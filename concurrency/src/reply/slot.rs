@@ -738,11 +738,17 @@ impl<R> Slot<R> {
     /// reads no clock.
     #[cfg_attr(not(feature = "async"), allow(dead_code))]
     pub(crate) fn poll(&self, waker: &Waker) -> Poll<Result<R, Terminal>> {
+        if let Some(result) = self.take(state(self.word())) {
+            return Poll::Ready(result);
+        }
         // `Waker::clone` and dropping a waker run executor code, so neither
-        // happens under the slot lock.
-        let mut fresh: Option<Waker> = None;
+        // happens under the slot lock. The first registration clones before
+        // locking (one lock section instead of two); a later poll with the
+        // same waker finds it registered and drops the copy.
+        let mut fresh: Option<Waker> = Some(waker.clone());
         loop {
             if let Some(result) = self.take(state(self.word())) {
+                drop(fresh);
                 return Poll::Ready(result);
             }
             let mut inner = lock(&self.inner);

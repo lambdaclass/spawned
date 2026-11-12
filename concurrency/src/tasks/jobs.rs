@@ -4,7 +4,7 @@
 //! A child module of `tasks::actor`, so it reaches the private envelope and
 //! shared-state types.
 
-use super::{Actor, Context, Envelope, Handler};
+use super::{dispatched, Actor, Context, Dispatch, Envelope, Handler};
 use crate::message::Message;
 use crate::reply::deadline::Expirable;
 use crate::reply::jobs::{
@@ -16,7 +16,7 @@ use crate::reply::{now_ticks, PendingReply, ReplyTo};
 use futures::future::{self, FutureExt as _};
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
-use std::pin::{pin, Pin};
+use std::pin::pin;
 use std::sync::{Arc, Mutex, Weak};
 
 // ---------------------------------------------------------------------------
@@ -35,8 +35,8 @@ impl Drop for EmitCredit {
 /// A message emitted by a job; fenced at dispatch when the job is cancelled
 /// or belongs to another instance.
 struct EmitEnvelope<M> {
-    msg: M,
-    credit: EmitCredit,
+    msg: Option<M>,
+    credit: Option<EmitCredit>,
 }
 
 impl<A, M> Envelope<A> for EmitEnvelope<M>
@@ -48,20 +48,20 @@ where
     fn message_type(&self) -> &'static str {
         std::any::type_name::<M>()
     }
-    fn handle<'a>(
-        self: Box<Self>,
-        actor: &'a mut A,
-        ctx: &'a Context<A>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        let EmitEnvelope { msg, credit } = *self;
+    fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
+        let msg = dispatched(&mut self.msg);
+        let credit = dispatched(&mut self.credit);
         let fenced = credit.0.fenced(ctx.id(), "emit");
         // The credit returns at dispatch (or here, when fenced).
         drop(credit);
         if fenced {
             ctx.shared.sender.failures().discard(msg);
-            return Box::pin(async {});
+            return (Box::pin(async {}), None);
         }
-        Box::pin(actor.handle(msg, PendingReply::detached(), ctx))
+        (
+            Box::pin(actor.handle(msg, PendingReply::detached(), ctx)),
+            None,
+        )
     }
 }
 
@@ -71,8 +71,8 @@ type Done<T, M> = Box<dyn FnOnce(JobOutcome<T>) -> M + Send>;
 /// produced message is dispatched in the same turn.
 struct TerminalEnvelope<T, M> {
     job: Arc<JobState>,
-    done: Done<T, M>,
-    outcome: JobOutcome<T>,
+    /// `done` and the outcome, taken at dispatch.
+    payload: Option<(Done<T, M>, JobOutcome<T>)>,
 }
 
 impl<A, T, M> Envelope<A> for TerminalEnvelope<T, M>
@@ -85,12 +85,10 @@ where
     fn message_type(&self) -> &'static str {
         std::any::type_name::<M>()
     }
-    fn handle<'a>(
-        self: Box<Self>,
-        actor: &'a mut A,
-        ctx: &'a Context<A>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        let TerminalEnvelope { job, done, outcome } = *self;
+    fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
+        let Self { job, payload } = self;
+        let job: &'a Arc<JobState> = job;
+        let (done, outcome) = dispatched(payload);
         let kind = if matches!(outcome, Err(JobError::DeadlineExceeded)) {
             "deadline"
         } else {
@@ -99,7 +97,7 @@ where
         // Everything runs inside the returned future, so a panicking `done`
         // is a handler panic caught by the run loop (`stopped()`, turn end
         // and job cancellation still run).
-        Box::pin(async move {
+        let turn = Box::pin(async move {
             if job.fenced(ctx.id(), kind) {
                 // Fenced: `done` and its captures (a linked token) are
                 // discarded in the turn, through the mailbox drop path.
@@ -108,7 +106,8 @@ where
             }
             let msg = done(outcome);
             actor.handle(msg, PendingReply::detached(), ctx).await
-        })
+        });
+        (turn, None)
     }
 }
 
@@ -165,8 +164,7 @@ where
         drop(hold);
         let envelope: Box<dyn Envelope<A> + Send> = Box::new(TerminalEnvelope {
             job: self.state.clone(),
-            done,
-            outcome,
+            payload: Some((done, outcome)),
         });
         self.ctx.shared.sender.send(envelope).err().map(|e| e.0)
     }
@@ -381,7 +379,10 @@ impl<A: Actor> JobCtx<A> {
         let credit = EmitCredit(self.state.clone());
         let ctx = self.ctx.clone();
         let send: SendScheduled = Box::new(move || {
-            let envelope: Box<dyn Envelope<A> + Send> = Box::new(EmitEnvelope { msg, credit });
+            let envelope: Box<dyn Envelope<A> + Send> = Box::new(EmitEnvelope {
+                msg: Some(msg),
+                credit: Some(credit),
+            });
             ctx.shared
                 .sender
                 .send(envelope)
@@ -414,7 +415,10 @@ impl<A: Actor> JobCtx<A> {
         let credit = EmitCredit(self.state.clone());
         self.state
             .enqueue_emit(|| {
-                let envelope: Box<dyn Envelope<A> + Send> = Box::new(EmitEnvelope { msg, credit });
+                let envelope: Box<dyn Envelope<A> + Send> = Box::new(EmitEnvelope {
+                    msg: Some(msg),
+                    credit: Some(credit),
+                });
                 self.ctx.shared.sender.send(envelope)
             })
             .map_err(|(gone, unsent)| {

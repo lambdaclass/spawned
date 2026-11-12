@@ -21,8 +21,10 @@ pub use slot::Delivery;
 use crate::error::ActorError;
 use crate::ActorId;
 use registry::Registry;
-use slot::{Slot, Terminal, NEVER};
+pub(crate) use slot::Slot;
+use slot::{Terminal, NEVER};
 use spawned_rt::time::Instant;
+use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
@@ -242,13 +244,19 @@ impl<R: Send + 'static> SlotHandle<R> {
     pub(crate) fn take(&mut self) -> Option<Arc<Slot<R>>> {
         self.0.take()
     }
-    /// The request's slot, type-erased (the turn's caller, for the death
-    /// point to answer if the turn is destroyed unfinished).
-    #[cfg_attr(not(feature = "async"), allow(dead_code))]
-    pub(crate) fn caller(&self) -> Option<Arc<dyn registry::Closeable>> {
-        self.0
-            .as_ref()
-            .map(|slot| slot.clone() as Arc<dyn registry::Closeable>)
+}
+
+/// A turn's caller, lent by its envelope for the turn: retained (one
+/// reference) only if the runtime destroys the turn unfinished, for the
+/// death point to answer.
+#[cfg_attr(not(feature = "async"), allow(dead_code))]
+pub(crate) trait Caller: Sync {
+    fn retain(&self) -> Arc<dyn registry::Closeable>;
+}
+
+impl<R: Send + 'static> Caller for Arc<Slot<R>> {
+    fn retain(&self) -> Arc<dyn registry::Closeable> {
+        self.clone()
     }
 }
 
@@ -295,7 +303,8 @@ pub enum DeferError {
 /// `PendingReply`: `reply` drops the value and `defer` returns
 /// [`DeferError::NoCaller`].
 pub struct PendingReply<'t, R: Send + 'static> {
-    slot: Option<Arc<Slot<R>>>,
+    /// Lent by the dispatching envelope for the turn (tasks mode), or owned.
+    slot: Option<Cow<'t, Arc<Slot<R>>>>,
     registry: Option<&'t Arc<Registry>>,
     _turn: PhantomData<&'t mut ()>,
 }
@@ -310,12 +319,24 @@ impl<R: Send + 'static> std::fmt::Debug for PendingReply<'_, R> {
 
 impl<'t, R: Send + 'static> PendingReply<'t, R> {
     pub(crate) fn new(slot: Option<Arc<Slot<R>>>, registry: &'t Arc<Registry>) -> Self {
+        Self::with_slot(slot.map(Cow::Owned), registry)
+    }
+
+    /// The obligation of a request whose slot the dispatching envelope
+    /// keeps for the turn: no reference is taken unless it is deferred or
+    /// dropped unanswered.
+    #[cfg_attr(not(feature = "async"), allow(dead_code))]
+    pub(crate) fn lent(slot: Option<&'t Arc<Slot<R>>>, registry: &'t Arc<Registry>) -> Self {
+        Self::with_slot(slot.map(Cow::Borrowed), registry)
+    }
+
+    fn with_slot(slot: Option<Cow<'t, Arc<Slot<R>>>>, registry: &'t Arc<Registry>) -> Self {
         #[cfg(feature = "lifecycle-trace")]
         if let Some(slot) = &slot {
             crate::lifecycle_trace::reply(
                 registry.owner().raw(),
                 "Dispatch",
-                Arc::as_ptr(slot) as u64,
+                Arc::as_ptr(&**slot) as u64,
                 "",
             );
         }
@@ -364,7 +385,7 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
     /// caller is answered `Overloaded` and this returns
     /// [`DeferError::Overloaded`].
     pub fn defer(mut self) -> Result<ReplyTo<R>, DeferError> {
-        let slot = self.slot.take().ok_or(DeferError::NoCaller)?;
+        let slot = self.slot.take().ok_or(DeferError::NoCaller)?.into_owned();
         let registry = self.registry.take().ok_or(DeferError::NoCaller)?;
         match slot.defer(registry.pool(), &now_ticks) {
             Ok(()) => {
@@ -410,8 +431,11 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
 impl<R: Send + 'static> Drop for PendingReply<'_, R> {
     fn drop(&mut self) {
         if let Some(slot) = self.slot.take() {
+            if slot.is_terminal() {
+                return;
+            }
             match self.registry {
-                Some(registry) => registry.dropped(slot),
+                Some(registry) => registry.dropped(slot.into_owned()),
                 None => {
                     slot.terminate(Terminal::Dropped);
                 }

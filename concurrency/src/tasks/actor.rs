@@ -9,7 +9,7 @@ use crate::link::{
 use crate::mailbox::tasks as mpsc;
 use crate::message::Message;
 use crate::monitor::{Down, MonitorCleanup, MonitorRef, MonitorTable};
-use crate::reply::{registry::Registry, reply_slot, SlotHandle};
+use crate::reply::{registry::Registry, reply_slot, Caller, Slot, SlotHandle};
 use crate::reply::{Deadline, PendingReply, ReplyReceiver, DEFAULT_MAX_OUTSTANDING};
 use core::pin::pin;
 use futures::future::{self, FutureExt as _};
@@ -164,17 +164,39 @@ trait Envelope<A: Actor>: Send {
     /// mailbox is destroyed. No user code runs.
     fn discharge(&mut self) {}
 
-    /// The request's caller, if any (answered at the death point if the
-    /// runtime destroys the turn before it finishes).
-    fn caller(&self) -> Option<Arc<dyn crate::reply::registry::Closeable>> {
-        None
-    }
+    /// Dispatch once: the turn's future, and the request's caller if any.
+    /// The envelope keeps the request's slot for the whole turn and lends
+    /// it to the handler's `PendingReply` (no reference count change per
+    /// message); the run loop answers the lent caller at the death point if
+    /// the runtime destroys the turn before it finishes.
+    fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a>;
+}
 
-    fn handle<'a>(
-        self: Box<Self>,
-        actor: &'a mut A,
-        ctx: &'a Context<A>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+/// A dispatched turn: its future and the caller it answers, lent by the
+/// envelope for the turn.
+type Dispatch<'a> = (
+    Pin<Box<dyn Future<Output = ()> + Send + 'a>>,
+    Option<&'a dyn Caller>,
+);
+
+/// Dispatch `envelope`, catching a panic while the handler builds its
+/// future (a manual `Handler` may panic before it returns one): a handler
+/// panic like any other.
+fn dispatch<'a, A: Actor>(
+    envelope: &'a mut (dyn Envelope<A> + Send),
+    actor: &'a mut A,
+    ctx: &'a Context<A>,
+) -> Result<Dispatch<'a>, Box<dyn std::any::Any + Send>> {
+    let mut parts = Some((envelope, actor));
+    std::panic::catch_unwind(AssertUnwindSafe(move || {
+        let (envelope, actor) = parts.take().expect("dispatched once");
+        envelope.handle(actor, ctx)
+    }))
+}
+
+/// Take an envelope's payload at its one dispatch.
+fn dispatched<T>(payload: &mut Option<T>) -> T {
+    payload.take().expect("an envelope is dispatched once")
 }
 
 /// Answer every request queued in a dead owner's mailbox, destroying
@@ -211,7 +233,9 @@ fn erase<T: Send + 'static>(items: Vec<T>) -> Vec<Box<dyn Send>> {
 struct MessageEnvelope<M: Message> {
     // Before the message: a plain drop also answers the request first.
     slot: SlotHandle<M::Result>,
-    msg: M,
+    /// The slot lent to the dispatched turn (taken from `slot`).
+    lent: Option<Arc<Slot<M::Result>>>,
+    msg: Option<M>,
     #[cfg(feature = "metrics")]
     observation: Option<crate::instrumentation::MessageObservation>,
     /// The recorded actor that sent it (0: outside code or a request); its
@@ -251,17 +275,18 @@ where
     fn discharge(&mut self) {
         drop(std::mem::replace(&mut self.slot, SlotHandle::detached()));
     }
-    fn caller(&self) -> Option<Arc<dyn crate::reply::registry::Closeable>> {
-        self.slot.caller()
-    }
-    fn handle<'a>(
-        self: Box<Self>,
-        actor: &'a mut A,
-        ctx: &'a Context<A>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        let mut this = *self;
-        let reply = PendingReply::new(this.slot.take(), &ctx.shared.replies);
-        Box::pin(actor.handle(this.msg, reply, ctx))
+    fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
+        let Self {
+            slot, lent, msg, ..
+        } = self;
+        let msg = dispatched(msg);
+        *lent = slot.take();
+        let lent: &'a Option<Arc<Slot<M::Result>>> = lent;
+        let reply = PendingReply::lent(lent.as_ref(), &ctx.shared.replies);
+        (
+            Box::pin(actor.handle(msg, reply, ctx)),
+            lent.as_ref().map(|slot| slot as &dyn Caller),
+        )
     }
 }
 
@@ -284,19 +309,16 @@ impl<A: Actor + Handler<Down>> Envelope<A> for DownEnvelope {
             observation.reject();
         }
     }
-    fn handle<'a>(
-        self: Box<Self>,
-        actor: &'a mut A,
-        ctx: &'a Context<A>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        let down = self.down;
-        Box::pin(async move {
+    fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
+        let down = dispatched(&mut self.down);
+        let turn = Box::pin(async move {
             fail_point!("monitor.down_before_dispatch", async);
             if crate::monitor::fence::take_queued(&ctx.shared.monitors, &down.monitor_ref) {
                 let reply = PendingReply::new(None, &ctx.shared.replies);
                 actor.handle(down, reply, ctx).await;
             }
-        })
+        });
+        (turn, None)
     }
 }
 
@@ -317,8 +339,9 @@ where
 {
     let from = crate::lifecycle_trace::life_sender::<M>(replies.owner().raw(), slot.is_detached());
     let envelope: Box<dyn Envelope<A> + Send> = Box::new(MessageEnvelope {
-        msg,
+        msg: Some(msg),
         slot,
+        lent: None,
         #[cfg(feature = "metrics")]
         observation: Some(_mailbox.enqueued()),
         #[cfg(feature = "lifecycle-trace")]
@@ -334,7 +357,7 @@ where
 /// `demonitor(Ref, [flush])`). A `Down` user code sends is an ordinary
 /// message.
 struct DownEnvelope {
-    down: Down,
+    down: Option<Down>,
     #[cfg(feature = "metrics")]
     observation: Option<crate::instrumentation::MessageObservation>,
 }
@@ -346,7 +369,7 @@ fn enqueue_down<A: Actor + Handler<Down>>(
     down: Down,
 ) -> Result<(), ActorError> {
     let envelope: Box<dyn Envelope<A> + Send> = Box::new(DownEnvelope {
-        down,
+        down: Some(down),
         #[cfg(feature = "metrics")]
         observation: Some(_mailbox.enqueued()),
     });
@@ -392,7 +415,8 @@ fn admit<A: Actor, M: 'static>(
 type InTurn<A, R> = Box<dyn FnOnce(&mut A, &Context<A>) -> R + Send>;
 struct InTurnEnvelope<A: Actor, R: Send + 'static> {
     slot: SlotHandle<R>,
-    f: InTurn<A, R>,
+    lent: Option<Arc<Slot<R>>>,
+    f: Option<InTurn<A, R>>,
 }
 
 impl<A: Actor, R: Send + 'static> Envelope<A> for InTurnEnvelope<A, R> {
@@ -403,41 +427,38 @@ impl<A: Actor, R: Send + 'static> Envelope<A> for InTurnEnvelope<A, R> {
     fn discharge(&mut self) {
         drop(std::mem::replace(&mut self.slot, SlotHandle::detached()));
     }
-    fn caller(&self) -> Option<Arc<dyn crate::reply::registry::Closeable>> {
-        self.slot.caller()
-    }
-    fn handle<'a>(
-        self: Box<Self>,
-        actor: &'a mut A,
-        ctx: &'a Context<A>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        let InTurnEnvelope { f, mut slot } = *self;
+    fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
+        let Self { slot, lent, f } = self;
+        let f = dispatched(f);
+        *lent = slot.take();
+        let lent: &'a Option<Arc<Slot<R>>> = lent;
         // Inside the future, so a panicking closure is a handler panic.
-        Box::pin(async move {
-            let reply = PendingReply::new(slot.take(), &ctx.shared.replies);
+        let turn = Box::pin(async move {
+            let reply = PendingReply::lent(lent.as_ref(), &ctx.shared.replies);
             let value = f(actor, ctx);
             let _ = reply.reply(value);
-        })
+        });
+        (turn, lent.as_ref().map(|slot| slot as &dyn Caller))
     }
 }
 
 // Private lifecycle signal, excluded from application message/handler metrics.
 // Nested supervisor adapters have no public mailbox traffic to bury this signal.
-struct FailureEnvelope(String);
+struct FailureEnvelope(Option<String>);
 impl<A: Actor> Envelope<A> for FailureEnvelope {
     #[cfg(feature = "diagnostics")]
     fn message_type(&self) -> &'static str {
         "Exit"
     }
 
-    fn handle<'a>(
-        self: Box<Self>,
-        _: &'a mut A,
-        _: &'a Context<A>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        Box::pin(async move {
-            panic!("nested supervisor failed: {}", self.0);
-        })
+    fn handle<'a>(&'a mut self, _: &'a mut A, _: &'a Context<A>) -> Dispatch<'a> {
+        let failure = dispatched(&mut self.0);
+        (
+            Box::pin(async move {
+                panic!("nested supervisor failed: {failure}");
+            }),
+            None,
+        )
     }
 }
 
@@ -446,7 +467,7 @@ impl<A: Actor> Envelope<A> for FailureEnvelope {
 /// `Handler<Exit>` on the actor — every actor can receive `Exit` via the
 /// trait's default-no-op `exit_received` callback.
 struct ExitEnvelope {
-    exit: Exit,
+    exit: Option<Exit>,
 }
 
 impl<A: Actor> Envelope<A> for ExitEnvelope {
@@ -460,21 +481,21 @@ impl<A: Actor> Envelope<A> for ExitEnvelope {
         "Exit"
     }
 
-    fn handle<'a>(
-        self: Box<Self>,
-        actor: &'a mut A,
-        ctx: &'a Context<A>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        Box::pin(async move {
-            actor.exit_received(self.exit, ctx).await;
-        })
+    fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
+        let exit = dispatched(&mut self.exit);
+        (
+            Box::pin(async move {
+                actor.exit_received(exit, ctx).await;
+            }),
+            None,
+        )
     }
 }
 
 /// A parent exit (E3): when dispatched, exit begins with the parent's reason
 /// and `stopped()` runs. `exit_received` never sees it.
 struct ParentExitEnvelope {
-    exit: Exit,
+    exit: Option<Exit>,
 }
 
 impl<A: Actor> Envelope<A> for ParentExitEnvelope {
@@ -488,12 +509,9 @@ impl<A: Actor> Envelope<A> for ParentExitEnvelope {
         "ParentExit"
     }
 
-    fn handle<'a>(
-        self: Box<Self>,
-        _actor: &'a mut A,
-        ctx: &'a Context<A>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        Box::pin(async move { ctx.parent_exit(self.exit.reason) })
+    fn handle<'a>(&'a mut self, _actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
+        let exit = dispatched(&mut self.exit);
+        (Box::pin(async move { ctx.parent_exit(exit.reason) }), None)
     }
 }
 
@@ -501,7 +519,7 @@ impl<A: Actor> Envelope<A> for ParentExitEnvelope {
 /// (phase 0). If the actor trapped exits when `started()` returned it is an
 /// `Exit` (or parent exit); otherwise it was resolved then and is inert.
 struct HeldEnvelope {
-    exit: Exit,
+    exit: Option<Exit>,
     parent: bool,
 }
 
@@ -516,21 +534,20 @@ impl<A: Actor> Envelope<A> for HeldEnvelope {
         "Exit"
     }
 
-    fn handle<'a>(
-        self: Box<Self>,
-        actor: &'a mut A,
-        ctx: &'a Context<A>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        Box::pin(async move {
+    fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
+        let exit = dispatched(&mut self.exit);
+        let parent = self.parent;
+        let turn = Box::pin(async move {
             if !link::lock_request(&ctx.shared.linked_reason).held_trapped() {
                 return;
             }
-            if self.parent {
-                ctx.parent_exit(self.exit.reason);
+            if parent {
+                ctx.parent_exit(exit.reason);
             } else {
-                actor.exit_received(self.exit, ctx).await;
+                actor.exit_received(exit, ctx).await;
             }
-        })
+        });
+        (turn, None)
     }
 }
 
@@ -547,15 +564,19 @@ fn signal_target<A: Actor>(
     let parent_tx = sender.clone();
     let held_tx = sender.clone();
     let send_exit: SendExitFn = Arc::new(move |exit: Exit| {
-        let envelope: Box<dyn Envelope<A> + Send> = Box::new(ExitEnvelope { exit });
+        let envelope: Box<dyn Envelope<A> + Send> = Box::new(ExitEnvelope { exit: Some(exit) });
         exit_tx.send(envelope).map_err(|_| ActorError::NoProc)
     });
     let send_parent_exit: SendExitFn = Arc::new(move |exit: Exit| {
-        let envelope: Box<dyn Envelope<A> + Send> = Box::new(ParentExitEnvelope { exit });
+        let envelope: Box<dyn Envelope<A> + Send> =
+            Box::new(ParentExitEnvelope { exit: Some(exit) });
         parent_tx.send(envelope).map_err(|_| ActorError::NoProc)
     });
     let send_held: SendHeldFn = Arc::new(move |exit: Exit, parent: bool| {
-        let envelope: Box<dyn Envelope<A> + Send> = Box::new(HeldEnvelope { exit, parent });
+        let envelope: Box<dyn Envelope<A> + Send> = Box::new(HeldEnvelope {
+            exit: Some(exit),
+            parent,
+        });
         held_tx.send(envelope).map_err(|_| ActorError::NoProc)
     });
     Arc::new(SignalTarget {
@@ -1239,7 +1260,10 @@ impl<A: Actor> ActorRef<A> {
             .await
     }
     pub(crate) fn signal_failure(&self, error: String) {
-        let _ = self.shared.sender.send(Box::new(FailureEnvelope(error)));
+        let _ = self
+            .shared
+            .sender
+            .send(Box::new(FailureEnvelope(Some(error))));
     }
     /// Send a fire-and-forget message to the actor.
     pub fn send<M>(&self, msg: M) -> Result<(), ActorError>
@@ -1302,8 +1326,9 @@ impl<A: Actor> ActorRef<A> {
     {
         let (slot, rx) = reply_slot(Deadline::Never, Some(&self.shared.replies));
         let envelope: Box<dyn Envelope<A> + Send> = Box::new(InTurnEnvelope {
-            f: Box::new(f),
+            f: Some(Box::new(f)),
             slot,
+            lent: None,
         });
         // Past the death point the actor is gone (E4), as for `enqueue`.
         if self.shared.replies.refuses_admission() {
@@ -1780,14 +1805,14 @@ struct DeathFirst<'a, A: Actor, C: Fn()> {
     inner: Option<Pin<Box<dyn Future<Output = ()> + Send + 'a>>>,
     rx: &'a mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cleanup: &'a mut crate::actor_cleanup::ActorCleanup<C>,
-    caller: Option<Arc<dyn crate::reply::registry::Closeable>>,
+    caller: Option<&'a dyn Caller>,
 }
 impl<'a, A: Actor, C: Fn()> DeathFirst<'a, A, C> {
     fn new(
         inner: Pin<Box<dyn Future<Output = ()> + Send + 'a>>,
         rx: &'a mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
         cleanup: &'a mut crate::actor_cleanup::ActorCleanup<C>,
-        caller: Option<Arc<dyn crate::reply::registry::Closeable>>,
+        caller: Option<&'a dyn Caller>,
     ) -> Self {
         Self {
             inner: Some(inner),
@@ -1797,25 +1822,31 @@ impl<'a, A: Actor, C: Fn()> DeathFirst<'a, A, C> {
         }
     }
 }
+/// A caught panic payload.
+type Panic = Box<dyn std::any::Any + Send>;
+
 impl<A: Actor, C: Fn()> Future for DeathFirst<'_, A, C> {
-    type Output = ();
-    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+    /// The future's panic, caught: the turn's (or hook's) panic, not a
+    /// runtime drop. The future is gone before it is returned.
+    type Output = Result<(), Panic>;
+    fn poll(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
         let this = self.get_mut();
         let inner = this.inner.as_mut().expect("polled after completion");
         match std::panic::catch_unwind(AssertUnwindSafe(|| inner.as_mut().poll(cx))) {
             Ok(std::task::Poll::Pending) => std::task::Poll::Pending,
             Ok(std::task::Poll::Ready(())) => {
                 this.inner = None;
-                std::task::Poll::Ready(())
+                std::task::Poll::Ready(Ok(()))
             }
-            // A panic is the turn's (or hook's) panic, not a runtime drop:
-            // the future is gone before the panic continues.
             Err(panic) => {
                 let inner = this.inner.take();
                 if let Err(secondary) = std::panic::catch_unwind(AssertUnwindSafe(|| drop(inner))) {
                     crate::mailbox::dispose_panic(secondary);
                 }
-                std::panic::resume_unwind(panic)
+                std::task::Poll::Ready(Err(panic))
             }
         }
     }
@@ -1828,7 +1859,7 @@ impl<A: Actor, C: Fn()> Drop for DeathFirst<'_, A, C> {
         // Destroyed while pending: the runtime dropped the actor.
         self.cleanup.die_dropped();
         if let Some(caller) = self.caller.take() {
-            self.cleanup.answer_turn(caller);
+            self.cleanup.answer_turn(caller.retain());
         }
         let queued = answer_mailbox(self.rx);
         self.cleanup.discharged();
@@ -1949,6 +1980,7 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
             None,
         )
         .await
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     })
     .catch_unwind()
     .await;
@@ -2051,17 +2083,16 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
                 // The handler's future is built inside the guarded future: a
                 // manual `Handler` may panic before it returns one, and that
                 // is a handler panic like any other (threads mode catches the
-                // same call).
-                let caller = envelope.caller();
-                let result = AssertUnwindSafe(async {
-                    let turn = crate::lifecycle_trace::in_actor(
-                        ctx.shared.id.raw(),
-                        envelope.handle(actor, &ctx),
-                    );
-                    DeathFirst::new(turn, &mut *rx, &mut *cleanup, caller).await
-                })
-                .catch_unwind()
-                .await;
+                // same call). The envelope outlives the turn and lends it the
+                // request's slot.
+                let mut envelope = envelope;
+                let result = match dispatch(&mut *envelope, &mut *actor, &ctx) {
+                    Ok((turn, caller)) => {
+                        let turn = crate::lifecycle_trace::in_actor(ctx.shared.id.raw(), turn);
+                        DeathFirst::new(turn, &mut *rx, &mut *cleanup, caller).await
+                    }
+                    Err(panic) => Err(panic),
+                };
                 ctx.shared.replies.end_turn(result.is_err());
                 #[cfg(feature = "diagnostics")]
                 drop(_turn);
@@ -2143,6 +2174,7 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
             None,
         )
         .await
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     })
     .catch_unwind()
     .await;
@@ -4394,8 +4426,9 @@ mod turn_regressions {
                     let count = Arc::new(AtomicUsize::new(0));
                     for _ in 0..2 {
                         tx.send(Box::new(MessageEnvelope {
-                            msg: Inc,
+                            msg: Some(Inc),
                             slot: SlotHandle::detached(),
+                            lent: None,
                             #[cfg(feature = "metrics")]
                             observation: None,
                             #[cfg(feature = "lifecycle-trace")]
@@ -4479,8 +4512,9 @@ mod idle_stop_regression {
                     assert!(futures::poll!(actor.as_mut()).is_pending());
                     let (slot, response) = reply_slot(crate::reply::Deadline::Never, None);
                     tx.send(Box::new(MessageEnvelope {
-                        msg: Increment,
+                        msg: Some(Increment),
                         slot,
+                        lent: None,
                         #[cfg(feature = "metrics")]
                         observation: None,
                         #[cfg(feature = "lifecycle-trace")]

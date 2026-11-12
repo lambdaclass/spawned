@@ -645,3 +645,50 @@ fn polled_receiver_vs_shorten_and_reply() {
         assert_balanced(&pool, &[&slot]);
     });
 }
+
+/// The dispatching envelope lends its slot to the turn (no reference taken
+/// per message): the in-turn reply goes through the borrow while the
+/// caller takes the value or abandons, and either side may drop the last
+/// reference. The value is dropped exactly once, by whoever holds it last,
+/// and never while the other side still reads it.
+#[test]
+fn lent_reply_vs_receiver_last_reference() {
+    use loom::sync::atomic::AtomicUsize;
+    struct Counted(Arc<AtomicUsize>);
+    impl Drop for Counted {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    model(|| {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let lent: Arc<Slot<Counted>> = Arc::new(Slot::new(NEVER));
+        let receiver = {
+            let slot = lent.clone();
+            loom::thread::spawn(move || match slot.try_take(&|| 0) {
+                Some(Ok(value)) => {
+                    drop(value);
+                    true
+                }
+                Some(Err(_)) => false,
+                None => {
+                    slot.abandon();
+                    false
+                }
+            })
+        };
+        let borrowed: &Arc<Slot<Counted>> = &lent;
+        let (delivery, back) = borrowed.reply_in_turn(Counted(drops.clone()), &|| 0);
+        drop(back);
+        drop(lent);
+        let took = receiver.join().unwrap();
+        assert_eq!(
+            drops.load(Ordering::SeqCst),
+            1,
+            "the value is dropped exactly once"
+        );
+        if took {
+            assert_eq!(delivery, Delivery::Delivered);
+        }
+    });
+}
