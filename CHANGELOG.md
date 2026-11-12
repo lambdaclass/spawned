@@ -186,13 +186,22 @@
   not returning to its baseline after quiesce, and has a `--inject-leak`
   negative control. Run it before each release (`docs/TESTING.md`).
 
-- Determinism D1-D3 (priority tier 3, work in progress): under
-  `--cfg spawned_sim`, wall-clock and OS-entropy reads on a simulated thread
-  return virtual time and seeded bytes (`spawned-sim-libc`, a sim-only crate
-  that holds the unsafe symbol interposers; `SPAWNED_SIM_STRICT=1` fails the
-  run instead); `spawn_blocking` runs inline as one simulator step; and
-  `spawned_rt::tasks` gains `interval`, `sleep_until` and `JoinSet`, with a
-  direct `tokio::time` call failing with a message naming the replacement.
+- Determinism D1-D3 (priority tier 3). Under `--cfg spawned_sim`:
+  wall-clock and OS-entropy reads made inside a simulated run return virtual
+  time and seeded bytes, so `Instant::now`, `SystemTime::now`,
+  `rand::thread_rng`, `OsRng` and `HashMap` iteration order replay per seed
+  with no call-site change (D1; madsim's technique, in the new sim-only crate
+  `spawned-sim-libc`, which holds all the unsafe interposers so the other
+  crates stay `forbid(unsafe_code)`; Linux/glibc and macOS). Each harness run
+  gets a fresh thread, so bodies passed to `sim_test`/`run_once`/`explore`
+  must be `Sync`. `SPAWNED_SIM_STRICT=1` (`sim::set_strict`) fails the run on
+  such a read, naming the caller. `spawn_blocking` runs inline as one
+  simulator step instead of panicking (D2; not concurrent under simulation).
+  `spawned_rt::tasks` gains `sleep_until`, `interval`/`interval_at`
+  (`Interval`, `MissedTickBehavior`) and `JoinSet` (`AbortHandle`,
+  `JoinError`), virtual under the simulator and Tokio's otherwise, and a
+  direct `tokio::time` timer fails the run with a message naming the
+  replacement (D3). See `docs/TESTING.md` and `docs/MIGRATION.md`.
 
 ## 0.7.3 — 2026-11-10
 

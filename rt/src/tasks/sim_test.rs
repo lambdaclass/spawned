@@ -21,6 +21,7 @@
 //! | `SPAWNED_SIM_ITERATIONS=n` | runs for that strategy (default 8 for random, 100 otherwise); overrides the test's `iterations` |
 //! | `SPAWNED_SIM_FAIR_AFTER=n` | polls after which a PCT/DFS run switches to a fair scheduler (default 20,000) |
 //! | `SPAWNED_SIM_TURN_BUDGET=ms` | wall-clock budget of one actor turn inside a poll (default 250, 0 = off) |
+//! | `SPAWNED_SIM_STRICT=1` | a direct wall-clock or OS-entropy read on the simulated thread (`Instant::now`, `SystemTime::now`, `thread_rng`, `OsRng`) fails the run naming the caller, instead of reading virtual time or seeded bytes |
 
 use std::future::Future;
 use std::ops::Range;
@@ -175,6 +176,7 @@ impl SimTest {
             "SPAWNED_SIM_MAX_STEPS",
             "SPAWNED_SIM_FAIR_AFTER",
             "SPAWNED_SIM_TURN_BUDGET",
+            "SPAWNED_SIM_STRICT",
         ]
         .iter()
         .filter_map(|key| std::env::var(key).ok().map(|v| format!("{key}={v} ")))

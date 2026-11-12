@@ -492,6 +492,92 @@ Other `#[test]`s in a simulated binary that build a runtime with
 `spawned_rt::tasks::Runtime::new()` run on the simulator too, but only with
 seed 0 (or `SPAWNED_SIM_SEED`); they are not seed sweeps.
 
+**Wall clock, entropy, blocking work and timers (determinism D1-D3).**
+Real code reads the clock and the OS entropy source directly, offloads
+synchronous work with `spawn_blocking`, and uses Tokio's timers. Under the cfg:
+
+- *D1, clock and entropy.* The `spawned-sim-libc` crate (compiled only under
+  `--cfg spawned_sim`; the one place with unsafe code, so `spawned-rt` and
+  the other crates stay `#![forbid(unsafe_code)]` in every build) defines
+  `clock_gettime`, `gettimeofday`, `getrandom`, `getentropy`, on Linux the
+  `syscall` entry for `SYS_getrandom` and on macOS `CCRandomGenerateBytes`,
+  madsim's technique. The test binary's references (std, `rand`, `chrono`)
+  bind to them at link time; each asks the simulator and otherwise calls libc
+  through `dlsym(RTLD_NEXT)`. While a world runs on the thread (inside its
+  `block_on`), `std::time::Instant::now()` reads `sim::VIRTUAL_BOOT` (one day)
+  plus virtual time and `SystemTime::now()` reads `sim::VIRTUAL_EPOCH`
+  (2000-01-01T00:00:00Z) plus virtual time. On any thread that has a world,
+  entropy reads (`HashMap`/`HashSet` keys, `rand::thread_rng`, `OsRng`,
+  `getrandom`) return bytes from a stream seeded by the world's seed, separate
+  from the scheduling generator. Every other thread, and the simulator's own
+  watchdog and turn budget (`sim::wall_now()`), read the real clock. Each
+  harness run gets a fresh OS thread, so state std and `rand` seed once per
+  thread is seeded inside the run: a seed in a sweep, the same seed alone, a
+  tape replay and a separate process observe the same values
+  (`rt/tests/sim_determinism.rs`). This is why `sim_test`, `run_once` and
+  `explore` bodies must be `Sync`. Interposition works on Linux with glibc
+  (the CI target; the `syscall` entry on x86_64 and aarch64) and macOS;
+  `sim::INTERPOSED` says whether it is active.
+- *Strict mode.* `SPAWNED_SIM_STRICT=1` (or `sim::set_strict(true)`) turns a
+  direct clock or entropy read on the simulated thread into a failure, the
+  way a direct `tokio::spawn` fails today, with the caller's frames:
+
+  ```text
+  spawned_sim: determinism leak: clock_gettime(CLOCK_REALTIME) on the simulated
+  thread (SPAWNED_SIM_STRICT=1): a direct wall-clock or OS-entropy read
+  (Instant::now, SystemTime::now, thread_rng, OsRng, getrandom); read time through
+  spawned_rt::time::Instant and draw randomness from a generator seeded by the
+  test. Caller:
+    13: <std::time::SystemTime>::now
+    14: my_crate::reads_the_wall_clock
+  ```
+
+  `HashMap` key generation (std asks with `GRND_INSECURE`) is never
+  reported, nor are Tokio's own runtime-metrics reads. Log timestamps
+  (`tracing-subscriber`'s default formatter) are wall-clock reads; use
+  `without_time()` under strict mode. Strict mode needs the interposers.
+- *D2, blocking work.* `spawned_rt::tasks::spawn_blocking` (and
+  `Handle::spawn_blocking`, `JoinSet::spawn_blocking`, actor
+  `spawn_blocking_helper`s) runs its closure inline as the single poll of a
+  new simulated task: the seed decides when it runs, and nothing else in the
+  world runs while it does. It is **not concurrent** under the simulator. A
+  closure that waits for async work in the same world cannot finish on one
+  thread; a nested `block_on` fails the run (so does a `Backend::Blocking`
+  actor), and a closure that blocks otherwise trips the poll watchdog.
+  `block_in_place` calls its closure.
+- *D3, timers and task sets.* `spawned_rt::tasks` has `sleep_until`,
+  `interval` / `interval_at` (`Interval`, `MissedTickBehavior`; Tokio's
+  semantics: the first tick is immediate, `Burst` by default) and `JoinSet`
+  (`spawn`, `spawn_blocking`, `join_next`, `try_join_next`, `abort_all`,
+  `shutdown`, `join_all`, `AbortHandle`), virtual under the simulator and
+  Tokio's otherwise. A simulated `JoinSet::join_next` returns, among tasks
+  that finished since the last call, the one with the smallest task id. A
+  direct `tokio::time` timer (Tokio's "timers are disabled" panic) fails the
+  run, even from a task nobody joins, with:
+
+  ```text
+  spawned_sim: direct tokio::time call (sleep, sleep_until, timeout or interval)
+  under the simulator: Tokio's timers do not run on virtual time; use
+  spawned_rt::tasks::{sleep, sleep_until, timeout, interval} (virtual under
+  spawned_sim, Tokio otherwise)
+  ```
+
+Simulator environment variables (all read under the cfg only):
+
+| Variable | Effect |
+|---|---|
+| `SPAWNED_SIM_SEED=n` | run only seed `n` |
+| `SPAWNED_SIM_SEEDS=n` | run seeds `0..n` (default 8) |
+| `SPAWNED_SIM_TAPE=path` | replay a decision tape |
+| `SPAWNED_SIM_TAPE_DIR=dir` | where failing tapes go (default `$TMPDIR/spawned-sim`) |
+| `SPAWNED_SIM_SHRINK=n` | shrinker run budget (default 200, 0 = off) |
+| `SPAWNED_SIM_STRATEGY=s`, `SPAWNED_SIM_ITERATIONS=n`, `SPAWNED_SIM_FAIR_AFTER=n` | exploration (below) |
+| `SPAWNED_SIM_SPIN=n` | busy polls before the clock creeps 1 ms (default 10,000) |
+| `SPAWNED_SIM_MAX_STEPS=n` | livelock guard (default 10 million polls) |
+| `SPAWNED_SIM_POLL_TIMEOUT=s` | wall-clock poll watchdog (default 60, 0 = off) |
+| `SPAWNED_SIM_TURN_BUDGET=ms` | wall-clock budget of one actor turn (default 250, 0 = off) |
+| `SPAWNED_SIM_STRICT=1` | a direct clock or entropy read fails the run (D1) |
+
 **What the simulator does not model.** Determinism and replay hold only within
 these limits:
 
@@ -501,19 +587,29 @@ these limits:
 - Tokio's cooperative budget is emulated (each poll runs inside a per-run
   Tokio context, so a task is forced to yield after 128 ready channel
   operations, as on Tokio), but Tokio's timer, I/O and blocking pools are not:
-  a direct `tokio::spawn` fails the run, and direct `tokio::time` use panics.
+  a direct `tokio::spawn` or `tokio::task::spawn_blocking` fails the run, and
+  a direct `tokio::time` timer fails it with a message naming the
+  `spawned_rt::tasks` replacement.
 - Timers fire only when no task is ready, or after `SPAWNED_SIM_SPIN` busy
   polls (default 10,000) when the clock creeps by 1 ms; every 100 creeps
   without an idle moment that threshold halves, down to one poll per
   millisecond. A real clock would fire timers at wall-clock moments in the
   middle of busy work, at a rate unrelated to poll counts.
-- One thread: Thread, Blocking, native and pinned placements, dedicated
-  runtimes and `spawn_blocking` do not run. A poll with no await point that
+- One thread: Thread, Blocking, native and pinned placements and dedicated
+  runtimes do not run (a Blocking-backend actor fails the run), and
+  `spawned_rt::tasks::spawn_blocking` runs inline as one atomic step, never
+  concurrently. A poll with no await point that
   never returns trips a wall-clock watchdog (`SPAWNED_SIM_POLL_TIMEOUT`,
   default 60 s) that aborts the process; one that returns after more than
   `SPAWNED_SIM_TURN_BUDGET` (250 ms) inside an actor turn fails the run.
-- Direct `std::time`/`SystemTime` reads, `std::thread`, Tokio I/O and
-  direct Tokio timers are outside its control.
+- `std::thread`, Tokio I/O, and wall-clock and entropy reads the
+  interposers cannot see (targets other than Linux/glibc and macOS,
+  `getrandom` found with `dlsym` as the `getrandom` crate 0.3+ does on Linux,
+  raw syscalls) are outside its control. A blocking wait with a timeout on
+  the simulated thread (`Condvar::wait_timeout`, `park_timeout`,
+  `recv_timeout`) computes its kernel deadline from virtual time: it can
+  return at once or stall until the poll watchdog fires. Blocking the
+  simulated thread is outside the model either way.
 - Remaining nondeterminism between runs in one process: actor, monitor and
   registration ids come from process-global counters (their order within a
   run is fixed, their values depend on earlier tests), and the name

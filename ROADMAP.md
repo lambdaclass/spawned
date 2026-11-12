@@ -74,9 +74,9 @@ From the [determinism audit](docs/research/determinism-audit.md) (2026-11-11) of
 
 | # | Item | Effort |
 |---|---|---|
-| D1 | Interpose `clock_gettime`/`gettimeofday` and `getrandom`/`getentropy` under `spawned_sim` (madsim's technique): virtual time and seeded bytes on a thread that owns a world, so `Instant::now`, `SystemTime::now`, `thread_rng`, `OsRng` and `HashMap` keys become deterministic with no call-site change; `SPAWNED_SIM_STRICT=1` panics with the caller instead (the `tokio::spawn`-style check). Covers ~270 clock and ~50 rand sites in the clients. | M |
-| D2 | `spawn_blocking` runs inline under sim as one atomic step (today it panics): synchronous DB and compute offload (64 client sites) becomes simulable. | S |
-| D3 | Complete `spawned_rt::tasks` (`interval`, `sleep_until`, a `JoinSet`) and turn Tokio's "timers are disabled" panic into a message naming the `spawned_rt` replacement. | S |
+| D1 | **Implemented (#267).** Interpose `clock_gettime`/`gettimeofday` and `getrandom`/`getentropy` under `spawned_sim` (madsim's technique): virtual time and seeded bytes on a thread that owns a world, so `Instant::now`, `SystemTime::now`, `thread_rng`, `OsRng` and `HashMap` keys become deterministic with no call-site change; `SPAWNED_SIM_STRICT=1` panics with the caller instead (the `tokio::spawn`-style check). Covers ~270 clock and ~50 rand sites in the clients. Done in the sim-only `spawned-sim-libc` crate (Linux/glibc and macOS; each harness run on a fresh thread so per-thread seeding is per run); left out: `getrandom` 0.3+ on Linux, which finds the symbol with `dlsym`. | M |
+| D2 | **Implemented (#267).** `spawn_blocking` runs inline under sim as one atomic step (today it panics): synchronous DB and compute offload (64 client sites) becomes simulable. | S |
+| D3 | **Implemented (#267).** Complete `spawned_rt::tasks` (`interval`, `sleep_until`, a `JoinSet`) and turn Tokio's "timers are disabled" panic into a message naming the `spawned_rt` replacement. | S |
 | D4 | Route the clients' direct Tokio calls: Ethrex 34 `tokio::spawn`/`JoinSet` and 48 `tokio::time`, Ethlambda 8 and 8 (lists in the audit). | M |
 | D5 | Library fixes: per-world id counters under sim (byte-identical traces, so S2 can run in CI); `PendingReplies::drain` in insertion order (0.8); `FailScenario::setup()` seeded from the world. | S |
 | D6 | First client `#[sim_test]`s (none exist today): Ethlambda's blockchain actor, Ethrex `tx_broadcaster` and `peer_table`, after D1. | S-M |

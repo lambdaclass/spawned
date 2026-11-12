@@ -33,9 +33,29 @@
 //!   about two million polls, well before the livelock guard
 //!   (`SPAWNED_SIM_MAX_STEPS`, default 10 million), even if other timers keep
 //!   firing.
-//!   `spawned_rt::time::Instant` reads this clock.
-//! - **Detected limits.** `spawn_blocking`, `block_in_place` and a nested
-//!   `block_on` panic with a message naming the call; a run with no ready task
+//!   `spawned_rt::time::Instant` reads this clock, and so do
+//!   `sleep_until`, `interval` and `JoinSet` (determinism D3). A direct
+//!   `tokio::time` timer fails the run with a message naming the
+//!   `spawned_rt` replacement.
+//! - **Wall clock and OS entropy (D1).** On Linux (glibc) and macOS,
+//!   `spawned-sim-libc` interposes `clock_gettime`, `gettimeofday`,
+//!   `getrandom`, `getentropy` (and `syscall(SYS_getrandom)` on Linux,
+//!   `CCRandomGenerateBytes` on macOS). While a world runs on a thread
+//!   (inside its `block_on`), `std::time::Instant::now` reads
+//!   [`VIRTUAL_BOOT`] plus virtual time and `SystemTime::now` reads
+//!   [`VIRTUAL_EPOCH`] plus virtual time; on any thread that has a world,
+//!   `getrandom`-style reads (`HashMap` keys, `rand::thread_rng`, `OsRng`)
+//!   return bytes from a stream seeded by the world's seed. Other threads,
+//!   and the simulator's own watchdog and turn budget ([`wall_now`]), read
+//!   the real clock. Each run of the harness gets a fresh thread, so
+//!   per-thread seeding (`HashMap` keys, `thread_rng`) happens inside the
+//!   run. `SPAWNED_SIM_STRICT=1` ([`set_strict`]) turns such a read into a
+//!   failure naming the caller instead.
+//! - **Blocking work (D2).** `spawn_blocking` runs its closure inline as the
+//!   single poll of a new task: one atomic step, never concurrent with
+//!   anything else in the world. `block_in_place` calls its closure. A
+//!   nested `block_on` (a Blocking-backend actor, `Handle::block_on` inside
+//!   a task or a `spawn_blocking` closure) fails the run; a run with no ready task
 //!   and no pending timer panics as a deadlock instead of hanging. A single
 //!   poll that runs longer than `SPAWNED_SIM_POLL_TIMEOUT` wall-clock seconds
 //!   (default 60; `SPAWNED_SIM_POLL_TIMEOUT=0` disables it, and the per-poll
@@ -66,8 +86,10 @@
 //! Library code reads time and jitter entropy through `spawned_rt::time`,
 //! which this module backs under the cfg. The one scheduling-relevant
 //! `HashMap` walk in the library (waking monitor waiters on exit) is done in
-//! monitor-creation order under the cfg. Still outside its control: direct
-//! `std::time` / `SystemTime` reads, `std::thread`, Tokio I/O, and
+//! monitor-creation order under the cfg. Still outside its control:
+//! `std::time` and entropy reads on targets without interposers,
+//! `getrandom` found through `dlsym` (the `getrandom` crate 0.3+ on Linux),
+//! `std::thread`, Tokio I/O, and
 //! process-global id counters (ids differ between runs in one process, but
 //! their relative order within a run is fixed).
 //!
