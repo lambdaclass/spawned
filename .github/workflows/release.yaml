@@ -67,6 +67,22 @@ jobs:
       - name: Wait for crates.io indexing
         run: sleep 30
 
+      - name: Publish spawned-sim-libc
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: |
+          OUTPUT=$(cargo publish --locked --package spawned-sim-libc 2>&1) || {
+            if echo "$OUTPUT" | grep -Eq "already (exists|uploaded)"; then
+              echo "spawned-sim-libc already published, continuing"
+            else
+              echo "$OUTPUT"
+              exit 1
+            fi
+          }
+
+      - name: Wait for crates.io indexing
+        run: sleep 30
+
       - name: Publish spawned-rt
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
