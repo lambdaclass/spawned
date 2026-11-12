@@ -602,6 +602,49 @@ impl<R> Slot<R> {
         self.reply_admitted(value, now, || Some(()))
     }
 
+    /// A reply from the owner's own turn (`PendingReply::reply`): nothing
+    /// shortens the deadline concurrently (only a deferred token can) and the
+    /// owner's death point cannot run during its own turn, so the only
+    /// concurrent transitions are the caller's (abandonment, its timer's
+    /// expiry), each one CAS out of `OPEN`. With the deadline still ahead,
+    /// the value is written under the slot lock and published by one CAS
+    /// `OPEN -> REPLIED` (the same linearization point as `OPEN -> WRITING`:
+    /// a receiver reads the value under that lock); a lost CAS hands the
+    /// value back. A reply at or past the deadline takes [`reply`](Self::reply).
+    pub(crate) fn reply_in_turn(&self, value: R, now: &impl Fn() -> u64) -> (Delivery, Option<R>) {
+        let deadline = self.deadline();
+        if deadline != NEVER && now() >= deadline {
+            return self.reply(value, now);
+        }
+        let mut inner = lock(&self.inner);
+        inner.value = Some(value);
+        match self.cas(None, |w| {
+            if state(w) == OPEN {
+                Ok(with_state(w, REPLIED))
+            } else {
+                Err(state(w))
+            }
+        }) {
+            Ok((old, new)) => {
+                let wake =
+                    Self::collect(&mut inner, credits(old).saturating_sub(credits(new)), true);
+                drop(inner);
+                wake.run(&self.parked);
+                (Delivery::Delivered, None)
+            }
+            Err(lost) => {
+                let value = inner.value.take();
+                drop(inner);
+                let delivery = match lost {
+                    Some(TIMED_OUT) => Delivery::Expired,
+                    Some(STOPPED) => Delivery::OwnerExited,
+                    _ => Delivery::CallerGone,
+                };
+                (delivery, value)
+            }
+        }
+    }
+
     /// [`reply`](Self::reply) admitted by the owner: `admit` returns a
     /// permit held across the linearizing `OPEN -> WRITING` CAS (and
     /// released before the value is written), or `None` once the owner is

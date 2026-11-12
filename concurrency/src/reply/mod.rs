@@ -333,7 +333,7 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
                 Delivery::CallerGone
             }
             Some(slot) => {
-                let (delivery, unsent) = slot.reply(value, &now_ticks);
+                let (delivery, unsent) = slot.reply_in_turn(value, &now_ticks);
                 drop(unsent);
                 record(delivery);
                 delivery

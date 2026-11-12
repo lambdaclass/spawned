@@ -180,6 +180,68 @@ fn reply_vs_abandon() {
     });
 }
 
+/// The in-turn reply (one CAS `OPEN -> REPLIED`, value written under the
+/// slot lock) versus the caller abandoning: exactly one wins; a lost reply
+/// gets its value back.
+#[test]
+fn reply_in_turn_vs_abandon() {
+    model(|| {
+        let slot: Arc<Slot<u32>> = Arc::new(Slot::new(NEVER));
+        let replier = {
+            let slot = slot.clone();
+            loom::thread::spawn(move || slot.reply_in_turn(1, &|| 0))
+        };
+        let abandoned = slot.abandon();
+        let (delivery, back) = replier.join().unwrap();
+        assert_ne!(abandoned, delivery == Delivery::Delivered);
+        if abandoned {
+            assert_eq!(state(slot.word()), slot::ABANDONED);
+            assert_eq!((delivery, back), (Delivery::CallerGone, Some(1)));
+        } else {
+            assert_eq!(state(slot.word()), slot::REPLIED);
+            assert_eq!(back, None);
+        }
+    });
+}
+
+/// The in-turn reply versus the caller's timer expiring the slot: one wins;
+/// an expired slot hands the value back as `Expired`.
+#[test]
+fn reply_in_turn_vs_expiry() {
+    model(|| {
+        let slot: Arc<Slot<u32>> = Arc::new(Slot::new(10));
+        let replier = {
+            let slot = slot.clone();
+            loom::thread::spawn(move || slot.reply_in_turn(7, &|| 0))
+        };
+        let expired = slot.terminate(Terminal::TimedOut);
+        let (delivery, back) = replier.join().unwrap();
+        assert_ne!(expired, delivery == Delivery::Delivered);
+        if expired {
+            assert_eq!(state(slot.word()), slot::TIMED_OUT);
+            assert_eq!((delivery, back), (Delivery::Expired, Some(7)));
+        } else {
+            assert_eq!(state(slot.word()), slot::REPLIED);
+        }
+    });
+}
+
+/// A polled receiver sees the in-turn reply's value (written before the
+/// publishing CAS, under the lock the receiver takes).
+#[test]
+fn polled_receiver_vs_reply_in_turn() {
+    model(|| {
+        let slot: Arc<Slot<u32>> = Arc::new(Slot::new(NEVER));
+        let replier = {
+            let slot = slot.clone();
+            loom::thread::spawn(move || slot.reply_in_turn(4, &|| 0).0)
+        };
+        let got = loom::future::block_on(std::future::poll_fn(|cx| slot.poll(cx.waker())));
+        assert_eq!(got, Ok(4));
+        assert_eq!(replier.join().unwrap(), Delivery::Delivered);
+    });
+}
+
 /// Reply versus the owner's registry close at death. A close that finds
 /// `WRITING` waits for the reply to resolve.
 #[test]
