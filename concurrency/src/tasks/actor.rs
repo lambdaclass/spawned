@@ -1981,6 +1981,9 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
         }
     }
 
+    // One cancellation future for the whole loop: polled only when the
+    // mailbox has nothing, so a busy actor registers no waiter per message.
+    let mut cancelled = pin!(cancellation_token.cancelled());
     while !cancellation_token.is_cancelled() {
         let msg = {
             let recv = pin!(future::poll_fn(|cx| {
@@ -2013,11 +2016,15 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
                 }
                 result
             }));
-            let cancel = pin!(cancellation_token.cancelled());
-            match future::select(recv, cancel).await {
-                future::Either::Left((msg, _)) => msg,
-                future::Either::Right(_) => None,
-            }
+            let mut recv = recv;
+            future::poll_fn(|cx| match recv.as_mut().poll(cx) {
+                std::task::Poll::Pending => match cancelled.as_mut().poll(cx) {
+                    std::task::Poll::Ready(()) => std::task::Poll::Ready(None),
+                    std::task::Poll::Pending => std::task::Poll::Pending,
+                },
+                ready => ready,
+            })
+            .await
         };
         match msg {
             Some(envelope) => {
