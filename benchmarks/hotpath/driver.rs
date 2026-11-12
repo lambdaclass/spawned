@@ -226,17 +226,14 @@ fn run_threads(name: &str, n: u64) -> Duration {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    match args.get(1).map(String::as_str) {
-        // `list`: every benchmark; `list-gate`: the deterministic ones.
-        Some(list @ ("list" | "list-gate")) => {
-            for (b, deterministic) in BENCHMARKS {
-                if list == "list" || *deterministic {
-                    println!("{b}");
-                }
+    // `list`: every benchmark; `list-gate`: the deterministic ones.
+    if let Some(list @ ("list" | "list-gate")) = args.get(1).map(String::as_str) {
+        for (b, deterministic) in BENCHMARKS {
+            if list == "list" || *deterministic {
+                println!("{b}");
             }
-            return;
         }
-        _ => {}
+        return;
     }
     let name = args[1].as_str();
     let n: u64 = args[2].parse().unwrap();
