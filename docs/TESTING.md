@@ -102,6 +102,74 @@ suites cover faults, Kani and mutation testing harden functions and tests, and
 the clients and canaries check real use. A bug fix always comes with a test
 that reproduces it ([reproducing-test rule](#reproducing-test-rule)).
 
+## How databases test, and how spawned compares
+
+Databases have the strongest testing culture in industry, because a bug
+silently loses data. Spawned borrows their techniques deliberately; this
+section maps each one to what spawned does and lists where it is still behind.
+
+### What the best databases do
+
+1. **Deterministic simulation (FoundationDB, TigerBeetle's VOPR).** The whole
+   system, including network, disk, clock and other machines, runs on one
+   seeded, single-threaded simulator that injects faults reality rarely
+   produces: machines dying mid-write, partitions, disk errors, clock jumps.
+   Every failure replays exactly from its seed, and simulation runs constantly.
+2. **Fault injection at every point (SQLite, FoundationDB's `BUGGIFY`).**
+   SQLite fails every allocation, every I/O and every possible crash point in
+   turn and checks the database stays consistent. `BUGGIFY` points make code
+   misbehave on purpose under simulation.
+3. **Formal specifications (AWS, MongoDB, CockroachDB, TiDB).** AWS specifies
+   systems such as DynamoDB and S3 in TLA+ before building them. Checking
+   traces of the real code against the spec keeps the two from drifting.
+4. **Proving the tests work (SQLite).** About 600 lines of test per line of
+   code, 100% branch coverage at the machine-code level (MC/DC), and checks
+   that deliberately broken builds fail the suite.
+5. **Fuzzing and differential or metamorphic testing (SQLite, CockroachDB,
+   DuckDB).** Generated workloads compared against a reference, or the same
+   workload under different configurations that must agree.
+6. **Black-box consistency checking (Jepsen).** The real system on real
+   machines under partitions, crashes and clock skew; every operation's history
+   is checked for linearizability.
+7. **Long soak and chaos runs (CockroachDB's roachtest, TiDB's Chaos Mesh).**
+   Days of load with injected failures, watching for leaks and slow decay.
+8. **Production as the last test.** Canaries, staged rollouts and invariant
+   monitors on live systems.
+
+### What spawned does
+
+| Database practice | Spawned's equivalent |
+|---|---|
+| Deterministic simulation | The [simulator](#seeds-and-decision-tapes-under---cfg-spawned_sim): a seeded single thread with virtual time; decision tapes that replay exactly and shrink to a minimal schedule; PCT and bounded exploration. The simulated suites are a required CI check (`sim`) |
+| Fault injection | Failpoints at named sites in the lifecycle code; suites that panic in every user callback and drop every public future at every await point |
+| Formal specifications | TLA+ models of every lifecycle protocol, each invariant with a negative control that must fail; Apalache proofs of the safety invariants |
+| Specs tied to the code | Trace validation of real runs against the models, trace coverage, and the required `model-sync` check: code that changes modelled behaviour without its model fails CI |
+| Proving the tests work | The [planted-bug matrix](#planted-bug-sensitivity) (23 of 24 realistic bugs caught, each by two or more layers), `cargo-mutants`, and the [semantics coverage](#semantics-coverage) matrix (a check that fails for 47 of 50 guarantees) |
+| Fuzzing, metamorphic testing | The coverage-guided [scenario fuzzer](#scenario-fuzzing-fuzz) with contract oracles; one workload on every backend must give the same result |
+| Linearizability checking | A Porcupine-style checker over concurrent request histories |
+| Memory-model checking | Loom, ThreadSanitizer, LeakSanitizer and Kani proofs |
+| Soak and chaos | The [soak harness](#soak-harness) (hours of churn with leak gates, before each release); fault-injection canaries that crash supervised actors inside real clients |
+| Production | Ethrex and Ethlambda canaries on testnet and mainnet, compared with the clients' main branches |
+
+### Where spawned is behind, and the plan
+
+1. **Simulating the environment.** FoundationDB simulates network and disk,
+   where most distributed bugs live. Spawned's simulator controls actors and
+   time only. The determinism backlog (ROADMAP tier 3: clock and randomness
+   interception, `spawn_blocking`, timers) and actor-owned I/O with a simulated
+   network (rank 22a) close this, so a whole client node with peers,
+   partitions and crashes can run from a seed.
+2. **Volume.** FoundationDB and TigerBeetle simulate continuously. Spawned's
+   simulator and fuzzer run in CI and by hand; continuous seeds are the
+   cheapest way to find what is left once scheduled runs are enabled.
+3. **Code coverage.** SQLite measures branch coverage; spawned measures
+   guarantee and model-action coverage. Adding code coverage of the simulated
+   suites would show untested paths directly.
+4. **Production monitors (rank 5c).** The TLA+ invariants as live checks
+   inside canary nodes.
+5. **An external audit.** A Jepsen-style review of the semantics contract and
+   the models by someone outside the project, a 1.0 requirement.
+
 ## Verification layers
 
 Status of each layer. "Planned" items are tracked in the

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- TESTING.md: how databases test (FoundationDB, TigerBeetle, SQLite, AWS,
+  Jepsen and others), how each technique maps to spawned, and the gaps.
 - Tests: planted-bug follow-ups. New scenario-fuzzer oracles for restart
   decisions, RestForOne cohorts, Transient restarts, required restarts versus
   budget exhaustion, backoff delays in virtual time, linked exit reasons,
