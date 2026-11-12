@@ -88,9 +88,25 @@ word: AtomicU64 = state:4 | TOKEN:1 | REG:1 | JOBS:16 | (spare)
   JOBS:  running linked jobs (pipe_reply); MAX_OUTSTANDING is limited to
          65535 at configuration, so the field cannot overflow
 deadline: AtomicU64   rt clock ticks; u64::MAX = never; only decreases
-value:    written only by the thread that moved the word to WRITING
-waker:    AtomicWaker (tasks) / Mutex+Condvar (threads)
+inner:    one mutex (the slot lock) over
+            value:  written only by the reply that won the word, before the
+                    CAS that publishes REPLIED
+            waker:  the caller's task waker, or the unparker of a thread
+                    blocked in recv() (then `parked` is set, so the death
+                    point's discharge wakes it before any other waker)
+            side:   boxed, created by defer(): the owner's credit pool and
+                    the token's watchers (ReplyTo::closed, caller-gone job
+                    cancellation); a plain request never allocates it
+          the slot lock also orders a shortening against a reply's
+          deadline read
 ```
+
+A terminal transition takes the waker under the slot lock after its CAS;
+a receiver checks the word under that lock before it registers, so either
+the transition finds its waker or the check sees the terminal state (no
+lost wakeup; `tests/reply_slot_loom.rs`). A blocking receiver parks its
+thread (no condvar). An `AtomicWaker` beside a value mutex was measured and
+costs more per request than one lock for both.
 
 **Credits held by a slot:**
 

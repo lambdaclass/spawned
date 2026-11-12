@@ -20,10 +20,17 @@
 //! This file is shared with the Loom model (`tests/reply_slot_loom.rs`), which
 //! supplies the synchronization types through `super::sync`. Time is passed in
 //! as a `now` closure returning clock ticks, so the model controls the clock.
-//! No user code runs under the slot mutex: values and wakers are moved out and
+//! No user code runs under a slot lock: values and wakers are moved out and
 //! dropped or woken after it is released.
+//!
+//! The slot lock guards the value and the caller's waker (a thread blocked
+//! in `recv_blocking` registers its unparker there: no condvar). Deferred
+//! token state (the credit pool and the token's watchers) is created by
+//! `defer()`, so a plain request never allocates it and its drop is cheap.
+//! (An `AtomicWaker` beside a value mutex measured more instructions per
+//! request than one lock for both: two more read-modify-writes.)
 
-use super::sync::{wait_ticks, yield_now, Arc, AtomicU64, AtomicUsize, Condvar, Mutex, Ordering};
+use super::sync::{yield_now, Arc, AtomicU64, AtomicUsize, Mutex, Ordering};
 use std::task::{Poll, Waker};
 
 pub(crate) const OPEN: u64 = 0;
@@ -182,19 +189,29 @@ impl CreditPool {
     }
 }
 
-struct Inner<R> {
-    /// Written only by the reply that moved the word to `WRITING`, and
-    /// published by `WRITING -> REPLIED` under this lock.
-    value: Option<R>,
-    /// The caller's receiver.
-    waker: Option<Waker>,
+/// Deferred-token state, created by `defer()` (which installs the pool
+/// before its CAS can take a credit): a plain request never allocates it.
+struct Side {
+    /// The owner's pool, where this slot's credits return.
+    pool: Arc<CreditPool>,
     /// Token-side waiters: `ReplyTo::closed()` and caller-gone job
     /// cancellation. Several may wait at once.
     watchers: Vec<Waker>,
-    /// The owner's pool, set by `defer()` before its CAS installs `TOKEN`.
-    pool: Option<Arc<CreditPool>>,
-    /// Threads parked in `recv_blocking`.
-    parked: usize,
+}
+
+/// What the slot lock guards. Its drop is two `None` checks and a null
+/// check for a plain request.
+struct Inner<R> {
+    /// Written only by the reply that won the word, before the CAS that
+    /// publishes `REPLIED`; taken by the receiver after it reads `REPLIED`.
+    value: Option<R>,
+    /// The caller's receiver: an async task's waker, or the unparker of a
+    /// thread blocked in `recv_blocking` (then `parked` is set).
+    waker: Option<Waker>,
+    /// The registered waker is a parked thread's (no user code): the death
+    /// point's discharge wakes it before any other waker.
+    parked: bool,
+    side: Option<Box<Side>>,
 }
 
 pub(crate) struct Slot<R> {
@@ -204,41 +221,49 @@ pub(crate) struct Slot<R> {
     pub(crate) owner: super::sync::SlotOwner,
     word: AtomicU64,
     deadline: AtomicU64,
+    /// The slot lock: the value and waker handoff, and the order of a
+    /// deadline shortening against a reply's deadline read.
     inner: Mutex<Inner<R>>,
-    parked: Condvar,
 }
 
+#[inline]
 fn lock<T>(mutex: &Mutex<T>) -> super::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// What a winning transition must do after its CAS: return credits, then wake.
+/// What a winning transition must do after its CAS (the credit has already
+/// returned): wake the receiver and the token's watchers.
 pub(crate) struct Wake {
-    pool: Option<Arc<CreditPool>>,
-    release: u64,
     waker: Option<Waker>,
+    /// `waker` unparks a thread blocked in `recv_blocking`.
+    parked: bool,
     watchers: Vec<Waker>,
-    notify: bool,
 }
 
 impl Wake {
-    /// Wake the slot's parked blocking receivers (no user code). Done first,
-    /// so a parked `recv()` never waits behind an arbitrary waker.
-    fn notify_parked(&mut self, slot_parked: &Condvar) {
-        if std::mem::take(&mut self.notify) {
-            slot_parked.notify_all();
+    const NONE: Self = Self {
+        waker: None,
+        parked: false,
+        watchers: Vec::new(),
+    };
+    /// Wake a parked blocking receiver (no user code). Done first, so a
+    /// parked `recv()` never waits behind an arbitrary waker.
+    fn notify_parked(&mut self) {
+        if std::mem::take(&mut self.parked) {
+            if let Some(waker) = self.waker.take() {
+                waker.wake();
+            }
         }
     }
-    fn run(mut self, slot_parked: &Condvar) {
-        if let Some(pool) = self.pool.take() {
-            pool.release(self.release);
-        }
-        self.notify_parked(slot_parked);
+    #[inline]
+    fn run(self) {
         if let Some(waker) = self.waker {
             waker.wake();
         }
-        for watcher in self.watchers {
-            watcher.wake();
+        if !self.watchers.is_empty() {
+            for watcher in self.watchers {
+                watcher.wake();
+            }
         }
     }
 }
@@ -258,22 +283,23 @@ impl<R> Slot<R> {
             inner: Mutex::new(Inner {
                 value: None,
                 waker: None,
-                watchers: Vec::new(),
-                pool: None,
-                parked: 0,
+                parked: false,
+                side: None,
             }),
-            parked: Condvar::new(),
         }
     }
 
+    #[inline]
     pub(crate) fn word(&self) -> u64 {
         self.word.load(Ordering::Acquire)
     }
 
+    #[inline]
     pub(crate) fn deadline(&self) -> u64 {
         self.deadline.load(Ordering::Acquire)
     }
 
+    #[inline]
     pub(crate) fn is_terminal(&self) -> bool {
         !live(state(self.word()))
     }
@@ -334,41 +360,38 @@ impl<R> Slot<R> {
         }
     }
 
-    /// After a winning CAS `old -> new`: collect the credit return and, when
-    /// the state became terminal, the waker. The caller runs it after every
-    /// lock is released.
+    /// After a winning CAS `old -> new`: return the credit delta now and,
+    /// when the state became terminal, collect the wake-up, which the caller
+    /// runs after every lock is released.
     fn after(&self, old: u64, new: u64) -> Wake {
         let release = credits(old).saturating_sub(credits(new));
         let terminal = live(state(old)) && !live(state(new));
         if release == 0 && !terminal {
-            return Wake {
-                pool: None,
-                release: 0,
-                waker: None,
-                watchers: Vec::new(),
-                notify: false,
-            };
+            return Wake::NONE;
         }
         let mut inner = lock(&self.inner);
-        Self::collect(&mut inner, release, terminal)
+        Self::finish(&mut inner, release, terminal)
     }
 
-    /// The wake-up work of a transition, taken under the slot lock.
-    fn collect(inner: &mut Inner<R>, release: u64, terminal: bool) -> Wake {
+    /// Under the slot lock: return `release` credits (an atomic, no user
+    /// code) and, for a terminal transition, take the wake-up.
+    #[inline]
+    fn finish(inner: &mut Inner<R>, release: u64, terminal: bool) -> Wake {
+        if release > 0 {
+            if let Some(side) = &inner.side {
+                side.pool.release(release);
+            }
+        }
+        if !terminal {
+            return Wake::NONE;
+        }
         Wake {
-            pool: if release > 0 {
-                inner.pool.clone()
-            } else {
-                None
+            waker: inner.waker.take(),
+            parked: inner.parked,
+            watchers: match &mut inner.side {
+                Some(side) => std::mem::take(&mut side.watchers),
+                None => Vec::new(),
             },
-            release,
-            waker: if terminal { inner.waker.take() } else { None },
-            watchers: if terminal {
-                std::mem::take(&mut inner.watchers)
-            } else {
-                Vec::new()
-            },
-            notify: terminal && inner.parked > 0,
         }
     }
 
@@ -402,7 +425,7 @@ impl<R> Slot<R> {
         drop(permit);
         match transition {
             Ok((old, new)) => {
-                self.after(old, new).run(&self.parked);
+                self.after(old, new).run();
                 true
             }
             Err(_) => false,
@@ -415,7 +438,7 @@ impl<R> Slot<R> {
     pub(crate) fn close(&self) -> bool {
         match self.close_collect() {
             Some(wake) => {
-                wake.run(&self.parked);
+                wake.run();
                 true
             }
             None => false,
@@ -435,12 +458,8 @@ impl<R> Slot<R> {
                     Err(())
                 }
             }) {
-                let mut wake = self.after(old, new);
                 // The credit returns with the transition; only wakes wait.
-                if let Some(pool) = wake.pool.take() {
-                    pool.release(wake.release);
-                }
-                return Some(wake);
+                return Some(self.after(old, new));
             }
             if state(self.word()) != WRITING {
                 return None;
@@ -451,13 +470,13 @@ impl<R> Slot<R> {
 
     /// Run the wake-up work [`close_collect`](Self::close_collect) returned.
     pub(crate) fn run_wake(&self, wake: Wake) {
-        wake.run(&self.parked);
+        wake.run();
     }
 
     /// The parked-receiver part of `wake`, run ahead of every waker of a
     /// batch (see `Registry::end_discharge`).
     pub(crate) fn notify_parked(&self, wake: &mut Wake) {
-        wake.notify_parked(&self.parked);
+        wake.notify_parked();
     }
 
     /// `[deadline]`: expire the slot if `now >= deadline`. Returns whether the
@@ -486,7 +505,7 @@ impl<R> Slot<R> {
     /// finds `WRITING` (or later) is a no-op; one that lowers the deadline is
     /// seen by any reply that has not read it yet.
     pub(crate) fn shorten(&self, at: u64, now: &impl Fn() -> u64) -> bool {
-        let (lowered, watchers, waker, parked) = {
+        let (lowered, watchers, waker) = {
             let mut inner = lock(&self.inner);
             let lower = state(self.word()) == OPEN && at < self.deadline();
             if lower {
@@ -494,27 +513,23 @@ impl<R> Slot<R> {
                 super::sync::shortened(&self.owner, self as *const Self as usize);
                 // Moved out, not cloned: no executor code under the lock. A
                 // woken receiver re-registers when it polls again.
-                (
-                    true,
-                    std::mem::take(&mut inner.watchers),
-                    inner.waker.take(),
-                    inner.parked > 0,
-                )
+                let watchers = match &mut inner.side {
+                    Some(side) => std::mem::take(&mut side.watchers),
+                    None => Vec::new(),
+                };
+                (true, watchers, inner.waker.take())
             } else {
-                (false, Vec::new(), None, false)
+                (false, Vec::new(), None)
             }
         };
         // Both sides re-arm their timers for the earlier deadline: the
-        // token's waiters, the caller's receiver and parked `recv_blocking`
-        // threads (which recompute their wait).
-        if parked {
-            self.parked.notify_all();
+        // token's waiters and the caller's receiver (a parked `recv_blocking`
+        // thread recomputes its wait).
+        if let Some(waker) = waker {
+            waker.wake();
         }
         for watcher in watchers {
             watcher.wake();
-        }
-        if let Some(waker) = waker {
-            waker.wake();
         }
         self.check_deadline(now);
         lowered
@@ -531,7 +546,14 @@ impl<R> Slot<R> {
         if self.check_deadline(now) {
             return Err(Refused::Closed);
         }
-        lock(&self.inner).pool = Some(pool.clone());
+        // The side state (the pool credits return to) exists before the CAS
+        // can take a credit.
+        lock(&self.inner).side.get_or_insert_with(|| {
+            Box::new(Side {
+                pool: pool.clone(),
+                watchers: Vec::new(),
+            })
+        });
         match self.cas(Some(pool), |w| {
             if state(w) == OPEN && w & TOKEN == 0 {
                 Ok(w | TOKEN | REG)
@@ -554,7 +576,10 @@ impl<R> Slot<R> {
         if self.check_deadline(now) {
             return Err(Refused::Closed);
         }
-        let pool = lock(&self.inner).pool.clone();
+        let pool = lock(&self.inner)
+            .side
+            .as_ref()
+            .map(|side| side.pool.clone());
         match self.cas(pool.as_deref(), |w| {
             if state(w) != OPEN || w & TOKEN == 0 {
                 Err(Refused::Closed)
@@ -577,7 +602,7 @@ impl<R> Slot<R> {
             debug_assert!(jobs(w) >= 1, "job_end without a running job");
             Ok(w - JOB_ONE)
         }) {
-            Ok((old, new)) => self.after(old, new).run(&self.parked),
+            Ok((old, new)) => self.after(old, new).run(),
             Err(_) => unreachable!("job_end never aborts or reserves"),
         }
     }
@@ -627,9 +652,9 @@ impl<R> Slot<R> {
         }) {
             Ok((old, new)) => {
                 let wake =
-                    Self::collect(&mut inner, credits(old).saturating_sub(credits(new)), true);
+                    Self::finish(&mut inner, credits(old).saturating_sub(credits(new)), true);
                 drop(inner);
-                wake.run(&self.parked);
+                wake.run();
                 (Delivery::Delivered, None)
             }
             Err(lost) => {
@@ -687,14 +712,15 @@ impl<R> Slot<R> {
             (Delivery::Delivered, None, REPLIED)
         };
         let (old, new) = self.resolve_writing(to);
-        let wake = Self::collect(&mut inner, credits(old).saturating_sub(credits(new)), true);
+        let wake = Self::finish(&mut inner, credits(old).saturating_sub(credits(new)), true);
         drop(inner);
-        wake.run(&self.parked);
+        wake.run();
         (delivery, unsent)
     }
 
     /// Receiver side: take the outcome of a terminal word. `Replied` with no
     /// value means it was already taken.
+    #[inline]
     fn take(&self, state: u64) -> Option<Result<R, Terminal>> {
         let terminal = Terminal::of(state)?;
         Some(match terminal {
@@ -720,6 +746,8 @@ impl<R> Slot<R> {
                 return Poll::Ready(result);
             }
             let mut inner = lock(&self.inner);
+            // Checked under the lock a terminal transition takes the waker
+            // under: a waker stored here is taken by it.
             if !live(state(self.word())) {
                 continue;
             }
@@ -741,7 +769,7 @@ impl<R> Slot<R> {
     }
 
     /// Token side: ready once the slot is terminal (or its deadline passed,
-    /// which expires it). Registers `waker` as the watcher otherwise.
+    /// which expires it). Registers `waker` as a watcher otherwise.
     #[cfg_attr(not(feature = "async"), allow(dead_code))]
     pub(crate) fn poll_closed(&self, waker: &Waker, now: &impl Fn() -> u64) -> Poll<()> {
         let mut fresh: Option<Waker> = None;
@@ -753,7 +781,12 @@ impl<R> Slot<R> {
             if !live(state(self.word())) {
                 continue;
             }
-            if inner.watchers.iter().any(|w| w.will_wake(waker)) {
+            let Some(side) = &mut inner.side else {
+                // Only a deferred token (or its linked job) watches its slot.
+                debug_assert!(false, "poll_closed on a slot that was never deferred");
+                return Poll::Ready(());
+            };
+            if side.watchers.iter().any(|w| w.will_wake(waker)) {
                 drop(inner);
                 drop(fresh);
                 return Poll::Pending;
@@ -763,7 +796,7 @@ impl<R> Slot<R> {
                 fresh = Some(waker.clone());
                 continue;
             };
-            inner.watchers.push(new);
+            side.watchers.push(new);
             return Poll::Pending;
         }
     }
@@ -789,19 +822,27 @@ impl<R> Slot<R> {
             if self.check_deadline(now) {
                 continue;
             }
-            let mut inner = lock(&self.inner);
-            if !live(state(self.word())) {
-                continue;
-            }
             let deadline = self.deadline();
             let remaining = (deadline != NEVER).then(|| deadline.saturating_sub(now()));
             if remaining == Some(0) {
                 continue;
             }
-            inner.parked += 1;
+            {
+                let mut inner = lock(&self.inner);
+                if !live(state(self.word())) {
+                    continue;
+                }
+                // The thread's own unparker (no user code to clone or drop).
+                super::sync::with_thread_waker(|waker| {
+                    if !inner.waker.as_ref().is_some_and(|w| w.will_wake(waker)) {
+                        inner.waker = Some(waker.clone());
+                    }
+                });
+                inner.parked = true;
+            }
             super::sync::parked();
-            let mut inner = wait_ticks(&self.parked, inner, remaining);
-            inner.parked -= 1;
+            // A stale unpark or a spurious return only loops.
+            super::sync::park(remaining);
         }
     }
 

@@ -73,28 +73,39 @@ mod sync {
         }
     }
 
-    /// A blocking receiver is about to wait on its slot (under the slot's
-    /// lock): the failpoint site `reply.recv_parked`, a handshake for tests.
+    /// A blocking receiver registered its unparker and is about to park:
+    /// the failpoint site `reply.recv_parked`, a handshake for tests.
     #[inline(always)]
     pub(crate) fn parked() {
         fail_point!("reply.recv_parked");
     }
 
-    /// Wait on `condvar` for at most `ticks` clock ticks (nanoseconds), or
-    /// until notified when `None`.
-    pub(crate) fn wait_ticks<'a, T>(
-        condvar: &Condvar,
-        guard: MutexGuard<'a, T>,
-        ticks: Option<u64>,
-    ) -> MutexGuard<'a, T> {
-        match ticks {
-            None => condvar.wait(guard).unwrap_or_else(|p| p.into_inner()),
-            Some(ticks) => {
-                condvar
-                    .wait_timeout(guard, Duration::from_nanos(ticks))
-                    .unwrap_or_else(|p| p.into_inner())
-                    .0
+    /// Run `f` with a waker that unparks the current thread (cached per
+    /// thread: no allocation, and no reference count change when it is
+    /// already the slot's registered waker).
+    pub(crate) fn with_thread_waker<T>(f: impl FnOnce(&std::task::Waker) -> T) -> T {
+        struct Unpark(std::thread::Thread);
+        impl std::task::Wake for Unpark {
+            fn wake(self: Arc<Self>) {
+                self.0.unpark();
             }
+            fn wake_by_ref(self: &Arc<Self>) {
+                self.0.unpark();
+            }
+        }
+        thread_local! {
+            static WAKER: std::task::Waker =
+                std::task::Waker::from(Arc::new(Unpark(std::thread::current())));
+        }
+        WAKER.with(|waker| f(waker))
+    }
+
+    /// Park the current thread for at most `ticks` clock ticks
+    /// (nanoseconds), or until unparked when `None`.
+    pub(crate) fn park(ticks: Option<u64>) {
+        match ticks {
+            None => std::thread::park(),
+            Some(ticks) => std::thread::park_timeout(Duration::from_nanos(ticks)),
         }
     }
     use std::time::Duration;

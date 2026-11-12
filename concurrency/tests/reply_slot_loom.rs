@@ -9,7 +9,7 @@
 
 mod sync {
     pub(crate) use loom::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-    pub(crate) use loom::sync::{Arc, Condvar, Mutex, MutexGuard};
+    pub(crate) use loom::sync::{Arc, Mutex, MutexGuard};
     pub(crate) use loom::thread::yield_now;
     pub(crate) type SlotOwner = Option<()>;
     pub(crate) fn section<T>(f: impl FnOnce() -> T) -> T {
@@ -19,14 +19,40 @@ mod sync {
     pub(crate) fn shortened(_: &SlotOwner, _: usize) {}
     pub(crate) fn parked() {}
 
-    /// Loom has no timed wait; tests park only on slots without a deadline.
-    pub(crate) fn wait_ticks<'a, T>(
-        condvar: &Condvar,
-        guard: MutexGuard<'a, T>,
-        ticks: Option<u64>,
-    ) -> MutexGuard<'a, T> {
+    /// The thread's park token: `std::thread::park`'s semantics (a wake
+    /// sets the token; a park consumes it), modelled with a Loom mutex and
+    /// condvar because Loom's own `unpark` also wakes a thread blocked in a
+    /// `join`.
+    #[derive(Default)]
+    pub(crate) struct Token {
+        set: loom::sync::Mutex<bool>,
+        cv: loom::sync::Condvar,
+    }
+    impl std::task::Wake for Token {
+        fn wake(self: std::sync::Arc<Self>) {
+            *self.set.lock().unwrap() = true;
+            self.cv.notify_all();
+        }
+    }
+    loom::thread_local! {
+        static TOKEN: std::sync::Arc<Token> = std::sync::Arc::new(Token::default());
+    }
+
+    /// A waker that unparks the current Loom thread.
+    pub(crate) fn with_thread_waker<T>(f: impl FnOnce(&std::task::Waker) -> T) -> T {
+        let waker = TOKEN.with(|token| std::task::Waker::from(token.clone()));
+        f(&waker)
+    }
+
+    /// Loom has no timed park; tests park only on slots without a deadline.
+    pub(crate) fn park(ticks: Option<u64>) {
         assert!(ticks.is_none(), "timed park is not modelled");
-        condvar.wait(guard).unwrap_or_else(|p| p.into_inner())
+        let token = TOKEN.with(|token| token.clone());
+        let mut set = token.set.lock().unwrap();
+        while !*set {
+            set = token.cv.wait(set).unwrap();
+        }
+        *set = false;
     }
 }
 
@@ -534,5 +560,88 @@ fn defer_at_the_bound_vs_abandon() {
             Ok(()) => panic!("a full pool granted a credit"),
         }
         assert_eq!(pool.used(), 0);
+    });
+}
+
+/// A parked threads-mode receiver is woken by the in-turn reply (one CAS
+/// publishing the value; the receiver's unparker sits in the waker cell).
+#[test]
+fn parked_receiver_vs_reply_in_turn() {
+    model(|| {
+        let slot: Arc<Slot<u32>> = Arc::new(Slot::new(NEVER));
+        let replier = {
+            let slot = slot.clone();
+            loom::thread::spawn(move || slot.reply_in_turn(5, &|| 0).0)
+        };
+        assert_eq!(slot.recv_blocking(&|| 0), Ok(5));
+        assert_eq!(replier.join().unwrap(), Delivery::Delivered);
+    });
+}
+
+/// The death point's batched close: the close collects the wake-up, the
+/// parked receivers are notified first (`notify_parked`), the rest runs
+/// after. A parked receiver is never lost between the two steps.
+#[test]
+fn parked_receiver_vs_batched_close() {
+    model(|| {
+        let pool = Arc::new(CreditPool::new(1));
+        let slot = deferred(&pool, NEVER);
+        let closer = {
+            let slot = slot.clone();
+            loom::thread::spawn(move || {
+                let mut wake = slot.close_collect().expect("the close wins an open slot");
+                slot.notify_parked(&mut wake);
+                slot.run_wake(wake);
+            })
+        };
+        assert_eq!(slot.recv_blocking(&|| 0), Err(Terminal::Stopped));
+        closer.join().unwrap();
+        assert_eq!(pool.used(), 0, "the credit returned with the close");
+        assert_balanced(&pool, &[&slot]);
+    });
+}
+
+/// A token watcher (`ReplyTo::closed`, caller-gone job cancellation) is
+/// woken by a deferred reply from another thread (no lost wakeup), and the
+/// caller's receiver gets the value.
+#[test]
+fn watcher_and_receiver_vs_deferred_reply() {
+    model(|| {
+        let pool = Arc::new(CreditPool::new(1));
+        let slot = deferred(&pool, NEVER);
+        let replier = {
+            let slot = slot.clone();
+            loom::thread::spawn(move || slot.reply(8, &|| 0).0)
+        };
+        loom::future::block_on(std::future::poll_fn(|cx| {
+            slot.poll_closed(cx.waker(), &|| 0)
+        }));
+        assert_eq!(replier.join().unwrap(), Delivery::Delivered);
+        let got = loom::future::block_on(std::future::poll_fn(|cx| slot.poll(cx.waker())));
+        assert_eq!(got, Ok(8));
+        assert_balanced(&pool, &[&slot]);
+    });
+}
+
+/// A polled receiver versus a shortening (which wakes it to re-arm) and
+/// the expiry that follows: the receiver ends `TimedOut` or with the
+/// reply, never blocked on a taken waker.
+#[test]
+fn polled_receiver_vs_shorten_and_reply() {
+    model(|| {
+        let clock = Clock::at(5);
+        let pool = Arc::new(CreditPool::new(1));
+        let slot = deferred(&pool, 100);
+        let owner = {
+            let (slot, clock) = (slot.clone(), clock.clone());
+            loom::thread::spawn(move || {
+                slot.shorten(5, &clock.now());
+                slot.reply(2, &clock.now()).0
+            })
+        };
+        let got = loom::future::block_on(std::future::poll_fn(|cx| slot.poll(cx.waker())));
+        assert_eq!(got, Err(Terminal::TimedOut));
+        assert_eq!(owner.join().unwrap(), Delivery::Expired);
+        assert_balanced(&pool, &[&slot]);
     });
 }

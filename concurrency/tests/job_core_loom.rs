@@ -25,14 +25,40 @@ mod sync {
     pub(crate) fn parked() {}
     pub(crate) use super::model_arc::{JobArc, JobWeak};
 
-    /// Loom has no timed wait; the model never parks on a slot.
-    pub(crate) fn wait_ticks<'a, T>(
-        condvar: &Condvar,
-        guard: MutexGuard<'a, T>,
-        ticks: Option<u64>,
-    ) -> MutexGuard<'a, T> {
+    /// The thread's park token: `std::thread::park`'s semantics (a wake
+    /// sets the token; a park consumes it), modelled with a Loom mutex and
+    /// condvar because Loom's own `unpark` also wakes a thread blocked in a
+    /// `join`.
+    #[derive(Default)]
+    pub(crate) struct Token {
+        set: loom::sync::Mutex<bool>,
+        cv: loom::sync::Condvar,
+    }
+    impl std::task::Wake for Token {
+        fn wake(self: std::sync::Arc<Self>) {
+            *self.set.lock().unwrap() = true;
+            self.cv.notify_all();
+        }
+    }
+    loom::thread_local! {
+        static TOKEN: std::sync::Arc<Token> = std::sync::Arc::new(Token::default());
+    }
+
+    /// A waker that unparks the current Loom thread.
+    pub(crate) fn with_thread_waker<T>(f: impl FnOnce(&std::task::Waker) -> T) -> T {
+        let waker = TOKEN.with(|token| std::task::Waker::from(token.clone()));
+        f(&waker)
+    }
+
+    /// Loom has no timed park; tests park only on slots without a deadline.
+    pub(crate) fn park(ticks: Option<u64>) {
         assert!(ticks.is_none(), "timed park is not modelled");
-        condvar.wait(guard).unwrap_or_else(|p| p.into_inner())
+        let token = TOKEN.with(|token| token.clone());
+        let mut set = token.set.lock().unwrap();
+        while !*set {
+            set = token.cv.wait(set).unwrap();
+        }
+        *set = false;
     }
 }
 
