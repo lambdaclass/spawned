@@ -40,7 +40,7 @@ pub struct SimTest {
 /// Run `body` as a seeded test with the default settings.
 pub fn sim_test<F, Fut>(body: F)
 where
-    F: Fn(u64) -> Fut,
+    F: Fn(u64) -> Fut + Sync,
     Fut: Future<Output = ()>,
 {
     SimTest::new().run(body)
@@ -142,7 +142,7 @@ impl SimTest {
     #[cfg(not(spawned_sim))]
     pub fn run<F, Fut>(self, body: F)
     where
-        F: Fn(u64) -> Fut,
+        F: Fn(u64) -> Fut + Sync,
         Fut: Future<Output = ()>,
     {
         let seed = env_u64("SPAWNED_SIM_SEED").unwrap_or(0);
@@ -162,7 +162,7 @@ impl SimTest {
     #[cfg(spawned_sim)]
     pub fn run<F, Fut>(self, body: F)
     where
-        F: Fn(u64) -> Fut,
+        F: Fn(u64) -> Fut + Sync,
         Fut: Future<Output = ()>,
     {
         use super::sim::explore::{explore, Strategy};

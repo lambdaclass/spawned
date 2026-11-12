@@ -20,6 +20,14 @@ async-task = { version = "=4.7.1", optional = true }
 [lib]
 path = "./src/lib.rs"
 
+# Clock and entropy interposers (determinism D1): simulation builds only, so
+# this crate keeps `forbid(unsafe_code)` and no unsafe code is linked otherwise.
+[target.'cfg(spawned_sim)'.dependencies]
+spawned-sim-libc = { path = "../sim-libc", version = "0.7.3" }
+
+[target.'cfg(spawned_sim)'.dev-dependencies]
+rand = "0.8"
+
 [target.'cfg(spawned_loom)'.dependencies]
 loom = "0.7"
 
