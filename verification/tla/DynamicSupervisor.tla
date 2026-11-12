@@ -407,7 +407,7 @@ CleanupStuck(s) ==
                    ELSE IF restartable \/ (Fault = "MisclassifyStuck" /\ ~sl[s].term)
                         THEN "restart" ELSE "retire"
        IN /\ sl' = [sl EXCEPT ![s].cs = "stuck", ![s].stuck = kind, ![s].pub = 0,
-                              ![s].fstuck = sl[s].fstuck \/ sl[s].cs = "finalizing",
+                              ![s].fstuck = (sl[s].fstuck \/ sl[s].cs = "finalizing"),
                               ![s].result = IF sl[s].result = "pending"
                                             THEN sl[s].cause ELSE sl[s].result]
           /\ IF kind # "retire" \/ Fault = "StuckFailsAll"
