@@ -2,7 +2,7 @@
 //! on the simulated thread come from the world (virtual time, seeded bytes)
 //! through `spawned-sim-libc`'s interposers; other threads read the real
 //! clock; strict mode turns such a read into a failure naming the caller.
-#![cfg(spawned_sim)]
+#![cfg(all(spawned_sim, feature = "async"))]
 
 use rand::{Rng, RngCore};
 use spawned_rt::tasks::{self as rt, sim};

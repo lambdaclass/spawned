@@ -4,6 +4,7 @@
 //! `--cfg spawned_sim`. The `sim` module checks what only the simulator
 //! guarantees: exact virtual instants, inline blocking work, and the failure
 //! a direct `tokio::time` call produces.
+#![cfg(feature = "async")]
 
 use spawned_rt::tasks::{self as rt, MissedTickBehavior, SimTest};
 use spawned_rt::time::Instant;
