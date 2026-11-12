@@ -241,6 +241,60 @@ DEFERRED_CONTROLS = [
     ("MCDeferredJobsEmits", "NoEmitCredit", "EmitCreditsBounded"),
 ]
 
+# Unified start (docs/design/unified-start.md): each mutation of the start
+# protocol against the invariant it breaks.
+START_CONTROLS = [
+    ("MCStart", "NoInherit", "InheritedPlacement"),
+    ("MCStart", "LinkAfterStarted", "LinkBeforeStarted"),
+    ("MCStart", "LinkCheckLate", "EdgeOnlyToRunningParent"),
+    ("MCStartNames", "DoubleRegister", "NameUnique"),
+    ("MCStartNames", "UnregisterAtDeath", "NameKeptWhileLive"),
+    ("MCStartNames", "UnregisterAtDeath", "NoOverlapOnReuse"),
+    ("MCStartNames", "LateUnregister", "NameFreeBeforeObservation"),
+    ("MCStartNames", "SplitCommit", "AbortInvisible"),
+    ("MCStart", "EarlyFailAck", "FailureAfterPublication"),
+    ("MCStart", "EarlyPending", "PendingOnlyAfterDeadline"),
+    ("MCStart", "AckBeforeStarted", "ResultMatchesCommit"),
+    ("MCStart", "ErrorAsOk", "ResultMatchesCommit"),
+    ("MCStart", "AnswerReadyAsFailure", "ReadyIsFinal"),
+    ("MCStart", "MarkKeptAfterReady", "NoLostNotice"),
+    ("MCStart", "NoMonitorFlush", "FailureFlushed"),
+    ("MCStart", "NoLinkFlush", "FailureFlushed"),
+    ("MCStart", "NoParentKillOnFailure", "FailureEndsNonTrappingParent"),
+    ("MCStart", "KillOnNormalFailure", "NormalFailureSparesParent"),
+    ("MCStart", "AbandonDropsNotice", "AbandonedNoticeDelivered"),
+    ("MCStart", "DoubleNotice", "NoticeOnce"),
+    ("MCStartTimeout", "RewriteCommit", "CommitImmutable"),
+    ("MCStartTimeout", "TimerIgnoresCommit", "TimeoutNeverKillsReady"),
+    ("MCStartTimeout", "KillBeforeUnlink", "TimeoutContained"),
+    ("MCStartTimeout", "ReadyAfterClose", "ReadyOnlyWhileOpen"),
+    ("MCStartTimeout", "SkipEscalation", "KillBeforeDIsKilled"),
+    ("MCStartTimeout", "SplitResolutionD", "IgnoredExitsNormal"),
+    ("MCStartCap", "AdmitClosed", "AdmittedOnlyOpen"),
+    ("MCStartCap", "IgnoreCap", "CapacityRespected"),
+    ("MCStartCap", "EarlySlotRelease", "SlotHeldUntilReleased"),
+    ("MCStartContinue", "ContinueQueued", "ContinueFirst"),
+    ("MCStartScope", "EarlyGenDone", "GenDoneMeansOwnedDone"),
+    ("MCStartScope", "GenDoneAtParentD", "GenDoneMeansOwnedDone"),
+    ("MCStartScope", "GenDoneIgnoresWork", "GenDoneMeansOwnedDone"),
+    ("MCStartScope", "NoScopeKill", "DeadlineKillsAllOwned"),
+    ("MCStartScope", "OwnerUnchecked", "OwnedOnlyWhileOwnerOpen"),
+    ("MCStartScope", "ParentExitClosesOwner", "OwnerRefusalOnlyOnShutdown"),
+    ("MCStartScope", "ParentSlotAtD", "ParentSlotHeld"),
+]
+START_TEMPORAL_CONTROLS = [
+    ("MCStartLive", "DropHeld", "ParentExitReachesChild"),
+    ("MCStartLive", "NoAnswerIgnore", "StartAnswered"),
+    ("MCStartScope", "NoPoliteStop", "OwnedScopeFinishes"),
+]
+
+
+def start_controls(tlc):
+    for module, fault, invariant in START_CONTROLS:
+        named_fault(module, fault, invariant, tlc)
+    for module, fault, prop in START_TEMPORAL_CONTROLS:
+        named_temporal(module, fault, prop, tlc)
+
 INTROSPECTION_CONTROLS = [
     ("MCIntrospection", "CheckThenAct", "NoChargeFinishedTurn"),
     ("MCIntrospection", "FailedCasKills", "NoChargeFinishedTurn"),
@@ -332,6 +386,7 @@ def main():
         named_fault(module, fault, invariant, args.tlc)
     for fault, prop in LIFECYCLE_TEMPORAL_CONTROLS:
         named_temporal("MCLifecycleLive", fault, prop, args.tlc, LIFECYCLE_SMALL)
+    start_controls(args.tlc)
 
 
 if __name__ == "__main__":

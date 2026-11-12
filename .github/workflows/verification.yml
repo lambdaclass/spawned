@@ -36,8 +36,10 @@ jobs:
             select: --only 'MCLifecycle*'
           - leg: deferred
             select: --only 'MCDeferred*'
+          - leg: start
+            select: --only 'MCStart*'
           - leg: other
-            select: --exclude 'MCSupervision,MCLifecycle*,MCDeferred*'
+            select: --exclude 'MCSupervision,MCLifecycle*,MCDeferred*,MCStart*'
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v16
@@ -112,6 +114,7 @@ jobs:
           - MCLifecycleWideDeep
           - MCLifecycleLiveDeep
           - MCLifecycleDeep
+          - MCStartDeep
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v16

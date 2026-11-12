@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Design (0.9, approved for implementation after round 3): a unified start API
+  (`docs/design/unified-start.md`, rank 5h). OTP's `start`, `start_link` and
+  `start_monitor` wait for `started()`, and `spawn` does not. All four take one
+  typed `StartOptions`. `started()` may fail, ignore or continue (`Init`), and a
+  failed init never runs `stopped()`, as OTP. Every instance has an immutable
+  startup commitment, and readiness is committed by the child, independently
+  of the waiter. Errors are answered after publication with the final exit
+  reason. One global lock order covers the commit, readiness and scope
+  admission. Linked children in the parent's system are owned by its scope,
+  with a polite Shutdown at the parent's publication and absolute,
+  composing deadlines. It replaces `start_on`, `start_with_backend`,
+  `ExecutionGroup::start` and `start_linked`. A new TLA+ model, `Start.tla`,
+  has eight configurations and 40 negative controls, and a client mapping
+  covers 51 sites.
 - TESTING.md: how databases test (FoundationDB, TigerBeetle, SQLite, AWS,
   Jepsen and others), how each technique maps to spawned, and the gaps.
 - ROADMAP: smaller releases (0.9 introspection and the attachable console,
