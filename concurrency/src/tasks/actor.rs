@@ -1984,7 +1984,10 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
     // One cancellation future for the whole loop: polled only when the
     // mailbox has nothing, so a busy actor registers no waiter per message.
     let mut cancelled = pin!(cancellation_token.cancelled());
-    while !cancellation_token.is_cancelled() {
+    // The receive checks the token before taking each message (and returns
+    // `None` once it is cancelled), so the loop needs no check of its own:
+    // `is_cancelled` locks the token's node.
+    loop {
         let msg = {
             let recv = pin!(future::poll_fn(|cx| {
                 // Stop and closed-mailbox both take the normal lifecycle exit,
