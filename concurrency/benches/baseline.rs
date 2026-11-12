@@ -131,16 +131,18 @@ enum Reply {
     Threads(ReplyReceiver<Ack>),
 }
 impl Target {
+    /// A raw request with no deadline: the 0.8 form of 0.7's `request_raw`
+    /// (no timeout), so the comparison with 0.7 measures the same operation.
     fn request(&self, work: Work) -> Reply {
         match self {
             Self::Tasks(actor) => Reply::Tasks(
                 actor
-                    .send_request(work, Deadline::after(Duration::from_secs(10)))
+                    .send_request(work, Deadline::Never)
                     .expect("actor stopped"),
             ),
             Self::Threads(actor) => Reply::Threads(
                 actor
-                    .send_request(work, Deadline::after(Duration::from_secs(10)))
+                    .send_request(work, Deadline::Never)
                     .expect("actor stopped"),
             ),
             Self::Tokio(tx) => {
