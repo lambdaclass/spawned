@@ -15,7 +15,7 @@
 //! and `OsRng`, `chrono::Utc::now`) bind to these definitions at link time.
 //! Each one asks the [`Hooks`] that `spawned-rt` installed: on a thread that
 //! runs a simulated world, the hook answers with virtual time or seeded bytes;
-//! on every other thread, and inside [`passthrough`], the call goes to the
+//! on every other thread (and for the clock inside [`real_clock`]) the call goes to the
 //! real libc function (found with `dlsym(RTLD_NEXT)`).
 //!
 //! Supported targets: Linux with glibc (x86_64 and aarch64 for the `syscall`
@@ -83,49 +83,47 @@ pub fn install(hooks: &'static Hooks) {
 }
 
 thread_local! {
-    /// Nonzero while this thread must see the real functions: inside a hook
-    /// (so its own reads do not recurse) or inside [`passthrough`]. A const
-    /// `Cell` has no destructor, so it is readable during thread teardown.
-    static BYPASS: Cell<u32> = const { Cell::new(0) };
+    /// Set while this thread runs a hook, so the hook's own reads (a lock,
+    /// a backtrace) go to libc instead of recursing. A const `Cell` has no
+    /// destructor, so it is readable during thread teardown.
+    static IN_HOOK: Cell<bool> = const { Cell::new(false) };
+    /// Nonzero inside [`real_clock`]: clock reads go to libc.
+    static REAL_CLOCK: Cell<u32> = const { Cell::new(0) };
 }
 
-struct Bypass;
-impl Bypass {
-    /// `None` if this thread is already bypassing (or tearing down).
+struct InHook;
+impl InHook {
+    /// `None` if this thread is already inside a hook (or tearing down).
     fn enter() -> Option<Self> {
-        let entered = BYPASS.try_with(|b| {
-            let idle = b.get() == 0;
-            if idle {
-                b.set(1);
-            }
-            idle
-        });
-        // `then`, not `then_some`: a `Self` built and dropped on the
-        // refusing path would decrement the depth.
+        let entered = IN_HOOK.try_with(|h| !h.replace(true));
+        // `then`, not `then_some`: a guard built and dropped on the refusing
+        // path would clear the flag.
         entered.ok()?.then(|| Self)
     }
 }
-impl Drop for Bypass {
+impl Drop for InHook {
     fn drop(&mut self) {
-        let _ = BYPASS.try_with(|b| b.set(b.get().saturating_sub(1)));
+        let _ = IN_HOOK.try_with(|h| h.set(false));
     }
 }
 
-/// Run `f` with the real clock and entropy on this thread (the simulator's
-/// own wall-clock watchdog and turn budget use it).
-pub fn passthrough<R>(f: impl FnOnce() -> R) -> R {
+/// Run `f` with the real clock on this thread (the simulator's own
+/// wall-clock watchdog and turn budget, and Tokio's runtime metrics around a
+/// simulated poll, use it). Entropy reads are still seeded: a `HashMap`
+/// created here must not take this thread's keys from the OS.
+pub fn real_clock<R>(f: impl FnOnce() -> R) -> R {
     struct Guard;
     impl Drop for Guard {
         fn drop(&mut self) {
-            let _ = BYPASS.try_with(|b| b.set(b.get().saturating_sub(1)));
+            let _ = REAL_CLOCK.try_with(|d| d.set(d.get().saturating_sub(1)));
         }
     }
-    let _ = BYPASS.try_with(|b| b.set(b.get() + 1));
+    let _ = REAL_CLOCK.try_with(|d| d.set(d.get() + 1));
     let _guard = Guard;
     f()
 }
 
-/// Run `f` with interception back on, inside a [`passthrough`] (the
+/// Run `f` with the clock interposed again, inside a [`real_clock`] (the
 /// simulator polls a task, whose reads are the program's, from inside Tokio
 /// machinery whose own reads are not).
 pub fn intercepted<R>(f: impl FnOnce() -> R) -> R {
@@ -133,28 +131,31 @@ pub fn intercepted<R>(f: impl FnOnce() -> R) -> R {
     impl Drop for Restore {
         fn drop(&mut self) {
             let depth = self.0;
-            let _ = BYPASS.try_with(|b| b.set(depth));
+            let _ = REAL_CLOCK.try_with(|d| d.set(depth));
         }
     }
-    let depth = BYPASS.try_with(|b| b.replace(0)).unwrap_or(0);
+    let depth = REAL_CLOCK.try_with(|d| d.replace(0)).unwrap_or(0);
     let _restore = Restore(depth);
     f()
 }
 
 /// Ask the installed hooks, unless none are installed or this thread is
-/// bypassing them.
+/// already inside one.
 fn ask<R>(f: impl FnOnce(&Hooks) -> Option<R>) -> Option<R> {
     let hooks = HOOKS.load(Ordering::Acquire);
     if hooks.is_null() {
         return None;
     }
-    let _bypass = Bypass::enter()?;
+    let _in_hook = InHook::enter()?;
     // SAFETY: `HOOKS` only ever holds a `&'static Hooks` (see `install`).
     let hooks = unsafe { &*hooks };
     catch_unwind(AssertUnwindSafe(|| f(hooks))).ok().flatten()
 }
 
 fn clock(kind: Clock, call: &'static str) -> Option<Duration> {
+    if REAL_CLOCK.try_with(|d| d.get() > 0).unwrap_or(true) {
+        return None;
+    }
     ask(|hooks| (hooks.clock)(kind, call))
 }
 

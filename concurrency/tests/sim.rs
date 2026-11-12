@@ -323,7 +323,7 @@ fn same_seed_same_trace_different_seeds_differ() {
 #[test]
 fn virtual_time_advances_only_when_idle() {
     let rt = Runtime::with_seed(1);
-    let wall = Instant::now();
+    let wall = sim::wall_now();
     rt.block_on(async {
         spawned_rt::tasks::sleep(Duration::from_secs(3600)).await;
         let late = spawned_rt::tasks::timeout(
