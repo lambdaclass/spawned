@@ -795,7 +795,7 @@ impl<A: Actor> Context<A> {
                 return result;
             }
         };
-        let result = rx.into_timed_future().await;
+        let result = rx.into_timed_future_after(duration).await;
         observation.finish(&result);
         result
     }
@@ -1209,7 +1209,7 @@ pub async fn request<M: Message>(
             return result;
         }
     };
-    let result = rx.into_timed_future().await;
+    let result = rx.into_timed_future_after(timeout_duration).await;
     observation.finish(&result);
     result
 }
@@ -1363,7 +1363,7 @@ impl<A: Actor> ActorRef<A> {
                 return result;
             }
         };
-        let result = rx.into_timed_future().await;
+        let result = rx.into_timed_future_after(duration).await;
         observation.finish(&result);
         result
     }
