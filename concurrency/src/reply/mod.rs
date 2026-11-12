@@ -651,9 +651,28 @@ impl<R> ReplyReceiver<R> {
         ReplyFuture {
             rx: self,
             armed: NEVER,
+            first_ms: 0,
             sleep: None,
             timer: true,
             tracked: false,
+        }
+    }
+
+    /// [`into_timed_future`](Self::into_timed_future) for a request just
+    /// sent with `Deadline::after(timeout)`: its first timer sleeps
+    /// `timeout` (in whole milliseconds, rounded up: the runtime timer's
+    /// resolution) instead of reading the clock again. The request was sent
+    /// at most the send-to-poll gap ago, so the timer fires at or after the
+    /// deadline, never before. A deadline shortened meanwhile re-arms from
+    /// the clock.
+    #[cfg(feature = "async")]
+    pub(crate) fn into_timed_future_after(self, timeout: Duration) -> ReplyFuture<R> {
+        let deadline = self.slot().deadline();
+        let first_ms = u32::try_from(timeout.as_nanos().div_ceil(1_000_000)).unwrap_or(0);
+        ReplyFuture {
+            armed: deadline,
+            first_ms,
+            ..self.into_timed_future()
         }
     }
 
@@ -674,31 +693,12 @@ impl<R> ReplyReceiver<R> {
         let slot = self
             .slot
             .take()
-            first_ms: 0,
             .expect("ReplyReceiver used after completion");
         slot.recv_blocking(&now_ticks)
             .map_err(|terminal| terminal_error(terminal, &slot))
     }
 
     /// Non-blocking check: `None` while the request is still open.
-    /// [`into_timed_future`](Self::into_timed_future) for a request just
-    /// sent with `Deadline::after(timeout)`: its first timer sleeps
-    /// `timeout` (in whole milliseconds, rounded up: the runtime timer's
-    /// resolution) instead of reading the clock again. The request was sent
-    /// at most the send-to-poll gap ago, so the timer fires at or after the
-    /// deadline, never before. A deadline shortened meanwhile re-arms from
-    /// the clock.
-    #[cfg(feature = "async")]
-    pub(crate) fn into_timed_future_after(self, timeout: Duration) -> ReplyFuture<R> {
-        let deadline = self.slot().deadline();
-        let first_ms = u32::try_from(timeout.as_nanos().div_ceil(1_000_000)).unwrap_or(0);
-        ReplyFuture {
-            armed: deadline,
-            first_ms,
-            ..self.into_timed_future()
-        }
-    }
-
     pub fn try_recv(&mut self) -> Option<Result<R, ActorError>> {
         let slot = self.slot();
         let result = slot
@@ -717,6 +717,7 @@ impl<R: Send + 'static> std::future::IntoFuture for ReplyReceiver<R> {
         ReplyFuture {
             rx: self,
             armed: NEVER,
+            first_ms: 0,
             sleep: None,
             timer: false,
             tracked: false,
@@ -731,6 +732,9 @@ pin_project_lite::pin_project! {
     pub struct ReplyFuture<R> {
         rx: ReplyReceiver<R>,
         armed: u64,
+        // A `request`'s timeout in milliseconds (0: none), with `armed` its
+        // send-time deadline: the first timer sleeps it (no clock read).
+        first_ms: u32,
         // Arm a runtime timer (`request`/`Response`), rather than putting the
         // deadline in the owner's heap (raw receivers).
         timer: bool,
@@ -740,7 +744,6 @@ pin_project_lite::pin_project! {
     }
 }
 
-            first_ms: 0,
 #[cfg(feature = "async")]
 impl<R> std::fmt::Debug for ReplyFuture<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -755,9 +758,6 @@ impl<R: Send + 'static> std::future::Future for ReplyFuture<R> {
     fn poll(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-        // A `request`'s timeout in milliseconds (0: none), with `armed` its
-        // send-time deadline: the first timer sleeps it (no clock read).
-        first_ms: u32,
     ) -> std::task::Poll<Self::Output> {
         use std::task::Poll;
         let mut this = self.project();
