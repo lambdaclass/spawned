@@ -142,8 +142,16 @@ The deadline is fixed when the request is sent (send time plus the timeout)
 and travels in the reply slot: there is one deadline, not a caller timer plus
 a server one. tasks: `request`-family futures enqueue on first poll and
 protocol methods enqueue when called; either way the deadline starts at the
-enqueue. threads: the call blocks. Expired requests are still dispatched (OTP);
-a late reply is dropped (`Delivery::Expired`).
+enqueue. threads: the call blocks. Expired requests are still dispatched (OTP).
+The caller's expiry is the only timeout authority, as in OTP's
+`gen_server:call`: a reply reads no clock. A reply that loses the race with
+the expiry (the caller's timer, the owner's deadline heap, or a
+`[deadline]` check) is discarded (`Delivery::Expired`) and the caller sees
+`RequestTimeout`; a reply that lands after the deadline instant but before
+the expiry runs is delivered (`Delivery::Delivered`, and the caller gets
+the value), as an OTP reply already in the caller's mailbox when its
+`after` clause would fire is received. Timer resolution (the runtime timer's 1 ms
+wheel, the deadline service's wake-up) bounds that window.
 Which clock expires a waiting caller is part of the contract: `request`,
 `request_with_timeout` and `Response::from(rx)` arm the runtime's timer, so
 they follow paused Tokio time; a request sent with `send_request` and a

@@ -636,7 +636,11 @@ Rules (the [design](design/deferred-replies.md) has the full contract):
   (default 1024). At the bound the caller gets `Err(Overloaded)` at once.
 - A `ReplyTo<R>` is `Send + 'static` and answers exactly once:
   `token.reply(v)` returns a `Delivery` (`Delivered`, `CallerGone`, `Expired`,
-  `OwnerExited`); `token.overloaded()` answers `Err(Overloaded)`.
+  `OwnerExited`); `token.overloaded()` answers `Err(Overloaded)`. As in OTP,
+  the caller's timeout is the only deadline authority: a reply reads no
+  clock, so `Expired` means the caller's expiry already ran (it sees
+  `RequestTimeout`); a reply just after the deadline, before that expiry,
+  is still `Delivered` and the caller gets the value.
 - Dropping an unanswered token answers `ReplyDropped`. If the turn panicked or
   the actor is exiting, it is held instead and answered at the actor's death
   with its final reason. `stopped()` may still answer stored tokens; at the

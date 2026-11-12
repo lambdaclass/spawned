@@ -210,6 +210,15 @@ table is the full list). What to edit:
 
 This is a breaking release. The notes below grow with the implementation:
 
+- Request timeouts follow OTP's `gen_server:call`: only the caller's expiry
+  (its timer, the owner's deadline heap for a raw `send_request` deadline,
+  or a deadline check such as `is_closed()`) times a request out; a reply
+  reads no clock. Code that relied on a reply at or past the deadline being
+  refused (`Delivery::Expired`) must not: a reply that lands after the
+  deadline but before the caller's expiry runs is `Delivered` and the caller
+  gets the value. `Expired` still means the caller already saw
+  `RequestTimeout`.
+
 - `ActorError` is `#[non_exhaustive]` and gains `ReplyDropped` and
   `Overloaded`; add a wildcard arm to exhaustive matches.
 

@@ -10,7 +10,6 @@
 mod sync {
     pub(crate) use loom::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     pub(crate) use loom::sync::{Arc, Mutex, MutexGuard};
-    pub(crate) use loom::thread::yield_now;
     pub(crate) type SlotOwner = Option<()>;
     pub(crate) type Reason = ();
     pub(crate) fn section<T>(f: impl FnOnce() -> T) -> T {
@@ -105,42 +104,35 @@ fn deferred(pool: &Arc<CreditPool>, deadline: u64) -> Arc<Slot<u32>> {
     slot
 }
 
-/// Reply versus expiry by a polling receiver as the clock reaches the
-/// deadline: one terminal outcome, and no success at or after the deadline.
+/// Reply versus expiry as the clock reaches the deadline (OTP: the
+/// caller's expiry is the only timeout authority; the reply reads no
+/// clock). Exactly one wins the word: a reply that wins is delivered even
+/// at the deadline (before the expiry ran); one that loses gets its value
+/// back as `Expired`, and the caller sees `TimedOut`, never the value.
 #[test]
 fn reply_vs_expiry() {
     model(|| {
         let clock = Clock::at(0);
         let pool = Arc::new(CreditPool::new(1));
         let slot = deferred(&pool, 10);
-        let replied_at = Arc::new(AtomicU64::new(NEVER));
         let replier = {
-            let (slot, clock, replied_at) = (slot.clone(), clock.clone(), replied_at.clone());
-            loom::thread::spawn(move || {
-                let now = || {
-                    let t = clock.now()();
-                    replied_at.store(t, Ordering::SeqCst);
-                    t
-                };
-                slot.reply(7, &now)
-            })
+            let slot = slot.clone();
+            loom::thread::spawn(move || slot.reply(7))
         };
         clock.set(10);
         let expired = slot.check_deadline(&clock.now());
         let (delivery, back) = replier.join().unwrap();
-        assert!(expired);
+        assert!(expired, "the deadline has passed");
         match delivery {
             Delivery::Delivered => {
                 assert_eq!(state(slot.word()), slot::REPLIED);
-                assert!(
-                    replied_at.load(Ordering::SeqCst) < 10,
-                    "success at the deadline"
-                );
                 assert!(back.is_none());
+                assert_eq!(slot.try_take(&clock.now()), Some(Ok(7)));
             }
             Delivery::Expired => {
                 assert_eq!(state(slot.word()), slot::TIMED_OUT);
                 assert_eq!(back, Some(7));
+                assert_eq!(slot.try_take(&clock.now()), Some(Err(Terminal::TimedOut)));
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -148,8 +140,10 @@ fn reply_vs_expiry() {
     });
 }
 
-/// Reply versus `with_deadline` shortening into the past: the reply's
-/// `WRITING` CAS linearizes; success implies the reply read a live deadline.
+/// Reply versus `shorten_deadline` into the past: the shortening's
+/// `[deadline]` check expires the slot, racing the reply on the word. The
+/// reply wins (delivered, whatever the deadline became) or loses
+/// (`Expired`, and then the shortening was applied).
 #[test]
 fn reply_vs_shortening() {
     model(|| {
@@ -157,22 +151,13 @@ fn reply_vs_shortening() {
         let pool = Arc::new(CreditPool::new(1));
         let slot = deferred(&pool, 100);
         let replier = {
-            let (slot, clock) = (slot.clone(), clock.clone());
-            loom::thread::spawn(move || slot.reply(1, &clock.now()))
+            let slot = slot.clone();
+            loom::thread::spawn(move || slot.reply(1))
         };
         let lowered = slot.shorten(3, &clock.now());
         let (delivery, _) = replier.join().unwrap();
-        // Linearization at the reply's WRITING CAS: a shortening after it is
-        // a no-op (the deadline stays), one before it is seen by the reply.
         match delivery {
-            Delivery::Delivered => {
-                assert_eq!(state(slot.word()), slot::REPLIED);
-                assert!(
-                    !lowered,
-                    "a shortening was applied but not seen by the reply"
-                );
-                assert_eq!(slot.deadline(), 100);
-            }
+            Delivery::Delivered => assert_eq!(state(slot.word()), slot::REPLIED),
             Delivery::Expired => {
                 assert_eq!(state(slot.word()), slot::TIMED_OUT);
                 assert!(lowered);
@@ -192,7 +177,7 @@ fn reply_vs_abandon() {
         let slot = deferred(&pool, NEVER);
         let replier = {
             let slot = slot.clone();
-            loom::thread::spawn(move || slot.reply(1, &|| 0))
+            loom::thread::spawn(move || slot.reply(1))
         };
         let abandoned = slot.abandon();
         let (delivery, back) = replier.join().unwrap();
@@ -216,7 +201,7 @@ fn reply_in_turn_vs_abandon() {
         let slot: Arc<Slot<u32>> = Arc::new(Slot::new(NEVER));
         let replier = {
             let slot = slot.clone();
-            loom::thread::spawn(move || slot.reply_in_turn(1, &|| 0))
+            loom::thread::spawn(move || slot.reply_in_turn(1))
         };
         let abandoned = slot.abandon();
         let (delivery, back) = replier.join().unwrap();
@@ -239,7 +224,7 @@ fn reply_in_turn_vs_expiry() {
         let slot: Arc<Slot<u32>> = Arc::new(Slot::new(10));
         let replier = {
             let slot = slot.clone();
-            loom::thread::spawn(move || slot.reply_in_turn(7, &|| 0))
+            loom::thread::spawn(move || slot.reply_in_turn(7))
         };
         let expired = slot.terminate(Terminal::TimedOut);
         let (delivery, back) = replier.join().unwrap();
@@ -261,7 +246,7 @@ fn polled_receiver_vs_reply_in_turn() {
         let slot: Arc<Slot<u32>> = Arc::new(Slot::new(NEVER));
         let replier = {
             let slot = slot.clone();
-            loom::thread::spawn(move || slot.reply_in_turn(4, &|| 0).0)
+            loom::thread::spawn(move || slot.reply_in_turn(4).0)
         };
         let got = loom::future::block_on(std::future::poll_fn(|cx| slot.poll(cx.waker())));
         assert_eq!(got, Ok(4));
@@ -278,7 +263,7 @@ fn reply_vs_owner_close() {
         let slot = deferred(&pool, NEVER);
         let replier = {
             let slot = slot.clone();
-            loom::thread::spawn(move || slot.reply(1, &|| 0).0)
+            loom::thread::spawn(move || slot.reply(1).0)
         };
         let closed = slot.close();
         assert!(
@@ -415,7 +400,7 @@ fn job_end_during_reply() {
             let slot = slot.clone();
             loom::thread::spawn(move || slot.job_end())
         };
-        assert_eq!(slot.reply(9, &|| 0).0, Delivery::Delivered);
+        assert_eq!(slot.reply(9).0, Delivery::Delivered);
         ender.join().unwrap();
         assert_eq!(jobs(slot.word()), 1);
         assert_eq!(pool.used(), 1, "the job still running keeps its credit");
@@ -461,7 +446,7 @@ fn parked_receiver_vs_reply() {
         let slot: Arc<Slot<u32>> = Arc::new(Slot::new(NEVER));
         let replier = {
             let slot = slot.clone();
-            loom::thread::spawn(move || slot.reply(3, &|| 0).0)
+            loom::thread::spawn(move || slot.reply(3).0)
         };
         assert_eq!(slot.recv_blocking(&|| 0), Ok(3));
         assert_eq!(replier.join().unwrap(), Delivery::Delivered);
@@ -489,7 +474,7 @@ fn polled_receiver_vs_reply() {
         let slot: Arc<Slot<u32>> = Arc::new(Slot::new(NEVER));
         let replier = {
             let slot = slot.clone();
-            loom::thread::spawn(move || slot.reply(4, &|| 0).0)
+            loom::thread::spawn(move || slot.reply(4).0)
         };
         let got = loom::future::block_on(std::future::poll_fn(|cx| slot.poll(cx.waker())));
         assert_eq!(got, Ok(4));
@@ -572,7 +557,7 @@ fn parked_receiver_vs_reply_in_turn() {
         let slot: Arc<Slot<u32>> = Arc::new(Slot::new(NEVER));
         let replier = {
             let slot = slot.clone();
-            loom::thread::spawn(move || slot.reply_in_turn(5, &|| 0).0)
+            loom::thread::spawn(move || slot.reply_in_turn(5).0)
         };
         assert_eq!(slot.recv_blocking(&|| 0), Ok(5));
         assert_eq!(replier.join().unwrap(), Delivery::Delivered);
@@ -612,7 +597,7 @@ fn watcher_and_receiver_vs_deferred_reply() {
         let slot = deferred(&pool, NEVER);
         let replier = {
             let slot = slot.clone();
-            loom::thread::spawn(move || slot.reply(8, &|| 0).0)
+            loom::thread::spawn(move || slot.reply(8).0)
         };
         loom::future::block_on(std::future::poll_fn(|cx| {
             slot.poll_closed(cx.waker(), &|| 0)
@@ -637,7 +622,7 @@ fn polled_receiver_vs_shorten_and_reply() {
             let (slot, clock) = (slot.clone(), clock.clone());
             loom::thread::spawn(move || {
                 slot.shorten(5, &clock.now());
-                slot.reply(2, &clock.now()).0
+                slot.reply(2).0
             })
         };
         let got = loom::future::block_on(std::future::poll_fn(|cx| slot.poll(cx.waker())));
@@ -679,7 +664,7 @@ fn lent_reply_vs_receiver_last_reference() {
             })
         };
         let borrowed: &Arc<Slot<Counted>> = &lent;
-        let (delivery, back) = borrowed.reply_in_turn(Counted(drops.clone()), &|| 0);
+        let (delivery, back) = borrowed.reply_in_turn(Counted(drops.clone()));
         drop(back);
         drop(lent);
         let took = receiver.join().unwrap();
@@ -704,7 +689,7 @@ fn unshared_take_vs_lent_reply_and_release() {
         let lent: Arc<Slot<u32>> = Arc::new(Slot::new(NEVER));
         let mut caller = Some(lent.clone());
         let owner = loom::thread::spawn(move || {
-            let (delivery, back) = lent.reply_in_turn(6, &|| 0);
+            let (delivery, back) = lent.reply_in_turn(6);
             drop(lent);
             (delivery, back)
         });

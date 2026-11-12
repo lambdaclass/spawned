@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Behaviour (0.8)**: request timeouts are the caller's, as OTP's
+  `gen_server:call`: a reply reads no clock, and only the caller's expiry
+  (its timer, the owner's deadline heap, a deadline check) times a request
+  out. A reply that loses that race is dropped (`Delivery::Expired`, the
+  caller sees `RequestTimeout`); one that lands after the deadline but
+  before the expiry runs is delivered. The `WRITING` slot state is gone and
+  no reply path reads the clock. `DeferredReplies.tla` models it (a reply
+  delivers while the slot is open; `LateSuccess` now overrides an expired
+  slot).
 - Performance (0.8 request path, no API change): the reply slot keeps one
   lock for value and waker with lazily created deferral state (no condvar:
   a blocking `recv()` parks its thread); the tasks envelope lends its

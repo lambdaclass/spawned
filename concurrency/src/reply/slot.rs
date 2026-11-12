@@ -12,10 +12,11 @@
 //! reserved before the CAS and rolled back if the CAS fails; a negative delta
 //! is returned after it, before the receiver is woken.
 //!
-//! `WRITING` counts as live for `credits`: it is the transient state of a
-//! reply between its linearization point (`OPEN -> WRITING`) and the
-//! publication of the value (`WRITING -> REPLIED`) or the deadline check
-//! (`WRITING -> TIMED_OUT`), so the token's credit returns at that second CAS.
+//! A reply is one CAS `OPEN -> REPLIED` with the value written under the
+//! slot lock; no reply reads the clock. The deadline is enforced only by an
+//! expiry `OPEN -> TIMED_OUT` (the caller's timer, the owner's deadline
+//! heap, or a `[deadline]` check), as OTP's caller-side `call` timeout: a
+//! reply and an expiry race on the word and exactly one wins.
 //!
 //! This file is shared with the Loom model (`tests/reply_slot_loom.rs`), which
 //! supplies the synchronization types through `super::sync`. Time is passed in
@@ -30,11 +31,12 @@
 //! (An `AtomicWaker` beside a value mutex measured more instructions per
 //! request than one lock for both: two more read-modify-writes.)
 
-use super::sync::{yield_now, Arc, AtomicU64, AtomicUsize, Mutex, Ordering};
+use super::sync::{Arc, AtomicU64, AtomicUsize, Mutex, Ordering};
 use std::task::{Poll, Waker};
 
 pub(crate) const OPEN: u64 = 0;
-pub(crate) const WRITING: u64 = 1;
+// State 1 was `WRITING` (a reply's deadline check between its CAS and its
+// publication); replies no longer read the clock, so it no longer exists.
 pub(crate) const REPLIED: u64 = 2;
 pub(crate) const DROPPED: u64 = 3;
 pub(crate) const OVERLOADED: u64 = 4;
@@ -76,7 +78,7 @@ pub(crate) fn jobs(word: u64) -> u64 {
 }
 #[inline]
 fn live(state: u64) -> bool {
-    state == OPEN || state == WRITING
+    state == OPEN
 }
 /// Credits a slot holds in its owner's pool.
 #[inline]
@@ -101,10 +103,10 @@ pub(crate) enum Terminal {
 }
 
 /// The model's name (`DeferredReplies.tla`) of the terminal state a slot
-/// leaves `OPEN` for; `WRITING` is the reply's linearization point.
+/// leaves `OPEN` for; `REPLIED` is the reply's linearization point.
 fn trace_name(state: u64) -> &'static str {
     match state {
-        WRITING | REPLIED => "ok",
+        REPLIED => "ok",
         DROPPED => "dropped",
         OVERLOADED => "overloaded",
         TIMED_OUT => "timeout",
@@ -147,7 +149,11 @@ pub enum Delivery {
     /// The caller left (abandoned the receiver) or the slot was already
     /// answered (dropped, overloaded).
     CallerGone,
-    /// The request's deadline had passed; the value was dropped.
+    /// The caller's deadline expired the request first (its timer, the
+    /// owner's deadline heap, or a deadline check); the value was dropped
+    /// and the caller sees `RequestTimeout`. A reply reads no clock (OTP's
+    /// `gen_server:call`): one that lands after the deadline but before
+    /// that expiry is `Delivered`.
     Expired,
     /// The owner died and its registry closed the slot (`ActorStopped`).
     OwnerExited,
@@ -449,8 +455,7 @@ impl<R> Slot<R> {
     }
 
     /// Registry close at the owner's death: every slot still `OPEN` becomes
-    /// `STOPPED`. A reply in `WRITING` is a value write with no user code in
-    /// it, so the close waits for it to resolve.
+    /// `STOPPED`; one already answered is left as it is.
     pub(crate) fn close(&self) -> bool {
         match self.close_collect() {
             Some(wake) => {
@@ -466,22 +471,17 @@ impl<R> Slot<R> {
     /// [`run_wake`](Self::run_wake) once a whole batch is closed, so no
     /// waker (executor or user code) runs between two closes.
     pub(crate) fn close_collect(&self) -> Option<Wake> {
-        loop {
-            if let Ok((old, new)) = self.cas::<()>(None, |w| {
+        let (old, new) = self
+            .cas::<()>(None, |w| {
                 if state(w) == OPEN {
                     Ok(with_state(w, STOPPED))
                 } else {
                     Err(())
                 }
-            }) {
-                // The credit returns with the transition; only wakes wait.
-                return Some(self.after(old, new));
-            }
-            if state(self.word()) != WRITING {
-                return None;
-            }
-            yield_now();
-        }
+            })
+            .ok()?;
+        // The credit returns with the transition; only wakes wait.
+        Some(self.after(old, new))
     }
 
     /// The owner's close records its final reason before the `STOPPED`
@@ -542,11 +542,10 @@ impl<R> Slot<R> {
     /// `with_deadline(at)`: shorten only, then the `[deadline]` check.
     /// Returns whether the deadline was lowered.
     ///
-    /// The reply's `WRITING` CAS is the linearization point: the reply reads
-    /// the deadline under the slot lock, and a shortening changes it only
-    /// under that lock and only while the word is `OPEN`. A shortening that
-    /// finds `WRITING` (or later) is a no-op; one that lowers the deadline is
-    /// seen by any reply that has not read it yet.
+    /// A shortening changes the deadline only while the word is `OPEN`
+    /// (under the slot lock) and then runs the `[deadline]` check: an
+    /// earlier deadline already passed expires the slot at once, racing any
+    /// reply on the word (exactly one wins). Replies do not read it.
     pub(crate) fn shorten(&self, at: u64, now: &impl Fn() -> u64) -> bool {
         let (lowered, watchers, waker) = {
             let mut inner = lock(&self.inner);
@@ -649,50 +648,55 @@ impl<R> Slot<R> {
         }
     }
 
-    /// Change only the state field of a `WRITING` word, retrying on concurrent
-    /// `JOBS` changes (a whole-word store would lose a job-end decrement).
-    fn resolve_writing(&self, to: u64) -> (u64, u64) {
-        match self.cas::<()>(None, |w| {
-            debug_assert_eq!(state(w), WRITING);
-            Ok(with_state(w, to))
-        }) {
-            Ok(pair) => pair,
-            Err(_) => unreachable!("resolving WRITING never aborts or reserves"),
-        }
+    /// Reply: write the value under the slot lock and publish it with one
+    /// CAS `OPEN -> REPLIED`, the reply's linearization point (a receiver
+    /// reads the value under that lock). No clock is read: as in OTP's
+    /// `gen_server:call`, the caller's deadline is enforced only by the
+    /// caller's expiry (`OPEN -> TIMED_OUT`, its timer or the owner's deadline
+    /// heap); a reply that loses that race finds the slot `TIMED_OUT` and
+    /// gets its value back as `Expired`. A value that was not published is
+    /// returned so the caller drops it outside every lock.
+    #[allow(dead_code)] // unit tests and the Loom model
+    pub(crate) fn reply(&self, value: R) -> (Delivery, Option<R>) {
+        self.reply_admitted(value, || Some(()))
     }
 
-    /// Reply: `OPEN -> WRITING`, then read the deadline: at or past it,
-    /// `WRITING -> TIMED_OUT` and the value comes back as `Expired`;
-    /// otherwise write the value and `WRITING -> REPLIED`. A value that was
-    /// not published is returned so the caller drops it outside every lock.
-    pub(crate) fn reply(&self, value: R, now: &impl Fn() -> u64) -> (Delivery, Option<R>) {
-        self.reply_admitted(value, now, || Some(()))
-    }
-
-    /// A reply from the owner's own turn (`PendingReply::reply`): nothing
-    /// shortens the deadline concurrently (only a deferred token can) and the
-    /// owner's death point cannot run during its own turn, so the only
-    /// concurrent transitions are the caller's (abandonment, its timer's
-    /// expiry), each one CAS out of `OPEN`. With the deadline still ahead,
-    /// the value is written under the slot lock and published by one CAS
-    /// `OPEN -> REPLIED` (the same linearization point as `OPEN -> WRITING`:
-    /// a receiver reads the value under that lock); a lost CAS hands the
-    /// value back. A reply at or past the deadline takes [`reply`](Self::reply).
+    /// A reply from the owner's own turn (`PendingReply::reply`): the
+    /// owner's death point cannot run during its own turn, so no admission
+    /// is needed.
     #[inline]
-    pub(crate) fn reply_in_turn(&self, value: R, now: &impl Fn() -> u64) -> (Delivery, Option<R>) {
-        let deadline = self.deadline();
-        if deadline != NEVER && now() >= deadline {
-            return self.reply(value, now);
-        }
+    pub(crate) fn reply_in_turn(&self, value: R) -> (Delivery, Option<R>) {
+        self.publish(value, || Some(()))
+    }
+
+    /// [`reply`](Self::reply) admitted by the owner: `admit` returns a
+    /// permit held across the publishing CAS (no user code: a lock and a
+    /// value move), or `None` once the owner is past its death point.
+    /// Refused, the slot is left to the owner's close (`OwnerExited`).
+    pub(crate) fn reply_admitted<P>(
+        &self,
+        value: R,
+        admit: impl FnOnce() -> Option<P>,
+    ) -> (Delivery, Option<R>) {
+        self.publish(value, admit)
+    }
+
+    #[inline]
+    fn publish<P>(&self, value: R, admit: impl FnOnce() -> Option<P>) -> (Delivery, Option<R>) {
+        let Some(permit) = admit() else {
+            return (Delivery::OwnerExited, Some(value));
+        };
         let mut inner = lock(&self.inner);
         inner.value = Some(value);
-        match self.cas(None, |w| {
+        let published = self.cas(None, |w| {
             if state(w) == OPEN {
                 Ok(with_state(w, REPLIED))
             } else {
                 Err(state(w))
             }
-        }) {
+        });
+        drop(permit);
+        match published {
             Ok((old, new)) => {
                 let wake = Self::finish(
                     &mut inner,
@@ -715,59 +719,6 @@ impl<R> Slot<R> {
                 (delivery, value)
             }
         }
-    }
-
-    /// [`reply`](Self::reply) admitted by the owner: `admit` returns a
-    /// permit held across the linearizing `OPEN -> WRITING` CAS (and
-    /// released before the value is written), or `None` once the owner is
-    /// past its death point. Refused, the slot is left to the owner's close
-    /// (`OwnerExited`).
-    pub(crate) fn reply_admitted<P>(
-        &self,
-        value: R,
-        now: &impl Fn() -> u64,
-        admit: impl FnOnce() -> Option<P>,
-    ) -> (Delivery, Option<R>) {
-        let Some(permit) = admit() else {
-            return (Delivery::OwnerExited, Some(value));
-        };
-        let linearized = self.cas(None, |w| {
-            if state(w) == OPEN {
-                Ok(with_state(w, WRITING))
-            } else {
-                Err(state(w))
-            }
-        });
-        drop(permit);
-        if let Err(Some(s)) = linearized {
-            let delivery = match s {
-                TIMED_OUT => Delivery::Expired,
-                STOPPED => Delivery::OwnerExited,
-                _ => Delivery::CallerGone,
-            };
-            return (delivery, Some(value));
-        }
-        // The deadline is read under the lock that shortening takes, so a
-        // shortening either precedes this read or finds `WRITING` and does
-        // nothing.
-        let mut inner = lock(&self.inner);
-        let deadline = self.deadline();
-        let (delivery, unsent, to) = if deadline != NEVER && now() >= deadline {
-            (Delivery::Expired, Some(value), TIMED_OUT)
-        } else {
-            inner.value = Some(value);
-            (Delivery::Delivered, None, REPLIED)
-        };
-        let (old, new) = self.resolve_writing(to);
-        let wake = Self::finish(
-            &mut inner,
-            credits(old).saturating_sub(credits(new)),
-            true,
-            new,
-        );
-        drop(inner);
-        wake.run();
-        (delivery, unsent)
     }
 
     /// Receiver side: take the outcome of a terminal word. `Replied` with no

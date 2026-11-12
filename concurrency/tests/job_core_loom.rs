@@ -15,7 +15,6 @@
 mod sync {
     pub(crate) use loom::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     pub(crate) use loom::sync::{Arc, Condvar, Mutex, MutexGuard};
-    pub(crate) use loom::thread::yield_now;
     pub(crate) type SlotOwner = Option<()>;
     pub(crate) type Reason = ();
     pub(crate) fn section<T>(f: impl FnOnce() -> T) -> T {

@@ -322,7 +322,7 @@ impl Registry {
         }
     }
 
-    /// Admit a deferred reply's linearization (its `OPEN -> WRITING` CAS),
+    /// Admit a deferred reply's linearization (its `OPEN -> REPLIED` CAS),
     /// or `None` once the owner reached its death point: the slot then stays
     /// listed and the registry's close answers it with the final reason.
     pub(crate) fn reply_permit(&self) -> Option<crate::mailbox::SendPermit<'_>> {
@@ -596,7 +596,7 @@ mod tests {
         let registry = Registry::new(ActorId::next(), 8);
         let open = deferred(&registry, NEVER);
         let answered = deferred(&registry, NEVER);
-        answered.reply(1, &|| 0);
+        answered.reply(1);
         assert_eq!(registry.close(), 1);
         assert_eq!(
             Terminal::of(crate::reply::slot::state(open.word())),

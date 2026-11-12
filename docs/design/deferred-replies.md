@@ -82,7 +82,7 @@ compare-and-swap on that word, so "install a credit only if `OPEN`" and
 
 ```text
 word: AtomicU64 = state:4 | TOKEN:1 | REG:1 | JOBS:16 | (spare)
-  state: OPEN | WRITING | REPLIED | DROPPED | OVERLOADED | TIMED_OUT | STOPPED | ABANDONED
+  state: OPEN | REPLIED | DROPPED | OVERLOADED | TIMED_OUT | STOPPED | ABANDONED
   TOKEN: a deferred token holds this request's credit (set by defer())
   REG:   listed in the owner registry (set together with TOKEN)
   JOBS:  running linked jobs (pipe_reply); MAX_OUTSTANDING is limited to
@@ -142,29 +142,30 @@ operation first reads `now`, and if `now >= deadline` it performs
 | `defer()` `[deadline]` | `OPEN`, `TOKEN=0` | `OPEN`, `TOKEN=1`, `REG=1` | +1 if `JOBS=0` |
 | `pipe_reply` attach `[deadline]` | `OPEN`, `TOKEN=1` | `OPEN`, `JOBS+1` | +1 if `JOBS>=1` (the first job shares the token's credit) |
 | linked job ends | any, `JOBS>=1` | same state, `JOBS-1` | -1 if this lowers `credits` |
-| reply | `OPEN` | `WRITING`, then `REPLIED` or `TIMED_OUT` | -1 if `TOKEN` and `JOBS=0` |
+| reply | `OPEN` | `REPLIED` (no clock read) | -1 if `TOKEN` and `JOBS=0` |
 | drop, overloaded, expiry, abandonment, registry close | `OPEN` | `DROPPED` / `OVERLOADED` / `TIMED_OUT` / `ABANDONED` / `STOPPED` | -1 if `TOKEN` and `JOBS=0` |
 | `is_closed()` `[deadline]` | `OPEN`, past deadline | `TIMED_OUT` | as expiry |
 
 Rules:
 
-1. **Reply.** The reply is `CAS OPEN -> WRITING`, which keeps the
-   `TOKEN`/`REG`/`JOBS` bits. It then reads `deadline` and `now`:
-   - at or past the deadline: CAS the state field `WRITING -> TIMED_OUT`, and
-     return the value as `Expired`;
-   - otherwise: write the value, then CAS the state field
-     `WRITING -> REPLIED`.
-
-   These CASes change only the state field and retry on concurrent `JOBS`
-   changes; a whole-word store would lose a job-end decrement.
-
-   Only `REPLIED` publishes the value; a receiver that sees `WRITING` waits.
-   A registry close that finds `WRITING` waits for it to resolve. The window
-   is a value write; no user code runs in it.
-2. **Shortening.** `shorten_deadline(at)` is `fetch_min(deadline, at)`, then the
-   `[deadline]` check. The linearization point is the reply's `WRITING` CAS:
-   - a shortening before it is seen by the reply;
-   - a shortening after it finds the word not `OPEN` and does nothing.
+1. **Reply.** The reply writes the value under the slot lock and publishes
+   it with one `CAS OPEN -> REPLIED` (keeping the `TOKEN`/`REG`/`JOBS`
+   bits; it retries on concurrent `JOBS` changes). A deferred reply holds
+   the owner's reply permit across that CAS (the death-point fence). The
+   reply reads no clock: the caller's expiry is the only timeout authority, as in OTP's
+`gen_server:call`: a reply reads no clock. A reply that loses the race with
+the expiry (the caller's timer, the owner's deadline heap, or a
+`[deadline]` check) is discarded (`Delivery::Expired`) and the caller sees
+`RequestTimeout`; a reply that lands after the deadline instant but before
+the expiry runs is delivered (`Delivery::Delivered`, and the caller gets
+the value), as an OTP reply already in the caller's mailbox when its
+`after` clause would fire is received. A reply that finds the
+   word not `OPEN` takes its value back (`Expired`, `CallerGone`,
+   `OwnerExited`).
+2. **Shortening.** `shorten_deadline(at)` lowers the deadline under the slot
+   lock while the word is `OPEN`, then runs the `[deadline]` check: a new
+   deadline already passed expires the slot at once, racing any reply on
+   the word (exactly one wins; a shortening after the reply does nothing).
 3. **Registry.** The registry is a per-instance list of weak slot references,
    appended by `defer()` after its CAS and pruned lazily; the `REG` bit in the
    word is authoritative. Closing the registry CASes every listed slot that is
@@ -245,7 +246,7 @@ absolute instant, and OTP's `call` starts waiting when it sends.
 - **The owner's deadline heap,** for deferred tokens and for job deadlines.
   It returns credits and delivers job deadline notifications even when no
   caller is polling.
-- **A reply itself:** at or past the deadline it expires the slot (rule 2).
+- **Not the reply:** a reply reads no clock (rule 1, as OTP).
 
 A queued or in-turn request that nobody polls stays open until it is polled,
 replied (and expired), deferred (`defer()` on an expired slot returns
@@ -911,8 +912,10 @@ It establishes, within its bounds:
 - **Discharge.** At most one discharge per request (`AtMostOneDischarge`), and
   no open slot without a live holder, including job-held tokens at death
   (`NoOrphan`).
-- **Deadlines.** No success at or after the deadline
-  (`NoSuccessAfterDeadline`); deadlines are serviced while a turn is stuck
+- **Deadlines.** Only the expiry decides a timeout; no success after the
+  slot expired, so none after the deadline instant
+  (`NoSuccessAfterDeadline`: `okAt <= dl`; negative control `LateSuccess`, a
+  reply overriding an expired slot); deadlines are serviced while a turn is stuck
   (`TimelyExpiry`); shortening never extends past the caller's deadline
   (`DeadlineWithinCaller`).
 - **Credits.** Combined token and linked-job accounting with attach-on-open

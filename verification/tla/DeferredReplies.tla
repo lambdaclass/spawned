@@ -5,10 +5,13 @@
 (* Part 2 (job fencing, keyed replacement, emits) is DeferredJobs.tla.    *)
 (*                                                                         *)
 (* Each request owns a slot with one atomic open -> terminal transition.  *)
-(* The deadline is fixed at send and is the only timeout; a reply at or   *)
-(* after it expires the slot instead of delivering. Expiry is serviced    *)
-(* independently of A's turns ("waiting" callers are polling; deferred    *)
-(* tokens are covered by the deadline service).                          *)
+(* The deadline is fixed at send and is the only timeout, and only the    *)
+(* expiry (Expire: the caller's timer, the owner's deadline heap, or a    *)
+(* [deadline] check) decides it, as OTP's gen_server:call: a reply reads  *)
+(* no clock and delivers while the slot is open; one that loses the race  *)
+(* with the expiry finds the slot closed and its value is discarded.      *)
+(* Expiry is serviced independently of A's turns ("waiting" callers are   *)
+(* polling; deferred tokens are covered by the deadline service).         *)
 (*                                                                         *)
 (* Owner A. Queued requests are dispatched even if their slot is already  *)
 (* terminal (OTP: the server still handles the call). In a turn the       *)
@@ -50,7 +53,8 @@
 (* violate the named invariant:                                           *)
 (*   NoAutoReply     (NoOrphan)            drops leave the slot open       *)
 (*   NoAtomicExpiry  (AtMostOneDischarge)  reply after expiry discharges   *)
-(*   LateSuccess     (NoSuccessAfterDeadline)                              *)
+(*   LateSuccess     (NoSuccessAfterDeadline)  a reply overrides an expired *)
+(*                                         slot (delivered after expiry)  *)
 (*   LoopDeadline    (TimelyExpiry)        expiry waits for A's turn       *)
 (*   Lengthen        (DeadlineWithinCaller)                                *)
 (*   Unbounded       (BoundedA)            defer ignores the bound         *)
@@ -125,10 +129,15 @@ Discharge(r, k) == DischargeSet({r}, k)
 Keep == UNCHANGED <<slot, discharges, caller, okAt>>
 OpenOf(S) == {r \in S : Open(r)}
 
+\* A reply reads no clock (OTP): it delivers while the slot is open; after
+\* the expiry it finds the slot closed and its value is discarded.
 TryReply(r) ==
     IF Open(r)
-    THEN IF now < dl[r] \/ Fault = "LateSuccess" THEN Discharge(r, "ok")
-         ELSE Discharge(r, "timeout")
+    THEN Discharge(r, "ok")
+    ELSE IF Fault = "LateSuccess" /\ slot[r] = "timeout"
+         THEN /\ slot' = [slot EXCEPT ![r] = "ok"]
+              /\ okAt' = [okAt EXCEPT ![r] = now]
+              /\ UNCHANGED <<discharges, caller>>
     ELSE IF Fault = "NoAtomicExpiry" /\ slot[r] = "timeout"
          THEN /\ discharges' = [discharges EXCEPT ![r] = @ + 1]
               /\ okAt' = [okAt EXCEPT ![r] = now]
@@ -256,7 +265,7 @@ ReplyGateOpen == phase \in {"run", "exiting", "stuck"}
 LaterReply(r) ==
     /\ ReplyGateOpen /\ turnA = 0 /\ holder[r] = "stateA"
     /\ holder' = [holder EXCEPT ![r] = "gone"] /\ TryReply(r)
-    /\ lateOk' = IF phase = "sealed" /\ Open(r) /\ now < dl[r] THEN lateOk \cup {r} ELSE lateOk
+    /\ lateOk' = IF phase = "sealed" /\ Open(r) THEN lateOk \cup {r} ELSE lateOk
     /\ U(<<now, sent, dl, jobs, down, phase, turnA, panicked>>)
 
 LaterDrop(r) ==
@@ -430,7 +439,11 @@ NoOrphan ==
     \A r \in Req : Open(r) =>
         /\ phase # "dead"
         /\ holder[r] \in {"qA", "turnA", "localA", "dropA", "stateA", "doneA", "pendA"}
-NoSuccessAfterDeadline == \A r \in Req : slot[r] = "ok" => okAt[r] < dl[r]
+\* A reply succeeds only while its slot is open: never after the expiry, so
+\* no later than the deadline (the clock does not pass an open slot's
+\* deadline: TimelyExpiry). It may land at the deadline instant, before the
+\* expiry runs, as an OTP reply already in the caller's mailbox does.
+NoSuccessAfterDeadline == \A r \in Req : slot[r] = "ok" => okAt[r] <= dl[r]
 TimelyExpiry == \A r \in Req : Open(r) => now <= dl[r]
 DeadlineWithinCaller == \A r \in Req : slot[r] # "none" => dl[r] <= sent[r]
 BoundedA == Credits <= BoundA
@@ -453,7 +466,7 @@ WokenAfterDischarge ==
 NoEarlyClose == earlyClosed = {}
 DownstreamOwned == \A r \in Req : down[r] \in {"qB", "stateB"} => jobs[r] > 0
 CallerConsistent ==
-    \A r \in Req : /\ caller[r] = "ok" => (slot[r] = "ok" /\ okAt[r] < sent[r])
+    \A r \in Req : /\ caller[r] = "ok" => (slot[r] = "ok" /\ okAt[r] <= sent[r])
                    /\ caller[r] = "timeout" => slot[r] = "timeout"
 
 Safety ==

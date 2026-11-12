@@ -34,7 +34,6 @@ use std::time::Duration;
 mod sync {
     pub(crate) use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
     pub(crate) use std::sync::{Arc, Arc as JobArc, Condvar, Mutex, MutexGuard, Weak as JobWeak};
-    pub(crate) use std::thread::yield_now;
     /// Lifecycle-trace builds keep the owner in each slot (its events name
     /// it); other builds keep nothing, so a slot stays small.
     #[cfg(feature = "lifecycle-trace")]
@@ -395,7 +394,7 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
                 Delivery::CallerGone
             }
             Some(slot) => {
-                let (delivery, unsent) = slot.reply_in_turn(value, &now_ticks);
+                let (delivery, unsent) = slot.reply_in_turn(value);
                 drop(unsent);
                 record(delivery);
                 delivery
@@ -510,8 +509,7 @@ impl<R: Send + 'static> ReplyTo<R> {
             .expect("ReplyTo holds its slot until consumed");
         // Admitted by the owner's death-point fence: once `NoProc` is
         // observable no reply succeeds (the owner's close answers the slot).
-        let (delivery, unsent) =
-            slot.reply_admitted(value, &now_ticks, || self.registry.reply_permit());
+        let (delivery, unsent) = slot.reply_admitted(value, || self.registry.reply_permit());
         drop(unsent);
         record(delivery);
         if delivery == Delivery::Delivered {
