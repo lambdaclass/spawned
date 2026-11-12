@@ -444,6 +444,14 @@
   not returning to its baseline after quiesce, and has a `--inject-leak`
   negative control. Run it before each release (`docs/TESTING.md`).
 
+- Determinism D1-D3 (priority tier 3, work in progress): under
+  `--cfg spawned_sim`, wall-clock and OS-entropy reads on a simulated thread
+  return virtual time and seeded bytes (`spawned-sim-libc`, a sim-only crate
+  that holds the unsafe symbol interposers; `SPAWNED_SIM_STRICT=1` fails the
+  run instead); `spawn_blocking` runs inline as one simulator step; and
+  `spawned_rt::tasks` gains `interval`, `sleep_until` and `JoinSet`, with a
+  direct `tokio::time` call failing with a message naming the replacement.
+
 ## 0.7.3 — 2026-11-10
 
 Patch release with one supervision behaviour change: a failed restart (a
