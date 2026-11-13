@@ -58,6 +58,7 @@
   Production-core Loom regressions and a TLA+ fault cover retained JobCtx races.
 - Timer regression: paused Tokio time is never stored as a service-clock
   deadline. Monotonic clock conversion is inlined without caching time.
+## 0.8.0 — 2026-11-13
 
 - Release validation: client compatibility uses the prepared `spawned-v0.8`
   ports for the breaking API, rather than the incompatible 0.7 client branches.
