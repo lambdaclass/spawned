@@ -130,6 +130,19 @@ pub trait Actor: Send + Sized + 'static {
 /// Uses RPITIT (return-position `impl Trait` in traits), which means this trait
 /// is **not** object-safe. For type-erased references, use [`Receiver<M>`] / [`Recipient<M>`].
 pub trait Handler<M: Message>: Actor {
+    /// Framework adapter for handlers that finish during dispatch. Returning
+    /// Some preserves the untouched message and obligation for `handle`.
+    #[doc(hidden)]
+    #[inline]
+    fn __spawned_handle_immediate<'turn>(
+        &mut self,
+        msg: M,
+        reply: PendingReply<'turn, M::Result>,
+        _ctx: &Context<Self>,
+    ) -> Option<(M, PendingReply<'turn, M::Result>)> {
+        Some((msg, reply))
+    }
+
     fn handle(
         &mut self,
         msg: M,
@@ -172,10 +185,10 @@ trait Envelope<A: Actor>: Send {
     fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a>;
 }
 
-/// A dispatched turn: its future and the caller it answers, lent by the
-/// envelope for the turn.
+/// A dispatched turn: None means the guarded dispatch already completed;
+/// otherwise its future and caller stay lent by the envelope for the turn.
 type Dispatch<'a> = (
-    Pin<Box<dyn Future<Output = ()> + Send + 'a>>,
+    Option<Pin<Box<dyn Future<Output = ()> + Send + 'a>>>,
     Option<&'a dyn Caller>,
 );
 
@@ -190,7 +203,7 @@ fn dispatch<'a, A: Actor>(
     let mut parts = Some((envelope, actor));
     std::panic::catch_unwind(AssertUnwindSafe(move || {
         let (envelope, actor) = parts.take().expect("dispatched once");
-        envelope.handle(actor, ctx)
+        crate::lifecycle_trace::with_actor(ctx.shared.id.raw(), || envelope.handle(actor, ctx))
     }))
 }
 
@@ -296,10 +309,11 @@ where
         let msg = dispatched(msg);
         let slot: &'a Option<Arc<Slot<M::Result>>> = slot;
         let reply = PendingReply::lent(slot.as_ref(), &ctx.shared.replies);
-        (
-            Box::pin(actor.handle(msg, reply, ctx)),
-            slot.as_ref().map(|slot| slot as &dyn Caller),
-        )
+        let caller = slot.as_ref().map(|slot| slot as &dyn Caller);
+        match <A as Handler<M>>::__spawned_handle_immediate(actor, msg, reply, ctx) {
+            None => (None, caller),
+            Some((msg, reply)) => (Some(Box::pin(actor.handle(msg, reply, ctx))), caller),
+        }
     }
 }
 
@@ -343,10 +357,15 @@ where
     #[inline]
     fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
         let msg = dispatched(&mut self.msg);
-        (
-            Box::pin(actor.handle(msg, PendingReply::detached(), ctx)),
-            None,
-        )
+        match <A as Handler<M>>::__spawned_handle_immediate(
+            actor,
+            msg,
+            PendingReply::detached(),
+            ctx,
+        ) {
+            None => (None, None),
+            Some((msg, reply)) => (Some(Box::pin(actor.handle(msg, reply, ctx))), None),
+        }
     }
 }
 
@@ -378,7 +397,7 @@ impl<A: Actor + Handler<Down>> Envelope<A> for DownEnvelope {
                 actor.handle(down, reply, ctx).await;
             }
         });
-        (turn, None)
+        (Some(turn), None)
     }
 }
 
@@ -522,7 +541,7 @@ impl<A: Actor, R: Send + 'static> Envelope<A> for InTurnEnvelope<A, R> {
             let value = f(actor, ctx);
             let _ = reply.reply(value);
         });
-        (turn, lent.as_ref().map(|slot| slot as &dyn Caller))
+        (Some(turn), lent.as_ref().map(|slot| slot as &dyn Caller))
     }
 }
 
@@ -538,9 +557,9 @@ impl<A: Actor> Envelope<A> for FailureEnvelope {
     fn handle<'a>(&'a mut self, _: &'a mut A, _: &'a Context<A>) -> Dispatch<'a> {
         let failure = dispatched(&mut self.0);
         (
-            Box::pin(async move {
+            Some(Box::pin(async move {
                 panic!("nested supervisor failed: {failure}");
-            }),
+            })),
             None,
         )
     }
@@ -568,9 +587,9 @@ impl<A: Actor> Envelope<A> for ExitEnvelope {
     fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
         let exit = dispatched(&mut self.exit);
         (
-            Box::pin(async move {
+            Some(Box::pin(async move {
                 actor.exit_received(exit, ctx).await;
-            }),
+            })),
             None,
         )
     }
@@ -595,7 +614,10 @@ impl<A: Actor> Envelope<A> for ParentExitEnvelope {
 
     fn handle<'a>(&'a mut self, _actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
         let exit = dispatched(&mut self.exit);
-        (Box::pin(async move { ctx.parent_exit(exit.reason) }), None)
+        (
+            Some(Box::pin(async move { ctx.parent_exit(exit.reason) })),
+            None,
+        )
     }
 }
 
@@ -631,7 +653,7 @@ impl<A: Actor> Envelope<A> for HeldEnvelope {
                 actor.exit_received(exit, ctx).await;
             }
         });
-        (turn, None)
+        (Some(turn), None)
     }
 }
 
@@ -2298,7 +2320,8 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
                 // request's slot.
                 let mut envelope = envelope;
                 let result = match dispatch(&mut *envelope, &mut *actor, &ctx) {
-                    Ok((turn, caller)) => {
+                    Ok((None, _)) => Ok(()),
+                    Ok((Some(turn), caller)) => {
                         let mut turn =
                             Some(crate::lifecycle_trace::in_actor(ctx.shared.id.raw(), turn));
                         // Most turns finish in their first poll, which runs

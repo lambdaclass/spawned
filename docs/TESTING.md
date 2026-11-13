@@ -1965,6 +1965,14 @@ way when a change touches the reply path. An earlier 0.8 candidate measured
 async burst 37% and the default `request()` 24% slower than main this way;
 rerun against the final release commit after performance fixes.
 
+Await-free generated dispatch has behavioral regressions in
+`concurrency/tests/immediate_dispatch.rs`: parameter patterns, early returns,
+`?`, name/lifetime hygiene, shared receivers and declared context types, lazy
+direct calls, opaque macros that await, ignored-field destructor order, and
+panics with queued callers. The lifecycle trace suite records and replays a
+direct handler's actor-to-actor send so bypassing its actor context is caught.
+Both the direct path and the future adapter use the same reply/death protocol.
+
 ## Release checklist
 
 Before tagging a release (`gh release create` triggers `release.yaml`, which

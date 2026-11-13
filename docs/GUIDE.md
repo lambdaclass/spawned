@@ -62,6 +62,15 @@ impl MyActor {
 }
 ```
 
+Generated async handlers with no await or opaque macro, and messages without
+destructors, can finish directly
+inside guarded mailbox dispatch, avoiding a per-message future allocation.
+Messages with destructors, methods that suspend, deferred handlers, and opaque
+macro/attribute bodies keep
+the async adapter. This is automatic: inherent async methods and direct
+`Handler::handle` futures remain lazy, and dispatch retains panic containment,
+reply accounting and actor tracing context.
+
 ### Panic Recovery
 
 All three phases are wrapped in `catch_unwind`:

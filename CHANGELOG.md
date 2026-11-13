@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Generated await-free async handlers can dispatch without a boxed turn future
+  when their message has no destructor. Shared/explicit-lifetime receivers,
+  opaque macros/attributes, suspending handlers and payloads with destructors
+  retain the future adapter. Public direct calls remain lazy; panic fencing,
+  drop order and causal actor tracing are preserved.
+- Request and turn bookkeeping avoids redundant atomic exchanges and dynamic
+  default-budget storage. Deferred-token ownership is tracked through the end
+  of destruction; production-core Loom races cover last-token retirement.
 - Performance: request envelopes reuse message presence as their dispatch
   marker and inline construction, removing duplicate state without moving
   dispatch or discharge. The instruction gate also covers manifest, lockfile

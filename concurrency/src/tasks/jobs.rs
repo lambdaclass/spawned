@@ -56,10 +56,10 @@ where
         drop(credit);
         if fenced {
             ctx.shared.sender.failures().discard(msg);
-            return (Box::pin(async {}), None);
+            return (Some(Box::pin(async {})), None);
         }
         (
-            Box::pin(actor.handle(msg, PendingReply::detached(), ctx)),
+            Some(Box::pin(actor.handle(msg, PendingReply::detached(), ctx))),
             None,
         )
     }
@@ -107,7 +107,7 @@ where
             let msg = done(outcome);
             actor.handle(msg, PendingReply::detached(), ctx).await
         });
-        (turn, None)
+        (Some(turn), None)
     }
 }
 
