@@ -316,13 +316,24 @@ fn job_thread_spawn_failure_child() {
     if std::env::var_os("SPAWNED_MAILBOX_DROP_CHILD").is_none() {
         return;
     }
-    struct Owner;
-    impl Actor for Owner {}
-    impl Handler<Done> for Owner {
+    // Wait until the actor's runtime and its worker thread exist before
+    // refusing new threads. Otherwise the limit can kill actor startup and
+    // turn the intended SpawnFailed result into OwnerStopping.
+    struct ReadyOwner(mpsc::Sender<()>);
+    impl Actor for ReadyOwner {
+        async fn started(&mut self, _: &Context<Self>) {
+            self.0.send(()).unwrap();
+        }
+    }
+    impl Handler<Done> for ReadyOwner {
         async fn handle(&mut self, _: Done, _: PendingReply<'_, ()>, _: &Context<Self>) {}
     }
+    let (started, ready) = mpsc::channel();
     // The actor runs on its own thread; this thread has no Tokio runtime.
-    let actor = Owner.start_with_backend(Backend::Thread);
+    let actor = ReadyOwner(started).start_with_backend(Backend::Thread);
+    ready
+        .recv_timeout(Duration::from_secs(30))
+        .expect("actor runtime did not finish starting before thread fault injection");
     let ctx = actor.context();
     assert!(tokio::runtime::Handle::try_current().is_err());
     let (soft, hard) = getrlimit(Resource::RLIMIT_NPROC).unwrap();
