@@ -7,8 +7,12 @@
 //! `ActorId`, `ExitReason`, `SignalTarget` and the synchronization types
 //! through `super`. The protocol never runs user code under a table lock
 //! except through the `apply` callback of [`take_record`], which production
-//! uses to apply the signal to the receiver (it takes only the receiver's
-//! exit-request lock, never a table lock).
+//! uses to apply the signal to the receiver. That path takes the receiver's
+//! exit-request lock, may enqueue an internal exit envelope (mailbox admission
+//! and an executor wake), or cancel its private actor token. These internal
+//! callbacks must never acquire a link-table lock or execute user handlers.
+//! The outgoing SendGate fence is acquired before the table lock at death;
+//! Registry::seal under the table lock only publishes the OnceLock reason.
 
 use super::sync::{Arc, Mutex, MutexGuard, Weak};
 use super::{ActorId, ExitReason, SignalTarget};

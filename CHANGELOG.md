@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Release-review fixes: job completion atomically closes emit admission,
+  including the gap after a held terminal is released; blocked emitters wake
+  on completion. Join waiters are deduplicated and woken outside their lock.
+  Production-core Loom regressions and a TLA+ fault cover retained JobCtx races.
+- Timer regression: paused Tokio time is never stored as a service-clock
+  deadline. Monotonic clock conversion is inlined without caching time.
+
 - Release validation: client compatibility uses the prepared `spawned-v0.8`
   ports for the breaking API, rather than the incompatible 0.7 client branches.
 
@@ -19,8 +26,8 @@
   a blocking `recv()` parks its thread); the tasks envelope lends its
   request slot to the turn instead of cloning it; a turn that finishes in
   its first poll skips the runtime-drop guard; `request` captures one precise
-  runtime timer before enqueue and shares its deadline with the slot (no
-  coarse clock or second initial clock read); a request without a
+  runtime timer before enqueue, keeping its relative budget separate from
+  the service-clock slot deadline so paused clocks stay correct (no coarse clock); a request without a
   deadline holds no reference to the owner's registry (the owner's close
   records the final reason in the slot); a caller that owns an answered
   slot alone takes the value without the lock; and the slot no longer

@@ -136,7 +136,7 @@ mod job_core;
 #[path = "../src/reply/slot.rs"]
 mod slot;
 
-use job_core::{Job, JobCore, JobGone, JobSetCore, Notification};
+use job_core::{Finish, Job, JobCore, JobGone, JobSetCore, Notification};
 use loom::sync::atomic::{AtomicUsize, Ordering};
 use loom::sync::{Arc, Mutex};
 use model_arc::JobArc;
@@ -532,6 +532,65 @@ fn scheduled_emit_vs_finish_and_cancel() {
             assert_eq!(job.core.emit_credits(), 1, "an emit credit was lost");
         });
     }
+}
+
+/// A retained JobCtx may schedule concurrently with the work handing in its
+/// result. A successful schedule must make finish hold the terminal.
+#[test]
+fn schedule_racing_finish_cannot_overtake_the_terminal() {
+    model(|| {
+        let core = Arc::new(JobCore::new(1));
+        core.acquire_blocking().unwrap();
+        let scheduling = {
+            let core = core.clone();
+            loom::thread::spawn(move || core.schedule())
+        };
+        let (finish, _) = core.finish(|| None::<()>, || Box::new(|| {}));
+        let scheduled = scheduling.join().unwrap();
+        assert!(
+            scheduled.is_err() || finish == Finish::Held,
+            "an accepted delayed emit was overtaken by the terminal"
+        );
+    });
+}
+
+/// Taking the held closure out of the last timer must not reopen admission
+/// before that closure queues the terminal notification.
+#[test]
+fn releasing_a_held_result_does_not_reopen_emit_admission() {
+    model(|| {
+        let core = JobCore::new(1);
+        core.acquire_blocking().unwrap();
+        core.schedule().unwrap();
+        assert_eq!(
+            core.finish(|| None::<()>, || Box::new(|| {})).0,
+            Finish::Held
+        );
+        let (_, held, _) = core.fire(Some(|| Ok::<(), ()>(())));
+        assert!(held.is_some());
+        core.return_emit_credit();
+        assert_eq!(core.try_acquire(|| {}), Some(Err(JobGone)));
+        assert_eq!(core.schedule(), Err(JobGone));
+        drop(held);
+    });
+}
+
+#[test]
+fn blocked_emitter_wakes_when_completion_holds_the_terminal() {
+    model(|| {
+        let core = Arc::new(JobCore::new(1));
+        core.acquire_blocking().unwrap();
+        core.schedule().unwrap();
+        let emitter = {
+            let core = core.clone();
+            loom::thread::spawn(move || core.acquire_blocking())
+        };
+        assert_eq!(
+            core.finish(|| None::<()>, || Box::new(|| {})).0,
+            Finish::Held
+        );
+        assert_eq!(emitter.join().unwrap(), Err(JobGone));
+    });
 }
 
 /// A native job completes (native slot released, terminal notification,

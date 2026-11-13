@@ -175,12 +175,13 @@ mod thread_service {
         wake: Condvar,
     }
 
+    static SERVICE: OnceLock<&'static Service> = OnceLock::new();
+
     fn lock(service: &Service) -> std::sync::MutexGuard<'_, State> {
         service.state.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     fn service() -> &'static Service {
-        static SERVICE: OnceLock<&'static Service> = OnceLock::new();
         SERVICE.get_or_init(|| {
             let service: &'static Service = Box::leak(Box::new(Service {
                 state: Mutex::new(State::default()),
@@ -195,18 +196,15 @@ mod thread_service {
     }
 
     pub(super) fn forget(key: u64) {
-        let Some(service) = SERVICE_REF.get() else {
+        let Some(service) = SERVICE.get() else {
             return;
         };
         let forgotten = lock(service).actors.remove(&key);
         drop(forgotten);
     }
 
-    static SERVICE_REF: OnceLock<&'static Service> = OnceLock::new();
-
     pub(super) fn schedule(registry: &Arc<Registry>, at: u64) {
         let service = service();
-        let _ = SERVICE_REF.set(service);
         let key = registry.key();
         let mut state = lock(service);
         match state.actors.get(&key) {

@@ -1,4 +1,4 @@
-//! An implicit call timeout and its slot use one captured runtime deadline.
+//! Caller timers and service deadlines stay in their own clock domains.
 #![cfg(feature = "async")]
 use spawned_concurrency::{
     message::Message,
@@ -38,6 +38,29 @@ async fn requests_after_virtual_time_advance_keep_their_full_timeout() {
         assert!(began.elapsed() >= duration, "timeout fired early");
         assert!(began.elapsed() <= duration + Duration::from_millis(2));
     }
+    actor.context().stop();
+    actor.join().await;
+}
+
+#[cfg(not(spawned_sim))]
+#[tokio::test(start_paused = true)]
+async fn wall_time_while_paused_cannot_expire_a_new_request() {
+    // Force the real-clock epoch to precede the wait, just as another actor
+    // would. Tokio's paused clock does not advance during synchronous work.
+    let _ = Deadline::after(Duration::from_secs(1));
+    std::thread::sleep(Duration::from_millis(100));
+    let actor = Idle(None).start();
+    let duration = Duration::from_millis(20);
+    let began = tokio::time::Instant::now();
+    assert!(matches!(
+        actor.request_with_timeout(Park, duration).await,
+        Err(ActorError::RequestTimeout)
+    ));
+    assert!(
+        began.elapsed() >= duration,
+        "slot expired before runtime timeout"
+    );
+    assert!(began.elapsed() <= duration + Duration::from_millis(2));
     actor.context().stop();
     actor.join().await;
 }

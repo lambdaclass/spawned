@@ -1,6 +1,8 @@
 ----------------------------- MODULE ReplyTimer -----------------------------
 \* Receiver-side refinement of DeferredReplies.Shorten/Expire.
-\* The runtime timer and the slot share one exact deadline captured before send.
+\* A send-time deadline and relative runtime timer have the same budget.
+\* Their captures and timer rounding can make expiry later, never earlier.
+\* `captured` records the deadline a timer was armed for; `timer` permits lag.
 \* A SHORTENED bit is consumed BEFORE reading the deadline: a concurrent later
 \* shortening either appears in that read or leaves another bit to consume.
 \* No cached/coarse clock is assumed. Timers can be polled late, never early.
@@ -9,8 +11,8 @@ CONSTANTS MaxTime, Fault
 ASSUME Fault \in {"None", "ClearLate", "ForgetFlag"}
 VARIABLES now, deadline, timer, marked, phase, captured, closed
 vars == <<now, deadline, timer, marked, phase, captured, closed>>
-Init == /\ now = 0 /\ deadline = MaxTime /\ timer = MaxTime
-        /\ marked = FALSE /\ phase = "idle" /\ captured = MaxTime /\ closed = FALSE
+Init == /\ now = 0 /\ deadline = MaxTime - 1 /\ timer \in (MaxTime-1)..MaxTime
+        /\ marked = FALSE /\ phase = "idle" /\ captured = MaxTime - 1 /\ closed = FALSE
 Shorten == /\ ~closed /\ deadline > 0
            /\ \E earlier \in 0..(deadline-1):
                 /\ deadline' = earlier
@@ -24,7 +26,7 @@ ReadDeadline == /\ ~closed /\ phase = "read"
                 /\ captured' = deadline /\ phase' = "install"
                 /\ UNCHANGED <<now, deadline, timer, marked, closed>>
 InstallTimer == /\ ~closed /\ phase = "install"
-                /\ timer' = captured /\ phase' = "idle"
+                /\ timer' \in captured..MaxTime /\ phase' = "idle"
                 /\ marked' = IF Fault = "ClearLate" THEN FALSE ELSE marked
                 /\ UNCHANGED <<now, deadline, captured, closed>>
 Tick == /\ now < MaxTime /\ now' = now + 1
@@ -41,6 +43,6 @@ TypeOK == /\ now \in 0..MaxTime /\ deadline \in 0..MaxTime
           /\ marked \in BOOLEAN /\ closed \in BOOLEAN
           /\ phase \in {"idle", "read", "install"}
 NeverEarly == closed => now >= deadline
-NoLostRearm == (~closed /\ phase = "idle" /\ ~marked) => timer = deadline
+NoLostRearm == (~closed /\ phase = "idle" /\ ~marked) => captured = deadline
 EventuallyExpires == <>closed
 =============================================================================

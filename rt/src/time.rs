@@ -42,6 +42,7 @@ pub const MAX_TICKS: u64 = u64::MAX - 1;
 /// Ticks count from a process-wide epoch (the first call), or, under
 /// simulation, from the start of the simulated world. Instants before the
 /// epoch map to 0 and instants beyond the range saturate at [`MAX_TICKS`].
+#[inline]
 pub fn to_ticks(instant: Instant) -> u64 {
     let nanos = elapsed_since_epoch(instant).as_nanos();
     nanos.min(MAX_TICKS as u128) as u64
@@ -49,6 +50,7 @@ pub fn to_ticks(instant: Instant) -> u64 {
 
 #[doc(hidden)] // clock plumbing for spawned-concurrency; no stability promise
 /// Inverse of [`to_ticks`].
+#[inline]
 pub fn from_ticks(ticks: u64) -> Instant {
     let elapsed = std::time::Duration::from_nanos(ticks.min(MAX_TICKS));
     #[cfg(all(spawned_sim, feature = "async"))]
@@ -64,16 +66,19 @@ pub fn from_ticks(ticks: u64) -> Instant {
 
 #[doc(hidden)] // clock plumbing for spawned-concurrency; no stability promise
 /// Ticks of [`Instant::now`].
+#[inline]
 pub fn now_ticks() -> u64 {
     to_ticks(Instant::now())
 }
 
 #[cfg(not(all(spawned_sim, feature = "async")))]
+#[inline]
 fn epoch() -> Instant {
     static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     *EPOCH.get_or_init(Instant::now)
 }
 
+#[inline]
 fn elapsed_since_epoch(instant: Instant) -> std::time::Duration {
     #[cfg(all(spawned_sim, feature = "async"))]
     {

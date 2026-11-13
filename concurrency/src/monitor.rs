@@ -85,10 +85,15 @@ pub(crate) type MonitorTable =
 pub(crate) struct MonitorCleanup(pub MonitorTable);
 impl Drop for MonitorCleanup {
     fn drop(&mut self) {
-        if let Some(mut monitors) = fence::close(&self.0) {
+        if let Some(monitors) = fence::close(&self.0) {
             // HashMap order is per-process random: wake waiters in
             // monitor-creation order, so a simulated schedule is seeded.
-            monitors.sort_unstable_by_key(|(r, _)| r.0);
+            #[cfg(spawned_sim)]
+            let monitors = {
+                let mut monitors = monitors;
+                monitors.sort_unstable_by_key(|(r, _)| r.0);
+                monitors
+            };
             for (_, token) in monitors {
                 token.cancel();
             }

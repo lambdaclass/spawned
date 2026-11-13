@@ -122,6 +122,7 @@ mod sync {
 }
 
 /// Clock ticks now, on the `spawned_rt` clock (virtual under simulation).
+#[inline]
 pub(crate) fn now_ticks() -> u64 {
     clock::now()
 }
@@ -152,24 +153,15 @@ pub(crate) mod clock {
     }
 }
 
-/// One runtime timer supplies both the send-time deadline and the caller's
-/// wait. Reading its captured deadline does not read the system clock again.
+/// The slot deadline uses the monotonic deadline-service clock. The caller's
+/// timer uses a relative runtime budget: a paused Tokio clock can differ from
+/// the service clock and its absolute instants must not be stored in the slot.
 #[cfg(feature = "async")]
 #[inline]
 pub(crate) fn request_timer(duration: Duration) -> (u64, Option<spawned_rt::tasks::Sleep>) {
-    let timer = spawned_rt::tasks::sleep(duration);
-    let ticks = if duration.as_nanos() >= spawned_rt::time::MAX_TICKS as u128 {
-        NEVER
-    } else {
-        let at = spawned_rt::tasks::sleep_deadline(&timer);
-        let ticks = spawned_rt::time::to_ticks(at);
-        if ticks >= spawned_rt::time::MAX_TICKS {
-            NEVER
-        } else {
-            ticks
-        }
-    };
-    (ticks, (ticks != NEVER).then_some(timer))
+    let ticks = clock::after(duration);
+    let timer = (ticks != NEVER).then(|| spawned_rt::tasks::sleep(duration));
+    (ticks, timer)
 }
 
 // ---------------------------------------------------------------------------
@@ -723,7 +715,8 @@ impl<R> ReplyReceiver<R> {
         ReplyFuture { rx: self, sleep }
     }
 
-    /// Use the same timer whose captured deadline was fixed before enqueue.
+    /// Use the relative runtime timer created before enqueue, while the slot
+    /// retains its send-time deadline on the monotonic service clock.
     #[cfg(feature = "async")]
     pub(crate) fn into_timed_future_with(
         self,

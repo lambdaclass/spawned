@@ -122,6 +122,9 @@ pub use reply::{
     ReplyReceiver, ReplyTo,
 };
 pub use response::{Response, DEFAULT_REQUEST_TIMEOUT};
+// send_handler also supports manual Handler impls. request_handler and
+// deferred_handler are method markers consumed by #[actor], not standalone
+// proc macros to re-export.
 pub use spawned_macros::{actor, protocol, send_handler};
 /// The instant type of reply and job deadlines (`Deadline::At`,
 /// `JobOptions::deadline`, `ReplyTo::deadline`, `JobCtx::emit_at`):

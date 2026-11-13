@@ -38,6 +38,9 @@ struct Inner {
     cancelled: bool,
     notification: Notification,
     running: bool,
+    /// Work handed in its result. Remains set while a held result is taken
+    /// out of the lock and its terminal notification is still pending.
+    work_finished: bool,
     emit_credits: u16,
     /// Delayed emits (`emit_at`) holding a credit, not yet fired.
     scheduled: u16,
@@ -54,7 +57,7 @@ impl Inner {
     /// New emits are accepted: open, and the work has not handed in its
     /// result (a held terminal).
     fn accepting(&self) -> bool {
-        self.open() && self.held.is_none()
+        self.open() && !self.work_finished
     }
 }
 
@@ -91,6 +94,7 @@ impl JobCore {
                 cancelled: false,
                 notification: Notification::Pending,
                 running: true,
+                work_finished: false,
                 emit_credits,
                 scheduled: 0,
                 held: None,
@@ -140,6 +144,7 @@ impl JobCore {
     /// (an envelope the mailbox refused) is returned to be dropped by the
     /// caller after the lock is released. When taken, the caller wakes async
     /// emitters.
+    #[allow(dead_code)] // convenience wrapper for the shared Loom core
     pub(crate) fn notify<X>(&self, enqueue: impl FnOnce() -> Option<X>) -> (bool, Option<X>) {
         let (taken, unsent, held) = self.notify_keeping_held(enqueue);
         // A deadline overtaking a held result: the result is dropped.
@@ -174,22 +179,24 @@ impl JobCore {
         enqueue: impl FnOnce() -> Option<X>,
         later: impl FnOnce() -> HeldTerminal,
     ) -> (Finish, Option<X>) {
-        {
+        let (finish, unsent) = {
             let mut inner = lock(&self.inner);
-            if !inner.open() {
+            if !inner.open() || inner.work_finished {
                 return (Finish::Refused, None);
             }
+            inner.work_finished = true;
             if inner.scheduled > 0 {
                 inner.held = Some(later());
-                return (Finish::Held, None);
+                (Finish::Held, None)
+            } else {
+                // Completion and scheduling share this lock: an accepted
+                // schedule either preceded this check or is now refused.
+                inner.notification = Notification::Notified;
+                (Finish::Taken, enqueue())
             }
-        }
-        // Nothing scheduled, and only the work schedules: `notify` takes it
-        // unless a cancel or the deadline came in between.
-        match self.notify(enqueue) {
-            (true, unsent) => (Finish::Taken, unsent),
-            (false, _) => (Finish::Refused, None),
-        }
+        };
+        self.emitters.notify_all();
+        (finish, unsent)
     }
 
     /// Whether the terminal notification can still be taken (the job

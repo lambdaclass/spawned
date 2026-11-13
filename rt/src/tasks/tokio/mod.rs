@@ -30,13 +30,6 @@ pub async fn ctrl_c() {
         .expect("Failed to listen for Ctrl+C");
 }
 
-/// The exact deadline already captured by a runtime timer.
-#[doc(hidden)]
-#[inline]
-pub fn sleep_deadline(timer: &Sleep) -> std::time::Instant {
-    timer.deadline().into_std()
-}
-
 /// Completes at `deadline` (Tokio's `sleep_until`, taking the
 /// `spawned_rt::time::Instant` that is virtual under simulation).
 pub fn sleep_until(deadline: std::time::Instant) -> tokio::time::Sleep {

@@ -66,7 +66,8 @@ CONSTANTS J, Keyed, JobBound, MaxGen, MaxEmit, Credits, Fault
 ASSUME Fault \in {"None", "NoInstanceCheck", "NoCancelFence", "DoubleTerminal",
                   "ReleaseOnTimeout", "KeyNoCancel", "ReplacePendingOnly",
                   "EmitAfterTerminal", "NoEmitCredit", "EarlyCredit",
-                  "HeldDeadlineLost", "ExitKeepsHeld", "NoAdmissionFence"}
+                  "HeldDeadlineLost", "ExitKeepsHeld", "NoAdmissionFence",
+                  "ReopenAfterRelease"}
 
 Jobs == 1..J
 ASSUME Keyed \subseteq Jobs
@@ -161,7 +162,8 @@ Emit(j) ==
 
 \* emit_at: take an emit credit now; the emit is enqueued when it fires.
 ScheduleEmit(j) ==
-    /\ exec[j] = "running" /\ emitted[j] < MaxEmit /\ Accepting(j)
+    /\ (exec[j] = "running" \/ (Fault = "ReopenAfterRelease" /\ releasing[j]))
+    /\ emitted[j] < MaxEmit /\ Accepting(j)
     /\ inflight[j] + sched[j] < Credits
     /\ emitted' = [emitted EXCEPT ![j] = @ + 1]
     /\ sched' = [sched EXCEPT ![j] = @ + 1]
@@ -330,11 +332,15 @@ ExitCancelsJobs ==
     ~alive => \A j \in Jobs :
         (owner[j] = inst /\ (exec[j] = "running" \/ sched[j] > 0 \/ held[j])) => cancelled[j]
 
+\* Completion closes emit admission even while the last scheduled emit has
+\* taken the held closure out of the lock and ReleaseHeld has not run yet.
+ReleasedHasNoScheduled == \A j \in Jobs : releasing[j] => sched[j] = 0
+
 Safety ==
     /\ TypeOK /\ NoLateResult /\ NoStaleAfterCancel /\ NoStaleKeyed
     /\ AtMostOneTerminal /\ PermitsBounded /\ OneLivePerKey
     /\ TerminalLast /\ EmitCreditsBounded /\ HeldCounted /\ DeadlineArmedWhileHeld
-    /\ ExitCancelsJobs
+    /\ ExitCancelsJobs /\ ReleasedHasNoScheduled
 
 \* A job started with a deadline and never cancelled is reported to its
 \* live owner instance even if its work never finishes.

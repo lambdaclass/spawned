@@ -1870,11 +1870,6 @@ pub struct Sleep {
     key: Option<(Duration, u64)>,
     yielded: bool,
 }
-/// The exact virtual deadline already captured by a runtime timer.
-#[doc(hidden)]
-pub fn sleep_deadline(timer: &Sleep) -> Instant {
-    Instant(timer.deadline)
-}
 
 impl fmt::Debug for Sleep {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

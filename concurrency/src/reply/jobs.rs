@@ -492,7 +492,7 @@ impl JobState {
             (finish, unsent)
         });
         #[cfg(feature = "async")]
-        if finish == Finish::Taken {
+        if finish != Finish::Refused {
             self.wake_emitters();
         }
         #[cfg(not(feature = "async"))]
@@ -819,8 +819,11 @@ impl JobSet {
         crate::instrumentation::hooks::job_ended();
         if self.core.ended(state) {
             #[cfg(feature = "async")]
-            for waker in std::mem::take(&mut *lock(&self.idle_async)) {
-                waker.wake();
+            {
+                let waiters = std::mem::take(&mut *lock(&self.idle_async));
+                for waker in waiters {
+                    waker.wake();
+                }
             }
         }
     }
@@ -889,7 +892,18 @@ impl JobSet {
             if self.running() == 0 {
                 return std::task::Poll::Ready(());
             }
-            lock(&self.idle_async).push(cx.waker().clone());
+            // Cloning/dropping a waker can run executor code: do it outside
+            // the waiters lock, and retain only one copy of this waiter.
+            let fresh = cx.waker().clone();
+            {
+                let mut waiters = lock(&self.idle_async);
+                if !waiters.iter().any(|w| w.will_wake(&fresh)) {
+                    waiters.push(fresh);
+                } else {
+                    drop(waiters);
+                    drop(fresh);
+                }
+            }
             if self.running() == 0 {
                 return std::task::Poll::Ready(());
             }
@@ -1148,6 +1162,39 @@ pub(crate) fn cancel_when_closed<R: Send + 'static>(
 mod tests {
     use super::*;
     use crate::reply::registry::Registry;
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn join_deduplicates_waiters_and_wakes_without_its_lock() {
+        use std::{
+            future::Future,
+            task::{Context, Wake, Waker},
+        };
+        struct Inspect(std::sync::Weak<JobSet>);
+        impl Wake for Inspect {
+            fn wake(self: Arc<Self>) {
+                let set = self.0.upgrade().unwrap();
+                assert!(
+                    set.idle_async.try_lock().is_ok(),
+                    "join waker ran under the waiters lock"
+                );
+            }
+        }
+        let owner = ActorId::next();
+        let set = Arc::new(JobSet::new(owner, 1));
+        let job = JobState::new(owner, 1);
+        assert!(set.admit(&job, None, false));
+        let waker = Waker::from(Arc::new(Inspect(Arc::downgrade(&set))));
+        let mut cx = Context::from_waker(&waker);
+        let mut join = std::pin::pin!(set.join(std::time::Duration::from_secs(30)));
+        for _ in 0..100 {
+            assert!(join.as_mut().poll(&mut cx).is_pending());
+        }
+        assert_eq!(lock(&set.idle_async).len(), 1);
+        set.ended(&job);
+        assert!(join.as_mut().poll(&mut cx).is_ready());
+        assert!(lock(&set.idle_async).is_empty());
+    }
 
     std::thread_local! {
         /// Runs once between `schedule_emit`'s `JobCore::schedule` and its

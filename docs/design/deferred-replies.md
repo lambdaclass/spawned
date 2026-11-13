@@ -247,10 +247,11 @@ absolute instant, and OTP's `call` starts waiting when it sends.
   (real time, or the simulated clock under `spawned_sim`), saving a timer
   per request. A shortened deadline (`ReplyTo::shorten_deadline`) wakes the
   awaiting or parked receiver, which re-arms for it.
-  For an implicit call timeout, one runtime sleep is created before enqueue:
-  its captured, precise deadline supplies the slot deadline and the same sleep
-  supplies the caller's wait. There is no cached clock or duplicate initial
-  clock read. Absolute-deadline responses still create their timer when polled.
+  For an implicit call timeout, the slot deadline is computed from the
+  monotonic service clock and a relative runtime sleep is created before
+  enqueue. The two captures are deliberate: a paused Tokio clock must not be
+  converted into an absolute service-clock instant. No coarse clock is used.
+  Absolute-deadline responses still create their timer when polled.
 - **`defer()`, the `pipe_reply` attach and `is_closed()`.** They check the
   deadline first, so an unpolled, expired request reports `Closed`.
 - **The owner's deadline heap,** for deferred tokens and for job deadlines.
@@ -914,13 +915,22 @@ Loom/Shuttle tests and trace validation once implemented. Measurements and
 the negative controls (each checked against its named invariant) are in
 [`verification/tla/README.md`](../../verification/tla/README.md#deferred-replies-rank-11-design).
 
+Completion closes new emit admission atomically with choosing to enqueue or
+hold the terminal. A retained `JobCtx` cannot reopen admission after the last
+timer takes the held result but before it enqueues that result. Blocked emitters
+are woken at completion even while a result remains held. `JobCore` records
+work completion separately from physical task termination and held-closure
+ownership. The shared-core Loom tests cover scheduling versus completion,
+the last-fire/release gap and blocked-emitter wakeup; `MCDeferredJobsEmitRace`
+checks `ReleasedHasNoScheduled` with a `ReopenAfterRelease` negative control.
+
 **`DeferredReplies.tla`** has a discrete clock, two callers, owner A with
 turns, a linked-job count per request, and downstream actor B.
 
 `ReplyTimer.tla` separately refines receiver timer bookkeeping: consuming the
 shortening mark, reading the deadline, and installing the timer are separate
 steps. `MCReplyTimer` checks no early expiration, no lost re-arm and eventual
-expiration under the stated fairness assumptions (535 states). Its negative
+expiration under the stated fairness assumptions, allowing timer lag. Its negative
 controls catch clearing the mark after reading and omitting the mark. The
 production slot implementation is also exercised directly by the two timer/
 bookkeeping races in `tests/reply_slot_loom.rs`; paused-time and overflow cases
