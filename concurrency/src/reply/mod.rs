@@ -315,6 +315,7 @@ impl<R: Send + 'static> SlotHandle<R> {
         self.0.take()
     }
     /// Hold `slot` again (an undispatched envelope's request).
+    #[cfg(feature = "async")]
     pub(crate) fn of(slot: Option<Arc<Slot<R>>>) -> Self {
         Self(slot)
     }

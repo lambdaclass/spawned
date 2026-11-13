@@ -22,8 +22,8 @@
   records the final reason in the slot); a caller that owns an answered
   slot alone takes the value without the lock; and the slot no longer
   holds its owner at all (two flags became word bits), which keeps it in
-  glibc's fast bins for typical reply sizes. Guarantees, Loom models and
-  the ownership model retain their linearization points. A receiver timer
+  glibc's fast bins for typical reply sizes. Reply ownership and terminal
+  transitions retain their linearization points. A receiver timer
   refinement (`ReplyTimer.tla`), two negative controls, production-slot Loom
   races, and paused-clock/overflow tests cover the timer bookkeeping.
 - `InsertError::kind()` (a `#[non_exhaustive]` `InsertErrorKind`) and
