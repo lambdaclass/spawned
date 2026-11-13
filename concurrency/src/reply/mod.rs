@@ -599,13 +599,13 @@ impl<R: Send + 'static> ReplyTo<R> {
     /// Every token owns one external hold through its entire Drop. Forgetting
     /// a token leaks that hold too, conservatively keeping the slow turn path.
     fn new(slot: Arc<Slot<R>>, registry: Arc<Registry>) -> Self {
-        let stamp = crate::instrumentation::hooks::deferred();
-        registry.token_added();
-        Self {
+        let token = Self {
             slot: Some(slot),
             registry,
-            stamp,
-        }
+            stamp: crate::instrumentation::hooks::deferred(),
+        };
+        token.registry.token_added();
+        token
     }
 
     /// Answer the caller. Returns how the reply was delivered.

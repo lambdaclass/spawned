@@ -2322,6 +2322,9 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
                 // request's slot.
                 let mut envelope = envelope;
                 let result = match dispatch(&mut *envelope, &mut *actor, &ctx) {
+                    // Dispatch completed the turn synchronously. The caller
+                    // hold is only needed if an unfinished future is dropped;
+                    // turn accounting and observation bracket either branch.
                     Ok((None, _)) => Ok(()),
                     Ok((Some(turn), caller)) => {
                         let mut turn =
