@@ -1,4 +1,8 @@
 --------------------------- MODULE DeferredReplies ---------------------------
+\* The implementation packs an ordinary value and optional extended metadata
+\* into a safe enum; promotion preserves the value and does not change State.
+\* A refused second publisher must not overwrite the first Reply's value;
+\* production-slot Loom tests check both refinements and the Reply guard.
 (***************************************************************************)
 (* Rank 11 design model, part 1: reply slots, deferred tokens, linked     *)
 (* jobs and owner exit. Design contract: docs/design/deferred-replies.md. *)

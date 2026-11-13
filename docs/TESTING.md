@@ -1047,7 +1047,13 @@ RUSTFLAGS="--cfg spawned_scheduler_loom" cargo test --release -p spawned-concurr
 ```
 
 `reply_slot_loom` covers the packed slot word (reply, expiry, shortening,
-abandon, close, defer at the bound, linked jobs, parked receivers);
+abandon, close, defer at the bound, linked jobs, parked receivers), retaining
+a published value when cold metadata is installed and when another publisher
+is refused. Removing the terminal pre-check reproduces a lost winning value.
+The production slot uses `parking_lot::Mutex` behind a small non-poisoning shim;
+Loom substitutes its own mutex in the shared algorithm. This checks the
+protocol under the mutex's acquire/release contract, not parking_lot's internal
+implementation. A scalar-slot size regression bounds the common allocation;
 `registry_turn_loom` the in-turn drop commit against turn end, exit and death,
 including zero external tokens, the last token's retirement and two concurrent
 drops. Its fast path is checked against an early-retirement mutation that loses

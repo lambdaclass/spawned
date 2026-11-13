@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Ordinary reply slots keep the value inline and move deferred metadata to a
+  cold allocation; scalar slots are bounded by a 56-byte layout regression.
+  Slot locking uses parking_lot behind the production/Loom synchronization
+  seam. A refused second publisher preserves the winning reply instead of
+  overwriting it; the regression fails without the terminal pre-check.
 - Job completion drops unused result factories outside the lifecycle trace
   lock. A reproducing destructor regression runs in trace CI; keyed-job
   generation retention and link attempts racing exit are documented.

@@ -10,6 +10,8 @@
 mod sync {
     pub(crate) use loom::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     pub(crate) use loom::sync::{Arc, Mutex, MutexGuard};
+    pub(crate) type SlotMutex<T> = Mutex<T>;
+    pub(crate) type SlotMutexGuard<'a, T> = MutexGuard<'a, T>;
     pub(crate) type SlotOwner = Option<()>;
     pub(crate) type Reason = ();
     pub(crate) fn section<T>(f: impl FnOnce() -> T) -> T {
@@ -776,5 +778,42 @@ fn in_turn_reply_racing_defer_returns_the_credit_once() {
         }
         assert_eq!(pool.used(), 0, "dropping the token returned credit twice");
         assert!(matches!(slot.try_take(&|| 0), Some(Ok(17))));
+    });
+}
+
+/// Even a second publisher must return its value without touching the reply
+/// that won the slot's single terminal transition.
+#[test]
+fn two_publishers_preserve_the_winning_value() {
+    model(|| {
+        let slot = Arc::new(Slot::new(NEVER));
+        let first = {
+            let slot = slot.clone();
+            loom::thread::spawn(move || slot.reply_in_turn(11_u64))
+        };
+        let second = {
+            let slot = slot.clone();
+            loom::thread::spawn(move || slot.reply(23_u64))
+        };
+        let a = first.join().unwrap();
+        let b = second.join().unwrap();
+        let winner = match (a, b) {
+            ((Delivery::Delivered, None), (Delivery::CallerGone, Some(23))) => 11,
+            ((Delivery::CallerGone, Some(11)), (Delivery::Delivered, None)) => 23,
+            other => panic!("two-publisher outcomes: {other:?}"),
+        };
+        assert_eq!(slot.try_take(&|| 0), Some(Ok(winner)));
+    });
+}
+
+#[test]
+fn late_side_promotion_preserves_a_published_value() {
+    model(|| {
+        let slot = Slot::new(NEVER);
+        let pool = Arc::new(CreditPool::new(1));
+        assert_eq!(slot.reply_in_turn(37_u64), (Delivery::Delivered, None));
+        assert_eq!(slot.defer(&pool, &|| 0), Err(Refused::Closed));
+        assert_eq!(slot.try_take(&|| 0), Some(Ok(37)));
+        assert_eq!(pool.used(), 0);
     });
 }

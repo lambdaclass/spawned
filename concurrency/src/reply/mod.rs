@@ -36,6 +36,24 @@ use std::time::Duration;
 mod sync {
     pub(crate) use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
     pub(crate) use std::sync::{Arc, Arc as JobArc, Condvar, Mutex, MutexGuard, Weak as JobWeak};
+    // A non-poisoning slot lock; payloads/wakers are never dropped under it.
+    // Keep the standard LockResult surface so the shared Loom code uses the
+    // same calls, while the ordinary path inlines to parking_lot's fast lock.
+    pub(crate) struct SlotMutex<T>(parking_lot::Mutex<T>);
+    pub(crate) type SlotMutexGuard<'a, T> = parking_lot::MutexGuard<'a, T>;
+    impl<T> SlotMutex<T> {
+        pub(crate) fn new(value: T) -> Self {
+            Self(parking_lot::Mutex::new(value))
+        }
+        #[inline]
+        pub(crate) fn lock(&self) -> std::sync::LockResult<SlotMutexGuard<'_, T>> {
+            Ok(self.0.lock())
+        }
+        #[inline]
+        pub(crate) fn into_inner(self) -> std::sync::LockResult<T> {
+            Ok(self.0.into_inner())
+        }
+    }
     /// Lifecycle-trace builds keep the owner in each slot (its events name
     /// it); other builds keep nothing, so a slot stays small.
     #[cfg(feature = "lifecycle-trace")]

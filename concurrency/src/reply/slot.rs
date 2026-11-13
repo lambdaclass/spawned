@@ -31,7 +31,7 @@
 //! (An `AtomicWaker` beside a value mutex measured more instructions per
 //! request than one lock for both: two more read-modify-writes.)
 
-use super::sync::{Arc, AtomicU64, AtomicUsize, Mutex, Ordering};
+use super::sync::{Arc, AtomicU64, AtomicUsize, Ordering, SlotMutex as Mutex};
 use std::task::{Poll, Waker};
 
 pub(crate) const OPEN: u64 = 0;
@@ -238,16 +238,66 @@ struct Side {
     reason: Option<super::sync::Reason>,
 }
 
-/// What the slot lock guards. Its drop is two `None` checks and a null
-/// check for a plain request.
-struct Inner<R> {
-    /// Written only by the reply that won the word, before the CAS that
-    /// publishes `REPLIED`; taken by the receiver after it reads `REPLIED`.
+/// Common replies keep only the value inline. Deferred metadata shares a
+/// cold allocation with its value instead of occupying every ordinary slot.
+/// INVARIANT: Extended is never demoted while the slot is shared; its pool
+/// exists before any token/job credit is taken and survives taking the value.
+enum Payload<R> {
+    Empty,
+    Value(R),
+    Extended(Box<Extended<R>>),
+}
+struct Extended<R> {
     value: Option<R>,
-    /// The caller's receiver: an async task's waker, or the unparker of a
-    /// thread blocked in `recv_blocking` (then the word has `PARKED`).
+    side: Side,
+}
+impl<R> Payload<R> {
+    #[inline]
+    fn side(&self) -> Option<&Side> {
+        match self {
+            Self::Extended(data) => Some(&data.side),
+            _ => None,
+        }
+    }
+    #[inline]
+    fn side_mut(&mut self) -> Option<&mut Side> {
+        match self {
+            Self::Extended(data) => Some(&mut data.side),
+            _ => None,
+        }
+    }
+    fn side_or_init(&mut self) -> &mut Side {
+        if !matches!(self, Self::Extended(_)) {
+            let value = self.take();
+            *self = Self::Extended(Box::new(Extended {
+                value,
+                side: Side::default(),
+            }));
+        }
+        self.side_mut().expect("installed above")
+    }
+    #[inline]
+    fn put(&mut self, value: R) {
+        match self {
+            Self::Extended(data) => data.value = Some(value),
+            _ => *self = Self::Value(value),
+        }
+    }
+    #[inline]
+    fn take(&mut self) -> Option<R> {
+        match self {
+            Self::Extended(data) => data.value.take(),
+            Self::Empty => None,
+            Self::Value(_) => match std::mem::replace(self, Self::Empty) {
+                Self::Value(value) => Some(value),
+                _ => unreachable!("matched value above"),
+            },
+        }
+    }
+}
+struct Inner<R> {
+    payload: Payload<R>,
     waker: Option<Waker>,
-    side: Option<Box<Side>>,
 }
 
 pub(crate) struct Slot<R> {
@@ -263,7 +313,7 @@ pub(crate) struct Slot<R> {
 }
 
 #[inline]
-fn lock<T>(mutex: &Mutex<T>) -> super::sync::MutexGuard<'_, T> {
+fn lock<T>(mutex: &Mutex<T>) -> super::sync::SlotMutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|p| p.into_inner())
 }
 
@@ -324,9 +374,8 @@ impl<R> Slot<R> {
             word: AtomicU64::new(OPEN | (key << KEY_SHIFT)),
             deadline: AtomicU64::new(deadline),
             inner: Mutex::new(Inner {
-                value: None,
+                payload: Payload::Empty,
                 waker: None,
-                side: None,
             }),
         }
     }
@@ -421,7 +470,7 @@ impl<R> Slot<R> {
     #[inline]
     fn finish(inner: &mut Inner<R>, release: u64, terminal: bool, new: u64) -> Wake {
         if release > 0 {
-            if let Some(pool) = inner.side.as_ref().and_then(|side| side.pool.as_ref()) {
+            if let Some(pool) = inner.payload.side().and_then(|side| side.pool.as_ref()) {
                 pool.release(release);
             }
         }
@@ -433,7 +482,7 @@ impl<R> Slot<R> {
             // `PARKED` is set under this lock before a thread stores its
             // waker, so a CAS that raced it failed and retried with it.
             parked: new & PARKED != 0,
-            watchers: match &mut inner.side {
+            watchers: match inner.payload.side_mut() {
                 Some(side) => std::mem::take(&mut side.watchers),
                 None => Vec::new(),
             },
@@ -513,10 +562,7 @@ impl<R> Slot<R> {
         if self.is_terminal() {
             return;
         }
-        lock(&self.inner)
-            .side
-            .get_or_insert_with(Default::default)
-            .reason = Some(reason);
+        lock(&self.inner).payload.side_or_init().reason = Some(reason);
     }
 
     /// The receiver takes a pending `SHORTENED` mark before it re-reads the
@@ -537,8 +583,8 @@ impl<R> Slot<R> {
     #[allow(dead_code)] // the Loom model has no reasons to read
     pub(crate) fn stopped_reason(&self) -> Option<super::sync::Reason> {
         lock(&self.inner)
-            .side
-            .as_ref()
+            .payload
+            .side()
             .and_then(|side| side.reason.clone())
     }
 
@@ -587,7 +633,7 @@ impl<R> Slot<R> {
                 super::sync::shortened(&self.owner, self as *const Self as usize);
                 // Moved out, not cloned: no executor code under the lock. A
                 // woken receiver re-registers when it polls again.
-                let watchers = match &mut inner.side {
+                let watchers = match inner.payload.side_mut() {
                     Some(side) => std::mem::take(&mut side.watchers),
                     None => Vec::new(),
                 };
@@ -623,8 +669,8 @@ impl<R> Slot<R> {
         // The side state (the pool credits return to) exists before the CAS
         // can take a credit.
         lock(&self.inner)
-            .side
-            .get_or_insert_with(Default::default)
+            .payload
+            .side_or_init()
             .pool
             .get_or_insert_with(|| pool.clone());
         match self.cas(Some(pool), |w| {
@@ -650,8 +696,8 @@ impl<R> Slot<R> {
             return Err(Refused::Closed);
         }
         let pool = lock(&self.inner)
-            .side
-            .as_ref()
+            .payload
+            .side()
             .and_then(|side| side.pool.clone());
         match self.cas(pool.as_deref(), |w| {
             if state(w) != OPEN || w & TOKEN == 0 {
@@ -704,14 +750,14 @@ impl<R> Slot<R> {
     pub(crate) fn reply_in_turn(&self, value: R) -> (Delivery, Option<R>) {
         let mut inner = lock(&self.inner);
         let current = self.word();
-        if state(current) != OPEN || inner.side.is_some() {
+        if state(current) != OPEN || !matches!(inner.payload, Payload::Empty) {
             drop(inner);
             return self.publish(value, || Some(()));
         }
         // Defer installs side.pool before taking any token/job credit and
         // side state is never removed. No side therefore implies no credits.
         debug_assert_eq!(credits(current), 0);
-        inner.value = Some(value);
+        inner.payload.put(value);
         // `PARKED` changes only under this lock, and nothing else moves a
         // word without credits but a terminal transition: a failed CAS
         // means the slot closed first.
@@ -733,7 +779,7 @@ impl<R> Slot<R> {
             exchanged
         });
         if published.is_err() {
-            let value = inner.value.take().expect("written above");
+            let value = inner.payload.take().expect("written above");
             drop(inner);
             return self.publish(value, || Some(()));
         }
@@ -763,7 +809,23 @@ impl<R> Slot<R> {
             return (Delivery::OwnerExited, Some(value));
         };
         let mut inner = lock(&self.inner);
-        inner.value = Some(value);
+        // A previous publisher may already own the value. Refuse before
+        // writing: overwriting it would lose that reply and could run its
+        // destructor under the lock.
+        let current = state(self.word());
+        if current != OPEN {
+            drop(inner);
+            drop(permit);
+            return (
+                match current {
+                    TIMED_OUT => Delivery::Expired,
+                    STOPPED => Delivery::OwnerExited,
+                    _ => Delivery::CallerGone,
+                },
+                Some(value),
+            );
+        }
+        inner.payload.put(value);
         let published = self.cas(None, |w| {
             if state(w) == OPEN {
                 Ok(with_state(w, REPLIED))
@@ -785,7 +847,7 @@ impl<R> Slot<R> {
                 (Delivery::Delivered, None)
             }
             Err(lost) => {
-                let value = inner.value.take();
+                let value = inner.payload.take();
                 drop(inner);
                 let delivery = match lost {
                     Some(TIMED_OUT) => Delivery::Expired,
@@ -803,7 +865,7 @@ impl<R> Slot<R> {
     fn take(&self, state: u64) -> Option<Result<R, Terminal>> {
         let terminal = Terminal::of(state)?;
         Some(match terminal {
-            Terminal::Replied => match lock(&self.inner).value.take() {
+            Terminal::Replied => match lock(&self.inner).payload.take() {
                 Some(value) => Ok(value),
                 None => Err(Terminal::Replied),
             },
@@ -867,7 +929,7 @@ impl<R> Slot<R> {
             if !live(state(self.word())) {
                 continue;
             }
-            let Some(side) = &mut inner.side else {
+            let Some(side) = inner.payload.side_mut() else {
                 // Only a deferred token (or its linked job) watches its slot.
                 debug_assert!(false, "poll_closed on a slot that was never deferred");
                 return Poll::Ready(());
@@ -940,20 +1002,38 @@ impl<R> Slot<R> {
     #[allow(dead_code)] // the Loom model takes through the lock
     #[inline]
     pub(crate) fn into_reply(self) -> Option<R> {
-        let Inner { value, waker, side } =
-            self.inner.into_inner().unwrap_or_else(|p| p.into_inner());
-        // A plain request has neither: no out-of-line drop calls for them.
-        if let Some(waker) = waker {
-            drop(waker);
+        let Inner { payload, waker } = self.inner.into_inner().unwrap_or_else(|p| p.into_inner());
+        drop(waker);
+        match payload {
+            Payload::Value(value) => Some(value),
+            Payload::Empty => None,
+            Payload::Extended(data) => {
+                let Extended { value, side } = *data;
+                drop(side);
+                value
+            }
         }
-        if let Some(side) = side {
-            drop(side);
-        }
-        value
     }
 
     /// The caller dropped its receiver: `OPEN -> ABANDONED`.
     pub(crate) fn abandon(&self) -> bool {
         self.terminate(Terminal::Abandoned)
+    }
+}
+
+#[cfg(all(
+    test,
+    target_pointer_width = "64",
+    not(feature = "lifecycle-trace"),
+    not(spawned_scheduler_loom)
+))]
+mod layout_tests {
+    #[test]
+    fn scalar_reply_slot_stays_within_56_bytes() {
+        let bytes = std::mem::size_of::<super::Slot<u64>>();
+        assert!(
+            bytes <= 56,
+            "ordinary scalar reply slot grew to {bytes} bytes"
+        );
     }
 }
