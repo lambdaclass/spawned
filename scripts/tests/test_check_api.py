@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import os
+import json
 import unittest
 from unittest.mock import patch
 
@@ -50,6 +51,46 @@ class FeatureSplitAudit(unittest.TestCase):
                 api.semver(root, "v0.5.0")
             build.assert_not_called()
             tool.assert_not_called()
+
+    def modern_policy(self, root):
+        policy = root / "verification/api"
+        policy.mkdir(parents=True)
+        source = Path(__file__).resolve().parents[2] / "verification/api"
+        (policy / "v0.6.0-no-default.json").write_text(
+            (source / "v0.6.0-no-default.json").read_text()
+        )
+        (policy / "release.json").write_text(json.dumps({
+            "baseline": "v0.8.0", "release_type": "patch", "reason": "patch policy",
+        }))
+
+    def test_modern_patch_checks_native_profiles_without_legacy_exemptions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.modern_policy(root)
+            with patch.object(api, "run") as build, patch.object(api, "declared_break") as legacy:
+                api.semver(root, None)
+            legacy.assert_not_called()
+            raw = [call.args for call in build.call_args_list
+                   if "--only-explicit-features" in call.args and "--current-features" not in call.args]
+            self.assertEqual(len(raw), 3)
+            self.assertEqual({call[call.index("-p") + 1] for call in raw},
+                             {"spawned-concurrency", "spawned-rt"})
+            self.assertEqual(sum("metrics" in call for call in raw), 1)
+            self.assertTrue(all("v0.8.0" in call and "patch" in call for call in raw))
+
+    def test_modern_native_api_failure_is_not_an_acknowledged_legacy_break(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.modern_policy(root)
+
+            def build(*command, cwd):
+                if "--only-explicit-features" in command and "--current-features" not in command:
+                    raise subprocess.CalledProcessError(100, command)
+
+            with patch.object(api, "run", side_effect=build), patch.object(api, "declared_break") as legacy:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    api.semver(root, None)
+            legacy.assert_not_called()
 
     def test_feature_checks_reuse_paths_and_refresh_only_the_copy(self):
         with tempfile.TemporaryDirectory() as folder:
