@@ -1126,6 +1126,8 @@ impl<A: Actor> Context<A> {
     /// Link as [`link`](Self::link), but report a target past its death
     /// point as `Err(NoProc)` and keep no record, whether or not this actor
     /// traps exits.
+    /// A caller whose exit already began does nothing and returns `Ok(())`;
+    /// an exit racing this call can linearize after the link attempt.
     pub fn try_link(&self, target: &ChildHandle) -> Result<(), NoProc> {
         match link::register_link(
             &self.shared.signal,

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Job completion drops unused result factories outside the lifecycle trace
+  lock. A reproducing destructor regression runs in trace CI; keyed-job
+  generation retention and link attempts racing exit are documented.
 - Generated await-free async handlers can dispatch without a boxed turn future
   when their message has no destructor. Shared/explicit-lifetime receivers,
   opaque macros/attributes, suspending handlers and payloads with destructors

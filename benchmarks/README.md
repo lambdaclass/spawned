@@ -19,7 +19,9 @@ It saves configuration, revision, compiler, source/binary hashes, raw CSV,
 summary CSV, build output and per-process logs. Output paths must be new
 directories. Each sample has a 90-second process watchdog; a failed sample fails
 the campaign and partial raw data and logs remain. Do not compare incomplete
-campaigns. `--cases` and `--backends` select smaller runs. Run a small smoke
+campaigns. The bench's raw requests are unbounded to match 0.7, so invoke the
+binary through this runner or an external process timeout. Per-request timers
+would change the operation being compared. `--cases` and `--backends` select smaller runs. Run a small smoke
 campaign across every backend and scenario before a full one.
 
 Cases: `rpc_single`, `rpc_parallel`, `mostly_idle`, `burst`,

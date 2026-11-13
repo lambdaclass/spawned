@@ -56,7 +56,7 @@ mod linux {
                 self.handled += 1;
                 if let Some(next) = &self.next {
                     return next
-                        .send_request(m, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                        .send_request(m, spawned_concurrency::Deadline::Never)
                         .unwrap()
                         .await
                         .unwrap();
@@ -221,7 +221,7 @@ mod linux {
                 let mut n = 0u64;
                 while Instant::now() < *finish.get().unwrap() {
                     let reply = actor
-                        .send_request(Work(n), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                        .send_request(Work(n), spawned_concurrency::Deadline::Never)
                         .unwrap()
                         .await
                         .unwrap();
@@ -245,7 +245,7 @@ mod linux {
             while Instant::now() < *cfinish.get().unwrap() {
                 let start = Instant::now();
                 let reply = endpoint
-                    .send_request(Work(n), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                    .send_request(Work(n), spawned_concurrency::Deadline::Never)
                     .unwrap()
                     .await
                     .unwrap();

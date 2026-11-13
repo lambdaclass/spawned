@@ -357,9 +357,10 @@ fn link_in_section(
     try_only: bool,
 ) -> LinkOutcome {
     // Sender lifetime (design Terms, semantics X2): `link` works only while
-    // the caller runs. Once its exit began (or past its D, checked again
-    // under the table lock below) the call is inert: no record, no notice,
-    // no NoProc. A dead process cannot call link in OTP.
+    // the caller runs. A caller already exiting at this check is inert:
+    // no record, no notice, no NoProc. A concurrent exit can linearize after
+    // this check; the table transaction below still rechecks D, so it cannot
+    // install an edge past the caller's death. A dead OTP process cannot link.
     if lock_request(&own.request).reason().is_some() {
         return LinkOutcome::Unchanged;
     }

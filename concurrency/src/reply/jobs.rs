@@ -59,6 +59,11 @@ impl Bounds {
 }
 
 /// A key for cancel-previous jobs (`JobOptions::key`).
+///
+/// Reuse a bounded set of keys. The owner retains the last generation per
+/// distinct key until it stops, so a replacement can fence queued results
+/// even after the old work finished. `MAX_OUTSTANDING` does not bound this
+/// history; leave unrelated, per-request work unkeyed.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct JobKey(std::borrow::Cow<'static, str>);
 
@@ -102,7 +107,8 @@ impl JobOptions {
 
     /// Cancel the previous job with this key (whatever its notification
     /// state) and fence its queued messages: the replacement is the only
-    /// live job of the key.
+    /// live job of the key. Reuse a bounded set: the last generation of each
+    /// distinct key is retained until owner shutdown (see [`JobKey`]).
     pub fn key(mut self, key: impl Into<JobKey>) -> Self {
         self.key = Some(key.into());
         self
@@ -464,10 +470,14 @@ impl JobState {
         later: impl FnOnce() -> HeldTerminal,
     ) -> Option<X> {
         let mut enqueue = Some(enqueue);
+        // The unused factory can own a user result. Keep it outside the
+        // trace section just like the unused enqueue closure.
+        let mut later = Some(later);
         let (finish, unsent) = trace::atomic(|| {
-            let (finish, unsent) = self
-                .core
-                .finish(|| enqueue.take().and_then(|enqueue| enqueue()), later);
+            let (finish, unsent) = self.core.finish(
+                || enqueue.take().and_then(|enqueue| enqueue()),
+                || later.take().expect("the terminal factory is used once")(),
+            );
             match finish {
                 Finish::Taken => {
                     crate::instrumentation::hooks::job_notified(end);
@@ -871,7 +881,9 @@ impl JobSet {
     }
 
     /// Join the cancelled jobs, bounded by `deadline`; returns how many are
-    /// still running (unfinished at stop).
+    /// still running (unfinished at stop). This is a physical native-thread
+    /// cleanup bound: deliberately wall-clock based, since virtual time cannot
+    /// advance while this blocking join is waiting for a real thread.
     pub(crate) fn join_blocking(&self, deadline: std::time::Instant) -> usize {
         self.core.join_with(|idle, running| {
             let now = std::time::Instant::now();
@@ -1162,6 +1174,47 @@ pub(crate) fn cancel_when_closed<R: Send + 'static>(
 mod tests {
     use super::*;
     use crate::reply::registry::Registry;
+
+    // Unused completion factories can own user payloads. Their destructors
+    // must be able to wait for another thread that records a lifecycle event.
+    #[cfg(feature = "lifecycle-trace")]
+    #[test]
+    fn unused_completion_factories_drop_outside_trace_section() {
+        struct Probe;
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                let (sent, received) = std::sync::mpsc::channel();
+                let worker = std::thread::spawn(move || {
+                    trace::atomic(|| {
+                        let _ = sent.send(());
+                    });
+                });
+                received
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .expect("completion factory destructor ran under the trace lock");
+                worker.join().unwrap();
+            }
+        }
+        for refused in [false, true] {
+            let state = JobState::new(ActorId::next(), 1);
+            if refused {
+                state.cancel();
+            }
+            let enqueue_probe = refused.then_some(Probe);
+            let later_probe = Probe;
+            let _ = state.finish(
+                "done",
+                move || {
+                    drop(enqueue_probe);
+                    None::<()>
+                },
+                move || {
+                    drop(later_probe);
+                    Box::new(|| {})
+                },
+            );
+        }
+    }
 
     #[cfg(feature = "async")]
     #[tokio::test]
