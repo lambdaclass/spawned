@@ -39,6 +39,22 @@ Runner self-tests (descendant cleanup and diagnostic retention):
 python3 -m unittest discover -s benchmarks -p test_runner.py
 ```
 
+## Hot-path regression checks
+
+`hotpath.py` compares a revision against its base on one shared driver
+(`hotpath/driver.rs`: async burst, `request()` sequential and concurrent,
+`send` with one and two producers, and the threads-mode equivalents):
+
+```sh
+python3 benchmarks/hotpath.py gate                       # instruction counts (callgrind), CI
+python3 benchmarks/hotpath.py abba --cores 12-15 --reps 30  # wall clock, before a release
+```
+
+`gate` is the `perf-gate` CI check: it fails when instructions per operation
+grow more than 3% over the merge base. `abba` alternates base and head on the
+same cores and reports the median and spread. See
+[performance gate](../docs/TESTING.md#performance-gate).
+
 ## Reliability campaign
 
 `run_reliability.py` drives isolated, resource-budgeted Linux campaigns
