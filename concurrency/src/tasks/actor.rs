@@ -236,7 +236,7 @@ struct MessageEnvelope<M: Message> {
     /// The request's slot: held until dispatch (dropped undispatched, it is
     /// disposed of as a `SlotHandle`), then lent to the turn.
     slot: Option<Arc<Slot<M::Result>>>,
-    dispatched: bool,
+    // Some until dispatch; taking the message is also the dispatch marker.
     msg: Option<M>,
     #[cfg(feature = "metrics")]
     observation: Option<crate::instrumentation::MessageObservation>,
@@ -251,7 +251,7 @@ struct MessageEnvelope<M: Message> {
 impl<M: Message> Drop for MessageEnvelope<M> {
     #[inline]
     fn drop(&mut self) {
-        if !self.dispatched && self.slot.is_some() {
+        if self.msg.is_some() && self.slot.is_some() {
             drop(SlotHandle::of(self.slot.take()));
         }
     }
@@ -286,20 +286,14 @@ where
         }
     }
     fn discharge(&mut self, replies: Option<&Registry>) {
-        if !self.dispatched {
+        if self.msg.is_some() {
             let mut held = SlotHandle::of(self.slot.take());
             held.dispose(replies);
         }
     }
     fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
-        let Self {
-            slot,
-            dispatched: done,
-            msg,
-            ..
-        } = self;
+        let Self { slot, msg, .. } = self;
         let msg = dispatched(msg);
-        *done = true;
         let slot: &'a Option<Arc<Slot<M::Result>>> = slot;
         let reply = PendingReply::lent(slot.as_ref(), &ctx.shared.replies);
         (
@@ -392,6 +386,7 @@ impl<A: Actor + Handler<Down>> Envelope<A> for DownEnvelope {
 /// mailbox is gone) it reports `NoProc`; before it, including while the
 /// actor exits, it is queued, and a request is answered at the death point
 /// if it is not handled.
+#[inline]
 fn enqueue<A, M>(
     sender: &mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     _mailbox: &crate::instrumentation::Mailbox,
@@ -408,7 +403,6 @@ where
     let envelope: Box<dyn Envelope<A> + Send> = Box::new(MessageEnvelope {
         msg: Some(msg),
         slot: slot.take(),
-        dispatched: false,
         #[cfg(feature = "metrics")]
         observation: Some(_mailbox.enqueued()),
         #[cfg(feature = "lifecycle-trace")]
@@ -4650,7 +4644,6 @@ mod turn_regressions {
                         tx.send(Box::new(MessageEnvelope {
                             msg: Some(Inc),
                             slot: None,
-                            dispatched: false,
                             #[cfg(feature = "metrics")]
                             observation: None,
                             #[cfg(feature = "lifecycle-trace")]
@@ -4739,7 +4732,6 @@ mod idle_stop_regression {
                             let mut slot = slot;
                             slot.take()
                         },
-                        dispatched: false,
                         #[cfg(feature = "metrics")]
                         observation: None,
                         #[cfg(feature = "lifecycle-trace")]

@@ -1933,7 +1933,9 @@ wall-clock check. The gate fails when any benchmark's instructions per operation
 more than 3% over the merge base (`--threshold`, or `HOTPATH_THRESHOLD` in the
 workflow). The job summary has the per-benchmark table. The workflow always
 reports, so it can be a required check, but it only builds and measures when
-`concurrency/src`, `rt/src`, `macros/src` or the driver changed.
+`concurrency/src`, `rt/src`, `macros/src`, the driver, a Cargo manifest or
+lockfile, or the pinned Rust toolchain changed. Release version bumps run the
+gate too; they cannot inherit a passing source check without measurement.
 
 ```sh
 python3 benchmarks/hotpath.py gate                  # HEAD vs merge base with main

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Performance: request envelopes reuse message presence as their dispatch
+  marker and inline construction, removing duplicate state without moving
+  dispatch or discharge. The instruction gate also covers manifest, lockfile
+  and compiler changes, including release version bumps.
 - Release-review fixes: job completion atomically closes emit admission,
   including the gap after a held terminal is released; blocked emitters wake
   on completion. Join waiters are deduplicated and woken outside their lock.
