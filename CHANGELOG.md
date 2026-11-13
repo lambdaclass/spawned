@@ -127,8 +127,10 @@ the road to 1.0. Upgrade notes, with an old-call → new-call table, are in
 ### Verification and testing
 
 - Await-free generated async handlers dispatch without a boxed turn future
-  when their messages have no destructors. Other handlers retain the original
-  future adapter. Regressions cover lazy direct calls, drop order, panic
+  when their messages have no destructors and their bodies contain no opaque
+  macros, nested items, closures or async blocks. Other handlers retain the
+  original future adapter. Regressions cover lazy direct calls, local item and
+  anonymous type identity, cooperative scheduling, drop order, panic
   containment, macro hygiene and causal tracing. Deferred-token retirement
   and the reduced turn bookkeeping have production-core Loom checks.
 - TLA+ models `Lifecycle`, `DeferredReplies` and `DeferredJobs`, each tied to
@@ -140,14 +142,24 @@ the road to 1.0. Upgrade notes, with an old-call → new-call table, are in
   hot-path benchmark may grow more than 3% in instructions per operation).
 - Request optimization keeps monotonic service deadlines separate from
   relative runtime waits, and reduces envelope and future storage; no coarse
-  clock is introduced. Paused-clock regressions cover the clock domains. The receiver timer model
-  and production-slot Loom races cover the new bookkeeping.
+  clock is introduced. Paused-clock regressions cover the clock domains.
+  The receiver timer model and production-slot Loom races cover the bookkeeping.
 - Semantics coverage: 47 of 50 guarantees have a check that fails if they
   break. Planted-bug matrix: 23 of 24 realistic bugs caught, each by two or
   more layers. Scenario-fuzzer oracles for restarts, budgets, backoff and
   links. Soak harness for leaks. Bounded waits: hung tests fail by name.
 
 ### Fixed
+
+- Compact reply slots keep ordinary values inline and deferred metadata in a
+  cold allocation, with a 56-byte scalar layout budget. Slot handoff uses a
+  non-poisoning parking_lot lock through the Loom synchronization seam. A
+  refused second publisher preserves the first winning reply.
+- Unused job completion factories drop outside the lifecycle trace lock.
+  The destructor regression runs with tracing enabled in CI.
+- The scenario-fuzzer oracle includes cleanup failures when deciding whether
+  a Transient child must restart, even when its published reason is Normal.
+  The original failing tape replays strictly and has additional seed coverage.
 
 - Job completion closes emit admission atomically. Retaining a `JobCtx`
   cannot schedule new messages during held-result release; blocked emitters
