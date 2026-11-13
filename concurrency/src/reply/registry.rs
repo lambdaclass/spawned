@@ -131,7 +131,7 @@ impl Registry {
     pub(crate) fn new(owner: ActorId, max_outstanding: usize) -> Arc<Self> {
         let max = max_outstanding.min(super::slot::MAX_JOBS as usize);
         static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
-        Arc::new(Self {
+        let registry = Arc::new(Self {
             owner,
             key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
             pool: Arc::new(CreditPool::new(max)),
@@ -147,7 +147,23 @@ impl Registry {
             discharge: Mutex::new(None),
             #[cfg(all(spawned_sim, feature = "async"))]
             sim: deadline::SimService::default(),
-        })
+        });
+        keys()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(registry.key, Arc::downgrade(&registry));
+        registry
+    }
+
+    /// The live registry with this `key` (a raw request's slot records it).
+    #[cfg_attr(not(feature = "async"), allow(dead_code))] // awaited receivers only
+    pub(crate) fn by_key(key: u64) -> Option<Arc<Self>> {
+        let weak = keys()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&key)
+            .cloned()?;
+        weak.upgrade()
     }
 
     /// The registry of replies not tied to an actor (`reply_pair`): always
@@ -516,8 +532,20 @@ pub(crate) fn contain_entry(step: impl FnOnce()) {
     }
 }
 
+/// Registries by key, for a raw receiver that finds its owner by the key in
+/// its slot's word (one insert per actor instance, one removal at its drop).
+fn keys() -> &'static Mutex<std::collections::HashMap<u64, Weak<Registry>>> {
+    static KEYS: OnceLock<Mutex<std::collections::HashMap<u64, Weak<Registry>>>> = OnceLock::new();
+    KEYS.get_or_init(Default::default)
+}
+
 impl Drop for Registry {
     fn drop(&mut self) {
+        let forgotten = keys()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&self.key);
+        drop(forgotten);
         // Every handle to the instance is gone; nothing can still answer.
         if self.turn.load() != DEAD {
             self.close();

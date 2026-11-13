@@ -216,9 +216,11 @@ fn terminal_error<R>(terminal: Terminal, slot: &Slot<R>) -> ActorError {
 /// close records the final reason in the slot, and an undispatched
 /// envelope is disposed of through the owner's mailbox
 /// ([`SlotHandle::dispose`]). A `raw` request with a deadline (the public
-/// `send_request`) puts its deadline in the owner's heap now, so its
-/// receiver, awaited directly, needs no runtime timer and no owner; the
-/// `request` paths arm their own timer and pass `raw = false`.
+/// `send_request`) records the owner's registry key in the slot's word, so
+/// its receiver, awaited directly and still pending, puts the deadline in
+/// that owner's heap without a runtime timer (a request answered before
+/// that never touches the heap); the `request` paths arm their own timer
+/// and pass `raw = false`.
 pub(crate) fn reply_slot<R: Send + 'static>(
     deadline: Deadline,
     owner: Option<&Arc<Registry>>,
@@ -228,11 +230,11 @@ pub(crate) fn reply_slot<R: Send + 'static>(
     let slot_owner = owner.cloned();
     #[cfg(not(feature = "lifecycle-trace"))]
     let slot_owner = ();
-    let slot = Arc::new(Slot::with_owner(deadline.ticks(), slot_owner));
-    if let (true, Deadline::At(_), Some(owner)) = (raw, deadline, owner) {
-        slot.mark_tracked();
-        owner.track_deadline(&slot);
-    }
+    let key = match (raw, deadline, owner) {
+        (true, Deadline::At(_), Some(owner)) => owner.key(),
+        _ => 0,
+    };
+    let slot = Arc::new(Slot::with_owner_key(deadline.ticks(), slot_owner, key));
     #[cfg(feature = "lifecycle-trace")]
     if let Some(owner) = owner {
         crate::lifecycle_trace::reply(owner.owner().raw(), "Send", Arc::as_ptr(&slot) as u64, "");
@@ -659,6 +661,7 @@ impl<R> ReplyReceiver<R> {
             first_ms: 0,
             sleep: None,
             timer: true,
+            tracked: false,
         }
     }
 
@@ -724,6 +727,7 @@ impl<R: Send + 'static> std::future::IntoFuture for ReplyReceiver<R> {
             first_ms: 0,
             sleep: None,
             timer: false,
+            tracked: false,
         }
     }
 }
@@ -741,6 +745,8 @@ pin_project_lite::pin_project! {
         // Arm a runtime timer (`request`/`Response`), rather than putting the
         // deadline in the owner's heap (raw receivers).
         timer: bool,
+        // The deadline is in the owner's heap.
+        tracked: bool,
         #[pin]
         sleep: Option<spawned_rt::tasks::Sleep>,
     }
@@ -791,11 +797,22 @@ impl<R: Send + 'static> std::future::Future for ReplyFuture<R> {
             if deadline == NEVER {
                 return Poll::Pending;
             }
-            // A raw request put its deadline in the owner's heap at send;
-            // the service expires the slot (waking this future) without a
-            // per-request runtime timer.
-            if !*this.timer && slot.word() & slot::TRACKED != 0 {
-                return Poll::Pending;
+            // A raw request with a deadline puts it once in its owner's
+            // heap (found by the key in the word); the service expires the
+            // slot (waking this future) without a per-request runtime timer.
+            if !*this.timer {
+                let key = slot::owner_key(slot.word());
+                if key != 0 {
+                    if *this.tracked {
+                        return Poll::Pending;
+                    }
+                    if let Some(owner) = Registry::by_key(key) {
+                        owner.track_deadline(slot);
+                        *this.tracked = true;
+                        return Poll::Pending;
+                    }
+                    // The owner is gone: fall back to the runtime timer.
+                }
             }
             if *this.armed != deadline || this.sleep.is_none() {
                 let wait = match std::mem::take(this.first_ms) {

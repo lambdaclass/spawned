@@ -2,7 +2,7 @@
 //! (docs/design/deferred-replies.md §1, "Slot synchronization protocol").
 //!
 //! ```text
-//! word:  state:4 | TOKEN:1 | REG:1 | JOBS:16 | PARKED:1
+//! word:  state:4 | TOKEN:1 | REG:1 | JOBS:16 | PARKED:1 | -:1 | OWNER:40
 //! credits(word) = max(JOBS, TOKEN and state is live ? 1 : 0)
 //! ```
 //!
@@ -60,10 +60,19 @@ const JOBS_MASK: u64 = MAX_JOBS << JOBS_SHIFT;
 /// and `credits` leave it alone). A word bit, not a field: it keeps the
 /// slot within the allocator's small size classes.
 pub(crate) const PARKED: u64 = 1 << (JOBS_SHIFT + 16);
-/// The deadline was put in the owner's heap at send (a raw request with a
-/// deadline): an awaited receiver waits for the heap's expiry instead of
-/// arming its own timer. Set before the slot is shared; never changes.
-pub(crate) const TRACKED: u64 = PARKED << 1;
+/// The owner's registry key (`Registry::key`, nonzero) of a raw request
+/// with a deadline, fixed at construction in the word's top bits (no
+/// transition touches them): an awaited receiver finds the owner by it and
+/// puts the deadline in the owner's heap on its first pending poll, without
+/// the slot holding a reference to the owner.
+const KEY_SHIFT: u32 = JOBS_SHIFT + 18;
+/// Largest owner key the word holds; a larger one is not recorded.
+pub(crate) const MAX_KEY: u64 = u64::MAX >> KEY_SHIFT;
+#[inline]
+#[cfg_attr(not(feature = "async"), allow(dead_code))] // awaited receivers only
+pub(crate) fn owner_key(word: u64) -> u64 {
+    word >> KEY_SHIFT
+}
 
 /// Deadline value meaning "never" (`Deadline::Never`).
 pub(crate) const NEVER: u64 = u64::MAX;
@@ -296,9 +305,15 @@ impl<R> Slot<R> {
     }
 
     pub(crate) fn with_owner(deadline: u64, owner: super::sync::SlotOwner) -> Self {
+        Self::with_owner_key(deadline, owner, 0)
+    }
+
+    /// A slot whose word records the owner's registry `key` (0: none).
+    pub(crate) fn with_owner_key(deadline: u64, owner: super::sync::SlotOwner, key: u64) -> Self {
+        let key = if key <= MAX_KEY { key } else { 0 };
         Self {
             owner,
-            word: AtomicU64::new(OPEN),
+            word: AtomicU64::new(OPEN | (key << KEY_SHIFT)),
             deadline: AtomicU64::new(deadline),
             inner: Mutex::new(Inner {
                 value: None,
@@ -494,12 +509,6 @@ impl<R> Slot<R> {
             .side
             .get_or_insert_with(Default::default)
             .reason = Some(reason);
-    }
-
-    /// Mark the deadline as tracked by the owner's heap (before sharing).
-    #[allow(dead_code)] // the Loom model has no heap
-    pub(crate) fn mark_tracked(&self) {
-        self.word.fetch_or(TRACKED, Ordering::Release);
     }
 
     /// The final reason the owner's close recorded, if it closed this slot.

@@ -102,13 +102,16 @@ inner:    one mutex (the slot lock) over
                     allocates it
 owner:    none outside lifecycle-trace builds (whose events name it): a
           request takes no shared reference count on its owner. A raw
-          request with a deadline (`send_request`) puts the deadline in the
-          owner's heap at send and sets TRACKED in the word (an awaited
-          receiver then needs no timer and no owner); an undispatched
-          envelope is answered through the owner's mailbox disposal at the
-          death point (`discharge(replies)`). PARKED (bit 22) and TRACKED
-          (bit 23) are word bits no transition reads or clears; as bits,
-          they keep the slot inside the allocator's small size classes
+          request with a deadline (`send_request`) records the owner's
+          registry key in the word's top 40 bits; its receiver, awaited and
+          still pending, finds the owner by that key and puts the deadline
+          in the owner's heap once (a request answered first never touches
+          the heap, and no heap entry outlives a slot answered before it).
+          An undispatched envelope is answered through the owner's mailbox
+          disposal at the death point (`discharge(replies)`). PARKED (bit
+          22) and the key are word bits no transition reads or changes; as
+          bits, they keep the slot inside the allocator's small size
+          classes
           the slot lock also orders a shortening against a reply's
           deadline read
 ```

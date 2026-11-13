@@ -123,11 +123,8 @@ fn admitted_request_racing_shutdown_drops_its_reply_before_join_completes() {
         let producer = std::thread::spawn(move || {
             PRODUCER.with(|p| p.set(true));
             for _ in 0..1024 {
-                // No deadline: a raw request with one puts it in the owner's
-                // deadline heap at send, whose growth would trip the gate
-                // before the mailbox send this test holds.
-                let reply =
-                    sender.send_request(Command::Work, spawned_concurrency::Deadline::Never);
+                let reply = sender
+                    .send_request(Command::Work, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT);
                 if PAUSED.load(Ordering::SeqCst) {
                     return reply;
                 }
