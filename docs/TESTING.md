@@ -1753,8 +1753,7 @@ cargo test --locked -p spawned-concurrency --no-default-features --test payload_
 `.github/workflows/client-compat.yml` builds and tests the two production
 clients, [ethrex](https://github.com/lambdaclass/ethrex) and
 [ethlambda](https://github.com/lambdaclass/ethlambda), against the spawned
-commit under test. Each client keeps a `spawned-v0.7` branch that tracks
-spawned; one GitHub-hosted job per client checks it out next to spawned.
+commit under test. CI defaults to each client's `spawned-v0.8` port branch for this breaking release; one GitHub-hosted job per client checks it out next to spawned.
 
 `.github/scripts/client-compat-patch.sh` points the client at the local
 checkout without editing its manifests. It reads where the client's
@@ -1790,7 +1789,7 @@ rerun it). To run it by hand, or against another client branch:
 
 ```sh
 gh workflow run client-compat.yml --ref <branch> \
-  -f ethrex_ref=spawned-v0.7 -f ethlambda_ref=spawned-v0.7
+  -f ethrex_ref=spawned-v0.8 -f ethlambda_ref=spawned-v0.8
 # Same gates against the spawned the client pins, without the patch:
 gh workflow run client-compat.yml --ref <branch> -f baseline=true
 ```
@@ -1798,9 +1797,10 @@ gh workflow run client-compat.yml --ref <branch> -f baseline=true
 When a gate fails, first run it with `baseline=true`: if it fails there too,
 the failure is the client's (or already in the released spawned), not the
 change under test. When a spawned change needs a client change, push the client
-change to a branch made from `spawned-v0.7`, dispatch the workflow with that
-ref, and land the spawned PR once both are green; then move the client branch. The `spawned-v0.7` client
-branches back long-lived draft PRs and are never merged from here.
+change to the corresponding port branch, dispatch the workflow with that
+ref, and land the spawned PR once both are green. Move the client ports to
+their long-lived draft PRs after publication; those client PRs are never
+merged from here.
 
 ## Soak harness
 

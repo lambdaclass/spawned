@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Release validation: client compatibility uses the prepared `spawned-v0.8`
+  ports for the breaking API, rather than the incompatible 0.7 client branches.
+
 - **Behaviour (0.8)**: request timeouts are the caller's, as OTP's
   `gen_server:call`: a reply reads no clock, and only the caller's expiry
   (its timer, the owner's deadline heap, a deadline check) times a request
