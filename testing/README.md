@@ -5,11 +5,11 @@ Mocks, recording probes, bounded harness helpers and fault injection for
 through typed protocol references or `Recipient<M>` without changing production
 handlers.
 
-For the 0.7.1 release, add it as a development dependency:
+For the 0.8 release, add it as a development dependency:
 
 ```toml
 [dev-dependencies]
-spawned-test = "0.7.1"
+spawned-test = "0.8"
 ```
 
 - `tasks::Mock` and `threads::Mock` reply from per-message closures and record
