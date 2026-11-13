@@ -126,6 +126,11 @@ the road to 1.0. Upgrade notes, with an old-call → new-call table, are in
 
 ### Verification and testing
 
+- Await-free generated async handlers dispatch without a boxed turn future
+  when their messages have no destructors. Other handlers retain the original
+  future adapter. Regressions cover lazy direct calls, drop order, panic
+  containment, macro hygiene and causal tracing. Deferred-token retirement
+  and the reduced turn bookkeeping have production-core Loom checks.
 - TLA+ models `Lifecycle`, `DeferredReplies` and `DeferredJobs`, each tied to
   the code by trace validation with full action coverage, alongside the
   updated `Supervision`, `Cohorts` and `Coordinator`; named negative
@@ -157,7 +162,7 @@ the road to 1.0. Upgrade notes, with an old-call → new-call table, are in
   death boundary, deferred replies and jobs (queued requests answered before
   destructors, the deadline service surviving a panicking payload, job
   admission atomic with exit, held results keeping their deadline and credit,
-  and others; see the changelog entries and MIGRATION).
+  and others; see MIGRATION).
 
 ## 0.7.3 — 2026-11-10
 
