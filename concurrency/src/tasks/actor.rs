@@ -293,6 +293,53 @@ where
     }
 }
 
+/// A sent message (no caller): no reply slot to hold, lend or dispose of,
+/// so its dispatch builds only a detached `PendingReply`.
+struct SendEnvelope<M: Message> {
+    msg: Option<M>,
+    #[cfg(feature = "metrics")]
+    observation: Option<crate::instrumentation::MessageObservation>,
+    #[cfg(feature = "lifecycle-trace")]
+    from: u64,
+}
+
+impl<A, M> Envelope<A> for SendEnvelope<M>
+where
+    A: Actor + Handler<M>,
+    M: Message,
+{
+    #[cfg(feature = "lifecycle-trace")]
+    fn trace_kind(&self) -> &'static str {
+        if self.from != 0 {
+            "msg"
+        } else {
+            crate::lifecycle_trace::life_kind::<M>()
+        }
+    }
+    #[cfg(any(feature = "diagnostics", spawned_sim))]
+    fn message_type(&self) -> &'static str {
+        std::any::type_name::<M>()
+    }
+    #[cfg(feature = "metrics")]
+    fn observation(&mut self) -> Option<crate::instrumentation::MessageObservation> {
+        self.observation.take()
+    }
+    #[cfg(feature = "metrics")]
+    fn reject(mut self: Box<Self>) {
+        if let Some(observation) = self.observation.take() {
+            observation.reject();
+        }
+    }
+    #[inline]
+    fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
+        let msg = dispatched(&mut self.msg);
+        (
+            Box::pin(actor.handle(msg, PendingReply::detached(), ctx)),
+            None,
+        )
+    }
+}
+
 impl<A: Actor + Handler<Down>> Envelope<A> for DownEnvelope {
     #[cfg(feature = "lifecycle-trace")]
     fn trace_kind(&self) -> &'static str {
@@ -345,6 +392,28 @@ where
         msg: Some(msg),
         slot,
         lent: None,
+        #[cfg(feature = "metrics")]
+        observation: Some(_mailbox.enqueued()),
+        #[cfg(feature = "lifecycle-trace")]
+        from,
+    });
+    admit::<A, M>(sender, replies, envelope, from)
+}
+
+/// Admit a sent message (no caller): no reply slot at all.
+fn enqueue_send<A, M>(
+    sender: &mpsc::Sender<Box<dyn Envelope<A> + Send>>,
+    _mailbox: &crate::instrumentation::Mailbox,
+    replies: &Registry,
+    msg: M,
+) -> Result<(), ActorError>
+where
+    A: Actor + Handler<M>,
+    M: Message,
+{
+    let from = crate::lifecycle_trace::life_sender::<M>(replies.owner().raw(), true);
+    let envelope: Box<dyn Envelope<A> + Send> = Box::new(SendEnvelope {
+        msg: Some(msg),
         #[cfg(feature = "metrics")]
         observation: Some(_mailbox.enqueued()),
         #[cfg(feature = "lifecycle-trace")]
@@ -732,12 +801,11 @@ impl<A: Actor> Context<A> {
         A: Handler<M>,
         M: Message,
     {
-        enqueue(
+        enqueue_send(
             &self.shared.sender,
             &self.shared.mailbox,
             &self.shared.replies,
             msg,
-            SlotHandle::detached(),
         )
     }
 
@@ -1309,12 +1377,11 @@ impl<A: Actor> ActorRef<A> {
         A: Handler<M>,
         M: Message,
     {
-        enqueue(
+        enqueue_send(
             &self.shared.sender,
             &self.shared.mailbox,
             &self.shared.replies,
             msg,
-            SlotHandle::detached(),
         )
     }
 

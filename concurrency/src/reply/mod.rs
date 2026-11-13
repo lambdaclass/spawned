@@ -389,8 +389,12 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
     }
 
     /// Answer the caller now. A value that is not delivered is dropped.
-    pub fn reply(mut self, value: R) -> Delivery {
-        match self.slot.take() {
+    #[inline]
+    pub fn reply(self, value: R) -> Delivery {
+        // Consumed here: the obligation's `Drop` (an unanswered reply) has
+        // nothing to do once the slot is taken, so it is skipped.
+        let mut this = std::mem::ManuallyDrop::new(self);
+        match this.slot.take() {
             None => {
                 drop(value);
                 Delivery::CallerGone
@@ -460,6 +464,7 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
 }
 
 impl<R: Send + 'static> Drop for PendingReply<'_, R> {
+    #[inline]
     fn drop(&mut self) {
         if let Some(slot) = self.slot.take() {
             if slot.is_terminal() {
