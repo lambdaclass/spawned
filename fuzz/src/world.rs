@@ -41,8 +41,8 @@ pub struct Inst {
     /// Some hook or handler of this instance panicked (injected).
     pub panicked: bool,
     pub started_panicked: bool,
-    /// The state destructor panicked (injected): a secondary failure that may
-    /// replace a clean requested reason (X8 skips such instances).
+    /// The state destructor panicked (injected): a cleanup failure, which
+    /// preserves the published reason but can restart a Transient child.
     pub drop_panicked: bool,
     /// Handed to the framework: only then may its destructor panic (a value
     /// the harness drops itself is not the framework's to contain).
