@@ -1956,8 +1956,9 @@ python3 benchmarks/hotpath.py abba --base origin/main --head <release commit> \
 ```
 
 Check `burst` and `rpc` in `benchmarks/run.py` (the baseline driver) the same
-way when a change touches the reply path. The 0.8 gate measured async burst
-37% and the default `request()` 24% slower than main this way.
+way when a change touches the reply path. An earlier 0.8 candidate measured
+async burst 37% and the default `request()` 24% slower than main this way;
+rerun against the final release commit after performance fixes.
 
 ## Release checklist
 

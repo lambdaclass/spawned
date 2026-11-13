@@ -927,7 +927,7 @@ bookkeeping races in `tests/reply_slot_loom.rs`; paused-time and overflow cases
 are in `tests/request_timer.rs`. This component model does not replace reply
 ownership or lifecycle trace validation.
 
-It establishes, within its bounds:
+`DeferredReplies` establishes, within its bounds:
 
 - **Discharge.** At most one discharge per request (`AtMostOneDischarge`), and
   no open slot without a live holder, including job-held tokens at death

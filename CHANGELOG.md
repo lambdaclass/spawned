@@ -15,14 +15,17 @@
   lock for value and waker with lazily created deferral state (no condvar:
   a blocking `recv()` parks its thread); the tasks envelope lends its
   request slot to the turn instead of cloning it; a turn that finishes in
-  its first poll skips the runtime-drop guard; `request` arms its first
-  timer from the timeout (no second clock read); a request without a
+  its first poll skips the runtime-drop guard; `request` captures one precise
+  runtime timer before enqueue and shares its deadline with the slot (no
+  coarse clock or second initial clock read); a request without a
   deadline holds no reference to the owner's registry (the owner's close
   records the final reason in the slot); a caller that owns an answered
   slot alone takes the value without the lock; and the slot no longer
   holds its owner at all (two flags became word bits), which keeps it in
   glibc's fast bins for typical reply sizes. Guarantees, Loom models and
-  the TLA+ models are unchanged (no linearization point moved).
+  the ownership model retain their linearization points. A receiver timer
+  refinement (`ReplyTimer.tla`), two negative controls, production-slot Loom
+  races, and paused-clock/overflow tests cover the timer bookkeeping.
 - `InsertError::kind()` (a `#[non_exhaustive]` `InsertErrorKind`) and
   `InsertError::into_parts()`: a refused insert's reason and token come
   together, so a caller answers the token for any reason, including one
