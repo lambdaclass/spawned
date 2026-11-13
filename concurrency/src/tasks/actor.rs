@@ -824,7 +824,7 @@ impl<A: Actor> Context<A> {
         M: Message,
     {
         let deadline = deadline.into();
-        self.send_request_with(msg, deadline, true)
+        self.send_request_with(msg, deadline.ticks(), true)
     }
 
     /// `send_request`; `raw` puts a deadline in the owner's heap now (the
@@ -833,7 +833,7 @@ impl<A: Actor> Context<A> {
     pub(crate) fn send_request_with<M>(
         &self,
         msg: M,
-        deadline: Deadline,
+        deadline: u64,
         raw: bool,
     ) -> Result<ReplyReceiver<M::Result>, ActorError>
     where
@@ -875,7 +875,7 @@ impl<A: Actor> Context<A> {
         // Bind the receiver before awaiting it: awaiting inside a `match` on
         // the `Result` keeps the scrutinee's storage alive beside the awaited
         // receiver and doubles this future's size.
-        let rx = match self.send_request_with(msg, Deadline::after(duration), false) {
+        let rx = match self.send_request_with(msg, crate::reply::clock::after(duration), false) {
             Ok(rx) => rx,
             Err(error) => {
                 let result = Err(error);
@@ -1258,7 +1258,7 @@ where
         msg: M,
         deadline: Deadline,
     ) -> Result<ReplyReceiver<M::Result>, ActorError> {
-        Context::send_request_with(self, msg, deadline, false)
+        Context::send_request_with(self, msg, deadline.ticks(), false)
     }
 }
 
@@ -1400,7 +1400,7 @@ impl<A: Actor> ActorRef<A> {
         M: Message,
     {
         let deadline = deadline.into();
-        self.send_request_with(msg, deadline, true)
+        self.send_request_with(msg, deadline.ticks(), true)
     }
 
     /// `send_request`; `raw` puts a deadline in the owner's heap now (the
@@ -1409,7 +1409,7 @@ impl<A: Actor> ActorRef<A> {
     pub(crate) fn send_request_with<M>(
         &self,
         msg: M,
-        deadline: Deadline,
+        deadline: u64,
         raw: bool,
     ) -> Result<ReplyReceiver<M::Result>, ActorError>
     where
@@ -1445,7 +1445,7 @@ impl<A: Actor> ActorRef<A> {
         R: Send + 'static,
         F: FnOnce(&mut A, &Context<A>) -> R + Send + 'static,
     {
-        let (slot, rx) = reply_slot(Deadline::Never, Some(&self.shared.replies), false);
+        let (slot, rx) = reply_slot(crate::reply::NEVER_TICKS, Some(&self.shared.replies), false);
         let envelope: Box<dyn Envelope<A> + Send> = Box::new(InTurnEnvelope {
             f: Some(Box::new(f)),
             slot,
@@ -1476,7 +1476,7 @@ impl<A: Actor> ActorRef<A> {
         // Bind the receiver before awaiting it: awaiting inside a `match` on
         // the `Result` keeps the scrutinee's storage alive beside the awaited
         // receiver and doubles this future's size.
-        let rx = match self.send_request_with(msg, Deadline::after(duration), false) {
+        let rx = match self.send_request_with(msg, crate::reply::clock::after(duration), false) {
             Ok(rx) => rx,
             Err(error) => {
                 let result = Err(error);
@@ -1602,7 +1602,7 @@ where
         msg: M,
         deadline: Deadline,
     ) -> Result<ReplyReceiver<M::Result>, ActorError> {
-        ActorRef::send_request_with(self, msg, deadline, false)
+        ActorRef::send_request_with(self, msg, deadline.ticks(), false)
     }
 }
 
@@ -4700,7 +4700,7 @@ mod idle_stop_regression {
                     // Start and park the actual actor loop, without allowing another
                     // executor task to run it between admission and stop below.
                     assert!(futures::poll!(actor.as_mut()).is_pending());
-                    let (slot, response) = reply_slot(crate::reply::Deadline::Never, None, false);
+                    let (slot, response) = reply_slot(crate::reply::NEVER_TICKS, None, false);
                     tx.send(Box::new(MessageEnvelope {
                         msg: Some(Increment),
                         slot,

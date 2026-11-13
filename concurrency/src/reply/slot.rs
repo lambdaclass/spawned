@@ -672,10 +672,51 @@ impl<R> Slot<R> {
 
     /// A reply from the owner's own turn (`PendingReply::reply`): the
     /// owner's death point cannot run during its own turn, so no admission
-    /// is needed.
+    /// is needed. Such a slot was never deferred (`defer()` consumes the
+    /// `PendingReply`), so it holds no credit, no job and no side state:
+    /// one CAS with the value written under the lock, then the receiver's
+    /// waker. Anything else (a lost race, an unexpected word) takes
+    /// [`publish`](Self::publish).
     #[inline]
     pub(crate) fn reply_in_turn(&self, value: R) -> (Delivery, Option<R>) {
-        self.publish(value, || Some(()))
+        let mut inner = lock(&self.inner);
+        let current = self.word();
+        if state(current) != OPEN || credits(current) != 0 || inner.side.is_some() {
+            drop(inner);
+            return self.publish(value, || Some(()));
+        }
+        inner.value = Some(value);
+        // `PARKED` changes only under this lock, and nothing else moves a
+        // word without credits but a terminal transition: a failed CAS
+        // means the slot closed first.
+        let published = super::sync::section(|| {
+            let exchanged = self.word.compare_exchange(
+                current,
+                with_state(current, REPLIED),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            if exchanged.is_ok() {
+                super::sync::left_open(
+                    &self.owner,
+                    self as *const Self as usize,
+                    trace_name(REPLIED),
+                    false,
+                );
+            }
+            exchanged
+        });
+        if published.is_err() {
+            let value = inner.value.take().expect("written above");
+            drop(inner);
+            return self.publish(value, || Some(()));
+        }
+        let waker = inner.waker.take();
+        drop(inner);
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+        (Delivery::Delivered, None)
     }
 
     /// [`reply`](Self::reply) admitted by the owner: `admit` returns a

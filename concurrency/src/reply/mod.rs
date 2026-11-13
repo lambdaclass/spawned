@@ -23,6 +23,8 @@ use crate::ActorId;
 use registry::Registry;
 pub(crate) use slot::Slot;
 use slot::{Terminal, NEVER};
+/// `Deadline::Never` in ticks.
+pub(crate) const NEVER_TICKS: u64 = NEVER;
 use spawned_rt::time::Instant;
 use std::borrow::Cow;
 use std::marker::PhantomData;
@@ -121,7 +123,33 @@ mod sync {
 
 /// Clock ticks now, on the `spawned_rt` clock (virtual under simulation).
 pub(crate) fn now_ticks() -> u64 {
-    spawned_rt::time::now_ticks()
+    clock::now()
+}
+
+/// The clock deadlines are fixed against: one seam, so the source (today
+/// the precise `spawned_rt` clock) can change without touching the reply
+/// protocol. Ticks are nanoseconds on the `spawned_rt` epoch; `NEVER` is
+/// reserved.
+pub(crate) mod clock {
+    use super::NEVER;
+    use std::time::Duration;
+
+    /// Ticks now.
+    #[inline]
+    pub(crate) fn now() -> u64 {
+        spawned_rt::time::now_ticks()
+    }
+
+    /// The deadline `timeout` from now, in ticks (`NEVER` if it overflows),
+    /// computed directly: no `Instant` arithmetic or conversion.
+    #[inline]
+    pub(crate) fn after(timeout: Duration) -> u64 {
+        u64::try_from(timeout.as_nanos())
+            .ok()
+            .and_then(|nanos| now().checked_add(nanos))
+            .filter(|ticks| *ticks < spawned_rt::time::MAX_TICKS)
+            .unwrap_or(NEVER)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -222,7 +250,7 @@ fn terminal_error<R>(terminal: Terminal, slot: &Slot<R>) -> ActorError {
 /// that never touches the heap); the `request` paths arm their own timer
 /// and pass `raw = false`.
 pub(crate) fn reply_slot<R: Send + 'static>(
-    deadline: Deadline,
+    deadline: u64,
     owner: Option<&Arc<Registry>>,
     raw: bool,
 ) -> (SlotHandle<R>, ReplyReceiver<R>) {
@@ -230,11 +258,11 @@ pub(crate) fn reply_slot<R: Send + 'static>(
     let slot_owner = owner.cloned();
     #[cfg(not(feature = "lifecycle-trace"))]
     let slot_owner = ();
-    let key = match (raw, deadline, owner) {
-        (true, Deadline::At(_), Some(owner)) => owner.key(),
+    let key = match owner {
+        Some(owner) if raw && deadline != NEVER => owner.key(),
         _ => 0,
     };
-    let slot = Arc::new(Slot::with_owner_key(deadline.ticks(), slot_owner, key));
+    let slot = Arc::new(Slot::with_owner_key(deadline, slot_owner, key));
     #[cfg(feature = "lifecycle-trace")]
     if let Some(owner) = owner {
         crate::lifecycle_trace::reply(owner.owner().raw(), "Send", Arc::as_ptr(&slot) as u64, "");
@@ -292,6 +320,7 @@ impl<R: Send + 'static> Caller for Arc<Slot<R>> {
 /// `NoProc` by the send itself): closed `STOPPED` now (trace builds, whose
 /// slots know their owner, dispose of it there).
 impl<R: Send + 'static> Drop for SlotHandle<R> {
+    #[inline]
     fn drop(&mut self) {
         if let Some(slot) = self.0.take() {
             #[cfg(feature = "lifecycle-trace")]
@@ -635,6 +664,7 @@ pub struct ReplyReceiver<R> {
 }
 
 impl<R> Drop for ReplyReceiver<R> {
+    #[inline]
     fn drop(&mut self) {
         if let Some(slot) = self.slot.take() {
             slot.abandon();
@@ -680,7 +710,14 @@ impl<R> ReplyReceiver<R> {
     #[cfg(feature = "async")]
     pub(crate) fn into_timed_future_after(self, timeout: Duration) -> ReplyFuture<R> {
         let deadline = self.slot().deadline();
-        let first_ms = u32::try_from(timeout.as_nanos().div_ceil(1_000_000)).unwrap_or(0);
+        // Whole milliseconds, rounded up, in 64-bit arithmetic (no 128-bit
+        // division); one that does not fit falls back to the clock.
+        let first_ms = timeout
+            .as_secs()
+            .checked_mul(1000)
+            .and_then(|ms| ms.checked_add(u64::from(timeout.subsec_nanos().div_ceil(1_000_000))))
+            .and_then(|ms| u32::try_from(ms).ok())
+            .unwrap_or(0);
         ReplyFuture {
             armed: deadline,
             first_ms,
@@ -853,7 +890,7 @@ impl<R: Send + 'static> std::future::Future for ReplyFuture<R> {
 pub(crate) fn reply_pair<R: Send + 'static>(
     deadline: Deadline,
 ) -> (PendingReply<'static, R>, ReplyReceiver<R>) {
-    let (mut handle, receiver) = reply_slot(deadline, None, false);
+    let (mut handle, receiver) = reply_slot(deadline.ticks(), None, false);
     let reply = PendingReply::new(handle.take(), Registry::detached());
     (reply, receiver)
 }
