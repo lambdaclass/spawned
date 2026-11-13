@@ -96,10 +96,13 @@ def model_fault(module, fault, tlc, temporal=False, invariant="Safety", drop=())
     print(f"COUNTEREXAMPLE model: {module}/{fault}" + ("" if temporal else f" ({invariant})"))
 
 
-def named_fault(module, fault, invariant, tlc):
+def named_fault(module, fault, invariant, tlc, constants=None):
     """Run MODULE (safety only) with Fault = FAULT, checking TypeOK and the
     single named INVARIANT, and require that invariant to be violated. This
-    shows the mutation breaks the property it targets, not just Safety."""
+    shows the mutation breaks the property it targets, not just Safety.
+    CONSTANTS overrides constant values (an instance where the fault can
+    show)."""
+    constants = constants or {}
     with tempfile.TemporaryDirectory(prefix="bad-model-") as directory:
         work = Path(directory)
         for source in HERE.glob("*.tla"):
@@ -112,6 +115,9 @@ def named_fault(module, fault, invariant, tlc):
                 line = "SPECIFICATION Spec"
             if line.startswith("INVARIANT"):
                 line = f"INVARIANT TypeOK\nINVARIANT {invariant}"
+            name = line.strip().split(" ")[0]
+            if name in constants:
+                line = f"    {name} = {constants[name]}"
             lines.append(line.replace('Fault = "None"', f'Fault = "{fault}"'))
         (work / f"{module}.cfg").write_text("\n".join(lines) + "\n")
         result = subprocess.run(shlex.split(tlc) + ["-workers", "1", "-deadlock", "-cleanup", module],
@@ -215,6 +221,60 @@ LIFECYCLE_TEMPORAL_CONTROLS = [
     ("SplitDeathPoint", "DownDelivered"),
 ]
 LIFECYCLE_SMALL = {"Reqs": "{}", "MaxSignals": "0", "DropEnabled": "FALSE"}
+
+# Rank 12a design model (docs/design/dynamic-supervisor.md, revision 3):
+# each mutation against the property it must break. Every invariant and
+# liveness property of DynamicSupervisor.tla has at least one. Run one at a
+# time (parallel TLC runs race on the standard modules TLC extracts to /tmp).
+DYNAMIC_CONTROLS = [
+    ("MCDynamicSupervisorWideDeep", "IgnoreMax", "MaxChildrenBound"),
+    ("MCDynamicSupervisorWideDeep", "UncountedRestart", "MaxChildrenBound"),
+    ("MCDynamicSupervisorWideDeep", "RestartTemporary", "TemporaryNeverRestarted"),
+    ("MCDynamicSupervisorWideDeep", "RestartTerminated", "TerminatedNeverRestarted"),
+    ("MCDynamicSupervisorWideDeep", "AcceptDuringShutdown", "NoStartAfterShutdown"),
+    ("MCDynamicSupervisorBackoffDeep", "RestartAfterClose", "NoGenerationAfterClose"),
+    ("MCDynamicSupervisorWideDeep", "NoEscalate", "ExhaustionCloses"),
+    ("MCDynamicSupervisorWideDeep", "EarlyDone", "NoChildOutlivesSupervisor"),
+    ("MCDynamicSupervisorWideDeep", "SkipSignal", "ConcurrentShutdown"),
+    ("MCDynamicSupervisorWideDeep", "ConcurrentStart", "SerialConstruction", {"MaxChildren": "2"}),
+    ("MCDynamicSupervisorWideDeep", "LaterOp", "FifoOrder"),
+    ("MCDynamicSupervisorWideDeep", "StuckFailsAll", "StuckIsolated"),
+    ("MCDynamicSupervisorWideDeep", "MisclassifyStuck", "StuckIsolated"),
+    ("MCDynamicSupervisorWideDeep", "PublishAfterClose", "NoPublishAfterStop"),
+    ("MCDynamicSupervisorWideDeep", "PublishAfterExit", "PublishedIsLive"),
+    ("MCDynamicSupervisorWideDeep", "OverlapGeneration", "AtMostOneGeneration"),
+    ("MCDynamicSupervisorWideDeep", "PublishBeforeReady", "PublishedIsLive"),
+    ("MCDynamicSupervisorWideDeep", "PrematureOk", "OkMeansReady"),
+    ("MCDynamicSupervisorWideDeep", "UnchargedRetry", "ChargedRestarts"),
+    ("MCDynamicSupervisorWideDeep", "ChargeFirstStart", "ChargedRestarts"),
+    ("MCDynamicSupervisorWideDeep", "TransientNormalRestart", "RestartFollowsPolicy"),
+    ("MCDynamicSupervisorWideDeep", "TransientNormalRestart", "RestartFollowsPolicy", {"MaxRestarts": "0", "MaxExpire": "0"}),
+    ("MCDynamicSupervisorWideDeep", "PermanentRetires", "RestartFollowsPolicy"),
+    ("MCDynamicSupervisorWideDeep", "RetryFirstStart", "FirstStartNeverRetried"),
+    ("MCDynamicSupervisorWideDeep", "EarlyFailedReply", "FailedAfterCleanup"),
+    ("MCDynamicSupervisorWideDeep", "EarlyRemove", "FailedAfterCleanup"),
+    ("MCDynamicSupervisorWideDeep", "LateFailedOverwrite", "FailureCauseKept"),
+    ("MCDynamicSupervisorBackoffDeep", "NoRefund", "ReservationsMatch"),
+    ("MCDynamicSupervisorBackoffDeep", "ExpireReserved", "ReservationsMatch"),
+    ("MCDynamicSupervisorWideDeep", "OverReserve", "BudgetBounded"),
+    ("MCDynamicSupervisorWideDeep", "TermReplyEarly", "TermResultsSound"),
+    ("MCDynamicSupervisorWideDeep", "SlotLookup", "TermResultsSound"),
+    ("MCDynamicSupervisorWideDeep", "QueuedTermOk", "QueuedTermStopped"),
+    ("MCDynamicSupervisorWideDeep", "StuckResultLost", "TermResultsSound"),
+    ("MCDynamicSupervisorWideDeep", "IgnoreExpect", "TermResultsSound"),
+    ("MCDynamicSupervisorWideDeep", "EarlyFree", "RemovedAfterFinalize"),
+    ("MCDynamicSupervisorWideDeep", "IgnoreFreesEarly", "RemovedAfterFinalize"),
+    ("MCDynamicSupervisorWideDeep", "IgnoreAfterClose", "NoStartAfterShutdown"),
+]
+DYNAMIC_TEMPORAL_CONTROLS = [
+    # MCDynamicSupervisorAbort has no startup deadlines and passes unmutated.
+    ("MCDynamicSupervisorAbort", "NoAbort", "ShutdownAnswersStarts"),
+    ("MCDynamicSupervisorCallersDeep", "NoDeadline", "StartAnswered"),
+    ("MCDynamicSupervisorCallersDeep", "TermLost", "TerminateAnswered"),
+    ("MCDynamicSupervisorCallersDeep", "Sequential", "FanoutCompletes"),
+    ("MCDynamicSupervisorLive", "StuckBackoff", "ClosedLeadsToDone"),
+    ("MCDynamicSupervisorLive", "LostRestart", "RecoveryProgress"),
+]
 
 DEFERRED_CONTROLS = [
     ("MCDeferredReplies", "NoAutoReply", "NoOrphan"),
@@ -386,6 +446,10 @@ def main():
         named_fault(module, fault, invariant, args.tlc)
     for fault, prop in LIFECYCLE_TEMPORAL_CONTROLS:
         named_temporal("MCLifecycleLive", fault, prop, args.tlc, LIFECYCLE_SMALL)
+    for module, fault, invariant, *constants in DYNAMIC_CONTROLS:
+        named_fault(module, fault, invariant, args.tlc, *constants)
+    for module, fault, prop, *constants in DYNAMIC_TEMPORAL_CONTROLS:
+        named_temporal(module, fault, prop, args.tlc, *constants)
     start_controls(args.tlc)
 
 

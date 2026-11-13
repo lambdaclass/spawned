@@ -213,6 +213,25 @@
   gauges into a CSV, fails on growth per hour after warm-up or on any count
   not returning to its baseline after quiesce, and has a `--inject-leak`
   negative control. Run it before each release (`docs/TESTING.md`).
+- Design (not implementation) for rank 12a, the dynamic supervisor
+  (`DynamicSupervisor` / `simple_one_for_one`, PR #245):
+  `docs/design/dynamic-supervisor.md`, the ethrex/ethlambda client mapping
+  and the `DynamicSupervisor` TLA+ model (per-PR, zero-budget and weekly
+  configurations). Revision 2 applies the maintainer's decisions (OTP-style
+  serialised starts, Elixir's 3-in-5 s budget with opt-in backoff,
+  `Shutdown` on exhaustion, arguments returned on rejection) and both
+  reviews (stuck-child isolation, reservation protocol, history-based
+  invariants), with 27 named negative controls. Revision 3 applies the
+  second reviews and the round-two decisions: one FIFO operation queue,
+  terminate lookup when the loop handles the call, stuck classification by
+  exit reason, caller liveness without assuming cleanup ends, `ignore`, a
+  trace-validation test plan, a fenced `terminate_slot(.., expect)` for
+  introspection, the shared shapes with unified start (#259:
+  `StartOutcome<Started<A>>`, `ChildStartError`, `Init::continue_with`,
+  `StartOptions<A>`), and 41 negative controls. Round 3: slot finalization
+  and ignored-attempt cleanup kept in the model, FIFO checked at selection,
+  queued terminate calls `Stopped` at shutdown, mempool reservations held by
+  an owning registration, 44 negative controls; approved for implementation.
 
 - Determinism D1-D3 (priority tier 3). Under `--cfg spawned_sim`:
   wall-clock and OS-entropy reads made inside a simulated run return virtual

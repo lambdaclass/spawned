@@ -177,7 +177,7 @@ Status of each layer. "Planned" items are tracked in the
 
 | Layer | Tool | Catches | Status |
 |---|---|---|---|
-| Design | TLA+ and TLC | Holes in lifecycle, restart and shutdown rules | `Supervision`, `Cohorts`, `NestedSupervision` and `Coordinator` models in `verification/tla`, run in CI |
+| Design | TLA+ and TLC | Holes in lifecycle, restart and shutdown rules | `Supervision`, `Cohorts`, `NestedSupervision` and `Coordinator` models in `verification/tla`, run in CI; design models `Lifecycle` (v0.8 exit signals), `DeferredReplies`/`DeferredJobs` (rank 11) and `DynamicSupervisor` (rank 12a), each with named negative controls |
 | Design, unbounded depth | Apalache inductive invariants | An invariant that a state TLC never reached would break | Safety invariants of all four models proven inductive at fixed sizes, with negative controls; `tla-apalache` CI job |
 | Design, any size | TLAPS or Veil | An invariant that fails only for larger configurations | Planned ([verification tools](research/verification-tools.md)) |
 | Spec and code | Trace validation | The implementation doing something the model forbids | Real OneForOne, cohort and nested traces plus invalid-trace and model-mutation controls |
@@ -1262,6 +1262,18 @@ seeded random runs, and TLC checks every recorded trace is a behavior of the
 model. Hand-edited traces are rejected at the edited event. Trace validation
 found one model gap (a running child may exit with `Shutdown` while the
 supervisor is open, via `ChildHandle::shutdown`); no implementation deviation.
+
+`verification/tla/DynamicSupervisor.tla` models the rank 12a design (not
+implemented, revision 3): OTP's serialised control loop with one FIFO queue,
+`start_child` and `terminate_child` racing crashes, restarts, `max_children`,
+the budget reservation protocol, ignore, stuck children and shutdown. TLC
+checks 23 safety invariants, two action properties and five liveness
+properties (callers answered even if cleanup never ends; shutdown and
+recovery complete when it does). Six configurations run on every PR and one
+weekly; 44 named negative controls each fail their property. The design's
+[test plan](design/dynamic-supervisor.md#test-plan-relating-the-model-to-the-code)
+specifies the trace events and trace-validation tests the implementation
+must ship.
 
 Apalache checks that the safety invariants of `Supervision`, `Cohorts`,
 `NestedSupervision` and `Coordinator` are inductive (`Init => IndInv`,

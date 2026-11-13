@@ -607,6 +607,11 @@ ignored by non-trapping peers (X3), and the Permanent/Transient/Temporary table 
 
 - Rank 11, deferred typed replies, forwarding and pipe-to-self: a reply may
   leave the handler's turn; adds exactly-one completion on panic and timeout.
+- Rank 12a, dynamic supervisor (design in review,
+  [dynamic-supervisor.md](dynamic-supervisor.md)): adds V10-V13 (dynamic
+  admission, a cap that counts restarting children, terminated means
+  removed, concurrent shutdown of dynamic children) and V14 (a child stuck
+  while retiring fails only itself); touches V1, V3-V5, V8, V9, S1, S2.
 - Rank 13, bounded draining: an opt-in stop that handles queued work by policy
   instead of discarding it (D4 remains the default).
 - Rank 14, fair control path: lifecycle signals not stuck behind a backlog (X7).
