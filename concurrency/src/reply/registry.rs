@@ -382,6 +382,11 @@ impl Registry {
         self.turn.external_added();
     }
 
+    #[cfg(all(test, feature = "async"))]
+    pub(crate) fn external_count(&self) -> usize {
+        self.turn.external_count()
+    }
+
     /// Keep the ownership hold through every callback run by token drop,
     /// including unwinding from a foreign waker.
     pub(crate) fn token_drop_guard(&self) -> impl Drop + '_ {

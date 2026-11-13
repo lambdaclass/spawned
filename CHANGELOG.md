@@ -12,7 +12,8 @@
   generation retention and link attempts racing exit are documented.
 - Generated await-free async handlers can dispatch without a boxed turn future
   when their message has no destructor. Shared/explicit-lifetime receivers,
-  opaque macros/attributes, suspending handlers and payloads with destructors
+  opaque macros/attributes, nested items/anonymous types, suspending handlers
+  and payloads with destructors
   retain the future adapter. Public direct calls remain lazy; panic fencing,
   drop order and causal actor tracing are preserved.
 - Request and turn bookkeeping avoids redundant atomic exchanges and dynamic

@@ -99,6 +99,141 @@ async fn inherent_methods_and_public_handler_futures_stay_lazy() {
     actor.join().await;
 }
 
+#[cfg(not(spawned_sim))]
+mod local_items {
+    use super::*;
+    struct ItemCounter;
+    impl Message for ItemCounter {
+        type Result = usize;
+    }
+    struct NestedItemCounter;
+    impl Message for NestedItemCounter {
+        type Result = usize;
+    }
+    struct ItemWorker;
+    struct ClosureIdentity;
+    impl Message for ClosureIdentity {
+        type Result = std::any::TypeId;
+    }
+    struct AsyncIdentity;
+    impl Message for AsyncIdentity {
+        type Result = std::any::TypeId;
+    }
+    fn identity<T: 'static>(_: T) -> std::any::TypeId {
+        std::any::TypeId::of::<T>()
+    }
+    #[actor]
+    impl ItemWorker {
+        #[request_handler]
+        async fn count(&mut self, _msg: ItemCounter, _ctx: &Context<Self>) -> usize {
+            static CALLS: AtomicUsize = AtomicUsize::new(0);
+            CALLS.fetch_add(1, Ordering::SeqCst)
+        }
+
+        #[request_handler]
+        async fn nested(&mut self, _msg: NestedItemCounter, _ctx: &Context<Self>) -> usize {
+            fn next() -> usize {
+                static CALLS: AtomicUsize = AtomicUsize::new(0);
+                CALLS.fetch_add(1, Ordering::SeqCst)
+            }
+            next()
+        }
+
+        #[request_handler]
+        async fn closure(
+            &mut self,
+            _msg: ClosureIdentity,
+            _ctx: &Context<Self>,
+        ) -> std::any::TypeId {
+            identity(|| ())
+        }
+
+        #[request_handler]
+        async fn nested_async(
+            &mut self,
+            _msg: AsyncIdentity,
+            _ctx: &Context<Self>,
+        ) -> std::any::TypeId {
+            identity(async {})
+        }
+    }
+
+    // Process-local statics intentionally cross the direct/mailbox boundary. This
+    // test uses the real runtime: statics are not reset between simulator seeds.
+    #[tokio::test]
+    async fn local_items_have_one_identity_across_direct_and_mailbox_calls() {
+        let actor = ItemWorker.start();
+        let context = actor.context();
+        let mut direct = ItemWorker;
+        assert_eq!(direct.count(ItemCounter, &context).await, 0);
+        assert_eq!(actor.request(ItemCounter).await.unwrap(), 1);
+        assert_eq!(direct.count(ItemCounter, &context).await, 2);
+        assert_eq!(direct.nested(NestedItemCounter, &context).await, 0);
+        assert_eq!(actor.request(NestedItemCounter).await.unwrap(), 1);
+        assert_eq!(direct.nested(NestedItemCounter, &context).await, 2);
+        assert_eq!(
+            direct.closure(ClosureIdentity, &context).await,
+            actor.request(ClosureIdentity).await.unwrap()
+        );
+        assert_eq!(
+            direct.nested_async(AsyncIdentity, &context).await,
+            actor.request(AsyncIdentity).await.unwrap()
+        );
+        actor.context().stop();
+        actor.join().await;
+    }
+}
+
+#[cfg(not(spawned_sim))]
+mod fairness {
+    use super::*;
+
+    struct Tick;
+    impl Message for Tick {
+        type Result = ();
+    }
+    struct Flood {
+        calls: Arc<AtomicUsize>,
+        observed: Arc<AtomicUsize>,
+    }
+    fn spawn_probe(calls: Arc<AtomicUsize>, observed: Arc<AtomicUsize>) {
+        spawned_rt::tasks::spawn(async move {
+            observed.store(calls.load(Ordering::SeqCst), Ordering::SeqCst);
+        });
+    }
+    #[actor]
+    impl Flood {
+        #[request_handler]
+        async fn tick(&mut self, _msg: Tick, _ctx: &Context<Self>) {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                spawn_probe(self.calls.clone(), self.observed.clone());
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn immediate_dispatch_keeps_mailbox_cooperative_budget() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::new(AtomicUsize::new(usize::MAX));
+        let actor = Flood {
+            calls,
+            observed: observed.clone(),
+        }
+        .start();
+        for _ in 0..1024 {
+            actor.send(Tick).unwrap();
+        }
+        actor.request(Tick).await.unwrap();
+        tokio::task::yield_now().await;
+        assert!(
+            observed.load(Ordering::SeqCst) < 1024,
+            "a flooded immediate handler starved a runnable task"
+        );
+        actor.context().stop();
+        actor.join().await;
+    }
+}
+
 macro_rules! opaque_await {
     () => {
         spawned_rt::tasks::yield_now().await

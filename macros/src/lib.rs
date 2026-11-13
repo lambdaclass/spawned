@@ -1118,6 +1118,18 @@ fn await_free_handler(method: &ImplItemFn) -> bool {
         fn visit_macro(&mut self, _: &'ast syn::Macro) {
             self.blocked = true;
         }
+        fn visit_item(&mut self, _: &'ast syn::Item) {
+            // A copied static (including one inside a nested function) has
+            // a different identity from the inherent method's original.
+            self.blocked = true;
+        }
+        fn visit_expr_closure(&mut self, _: &'ast syn::ExprClosure) {
+            // Anonymous types also have observable identity through TypeId.
+            self.blocked = true;
+        }
+        fn visit_expr_async(&mut self, _: &'ast syn::ExprAsync) {
+            self.blocked = true;
+        }
         fn visit_type_impl_trait(&mut self, _: &'ast syn::TypeImplTrait) {
             self.blocked = true;
         }
@@ -1751,7 +1763,7 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                             .sig
                             .inputs
                             .iter()
-                            .nth(2)
+                            .nth(ctx_index)
                             .expect("validated context arity")
                         {
                             FnArg::Typed(arg) => (&arg.pat, &arg.ty),

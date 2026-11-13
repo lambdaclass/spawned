@@ -110,6 +110,11 @@ impl<T> TurnPhase<T> {
         debug_assert!(previous > 0, "deferred token ownership underflow");
     }
 
+    #[cfg(all(test, feature = "async"))]
+    pub(crate) fn external_count(&self) -> usize {
+        self.external.load(Ordering::Acquire)
+    }
+
     /// The run loop is about to dispatch a handler. Only the run loop moves
     /// the phase out of `RUNNING`, so a plain store suffices.
     #[inline]

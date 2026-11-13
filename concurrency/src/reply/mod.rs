@@ -47,6 +47,7 @@ mod sync {
         }
         #[inline]
         pub(crate) fn lock(&self) -> std::sync::LockResult<SlotMutexGuard<'_, T>> {
+            // Production never poisons; recovery is exercised by Loom's lock.
             Ok(self.0.lock())
         }
         #[inline]

@@ -1057,6 +1057,47 @@ mod tests {
         async fn handle(&mut self, _: Note, _: PendingReply<'_, ()>, _: &Context<Self>) {}
     }
 
+    #[tokio::test]
+    async fn pipe_reply_retires_the_external_token_hold() {
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::pipe_reply_retires_the_external_token_hold"
+            ),
+            async {
+                let owner = Owner.start();
+                let ctx = owner.context();
+                let registry = ctx.shared.replies.clone();
+                let (mut handle, receiver) =
+                    crate::reply::reply_slot(crate::reply::NEVER_TICKS, Some(&registry), false);
+                let token = PendingReply::new(handle.take(), &registry).defer().unwrap();
+                assert_eq!(registry.external_count(), 1);
+                let (finished, completion) = tokio::sync::oneshot::channel();
+                let observed = registry.clone();
+                ctx.pipe_reply(
+                    JobOptions::new(),
+                    token,
+                    |_| async { 17u32 },
+                    move |outcome, token| {
+                        assert!(matches!(outcome, JobOutcome::Ok(17)));
+                        assert_eq!(observed.external_count(), 1);
+                        token.reply(17u32);
+                        assert_eq!(observed.external_count(), 0);
+                        let _ = finished.send(());
+                        Note
+                    },
+                )
+                .unwrap();
+                completion.await.unwrap();
+                assert_eq!(receiver.await.unwrap(), 17);
+                assert_eq!(registry.external_count(), 0);
+                ctx.stop();
+                owner.join().await;
+            },
+        )
+        .await;
+    }
+
     /// Review P1 (Codex 13): an emit refused after its credit was taken
     /// (the job was cancelled in between) returns that credit once, through
     /// its guard. It used to be returned by the refusal and again by the
