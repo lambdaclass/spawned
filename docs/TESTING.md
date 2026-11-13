@@ -1968,7 +1968,30 @@ publishes to crates.io):
    checks.
 2. A 4-hour [soak](#soak-harness) on fede passes on the release commit; link
    its `summary.txt` in the release PR.
-3. The wall-clock [performance](#performance-gate) A/B against the previous
+3. Full Lifecycle safety and liveness model checks pass on the release commit,
+   on a server with sufficient memory and disk. These are manual gates, like
+   the soak, rather than GitHub-hosted jobs: the full safety run took 28,912 s
+   (8h02m) on fede, exploring 2,128,345,702 distinct states; a deep liveness
+   run exhausted its Java heap during temporal checking. An out-of-memory
+   result or a timeout is incomplete verification, never a pass. Record the
+   commit, tool version, worker count, resource settings and complete logs in
+   the release PR. Run each in isolation, not alongside other large TLC jobs:
+
+   ```sh
+   git rev-parse HEAD
+   TLC_WORKERS=4 nix run .#check-tla -- --deep --only MCLifecycleDeep \
+     > lifecycle-safety.log 2>&1
+   TLC_WORKERS=4 nix run .#check-tla -- --deep --only MCLifecycleLiveDeep \
+     > lifecycle-liveness.log 2>&1
+   ```
+
+   Both commands must exit successfully with TLC's "No error has been found"
+   verdict. If liveness exceeds the server's resources, provision more or
+   review a bounded decomposition separately; do not remove the property or
+   report safety exploration as a liveness result. Weekly CI retains
+   `MCLifecycleWideDeep`, while per-PR CI retains `MCLifecycle`,
+   `MCLifecycleFence`, `MCLifecycleLive`, trace replay and negative controls.
+4. The wall-clock [performance](#performance-gate) A/B against the previous
    release on a quiet machine: no hot-path benchmark more than 5% slower.
    Link the table in the release PR.
 

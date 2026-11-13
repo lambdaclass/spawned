@@ -98,8 +98,11 @@ jobs:
           name: trace-coverage
           path: trace-coverage.json
 
-  # Weekly and on dispatch: the deep configurations (*Deep.cfg), one runner
-  # each. MCLifecycleWideDeep is the former per-PR MCLifecycle (43M states).
+  # Weekly and on dispatch: bounded deep configurations, one runner each.
+  # Keep the broad Lifecycle safety check here. Full MCLifecycleDeep and
+  # MCLifecycleLiveDeep are manual pre-release checks (like the soak): the
+  # safety run alone took >8 hours on fede, beyond a hosted runner's limit.
+  # Their configurations/properties stay intact; see docs/TESTING.md.
   tla-deep:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -112,8 +115,6 @@ jobs:
           - MCDeferredRepliesDeep
           - MCDeferredJobsDeep
           - MCLifecycleWideDeep
-          - MCLifecycleLiveDeep
-          - MCLifecycleDeep
           - MCStartDeep
     steps:
       - uses: actions/checkout@v4

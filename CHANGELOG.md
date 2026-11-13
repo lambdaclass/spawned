@@ -302,6 +302,11 @@
   live actor's turn. GUIDE: hard job deadlines and the soft-deadline
   pattern, replies carrying a reason through `R = Result<..>`, the
   `send_request` rows.
+- Verification: retain bounded weekly Lifecycle checks; run full Lifecycle
+  safety/liveness models manually before release, alongside the soak. The
+  full configurations and properties are unchanged; incomplete runs block
+  release rather than counting as successful CI verification.
+
 - CI: a hot-path performance gate (`perf-gate`). `benchmarks/hotpath.py gate`
   counts instructions per operation with callgrind for async burst, sequential
   and concurrent `request()` and `send` (on a current-thread runtime, so the
