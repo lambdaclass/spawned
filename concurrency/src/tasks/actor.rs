@@ -233,10 +233,10 @@ fn erase<T: Send + 'static>(items: Vec<T>) -> Vec<Box<dyn Send>> {
 }
 
 struct MessageEnvelope<M: Message> {
-    // Before the message: a plain drop also answers the request first.
-    slot: SlotHandle<M::Result>,
-    /// The slot lent to the dispatched turn (taken from `slot`).
-    lent: Option<Arc<Slot<M::Result>>>,
+    /// The request's slot: held until dispatch (dropped undispatched, it is
+    /// disposed of as a `SlotHandle`), then lent to the turn.
+    slot: Option<Arc<Slot<M::Result>>>,
+    dispatched: bool,
     msg: Option<M>,
     #[cfg(feature = "metrics")]
     observation: Option<crate::instrumentation::MessageObservation>,
@@ -244,6 +244,17 @@ struct MessageEnvelope<M: Message> {
     /// mailbox item kind is then the model's `msg`.
     #[cfg(feature = "lifecycle-trace")]
     from: u64,
+}
+
+/// An undispatched request (mailbox disposal without the registry, a
+/// refused admission) is answered as its `SlotHandle` would be.
+impl<M: Message> Drop for MessageEnvelope<M> {
+    #[inline]
+    fn drop(&mut self) {
+        if !self.dispatched && self.slot.is_some() {
+            drop(SlotHandle::of(self.slot.take()));
+        }
+    }
 }
 
 impl<A, M> Envelope<A> for MessageEnvelope<M>
@@ -275,20 +286,25 @@ where
         }
     }
     fn discharge(&mut self, replies: Option<&Registry>) {
-        self.slot.dispose(replies);
-        drop(std::mem::replace(&mut self.slot, SlotHandle::detached()));
+        if !self.dispatched {
+            let mut held = SlotHandle::of(self.slot.take());
+            held.dispose(replies);
+        }
     }
     fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
         let Self {
-            slot, lent, msg, ..
+            slot,
+            dispatched: done,
+            msg,
+            ..
         } = self;
         let msg = dispatched(msg);
-        *lent = slot.take();
-        let lent: &'a Option<Arc<Slot<M::Result>>> = lent;
-        let reply = PendingReply::lent(lent.as_ref(), &ctx.shared.replies);
+        *done = true;
+        let slot: &'a Option<Arc<Slot<M::Result>>> = slot;
+        let reply = PendingReply::lent(slot.as_ref(), &ctx.shared.replies);
         (
             Box::pin(actor.handle(msg, reply, ctx)),
-            lent.as_ref().map(|slot| slot as &dyn Caller),
+            slot.as_ref().map(|slot| slot as &dyn Caller),
         )
     }
 }
@@ -388,10 +404,11 @@ where
     M: Message,
 {
     let from = crate::lifecycle_trace::life_sender::<M>(replies.owner().raw(), slot.is_detached());
+    let mut slot = slot;
     let envelope: Box<dyn Envelope<A> + Send> = Box::new(MessageEnvelope {
         msg: Some(msg),
-        slot,
-        lent: None,
+        slot: slot.take(),
+        dispatched: false,
         #[cfg(feature = "metrics")]
         observation: Some(_mailbox.enqueued()),
         #[cfg(feature = "lifecycle-trace")]
@@ -830,6 +847,7 @@ impl<A: Actor> Context<A> {
     /// `send_request`; `raw` puts a deadline in the owner's heap now (the
     /// receiver may be awaited directly). The `request` paths arm their own
     /// timer and pass `false`.
+    #[inline]
     pub(crate) fn send_request_with<M>(
         &self,
         msg: M,
@@ -852,13 +870,18 @@ impl<A: Actor> Context<A> {
     }
 
     /// Send a request and wait for the reply (default 5s timeout).
-    pub async fn request<M>(&self, msg: M) -> Result<M::Result, ActorError>
+    ///
+    /// The future is `request_with_timeout`'s own (no extra state machine
+    /// around it).
+    pub fn request<M>(
+        &self,
+        msg: M,
+    ) -> impl std::future::Future<Output = Result<M::Result, ActorError>> + Send + '_
     where
         A: Handler<M>,
         M: Message,
     {
         self.request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT)
-            .await
     }
 
     /// Send a request and wait for the reply with a custom timeout.
@@ -875,7 +898,8 @@ impl<A: Actor> Context<A> {
         // Bind the receiver before awaiting it: awaiting inside a `match` on
         // the `Result` keeps the scrutinee's storage alive beside the awaited
         // receiver and doubles this future's size.
-        let rx = match self.send_request_with(msg, crate::reply::clock::after(duration), false) {
+        let (deadline, timer) = crate::reply::request_timer(duration);
+        let rx = match self.send_request_with(msg, deadline, false) {
             Ok(rx) => rx,
             Err(error) => {
                 let result = Err(error);
@@ -883,7 +907,7 @@ impl<A: Actor> Context<A> {
                 return result;
             }
         };
-        let result = rx.into_timed_future_after(duration).await;
+        let result = rx.into_timed_future_with(timer).await;
         observation.finish(&result);
         result
     }
@@ -1307,7 +1331,8 @@ pub async fn request<M: Message>(
     let observation = crate::instrumentation::RequestObservation::new();
     // The deadline is computed before enqueueing (send time, as OTP's call).
     // Bind the receiver before awaiting it (see `ActorRef::request_with_timeout`).
-    let rx = match recipient.send_request_timed(msg, Deadline::after(timeout_duration)) {
+    let (deadline, timer) = crate::reply::request_timer(timeout_duration);
+    let rx = match recipient.send_request_timed(msg, Deadline::of_ticks(deadline)) {
         Ok(rx) => rx,
         Err(error) => {
             let result = Err(error);
@@ -1315,7 +1340,7 @@ pub async fn request<M: Message>(
             return result;
         }
     };
-    let result = rx.into_timed_future_after(timeout_duration).await;
+    let result = rx.into_timed_future_with(timer).await;
     observation.finish(&result);
     result
 }
@@ -1406,6 +1431,7 @@ impl<A: Actor> ActorRef<A> {
     /// `send_request`; `raw` puts a deadline in the owner's heap now (the
     /// receiver may be awaited directly). The `request` paths arm their own
     /// timer and pass `false`.
+    #[inline]
     pub(crate) fn send_request_with<M>(
         &self,
         msg: M,
@@ -1428,13 +1454,18 @@ impl<A: Actor> ActorRef<A> {
     }
 
     /// Send a request and wait for the reply (default 5s timeout).
-    pub async fn request<M>(&self, msg: M) -> Result<M::Result, ActorError>
+    ///
+    /// The future is `request_with_timeout`'s own (no extra state machine
+    /// around it).
+    pub fn request<M>(
+        &self,
+        msg: M,
+    ) -> impl std::future::Future<Output = Result<M::Result, ActorError>> + Send + '_
     where
         A: Handler<M>,
         M: Message,
     {
         self.request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT)
-            .await
     }
 
     /// Run `f` in one of the actor's turns, with its state and `Context`,
@@ -1476,7 +1507,8 @@ impl<A: Actor> ActorRef<A> {
         // Bind the receiver before awaiting it: awaiting inside a `match` on
         // the `Result` keeps the scrutinee's storage alive beside the awaited
         // receiver and doubles this future's size.
-        let rx = match self.send_request_with(msg, crate::reply::clock::after(duration), false) {
+        let (deadline, timer) = crate::reply::request_timer(duration);
+        let rx = match self.send_request_with(msg, deadline, false) {
             Ok(rx) => rx,
             Err(error) => {
                 let result = Err(error);
@@ -1484,7 +1516,7 @@ impl<A: Actor> ActorRef<A> {
                 return result;
             }
         };
-        let result = rx.into_timed_future_after(duration).await;
+        let result = rx.into_timed_future_with(timer).await;
         observation.finish(&result);
         result
     }
@@ -4617,8 +4649,8 @@ mod turn_regressions {
                     for _ in 0..2 {
                         tx.send(Box::new(MessageEnvelope {
                             msg: Some(Inc),
-                            slot: SlotHandle::detached(),
-                            lent: None,
+                            slot: None,
+                            dispatched: false,
                             #[cfg(feature = "metrics")]
                             observation: None,
                             #[cfg(feature = "lifecycle-trace")]
@@ -4703,8 +4735,11 @@ mod idle_stop_regression {
                     let (slot, response) = reply_slot(crate::reply::NEVER_TICKS, None, false);
                     tx.send(Box::new(MessageEnvelope {
                         msg: Some(Increment),
-                        slot,
-                        lent: None,
+                        slot: {
+                            let mut slot = slot;
+                            slot.take()
+                        },
+                        dispatched: false,
                         #[cfg(feature = "metrics")]
                         observation: None,
                         #[cfg(feature = "lifecycle-trace")]

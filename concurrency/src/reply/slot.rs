@@ -2,7 +2,7 @@
 //! (docs/design/deferred-replies.md §1, "Slot synchronization protocol").
 //!
 //! ```text
-//! word:  state:4 | TOKEN:1 | REG:1 | JOBS:16 | PARKED:1 | -:1 | OWNER:40
+//! word:  state:4 | TOKEN:1 | REG:1 | JOBS:16 | PARKED:1 | SHORTENED:1 | RX_TRACKED:1 | OWNER:39
 //! credits(word) = max(JOBS, TOKEN and state is live ? 1 : 0)
 //! ```
 //!
@@ -60,12 +60,20 @@ const JOBS_MASK: u64 = MAX_JOBS << JOBS_SHIFT;
 /// and `credits` leave it alone). A word bit, not a field: it keeps the
 /// slot within the allocator's small size classes.
 pub(crate) const PARKED: u64 = 1 << (JOBS_SHIFT + 16);
+/// The deadline was lowered (`shorten_deadline`): a waiting receiver re-arms
+/// its timer from the clock. Set under the slot lock; cleared by the
+/// receiver before it reads the new deadline (a later shortening sets it
+/// again).
+pub(crate) const SHORTENED: u64 = PARKED << 1;
+/// An awaited raw receiver put the deadline in its owner's heap (set once by
+/// that receiver; never cleared).
+pub(crate) const RX_TRACKED: u64 = PARKED << 2;
 /// The owner's registry key (`Registry::key`, nonzero) of a raw request
 /// with a deadline, fixed at construction in the word's top bits (no
 /// transition touches them): an awaited receiver finds the owner by it and
 /// puts the deadline in the owner's heap on its first pending poll, without
 /// the slot holding a reference to the owner.
-const KEY_SHIFT: u32 = JOBS_SHIFT + 18;
+const KEY_SHIFT: u32 = JOBS_SHIFT + 19;
 /// Largest owner key the word holds; a larger one is not recorded.
 pub(crate) const MAX_KEY: u64 = u64::MAX >> KEY_SHIFT;
 #[inline]
@@ -511,6 +519,20 @@ impl<R> Slot<R> {
             .reason = Some(reason);
     }
 
+    /// The receiver takes a pending `SHORTENED` mark before it re-reads the
+    /// deadline. Returns whether it was set.
+    #[allow(dead_code)] // awaited receivers only
+    pub(crate) fn take_shortened(&self) -> bool {
+        self.word.fetch_and(!SHORTENED, Ordering::AcqRel) & SHORTENED != 0
+    }
+
+    /// Record that an awaited raw receiver put the deadline in its owner's
+    /// heap.
+    #[allow(dead_code)] // awaited receivers only
+    pub(crate) fn mark_rx_tracked(&self) {
+        self.word.fetch_or(RX_TRACKED, Ordering::AcqRel);
+    }
+
     /// The final reason the owner's close recorded, if it closed this slot.
     #[allow(dead_code)] // the Loom model has no reasons to read
     pub(crate) fn stopped_reason(&self) -> Option<super::sync::Reason> {
@@ -561,6 +583,7 @@ impl<R> Slot<R> {
             let lower = state(self.word()) == OPEN && at < self.deadline();
             if lower {
                 self.deadline.store(at, Ordering::Release);
+                self.word.fetch_or(SHORTENED, Ordering::AcqRel);
                 super::sync::shortened(&self.owner, self as *const Self as usize);
                 // Moved out, not cloned: no executor code under the lock. A
                 // woken receiver re-registers when it polls again.
@@ -912,11 +935,18 @@ impl<R> Slot<R> {
     /// ordered the value's write before it, and owning the slot excludes
     /// every other access). `None` if it was already taken.
     #[allow(dead_code)] // the Loom model takes through the lock
+    #[inline]
     pub(crate) fn into_reply(self) -> Option<R> {
-        self.inner
-            .into_inner()
-            .unwrap_or_else(|p| p.into_inner())
-            .value
+        let Inner { value, waker, side } =
+            self.inner.into_inner().unwrap_or_else(|p| p.into_inner());
+        // A plain request has neither: no out-of-line drop calls for them.
+        if let Some(waker) = waker {
+            drop(waker);
+        }
+        if let Some(side) = side {
+            drop(side);
+        }
+        value
     }
 
     /// The caller dropped its receiver: `OPEN -> ABANDONED`.

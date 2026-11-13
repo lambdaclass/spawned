@@ -152,6 +152,26 @@ pub(crate) mod clock {
     }
 }
 
+/// One runtime timer supplies both the send-time deadline and the caller's
+/// wait. Reading its captured deadline does not read the system clock again.
+#[cfg(feature = "async")]
+#[inline]
+pub(crate) fn request_timer(duration: Duration) -> (u64, Option<spawned_rt::tasks::Sleep>) {
+    let timer = spawned_rt::tasks::sleep(duration);
+    let ticks = if duration.as_nanos() >= spawned_rt::time::MAX_TICKS as u128 {
+        NEVER
+    } else {
+        let at = spawned_rt::tasks::sleep_deadline(&timer);
+        let ticks = spawned_rt::time::to_ticks(at);
+        if ticks >= spawned_rt::time::MAX_TICKS {
+            NEVER
+        } else {
+            ticks
+        }
+    };
+    (ticks, (ticks != NEVER).then_some(timer))
+}
+
 // ---------------------------------------------------------------------------
 // Deadline
 // ---------------------------------------------------------------------------
@@ -188,7 +208,7 @@ impl Deadline {
         }
     }
 
-    fn of_ticks(ticks: u64) -> Self {
+    pub(crate) fn of_ticks(ticks: u64) -> Self {
         if ticks == NEVER {
             Self::Never
         } else {
@@ -249,6 +269,7 @@ fn terminal_error<R>(terminal: Terminal, slot: &Slot<R>) -> ActorError {
 /// that owner's heap without a runtime timer (a request answered before
 /// that never touches the heap); the `request` paths arm their own timer
 /// and pass `raw = false`.
+#[inline]
 pub(crate) fn reply_slot<R: Send + 'static>(
     deadline: u64,
     owner: Option<&Arc<Registry>>,
@@ -292,6 +313,10 @@ impl<R: Send + 'static> SlotHandle<R> {
     }
     pub(crate) fn take(&mut self) -> Option<Arc<Slot<R>>> {
         self.0.take()
+    }
+    /// Hold `slot` again (an undispatched envelope's request).
+    pub(crate) fn of(slot: Option<Arc<Slot<R>>>) -> Self {
+        Self(slot)
     }
     /// Undispatched at its owner's death point (mailbox disposal): answered
     /// with the final reason, through the owner's registry.
@@ -690,39 +715,20 @@ impl<R> ReplyReceiver<R> {
     /// included).
     #[cfg(feature = "async")]
     pub(crate) fn into_timed_future(self) -> ReplyFuture<R> {
-        ReplyFuture {
-            rx: self,
-            armed: NEVER,
-            first_ms: 0,
-            sleep: None,
-            timer: true,
-            tracked: false,
-        }
+        let deadline = self.slot().deadline();
+        let sleep = (deadline != NEVER).then(|| {
+            spawned_rt::tasks::sleep(Duration::from_nanos(deadline.saturating_sub(now_ticks())))
+        });
+        ReplyFuture { rx: self, sleep }
     }
 
-    /// [`into_timed_future`](Self::into_timed_future) for a request just
-    /// sent with `Deadline::after(timeout)`: its first timer sleeps
-    /// `timeout` (in whole milliseconds, rounded up: the runtime timer's
-    /// resolution) instead of reading the clock again. The request was sent
-    /// at most the send-to-poll gap ago, so the timer fires at or after the
-    /// deadline, never before. A deadline shortened meanwhile re-arms from
-    /// the clock.
+    /// Use the same timer whose captured deadline was fixed before enqueue.
     #[cfg(feature = "async")]
-    pub(crate) fn into_timed_future_after(self, timeout: Duration) -> ReplyFuture<R> {
-        let deadline = self.slot().deadline();
-        // Whole milliseconds, rounded up, in 64-bit arithmetic (no 128-bit
-        // division); one that does not fit falls back to the clock.
-        let first_ms = timeout
-            .as_secs()
-            .checked_mul(1000)
-            .and_then(|ms| ms.checked_add(u64::from(timeout.subsec_nanos().div_ceil(1_000_000))))
-            .and_then(|ms| u32::try_from(ms).ok())
-            .unwrap_or(0);
-        ReplyFuture {
-            armed: deadline,
-            first_ms,
-            ..self.into_timed_future()
-        }
+    pub(crate) fn into_timed_future_with(
+        self,
+        sleep: Option<spawned_rt::tasks::Sleep>,
+    ) -> ReplyFuture<R> {
+        ReplyFuture { rx: self, sleep }
     }
 
     fn slot(&self) -> &Arc<Slot<R>> {
@@ -765,11 +771,7 @@ impl<R: Send + 'static> std::future::IntoFuture for ReplyReceiver<R> {
     fn into_future(self) -> ReplyFuture<R> {
         ReplyFuture {
             rx: self,
-            armed: NEVER,
-            first_ms: 0,
             sleep: None,
-            timer: false,
-            tracked: false,
         }
     }
 }
@@ -780,15 +782,9 @@ pin_project_lite::pin_project! {
     /// sleeps until its deadline and then expires it.
     pub struct ReplyFuture<R> {
         rx: ReplyReceiver<R>,
-        armed: u64,
-        // A `request`'s timeout in milliseconds (0: none), with `armed` its
-        // send-time deadline: the first timer sleeps it (no clock read).
-        first_ms: u32,
-        // Arm a runtime timer (`request`/`Response`), rather than putting the
-        // deadline in the owner's heap (raw receivers).
-        timer: bool,
-        // The deadline is in the owner's heap.
-        tracked: bool,
+        // The runtime timer: created with a timed future (`request`,
+        // `Response`), or on demand for a raw receiver whose owner's heap
+        // cannot take its deadline. Its size is Tokio's `Timeout`'s.
         #[pin]
         sleep: Option<spawned_rt::tasks::Sleep>,
     }
@@ -805,6 +801,7 @@ impl<R> std::fmt::Debug for ReplyFuture<R> {
 impl<R: Send + 'static> std::future::Future for ReplyFuture<R> {
     type Output = Result<R, ActorError>;
 
+    #[inline]
     fn poll(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -839,30 +836,31 @@ impl<R: Send + 'static> std::future::Future for ReplyFuture<R> {
             if deadline == NEVER {
                 return Poll::Pending;
             }
-            // A raw request with a deadline puts it once in its owner's
-            // heap (found by the key in the word); the service expires the
-            // slot (waking this future) without a per-request runtime timer.
-            if !*this.timer {
-                let key = slot::owner_key(slot.word());
+            let word = slot.word();
+            if this.sleep.is_none() {
+                // A raw receiver: its owner's deadline heap (found by the key
+                // in the word) expires the slot, waking this future, with no
+                // per-request runtime timer.
+                let key = slot::owner_key(word);
                 if key != 0 {
-                    if *this.tracked {
+                    if word & slot::RX_TRACKED != 0 {
                         return Poll::Pending;
                     }
                     if let Some(owner) = Registry::by_key(key) {
+                        slot.mark_rx_tracked();
                         owner.track_deadline(slot);
-                        *this.tracked = true;
                         return Poll::Pending;
                     }
                     // The owner is gone: fall back to the runtime timer.
                 }
-            }
-            if *this.armed != deadline || this.sleep.is_none() {
-                let wait = match std::mem::take(this.first_ms) {
-                    ms if ms != 0 && *this.armed == deadline => Duration::from_millis(ms.into()),
-                    _ => Duration::from_nanos(deadline.saturating_sub(now_ticks())),
-                };
+                let wait = Duration::from_nanos(deadline.saturating_sub(now_ticks()));
                 this.sleep.set(Some(spawned_rt::tasks::sleep(wait)));
-                *this.armed = deadline;
+            } else if word & slot::SHORTENED != 0 && slot.take_shortened() {
+                // A shortening wakes this future: re-arm once from the clock
+                // for the deadline read after taking the mark.
+                let deadline = slot.deadline();
+                let wait = Duration::from_nanos(deadline.saturating_sub(now_ticks()));
+                this.sleep.set(Some(spawned_rt::tasks::sleep(wait)));
             }
             let sleep = this.sleep.as_mut().as_pin_mut().expect("armed above");
             match sleep.poll(cx) {

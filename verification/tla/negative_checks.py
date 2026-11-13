@@ -264,6 +264,8 @@ LIFECYCLE_TEMPORAL_CONTROLS = [
 LIFECYCLE_SMALL = {"Reqs": "{}", "MaxSignals": "0", "DropEnabled": "FALSE"}
 
 DEFERRED_CONTROLS = [
+    ("MCReplyTimer", "ClearLate", "NoLostRearm"),
+    ("MCReplyTimer", "ForgetFlag", "NoLostRearm"),
     ("MCDeferredReplies", "NoAutoReply", "NoOrphan"),
     ("MCDeferredReplies", "NoAtomicExpiry", "AtMostOneDischarge"),
     ("MCDeferredReplies", "LateSuccess", "NoSuccessAfterDeadline"),

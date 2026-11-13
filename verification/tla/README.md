@@ -45,6 +45,16 @@ required check `tla` passes only if all of them passed.
 
 ## Trace validation
 
+`ReplyTimer.tla`/`MCReplyTimer` is a receiver-local refinement of request
+deadline bookkeeping, without actor trace events. It separates taking the
+shortening mark, reading the deadline and installing the timer, checking
+`NeverEarly`, `NoLostRearm` and `EventuallyExpires` (535 distinct states at
+`MaxTime = 4`). `ClearLate` and `ForgetFlag` are negative controls for
+`NoLostRearm`. Loom runs the production slot operations for the corresponding
+races; `request_timer` covers paused runtime clocks and overflowing durations.
+It assumes one captured precise initial deadline, not a coarse clock, and
+does not model Tokio's timer implementation.
+
 Model checking explores the configured bounded abstraction; trace validation checks that recorded implementation executions conform to it. Neither proves all Rust executions correct. With the `lifecycle-trace` feature
 (off by default, compiled out otherwise) `run_supervisor` and `run_child`
 record one event per model action, with its parameters, per supervisor

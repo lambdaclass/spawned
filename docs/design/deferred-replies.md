@@ -81,7 +81,7 @@ compare-and-swap on that word, so "install a credit only if `OPEN`" and
 "terminalize and release the credit" cannot interleave.
 
 ```text
-word: AtomicU64 = state:4 | TOKEN:1 | REG:1 | JOBS:16 | (spare)
+word: AtomicU64 = state:4 | TOKEN:1 | REG:1 | JOBS:16 | PARKED:1 | SHORTENED:1 | RX_TRACKED:1 | OWNER:39
   state: OPEN | REPLIED | DROPPED | OVERLOADED | TIMED_OUT | STOPPED | ABANDONED
   TOKEN: a deferred token holds this request's credit (set by defer())
   REG:   listed in the owner registry (set together with TOKEN)
@@ -103,17 +103,20 @@ inner:    one mutex (the slot lock) over
 owner:    none outside lifecycle-trace builds (whose events name it): a
           request takes no shared reference count on its owner. A raw
           request with a deadline (`send_request`) records the owner's
-          registry key in the word's top 40 bits; its receiver, awaited and
+          registry key in the word's top 39 bits; its receiver, awaited and
           still pending, finds the owner by that key and puts the deadline
           in the owner's heap once (a request answered first never touches
           the heap, and no heap entry outlives a slot answered before it).
           An undispatched envelope is answered through the owner's mailbox
           disposal at the death point (`discharge(replies)`). PARKED (bit
-          22) and the key are word bits no transition reads or changes; as
-          bits, they keep the slot inside the allocator's small size
-          classes
-          the slot lock also orders a shortening against a reply's
-          deadline read
+          22) marks a blocking receiver. SHORTENED (bit 23) asks an async
+          receiver to re-arm its timer; it takes this mark before reading
+          the deadline, so another shortening leaves a fresh mark.
+          RX_TRACKED (bit 24) records that the raw receiver registered its
+          deadline with the owner's heap. State and credit transitions
+          preserve these bits and the key. They keep the slot inside the
+          allocator's small size classes. The slot lock also orders a
+          shortening against a reply's deadline read
 ```
 
 A terminal transition takes the waker under the slot lock after its CAS;
@@ -244,6 +247,10 @@ absolute instant, and OTP's `call` starts waiting when it sends.
   (real time, or the simulated clock under `spawned_sim`), saving a timer
   per request. A shortened deadline (`ReplyTo::shorten_deadline`) wakes the
   awaiting or parked receiver, which re-arms for it.
+  For an implicit call timeout, one runtime sleep is created before enqueue:
+  its captured, precise deadline supplies the slot deadline and the same sleep
+  supplies the caller's wait. There is no cached clock or duplicate initial
+  clock read. Absolute-deadline responses still create their timer when polled.
 - **`defer()`, the `pipe_reply` attach and `is_closed()`.** They check the
   deadline first, so an unpolled, expired request reports `Closed`.
 - **The owner's deadline heap,** for deferred tokens and for job deadlines.
@@ -909,6 +916,16 @@ the negative controls (each checked against its named invariant) are in
 
 **`DeferredReplies.tla`** has a discrete clock, two callers, owner A with
 turns, a linked-job count per request, and downstream actor B.
+
+`ReplyTimer.tla` separately refines receiver timer bookkeeping: consuming the
+shortening mark, reading the deadline, and installing the timer are separate
+steps. `MCReplyTimer` checks no early expiration, no lost re-arm and eventual
+expiration under the stated fairness assumptions (535 states). Its negative
+controls catch clearing the mark after reading and omitting the mark. The
+production slot implementation is also exercised directly by the two timer/
+bookkeeping races in `tests/reply_slot_loom.rs`; paused-time and overflow cases
+are in `tests/request_timer.rs`. This component model does not replace reply
+ownership or lifecycle trace validation.
 
 It establishes, within its bounds:
 

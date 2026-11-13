@@ -10,5 +10,5 @@ error[E0308]: mismatched types
 note: method defined here
   --> src/reply/mod.rs
    |
-   |     pub fn reply(mut self, value: R) -> Delivery {
+   |     pub fn reply(self, value: R) -> Delivery {
    |            ^^^^^

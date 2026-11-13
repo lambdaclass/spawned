@@ -15,5 +15,5 @@ note: method `read` modifies its receiver in-place
 note: method defined here
   --> src/reply/mod.rs
    |
-   |     pub fn reply(mut self, value: R) -> Delivery {
+   |     pub fn reply(self, value: R) -> Delivery {
    |            ^^^^^

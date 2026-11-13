@@ -64,6 +64,47 @@ use loom::sync::atomic::{AtomicU64, Ordering};
 use loom::sync::Arc;
 use slot::{credits, jobs, state, CreditPool, Delivery, Refused, Slot, Terminal, NEVER};
 
+#[test]
+fn timer_rearm_cannot_lose_a_concurrent_shortening() {
+    model(|| {
+        let slot = Arc::new(Slot::<u32>::new(100));
+        assert!(slot.shorten(80, &|| 0));
+        let shortening = {
+            let slot = slot.clone();
+            loom::thread::spawn(move || slot.shorten(20, &|| 0))
+        };
+        assert!(slot.take_shortened());
+        let observed = slot.deadline();
+        shortening.join().unwrap();
+        assert!(
+            observed == 20 || slot.take_shortened(),
+            "a shortening after the timer read must leave a new rearm mark"
+        );
+    });
+}
+
+#[test]
+fn receiver_bookkeeping_preserves_owner_key_and_reply() {
+    model(|| {
+        let slot = Arc::new(Slot::<u32>::with_owner_key(100, None, slot::MAX_KEY));
+        let tracking = {
+            let slot = slot.clone();
+            loom::thread::spawn(move || slot.mark_rx_tracked())
+        };
+        let replying = {
+            let slot = slot.clone();
+            loom::thread::spawn(move || slot.reply(21).0)
+        };
+        let got = loom::future::block_on(std::future::poll_fn(|cx| slot.poll(cx.waker())));
+        tracking.join().unwrap();
+        assert_eq!(replying.join().unwrap(), Delivery::Delivered);
+        assert_eq!(got, Ok(21));
+        assert_eq!(slot::owner_key(slot.word()), slot::MAX_KEY);
+        assert_ne!(slot.word() & slot::RX_TRACKED, 0);
+        assert_eq!(credits(slot.word()), 0);
+    });
+}
+
 fn model(f: impl Fn() + Sync + Send + 'static) {
     let mut builder = loom::model::Builder::new();
     builder.preemption_bound = Some(3);

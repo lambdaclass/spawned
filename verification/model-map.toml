@@ -128,6 +128,14 @@ code = [
 ]
 coverage_floor = 14   # of 14 action keys (TraceReplies arms)
 
+[models.ReplyTimer]
+# Receiver-side refinement: the shared runtime deadline and shortening mark.
+files = ["verification/tla/ReplyTimer.tla", "verification/tla/MCReplyTimer*"]
+code = ["concurrency/src/reply/mod.rs", "concurrency/src/reply/slot.rs", "concurrency/src/tasks/actor.rs", "rt/src/tasks/tokio/mod.rs", "rt/src/tasks/sim.rs"]
+[models.ReplyTimer.tlc_only]
+reason = "receiver-local timer bookkeeping has no actor lifecycle trace events; production slot races are shared with Loom"
+tracking = "receiver timer projection of rank 11; see tests/reply_slot_loom.rs and tests/request_timer.rs"
+
 [models.DeferredJobs]
 # Rank 11: pipe jobs, keyed replacement, ActorId and cancellation fencing,
 # emit credits, terminal message last.
