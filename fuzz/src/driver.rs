@@ -1914,7 +1914,9 @@ impl Driver {
                     continue;
                 }
                 let s = self.world.lock();
-                let Some(i) = s.instance_of(mid) else { continue };
+                let Some(i) = s.instance_of(mid) else {
+                    continue;
+                };
                 if s.insts[i].exits.iter().any(|(from, _)| *from == oid) {
                     let detail = format!("w{i} from {}", s.name(oid));
                     drop(s);

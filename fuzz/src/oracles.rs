@@ -68,10 +68,7 @@ fn instance<'a>(s: &'a State, c: &Call) -> Option<(usize, &'a Inst)> {
 
 /// Something other than its supervisor may have stopped this instance.
 fn could_stop_itself(s: &State, x: &Inst) -> bool {
-    !x.published
-        || x.panicked
-        || x.drop_panicked
-        || x.id.is_none_or(|id| s.may_stop.contains(&id))
+    !x.published || x.panicked || x.drop_panicked || x.id.is_none_or(|id| s.may_stop.contains(&id))
 }
 
 /// Tick at which an attempt ended: the factory's return, or the drop of the
@@ -227,7 +224,12 @@ fn required_restarts(
                 if live && !after(j, dropped) {
                     found.push((
                         "V2: a sibling in the failed child's cohort was not restarted",
-                        format!("{} after {} w{i} ({:?})", slot_name(sup, j), c.slot, sup.strategy),
+                        format!(
+                            "{} after {} w{i} ({:?})",
+                            slot_name(sup, j),
+                            c.slot,
+                            sup.strategy
+                        ),
                     ));
                     return;
                 }
