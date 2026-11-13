@@ -29,22 +29,19 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   # Pinned: cargo-fuzz needs nightly for -Zsanitizer/sancov flags.
-  FUZZ_NIGHTLY: nightly-2026-10-20
+  RUSTUP_TOOLCHAIN: nightly-2026-10-20
   RUSTFLAGS: --cfg spawned_sim --cfg tokio_unstable
   SPAWNED_FUZZ_TAPE_DIR: ${{ github.workspace }}/fuzz/artifacts/tapes
 
 jobs:
   scenario:
     runs-on: ubuntu-latest
-    env:
-      # Overrides rust-toolchain.toml (stable 1.93.0): cargo-fuzz needs this nightly.
-      RUSTUP_TOOLCHAIN: ${{ env.FUZZ_NIGHTLY }}
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && 360 || 25 }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{ env.FUZZ_NIGHTLY }}
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
