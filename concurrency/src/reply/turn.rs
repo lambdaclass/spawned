@@ -131,6 +131,10 @@ impl<T> TurnPhase<T> {
         // no foreign writer can change this phase: an acquire of the last
         // token's release also sees the phase/queue writes of its whole drop.
         // Creating another token requires this owner to enter its next handler.
+        // Exiting/dead transitions belong to the same run-loop/cleanup owner;
+        // runtime destruction cannot drop a future while it is being polled.
+        // Jobs can retain slots after a token is consumed, but only borrowed
+        // PendingReply drops and counted ReplyTo drops call record_drop.
         // Otherwise retain the atomic exchange against a racing token drop.
         let previous = if self.external.load(Ordering::Acquire) == 0 {
             let previous = self.load();

@@ -21,7 +21,10 @@ directories. Each sample has a 90-second process watchdog; a failed sample fails
 the campaign and partial raw data and logs remain. Do not compare incomplete
 campaigns. The bench's raw requests are unbounded to match 0.7, so invoke the
 binary through this runner or an external process timeout. Per-request timers
-would change the operation being compared. `--cases` and `--backends` select smaller runs. Run a small smoke
+would change the operation being compared. `--cases` and `--backends` select
+smaller runs. The 0.8 runtime-isolation, workload and design drivers now also
+use unbounded raw requests, matching 0.7; rerun them rather than comparing with
+intermediate 0.8 campaigns that armed deadlines on these requests. Run a small smoke
 campaign across every backend and scenario before a full one.
 
 Cases: `rpc_single`, `rpc_parallel`, `mostly_idle`, `burst`,

@@ -1096,6 +1096,8 @@ fn await_free_handler(method: &ImplItemFn) -> bool {
     });
     if !ordinary_mut_receiver
         || !plain_parameters
+        || !method.sig.generics.params.is_empty()
+        || method.sig.generics.where_clause.is_some()
         || method.sig.asyncness.is_none()
         || method.sig.unsafety.is_some()
         || method.sig.abi.is_some()
@@ -1691,7 +1693,18 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                 // that is specialized into the generated dispatch adapter.
                 let msg_name = Ident::new("__spawned_msg", proc_macro2::Span::mixed_site());
                 let reply_name = Ident::new("__spawned_reply", proc_macro2::Span::mixed_site());
-                let ctx_name = Ident::new("__spawned_ctx", proc_macro2::Span::mixed_site());
+                let ctx_name = Ident::new(
+                    "__spawned_ctx",
+                    proc_macro2::Span::mixed_site().located_at(
+                        method
+                            .sig
+                            .inputs
+                            .iter()
+                            .nth(ctx_index)
+                            .expect("validated context arity")
+                            .span(),
+                    ),
+                );
                 // The parameter list carries the user's parentheses span.
                 let mut params = proc_macro2::Group::new(
                     proc_macro2::Delimiter::Parenthesis,
@@ -1714,6 +1727,7 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     ReturnType::Type(_, ty) if matches!(**ty, Type::ImplTrait(_))
                 );
                 let asynchronous = method.sig.asyncness.is_some() || returns_future;
+                let immediate = asynchronous && !deferred && await_free_handler(method);
                 let call = match (deferred, asynchronous) {
                     (true, true) => {
                         quote! { self.#method_name(#msg_name, #reply_name, #ctx_name).await }
@@ -1721,13 +1735,25 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     (true, false) => {
                         quote! { self.#method_name(#msg_name, #reply_name, #ctx_name) }
                     }
-                    (false, true) if await_free_handler(method) => {
+                    (false, true) if immediate => {
                         let body = &method.block;
-                        let msg_pat = match method.sig.inputs.iter().nth(1).unwrap() {
+                        let msg_pat = match method
+                            .sig
+                            .inputs
+                            .iter()
+                            .nth(1)
+                            .expect("validated message arity")
+                        {
                             FnArg::Typed(arg) => &arg.pat,
                             _ => unreachable!(),
                         };
-                        let (ctx_pat, ctx_ty) = match method.sig.inputs.iter().nth(2).unwrap() {
+                        let (ctx_pat, ctx_ty) = match method
+                            .sig
+                            .inputs
+                            .iter()
+                            .nth(2)
+                            .expect("validated context arity")
+                        {
                             FnArg::Typed(arg) => (&arg.pat, &arg.ty),
                             _ => unreachable!(),
                         };
@@ -1762,7 +1788,7 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                 };
 
-                let handler_impl = if asynchronous && !deferred && await_free_handler(method) {
+                let handler_impl = if immediate {
                     quote::quote_spanned! { span =>
                         #(#extra_attrs)*
                         impl #impl_generics Handler<#msg_ty> for #self_ty #where_clause {
@@ -1778,6 +1804,9 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                             ) -> ::core::option::Option<(#msg_ty, spawned_concurrency::PendingReply<#turn_lifetime, <#msg_ty as spawned_concurrency::message::Message>::Result>)> {
                                 // Keep payload destructors inside the original
                                 // future, whose drop is fenced by DeathFirst.
+                                // A refused result is dropped by reply() in
+                                // either adapter, after the method returned;
+                                // unlike a parameter, it adds no unwind capture.
                                 // This constant branch disappears for messages
                                 // without drop glue.
                                 if ::core::mem::needs_drop::<#msg_ty>() {

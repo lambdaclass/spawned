@@ -430,3 +430,84 @@ async fn generated_paths_do_not_capture_shadowed_prelude_names() {
     actor.context().stop();
     actor.join().await;
 }
+
+struct Discard;
+impl Message for Discard {
+    type Result = ();
+}
+struct Discarder;
+impl Actor for Discarder {}
+impl Handler<Discard> for Discarder {
+    fn __spawned_handle_immediate<'turn>(
+        &mut self,
+        _: Discard,
+        reply: spawned_concurrency::PendingReply<'turn, ()>,
+        _: &Context<Self>,
+    ) -> Option<(Discard, spawned_concurrency::PendingReply<'turn, ()>)> {
+        drop(reply);
+        None
+    }
+    async fn handle(
+        &mut self,
+        _: Discard,
+        _: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        std::panic::panic_any("direct adapter unexpectedly used the future");
+    }
+}
+#[spawned_macros::sim_test]
+async fn direct_dispatch_commits_an_unanswered_obligation_on_normal_return() {
+    let actor = Discarder.start();
+    assert!(matches!(
+        actor.request(Discard).await,
+        Err(ActorError::ReplyDropped)
+    ));
+    assert!(actor.exit_reason().is_none());
+    actor.context().stop();
+    actor.join().await;
+}
+struct RejectedResult(Arc<AtomicBool>);
+impl Drop for RejectedResult {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+        std::panic::panic_any("rejected result destructor");
+    }
+}
+struct GetRejected;
+impl Message for GetRejected {
+    type Result = RejectedResult;
+}
+struct ResultWorker {
+    dropped: Arc<AtomicBool>,
+    stopped: Arc<AtomicBool>,
+}
+#[actor]
+impl ResultWorker {
+    #[request_handler]
+    async fn get(&mut self, _: GetRejected, _: &Context<Self>) -> RejectedResult {
+        RejectedResult(self.dropped.clone())
+    }
+    #[stopped]
+    async fn on_stop(&mut self, _: &Context<Self>) {
+        self.stopped.store(true, Ordering::SeqCst);
+    }
+}
+#[spawned_macros::sim_test]
+async fn a_rejected_result_destructor_has_the_same_handler_panic_boundary() {
+    let dropped = Arc::new(AtomicBool::new(false));
+    let stopped = Arc::new(AtomicBool::new(false));
+    let actor = ResultWorker {
+        dropped: dropped.clone(),
+        stopped: stopped.clone(),
+    }
+    .start();
+    let receiver = actor.send_request(GetRejected, Deadline::Never).unwrap();
+    drop(receiver);
+    actor.join().await;
+    assert!(
+        matches!(actor.exit_reason(), Some(ExitReason::Panic(reason)) if reason == "panic in handler: rejected result destructor")
+    );
+    assert!(dropped.load(Ordering::SeqCst));
+    assert!(stopped.load(Ordering::SeqCst));
+}
