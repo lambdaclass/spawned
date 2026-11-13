@@ -975,19 +975,23 @@ result never changes). Liveness: `StartAnswered`, `TerminateAnswered`,
 startup deadlines, `MCDynamicSupervisorAbort`); `ClosedLeadsToDone`, `RecoveryProgress`
 (Spec).
 
-Configurations (TLC 2.19, fede, 4 workers, `nice -n 19`). These are
+Configurations measured 2026-11-12 (TLC 2.19, fede, 4 workers, `nice -n 19`). These are
 bounded checks: two slots for the broad instances, three for the targeted
 one; no cutoff argument is claimed (Codex F10).
 
 | Configuration | Instance | Distinct states | Depth | Time |
 |---|---|---|---|---|
-| `MCDynamicSupervisor` (per PR; safety, action properties; `Spec`) | 2 slots, every pair of restart types, two terminate calls (by id, by slot fenced with `expect`), `max_children` 1, budget 1, one window release, no backoff, exits `Normal`/`Panic`, start failures factory/`Normal`/timeout, ignore, cleanup failures | 8,488,736 | 30 | 1m26s |
-| `MCDynamicSupervisorBackoff` (per PR; safety) | as above with backoff | 9,878,333 | 36 | 1m48s |
-| `MCDynamicSupervisorZero` (per PR; safety) | as the first with budget 0 | 1,170,745 | 21 | 12 s |
-| `MCDynamicSupervisorThree` (per PR; safety) | 3 Permanent crashing children, `max_children` 2, shared budget 1, FIFO with three arrivals | 442,239 | 30 | 7 s |
-| `MCDynamicSupervisorCallers` (per PR; `StartAnswered`, `TerminateAnswered`, `FanoutCompletes` under `CallerSpec`) | 2 slots, `max_children` 2, one call, fan-out as separate steps | 3,380,536 | 29 | 6m33s |
-| `MCDynamicSupervisorLive` (per PR; `ClosedLeadsToDone`, `RecoveryProgress` under `Spec`) | 2 slots, one call by slot, backoff | 581,563 | 34 | 55 s |
-| `MCDynamicSupervisorDeep` (weekly; safety) | budget 2, two releases, `max_children` 2, backoff, one call | 9,992,213 | 45 | 1m35s |
+| `MCDynamicSupervisor` (per PR; safety, action properties) | 2 slots, every pair of restart types, one `terminate_slot` call fenced with `expect` (any generation seen), `max_children` 1, budget 1, one window release, no backoff, exits `Normal`/`Panic`, start failures factory/`Normal`/timeout, ignore, cleanup failures, finalization | 5,538,224 | 31 | 1m29s |
+| `MCDynamicSupervisorBackoff` (per PR; safety) | backoff, one unfenced `terminate_slot` call | 5,417,673 | 37 | 1m29s |
+| `MCDynamicSupervisorZero` (per PR; safety) | budget 0, two calls | 4,726,785 | 24 | 1m17s |
+| `MCDynamicSupervisorThree` (per PR; safety) | 3 Permanent crashing children, `max_children` 2, shared budget 1, FIFO with three arrivals | 3,091,036 | 36 | 45 s |
+| `MCDynamicSupervisorAbort` (per PR; `ShutdownAnswersStarts` under `CallerSpec`, no startup deadlines) | 2 slots, cap 1, no budget, no calls | 60,543 | 20 | 5 s |
+| `MCDynamicSupervisorCallers` (per PR; `StartAnswered`, `TerminateAnswered`, `FanoutCompletes` under `CallerSpec`) | Permanent and Temporary, `max_children` 2, one call, fan-out as separate steps | 3,909,389 | 32 | 14m27s (fede under load) |
+| `MCDynamicSupervisorLive` (per PR; `ClosedLeadsToDone`, `RecoveryProgress` under `Spec`) | 2 slots, one call by slot, backoff | 1,826,521 | 37 | 5m33s |
+| `MCDynamicSupervisorCallersDeep` (weekly; caller liveness) | as Callers with all three restart types; the liveness controls run here | 11,713,493 | 32 | 47m03s (fede under load) |
+| `MCDynamicSupervisorDeep` (weekly; safety) | budget 2, two window releases, cap 2, backoff, one terminate call, no cleanup-failure recording | 39,678,986 | 48 | 13m17s |
+| `MCDynamicSupervisorWideDeep` (weekly; safety) | broad two-slot instance, two terminate calls (by id and fenced slot), budget 1, no backoff, every outcome | 52,146,706 | 33 | 15m22s |
+| `MCDynamicSupervisorBackoffDeep` (weekly; safety) | as WideDeep with backoff and reservation/refund paths | 59,278,161 | 39 | 16m34s |
 
 Negative controls (`negative_checks.py`, run one at a time; each checks
 `TypeOK` and only the named property). Every invariant and liveness
@@ -1269,5 +1273,7 @@ no P0. Each fixed in its own commit.
 | **agy 1**: `Ignore` had no `open` guard and escaped `NoStartAfterShutdown`; leftover `StartOutcome`/`ChildStart` mismatches | **Accepted.** `Ignore` only while open; the ignore decision counts as a commit in the history; control `IgnoreAfterClose`. The non-goal line removed, the factory returns `S: Into<ChildStart<A>>`, `FailedToStart { cause: ChildStartError, .. }` throughout, the rank 12 example matches `StartOutcome::Started`, `ChildInfo::key` |
 | **agy 2**: stale `terminate` ids could not be replayed; `ExpectedChild::generation` vs failed replacements; tickets for directly consumed exits; an unlogged fan-out step | **Accepted.** A call names any generation the caller saw; `ExpectedChild` is the last published child (failed attempts publish nothing); an exit consumed by the waiting start or terminate takes no ticket (`DCleaned` ticket optional); the last signal ends the fan-out. `DClose` only for external or parent shutdown |
 | **agy P2**: the loop must await finalization | **Accepted** (with Codex 1) |
+| **Found while re-running** (Callers, two liveness counterexamples): a terminate call on a slot in finalization after an earlier stuck generation held the loop forever, because the finalization deadline was blocked by the earlier `stuck` mark; and a stuck finalization that later ended re-entered finalization with no deadline left | **Fixed in the model and the contract**: slot finalization has its own deadline whatever happened to earlier generations, and a stuck finalization that ends completes finalization (the slot is removed). Exactly the class of bug `CallerSpec` exists to catch |
+| **Instance sizes**: the broad instances grew to 52-59M states with stale ids and finalization | The broad configurations are weekly (`WideDeep`, `BackoffDeep`, `CallersDeep`) and the controls run on them (counterexamples take seconds); per-PR configurations are smaller (one terminate call, two restart types for Callers) |
 | **Codex note**: use the canonical shared declarations | **Accepted**: `ChildInfo`/`ChildCounts`/`ChildKey` and `ChildStart` are #256's and #259's; the shapes here show only the fields this design depends on |
 | **Unified start #259 rev. 3** (cross-design): `Ignored { pending }` and a stuck ignore keeping its slot until publication; a failed init never runs `stopped()` | **Adopted.** `start_child` returns `Ok(StartOutcome::Ignored { pending })`; a stuck ignored attempt answers at the deadline with `Some(handle)` and its slot counts (`Stopping`) until publication and finalization, which the model already does (`CleanupStuck` commits the ignore, the slot stays counted until `StuckDone` and `Finalize`). First-start failure and shutdown-during-construction text now say `stopped()` does not run; nothing in this design depended on it |

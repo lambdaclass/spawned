@@ -626,18 +626,12 @@ safety, 7 liveness), run one at a time from `negative_checks.py`; its
 [test plan](../../docs/design/dynamic-supervisor.md#test-plan-relating-the-model-to-the-code)
 lists the trace events the implementation must emit for trace validation.
 
-Measured 2026-11-11 (TLC 2.19, fede, 4 workers, `nice -n 19`). Bounded
-checks; no cutoff argument is claimed.
-
-| Configuration | Distinct states | Depth | Time |
-|---|---|---|---|
-| `MCDynamicSupervisor` (per PR, safety) | 8,488,736 | 30 | 1m26s |
-| `MCDynamicSupervisorBackoff` (per PR, safety) | 9,878,333 | 36 | 1m48s |
-| `MCDynamicSupervisorZero` (per PR, safety) | 1,170,745 | 21 | 12 s |
-| `MCDynamicSupervisorThree` (per PR, safety, three slots) | 442,239 | 30 | 7 s |
-| `MCDynamicSupervisorCallers` (per PR, liveness under `CallerSpec`) | 3,380,536 | 29 | 6m33s |
-| `MCDynamicSupervisorLive` (per PR, liveness under `Spec`) | 581,563 | 34 | 55 s |
-| `MCDynamicSupervisorDeep` (weekly, safety) | 9,992,213 | 45 | 1m35s |
+The [configuration/results table](../../docs/design/dynamic-supervisor.md#what-the-model-establishes)
+records the 2026-11-12 runs, including the finalization fixes: all eleven
+configurations passed, and all 44 negative controls produced their expected
+counterexample. The broad safety instances are 52.1M/59.3M states (WideDeep/
+BackoffDeep); the full caller-liveness instance is 11.7M (CallersDeep).
+These are bounded checks, with no cutoff argument claimed.
 
 Not yet: Apalache inductive invariants, and trace validation, which comes
 with the implementation.
