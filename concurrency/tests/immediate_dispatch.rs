@@ -99,6 +99,29 @@ async fn inherent_methods_and_public_handler_futures_stay_lazy() {
     actor.join().await;
 }
 
+#[spawned_macros::sim_test]
+async fn eligible_handler_uses_the_immediate_hook() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let actor = Worker {
+        calls: calls.clone(),
+    }
+    .start();
+    let context = actor.context();
+    let mut direct = Worker {
+        calls: calls.clone(),
+    };
+    assert!(<Worker as Handler<Compute>>::__spawned_handle_immediate(
+        &mut direct,
+        Compute { value: 1 },
+        spawned_test::detached_reply(),
+        &context,
+    )
+    .is_none());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    actor.context().stop();
+    actor.join().await;
+}
+
 #[cfg(not(spawned_sim))]
 mod local_items {
     use super::*;
@@ -415,7 +438,7 @@ impl DropWorker {
     }
 }
 #[spawned_macros::sim_test]
-async fn ignored_parameters_drop_after_the_handler_body_in_both_paths() {
+async fn ignored_parameters_drop_after_the_body_in_mailbox_and_inherent_calls() {
     for partial in [false, true] {
         let body_ran = Arc::new(AtomicBool::new(false));
         let observed = Arc::new(AtomicBool::new(false));

@@ -515,12 +515,7 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
             Ok(()) => {
                 #[cfg(feature = "lifecycle-trace")]
                 crate::lifecycle_trace::downstream_deferred(Arc::as_ptr(&slot) as u64);
-                let token = ReplyTo {
-                    slot: Some(slot),
-                    registry: registry.clone(),
-                    stamp: crate::instrumentation::hooks::deferred(),
-                };
-                registry.token_added();
+                let token = ReplyTo::new(slot, registry.clone());
                 // Construct the token first: a registration panic must also
                 // run its Drop and retire the external-ownership hold.
                 registry.register(token.slot());
@@ -601,6 +596,18 @@ impl<R: Send + 'static> std::fmt::Debug for ReplyTo<R> {
 }
 
 impl<R: Send + 'static> ReplyTo<R> {
+    /// Every token owns one external hold through its entire Drop. Forgetting
+    /// a token leaks that hold too, conservatively keeping the slow turn path.
+    fn new(slot: Arc<Slot<R>>, registry: Arc<Registry>) -> Self {
+        let stamp = crate::instrumentation::hooks::deferred();
+        registry.token_added();
+        Self {
+            slot: Some(slot),
+            registry,
+            stamp,
+        }
+    }
+
     /// Answer the caller. Returns how the reply was delivered.
     pub fn reply(mut self, value: R) -> Delivery {
         let slot = self
