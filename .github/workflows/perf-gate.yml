@@ -1,0 +1,55 @@
+name: Perf gate
+
+# Hot-path instruction counts, PR against its merge base
+# (benchmarks/hotpath.py gate; docs/TESTING.md, "Performance gate").
+# The workflow always runs so the check can be required; the gate itself is
+# skipped (and passes) unless concurrency/src, rt/src or macros/src changed.
+
+on:
+  pull_request:
+    branches: ["main"]
+  merge_group:
+
+concurrency:
+  group: perf-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # Maximum growth of instructions per operation, in percent.
+  HOTPATH_THRESHOLD: "3"
+
+jobs:
+  perf-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Base revision and hot-path changes
+        id: scope
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          MQ_BASE: ${{ github.event.merge_group.base_sha }}
+        run: |
+          base=$(git merge-base HEAD "${PR_BASE:-$MQ_BASE}")
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          if git diff --name-only "$base" HEAD | grep -qE '^(concurrency/src|rt/src|macros/src)/|^benchmarks/hotpath'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Perf gate skipped: no change under concurrency/src, rt/src, macros/src or benchmarks/hotpath." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: dtolnay/rust-toolchain@1.93.0
+        if: steps.scope.outputs.run == 'true'
+      - name: Install valgrind
+        if: steps.scope.outputs.run == 'true'
+        run: sudo apt-get update -q && sudo apt-get install -y -q valgrind
+      - name: Instruction counts, head vs merge base
+        if: steps.scope.outputs.run == 'true'
+        run: >
+          python3 benchmarks/hotpath.py gate
+          --base ${{ steps.scope.outputs.base }} --head HEAD
+          --work ${{ runner.temp }}/hotpath

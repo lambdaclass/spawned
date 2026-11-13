@@ -1905,14 +1905,72 @@ nice -n 19 taskset -c 26-29 target/release/deps/soak-<hash> \
 Runs are by hand only: no schedule. Run a 4-hour soak before each release
 ([release checklist](#release-checklist)).
 
+## Performance gate
+
+Robustness features must add no cost on the default path, and a performance
+regression on the hot path is a release blocker. Two checks share one driver,
+`benchmarks/hotpath/driver.rs`: async burst (every `request()` enqueued
+before the first reply is awaited), sequential and 16-task `request()`, a
+foreign thread blocking on each `request()`, `send` from one and two
+producers, and the threads-mode burst (four requesters), sequential requests
+and sends. `benchmarks/hotpath.py` copies the driver into both trees, so the
+base and the head run the same workload; it uses only APIs that are stable
+across releases (`#[actor]` handlers, `request()`, `send()`).
+
+**CI: instruction counts** (`perf-gate` workflow, every PR and the merge
+queue). Wall-clock numbers on shared runners are too noisy, so the gate counts
+instructions with callgrind. Each benchmark runs at two sizes (2,000 and 6,000
+operations, three runs each); instructions per operation is the difference
+divided by the extra operations, so process start, runtime and actor setup
+cancel. Only deterministic benchmarks are gated: the async ones on a Tokio
+current-thread runtime (`async_ct_*`: burst, sequential and 16-task
+`request()`, `send` from one and two producer tasks; identical counts run to
+run) and threads-mode sequential `request()` (a lockstep pair of threads,
+within 0.5%). On a multi-threaded runtime, or with free-running OS-thread
+producers (threads-mode burst and `send`), how often actors park and wake
+changes from run to run (up to ±20% instructions), so those run only in the
+wall-clock check. The gate fails when any benchmark's instructions per operation grow
+more than 3% over the merge base (`--threshold`, or `HOTPATH_THRESHOLD` in the
+workflow). The job summary has the per-benchmark table. The workflow always
+reports, so it can be a required check, but it only builds and measures when
+`concurrency/src`, `rt/src`, `macros/src` or the driver changed.
+
+```sh
+python3 benchmarks/hotpath.py gate                  # HEAD vs merge base with main
+python3 benchmarks/hotpath.py gate --base origin/main --head origin/my-branch --threshold 3
+```
+
+Instruction counts miss costs that are not instructions: lock contention,
+extra wake-ups and parking, cache-line transfers. A change that moves work
+between threads can pass the gate and still be slower, so the wall-clock
+check below runs before each release.
+
+**Manual: wall clock, ABBA** (before each release, on a quiet machine).
+`hotpath.py abba` alternates base and head on the same cores (base, head,
+head, base, ...) and reports the median, the range and the median paired
+change of operations per second:
+
+```sh
+python3 benchmarks/hotpath.py abba --base origin/main --head <release commit> \
+  --cores 12-15 --reps 30 --csv /tmp/hotpath-abba.csv
+```
+
+Check `burst` and `rpc` in `benchmarks/run.py` (the baseline driver) the same
+way when a change touches the reply path. The 0.8 gate measured async burst
+37% and the default `request()` 24% slower than main this way.
+
 ## Release checklist
 
 Before tagging a release (`gh release create` triggers `release.yaml`, which
 publishes to crates.io):
 
-1. CI green on the release PR, including the `client-compat` gate.
+1. CI green on the release PR, including the `client-compat` and `perf-gate`
+   checks.
 2. A 4-hour [soak](#soak-harness) on fede passes on the release commit; link
    its `summary.txt` in the release PR.
+3. The wall-clock [performance](#performance-gate) A/B against the previous
+   release on a quiet machine: no hot-path benchmark more than 5% slower.
+   Link the table in the release PR.
 
 ## CI hardening
 
