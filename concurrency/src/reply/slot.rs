@@ -704,10 +704,13 @@ impl<R> Slot<R> {
     pub(crate) fn reply_in_turn(&self, value: R) -> (Delivery, Option<R>) {
         let mut inner = lock(&self.inner);
         let current = self.word();
-        if state(current) != OPEN || credits(current) != 0 || inner.side.is_some() {
+        if state(current) != OPEN || inner.side.is_some() {
             drop(inner);
             return self.publish(value, || Some(()));
         }
+        // Defer installs side.pool before taking any token/job credit and
+        // side state is never removed. No side therefore implies no credits.
+        debug_assert_eq!(credits(current), 0);
         inner.value = Some(value);
         // `PARKED` changes only under this lock, and nothing else moves a
         // word without credits but a terminal transition: a failed CAS

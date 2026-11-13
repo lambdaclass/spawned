@@ -865,8 +865,8 @@ impl<A: Actor> Context<A> {
 
     /// Send a request and wait for the reply (default 5s timeout).
     ///
-    /// The future is `request_with_timeout`'s own (no extra state machine
-    /// around it).
+    /// Uses the same request state machine as `request_with_timeout`, with
+    /// a zero-sized fixed budget instead of capturing a Duration.
     pub fn request<M>(
         &self,
         msg: M,
@@ -875,19 +875,29 @@ impl<A: Actor> Context<A> {
         A: Handler<M>,
         M: Message,
     {
-        self.request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT)
+        self.request_with_budget(msg, crate::reply::DefaultRequestBudget)
     }
 
     /// Send a request and wait for the reply with a custom timeout.
-    pub async fn request_with_timeout<M>(
+    pub fn request_with_timeout<M>(
         &self,
         msg: M,
         duration: Duration,
-    ) -> Result<M::Result, ActorError>
+    ) -> impl Future<Output = Result<M::Result, ActorError>> + Send + '_
     where
         A: Handler<M>,
         M: Message,
     {
+        self.request_with_budget(msg, duration)
+    }
+
+    async fn request_with_budget<M, B>(&self, msg: M, budget: B) -> Result<M::Result, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+        B: crate::reply::RequestBudget,
+    {
+        let duration = budget.into_duration();
         let observation = crate::instrumentation::RequestObservation::new();
         // Bind the receiver before awaiting it: awaiting inside a `match` on
         // the `Result` keeps the scrutinee's storage alive beside the awaited
@@ -1449,8 +1459,8 @@ impl<A: Actor> ActorRef<A> {
 
     /// Send a request and wait for the reply (default 5s timeout).
     ///
-    /// The future is `request_with_timeout`'s own (no extra state machine
-    /// around it).
+    /// Uses the same request state machine as `request_with_timeout`, with
+    /// a zero-sized fixed budget instead of capturing a Duration.
     pub fn request<M>(
         &self,
         msg: M,
@@ -1459,7 +1469,7 @@ impl<A: Actor> ActorRef<A> {
         A: Handler<M>,
         M: Message,
     {
-        self.request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT)
+        self.request_with_budget(msg, crate::reply::DefaultRequestBudget)
     }
 
     /// Run `f` in one of the actor's turns, with its state and `Context`,
@@ -1488,15 +1498,25 @@ impl<A: Actor> ActorRef<A> {
     }
 
     /// Send a request and wait for the reply with a custom timeout.
-    pub async fn request_with_timeout<M>(
+    pub fn request_with_timeout<M>(
         &self,
         msg: M,
         duration: Duration,
-    ) -> Result<M::Result, ActorError>
+    ) -> impl Future<Output = Result<M::Result, ActorError>> + Send + '_
     where
         A: Handler<M>,
         M: Message,
     {
+        self.request_with_budget(msg, duration)
+    }
+
+    async fn request_with_budget<M, B>(&self, msg: M, budget: B) -> Result<M::Result, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+        B: crate::reply::RequestBudget,
+    {
+        let duration = budget.into_duration();
         let observation = crate::instrumentation::RequestObservation::new();
         // Bind the receiver before awaiting it: awaiting inside a `match` on
         // the `Result` keeps the scrutinee's storage alive beside the awaited

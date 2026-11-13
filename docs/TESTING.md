@@ -1048,7 +1048,10 @@ RUSTFLAGS="--cfg spawned_scheduler_loom" cargo test --release -p spawned-concurr
 
 `reply_slot_loom` covers the packed slot word (reply, expiry, shortening,
 abandon, close, defer at the bound, linked jobs, parked receivers);
-`registry_turn_loom` the in-turn drop commit against turn end, exit and death;
+`registry_turn_loom` the in-turn drop commit against turn end, exit and death,
+including zero external tokens, the last token's retirement and two concurrent
+drops. Its fast path is checked against an early-retirement mutation that loses
+a drop. Ownership holds are distinct from live credits;
 `job_core_loom` job admission and rollback at the credit and native bounds,
 keyed replacement of a completed job, emits against the terminal notification
 and cancel, a delayed emit (`emit_at`) firing against the work's finish (the

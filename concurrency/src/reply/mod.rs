@@ -153,6 +153,29 @@ pub(crate) mod clock {
     }
 }
 
+/// A type-level default lets ordinary requests keep their fixed budget out
+/// of the future's captured state, while custom requests carry a Duration.
+#[cfg(feature = "async")]
+pub(crate) trait RequestBudget: Send {
+    fn into_duration(self) -> Duration;
+}
+#[cfg(feature = "async")]
+pub(crate) struct DefaultRequestBudget;
+#[cfg(feature = "async")]
+impl RequestBudget for DefaultRequestBudget {
+    #[inline]
+    fn into_duration(self) -> Duration {
+        crate::response::DEFAULT_REQUEST_TIMEOUT
+    }
+}
+#[cfg(feature = "async")]
+impl RequestBudget for Duration {
+    #[inline]
+    fn into_duration(self) -> Duration {
+        self
+    }
+}
+
 /// The slot deadline uses the monotonic deadline-service clock. The caller's
 /// timer uses a relative runtime budget: a paused Tokio clock can differ from
 /// the service clock and its absolute instants must not be stored in the slot.
@@ -473,13 +496,17 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
             Ok(()) => {
                 #[cfg(feature = "lifecycle-trace")]
                 crate::lifecycle_trace::downstream_deferred(Arc::as_ptr(&slot) as u64);
-                registry.register(&slot);
-                registry.track_deadline(&slot);
-                Ok(ReplyTo {
+                let token = ReplyTo {
                     slot: Some(slot),
                     registry: registry.clone(),
                     stamp: crate::instrumentation::hooks::deferred(),
-                })
+                };
+                registry.token_added();
+                // Construct the token first: a registration panic must also
+                // run its Drop and retire the external-ownership hold.
+                registry.register(token.slot());
+                registry.track_deadline(token.slot());
+                Ok(token)
             }
             Err(slot::Refused::Closed) => Err(DeferError::Closed),
             Err(slot::Refused::Overloaded) => Err(DeferError::Overloaded),
@@ -657,6 +684,7 @@ impl<R: Send + 'static> ReplyTo<R> {
 
 impl<R: Send + 'static> Drop for ReplyTo<R> {
     fn drop(&mut self) {
+        let _ownership = self.registry.token_drop_guard();
         if let Some(slot) = self.slot.take() {
             self.registry.dropped(slot);
         }

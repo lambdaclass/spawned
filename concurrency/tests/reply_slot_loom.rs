@@ -754,3 +754,27 @@ fn unshared_take_vs_lent_reply_and_release() {
         assert_eq!(owner.join().unwrap(), (Delivery::Delivered, None));
     });
 }
+
+/// Side state is installed before any credit: an in-turn reply racing a
+/// deferral must either win first or use the accounting path, never leak it.
+#[test]
+fn in_turn_reply_racing_defer_returns_the_credit_once() {
+    model(|| {
+        let pool = Arc::new(CreditPool::new(1));
+        let slot = Arc::new(Slot::<u64>::new(NEVER));
+        let replier = {
+            let slot = slot.clone();
+            loom::thread::spawn(move || slot.reply_in_turn(17))
+        };
+        let deferred = slot.defer(&pool, &|| 0);
+        let (delivery, back) = replier.join().unwrap();
+        assert_eq!(delivery, Delivery::Delivered);
+        assert!(back.is_none());
+        assert_eq!(pool.used(), 0, "reply leaked the deferral's credit");
+        if deferred.is_ok() {
+            slot.terminate(Terminal::Dropped);
+        }
+        assert_eq!(pool.used(), 0, "dropping the token returned credit twice");
+        assert!(matches!(slot.try_take(&|| 0), Some(Ok(17))));
+    });
+}

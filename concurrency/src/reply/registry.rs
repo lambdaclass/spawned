@@ -378,6 +378,22 @@ impl Registry {
         self.final_reason.get().is_some()
     }
 
+    pub(crate) fn token_added(&self) {
+        self.turn.external_added();
+    }
+
+    /// Keep the ownership hold through every callback run by token drop,
+    /// including unwinding from a foreign waker.
+    pub(crate) fn token_drop_guard(&self) -> impl Drop + '_ {
+        struct Guard<'a>(&'a TurnPhase<Arc<dyn Closeable>>);
+        impl Drop for Guard<'_> {
+            fn drop(&mut self) {
+                self.0.external_finished();
+            }
+        }
+        Guard(&self.turn)
+    }
+
     /// The run loop is about to dispatch a handler.
     #[inline]
     pub(crate) fn begin_turn(&self) {

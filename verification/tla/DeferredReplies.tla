@@ -225,6 +225,13 @@ PipeReply(r) ==
              ELSE U(<<jobs, holder>>)              \* PipeReplyError hands the token back
     /\ Keep /\ U(<<now, sent, dl, down, phase, turnA, panicked>>)
 
+\* Refinement: the implementation exchanges the turn phase while an externally
+\* owned token exists. With none, the owner may load/store it: only this owner
+\* can create a new token, borrowed obligations are already gone, and the last
+\* token's release publishes its complete drop before the owner acquires zero.
+\* This counts ownership, not live credits (a terminal token may still drop).
+\* The real atomic protocol and early-retirement controls are checked by
+\* registry_turn_loom.rs; EndTurn/Panic keep the same observable transitions.
 \* Turn returns: tokens dropped in the turn, or a PendingReply never used,
 \* answer Dropped; a ReplyTo left in a local variable is dropped too.
 EndTurn ==
