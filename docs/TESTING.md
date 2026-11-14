@@ -676,10 +676,20 @@ these limits:
   `spawned_rt::tasks::spawn_blocking` runs inline as one atomic step, never
   concurrently. Native actor creation and message/request admission from a
   simulated world fail explicitly instead of mixing real and virtual deadline
-  ticks. Native tests wholly outside a world still use real time. A poll with no await point that
-  never returns trips a wall-clock watchdog (`SPAWNED_SIM_POLL_TIMEOUT`,
+  ticks. Native tests wholly outside a world still use real time. A poll with
+  no await point that never returns trips a wall-clock watchdog (`SPAWNED_SIM_POLL_TIMEOUT`,
   default 60 s) that aborts the process; one that returns after more than
   `SPAWNED_SIM_TURN_BUDGET` (250 ms) inside an actor turn fails the run.
+- Create the simulated `Runtime` before starting actors, preferably with
+  `Runtime::with_seed`. Setup before `block_on` then uses that runtime's
+  ambient world. Starting actors before *any* runtime creates an ambient
+  world, as `spawn` does: attach it with `Runtime::new`, drive it and drop the
+  runtime to drain its pending tasks. `Runtime::with_seed` starts a different
+  world and does not drain a previous unowned ambient one. Without that
+  explicit runtime lifecycle, pending actor tasks stay allocated; dropping
+  actor references or exiting their setup thread does not drain the world.
+  A registry held outside a dropped runtime can retain empty world metadata,
+  but the runtime drop still destroys pending task payloads and timers.
 - `std::thread`, Tokio I/O, and wall-clock and entropy reads the
   interposers cannot see (targets other than Linux/glibc and macOS,
   `getrandom` found with `dlsym` as the `getrandom` crate 0.3+ does on Linux,
