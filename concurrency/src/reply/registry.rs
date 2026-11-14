@@ -687,11 +687,23 @@ mod tests {
         });
         assert_eq!(terminal_of(&slot), Some(Terminal::TimedOut));
         let weak = Arc::downgrade(&registry);
+        let external = registry.clone();
+        let payload = Arc::new(());
+        let payload_weak = Arc::downgrade(&payload);
         runtime.spawn(async move {
             std::future::pending::<()>().await;
-            drop(registry);
+            drop((registry, payload));
         });
         drop(runtime);
+        assert!(
+            payload_weak.upgrade().is_none(),
+            "an external registry must not retain pending task payloads"
+        );
+        assert!(
+            weak.upgrade().is_some(),
+            "the explicit external holder still owns its registry"
+        );
+        drop(external);
         assert!(
             weak.upgrade().is_none(),
             "runtime teardown must drain pending task cycles"
@@ -704,6 +716,15 @@ mod tests {
         for seed in 0..3 {
             let runtime = spawned_rt::tasks::sim::Runtime::with_seed(seed);
             let weak = runtime.block_on(async {
+                let (direct, direct_receiver) =
+                    crate::reply::reply_pair::<u32>(crate::Deadline::Never);
+                let direct_owner = Arc::downgrade(direct.owned_registry.as_ref().unwrap());
+                assert_eq!(direct.reply(7), crate::Delivery::Delivered);
+                assert_eq!(direct_receiver.await.unwrap(), 7);
+                assert!(
+                    direct_owner.upgrade().is_none(),
+                    "direct reply must release its standalone owner"
+                );
                 let (pending, receiver) = crate::reply::reply_pair::<u32>(crate::Deadline::after(
                     std::time::Duration::from_millis(1),
                 ));
@@ -740,6 +761,54 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    #[cfg(all(spawned_sim, feature = "async"))]
+    #[test]
+    fn deadline_service_rejects_mixed_native_and_virtual_clock_requests() {
+        use crate::threads::{Actor, ActorStart, Context, Handler};
+        struct Native;
+        impl Actor for Native {}
+        struct Probe;
+        impl crate::message::Message for Probe {
+            type Result = ();
+        }
+        impl Handler<Probe> for Native {
+            fn handle(&mut self, _: Probe, reply: crate::PendingReply<'_, ()>, _: &Context<Self>) {
+                reply.reply(());
+            }
+        }
+        let actor = std::thread::spawn(|| Native.start()).join().unwrap();
+        let runtime = spawned_rt::tasks::sim::Runtime::with_seed(29);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runtime
+                .block_on(async { actor.send_request(Probe, std::time::Duration::from_millis(1)) })
+        }));
+        drop(runtime);
+        actor.context().stop();
+        actor.join();
+        let panic = match result {
+            Err(panic) => panic,
+            Ok(_) => panic!("mixed clock request was admitted"),
+        };
+        assert!(crate::error::panic_message(&*panic).contains("native actors cannot run"));
+        crate::mailbox::dispose_panic(panic);
+
+        let runtime = spawned_rt::tasks::sim::Runtime::with_seed(31);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runtime.block_on(async { Native.start() })
+        }));
+        drop(runtime);
+        let panic = match result {
+            Err(panic) => panic,
+            Ok(actor) => {
+                actor.context().stop();
+                actor.join();
+                panic!("native actor started in simulated world")
+            }
+        };
+        assert!(crate::error::panic_message(&*panic).contains("native actors cannot run"));
+        crate::mailbox::dispose_panic(panic);
     }
 
     #[cfg(all(spawned_sim, feature = "async"))]

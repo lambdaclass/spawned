@@ -432,6 +432,7 @@ fn deliver_notice(
 /// Effects of a fenced delivery that may run foreign code when destroyed.
 /// They leave both the receiver table and the outermost trace section first.
 #[derive(Default)]
+#[must_use = "dispose delivery effects after the outermost trace section"]
 struct DeliveryCleanup {
     record: Option<table::LinkEntry>,
     panic: Option<Box<dyn std::any::Any + Send>>,

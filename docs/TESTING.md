@@ -674,7 +674,9 @@ these limits:
 - One thread: Thread, Blocking, native and pinned placements and dedicated
   runtimes do not run (a Blocking-backend actor fails the run), and
   `spawned_rt::tasks::spawn_blocking` runs inline as one atomic step, never
-  concurrently. A poll with no await point that
+  concurrently. Native actor creation and message/request admission from a
+  simulated world fail explicitly instead of mixing real and virtual deadline
+  ticks. Native tests wholly outside a world still use real time. A poll with no await point that
   never returns trips a wall-clock watchdog (`SPAWNED_SIM_POLL_TIMEOUT`,
   default 60 s) that aborts the process; one that returns after more than
   `SPAWNED_SIM_TURN_BUDGET` (250 ms) inside an actor turn fails the run.

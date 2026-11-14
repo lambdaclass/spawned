@@ -214,6 +214,14 @@ impl<A: Actor + Handler<Down>> Envelope<A> for DownEnvelope {
     }
 }
 
+#[cfg(all(spawned_sim, feature = "async"))]
+fn assert_native_clock_context() {
+    assert!(
+        spawned_rt::tasks::Handle::try_current_or_ambient().is_err(),
+        "spawned_sim: native actors cannot run in or receive messages from a simulated world;          use tasks actors for simulation, or run native actors outside the simulation"
+    );
+}
+
 /// Admit a message. Past the death point (the registry is sealed, or the
 /// mailbox is gone) it reports `NoProc`; before it, including while the
 /// actor exits, it is queued, and a request is answered at the death point
@@ -229,6 +237,8 @@ where
     A: Actor + Handler<M>,
     M: Message,
 {
+    #[cfg(all(spawned_sim, feature = "async"))]
+    assert_native_clock_context();
     let from = crate::lifecycle_trace::life_sender::<M>(replies.owner().raw(), slot.is_detached());
     let envelope: Box<dyn Envelope<A> + Send> = Box::new(MessageEnvelope {
         msg,
@@ -1281,6 +1291,8 @@ where
 
 impl<A: Actor> ActorRef<A> {
     fn spawn(actor: A, parent: Option<ChildHandle>) -> Self {
+        #[cfg(all(spawned_sim, feature = "async"))]
+        assert_native_clock_context();
         let (tx, rx) = mpsc::channel::<MailboxItem<A>>();
         let cancellation_token = CancellationToken::new();
         register_stop_wakeup(&cancellation_token, tx.clone());

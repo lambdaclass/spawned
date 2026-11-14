@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Simulation rejects native actor creation and message/request admission from
+  a virtual world instead of comparing real-time and virtual deadline ticks.
+  Native-only tests outside a world continue to use real time.
+
 - Simulator deadline owners include setup before `block_on`; native actor
   owners explicitly use real time. Standalone test reply pairs have fresh
   simulated owners, released after each seed. Runtime-drop regressions check
