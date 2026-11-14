@@ -13,7 +13,7 @@
 //! callbacks must never acquire a link-table lock or execute user handlers.
 //! The outgoing SendGate fence is acquired before the table lock at death;
 //! Registry::seal under the table lock only publishes the OnceLock reason.
-//! Across these protocols the order is monitor table -> link tables (pointer
+//! Across these protocols the order is monitor table -> link tables (actor-ID
 //! order) -> exit request -> mailbox admission. Internal wakes must not call
 //! user handlers or reacquire a monitor/link table.
 
@@ -61,13 +61,16 @@ pub(super) fn lock(table: &Mutex<LinkState>) -> MutexGuard<'_, LinkState> {
 }
 
 /// Mutate both ends in one transaction. Callbacks and removed entries are
-/// handled after releasing both locks. Pointer order is stable while Arcs live.
+/// handled after releasing both locks. Actor IDs give every caller the same
+/// immutable total order, independent of allocator addresses and model replay.
 fn with_pair<R>(
+    own_id: ActorId,
     own: &LinkTable,
+    peer_id: ActorId,
     peer: &LinkTable,
     f: impl FnOnce(&mut LinkState, &mut LinkState) -> R,
 ) -> R {
-    if Arc::as_ptr(own) < Arc::as_ptr(peer) {
+    if own_id.raw() < peer_id.raw() {
         let mut a = lock(own);
         let mut b = lock(peer);
         f(&mut a, &mut b)
@@ -102,7 +105,7 @@ pub(crate) fn install(
     gen: u64,
     try_only: bool,
 ) -> LinkOutcome {
-    with_pair(own_links, peer_links, |a, b| {
+    with_pair(own.id, own_links, peer.id, peer_links, |a, b| {
         if a.exited.is_some() || a.entries.iter().any(|e| e.peer_id == peer.id) {
             return LinkOutcome::Unchanged;
         }
@@ -153,7 +156,9 @@ pub(crate) fn remove_pair(
     peer_id: ActorId,
     peer: &LinkTable,
 ) -> (Option<LinkEntry>, Option<LinkEntry>) {
-    with_pair(own, peer, |a, b| (remove(a, peer_id), remove(b, own_id)))
+    with_pair(own_id, own, peer_id, peer, |a, b| {
+        (remove(a, peer_id), remove(b, own_id))
+    })
 }
 
 /// Receiver-side delivery: under the receiver's table lock, apply the notice

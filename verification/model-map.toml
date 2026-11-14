@@ -109,6 +109,7 @@ code = [
     "concurrency/src/tasks/actor.rs",
     "concurrency/src/threads/actor.rs",
     "concurrency/src/link.rs",
+    "concurrency/src/link/table.rs",
     "concurrency/src/monitor.rs",
     "concurrency/src/child_handle.rs",
     "concurrency/src/mailbox.rs",

@@ -28,6 +28,11 @@ mod sync {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct ActorId(u64);
+impl ActorId {
+    fn raw(self) -> u64 {
+        self.0
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ExitReason {
@@ -65,14 +70,8 @@ use std::sync::Arc;
 use table::{LinkOutcome, LinkTable};
 
 fn model(name: &'static str, f: impl Fn() + Sync + Send + 'static) {
-    // std Arc addresses determine the production table's total lock order.
-    // Parallel libtest models add allocator activity outside Loom's control
-    // and can change that branch between replay iterations (an internal
-    // "expected to be able to acquire lock" failure on macOS). Libtest
-    // concurrency is not an actor-protocol interleaving: isolate model runs,
-    // while still exploring every application-thread schedule without bounds.
-    static MODEL_RUN: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _run = MODEL_RUN.lock().unwrap_or_else(|p| p.into_inner());
+    // Production orders table locks by immutable actor IDs, so model replay
+    // does not depend on std Arc addresses or libtest allocator activity.
     let runs = Arc::new(AtomicUsize::new(0));
     let counted = runs.clone();
     // Unbounded: the protocols are lock-based and small enough to explore
@@ -265,40 +264,49 @@ fn relink_after_unlink_ignores_the_stale_generation() {
 /// one notice (the real reason or a late `NoProc`).
 #[test]
 fn death_racing_unlink_and_a_new_link() {
-    model("death_racing_unlink_and_a_new_link", || {
-        let (a, b, c) = (
-            Arc::new(Actor::new(1)),
-            Arc::new(Actor::new(2)),
-            Arc::new(Actor::new(3)),
-        );
-        assert_eq!(link(&b, &a, 1, false), LinkOutcome::Linked);
-        let dying = {
-            let a = a.clone();
-            spawn(move || die(&a, ExitReason::Panic, &[]))
-        };
-        let linking = {
-            let (a, c) = (a.clone(), c.clone());
-            spawn(move || link(&c, &a, 2, false))
-        };
-        unlink(&b, &a, 1);
-        dying.join().unwrap();
-        let outcome = linking.join().unwrap();
-        assert!(b.log().len() <= 1);
-        let expected = match outcome {
-            LinkOutcome::Linked => ExitReason::Panic,
-            LinkOutcome::NoProc => ExitReason::NoProc,
-            LinkOutcome::Unchanged => panic!("a first link is never unchanged"),
-        };
-        assert_eq!(
-            c.log(),
-            vec![Notice {
-                from: a.id(),
-                gen: 2,
-                reason: expected
-            }]
-        );
-        assert_eq!(a.records() + b.records() + c.records(), 0);
-    });
+    for ids in [
+        [1, 2, 3],
+        [1, 3, 2],
+        [2, 1, 3],
+        [2, 3, 1],
+        [3, 1, 2],
+        [3, 2, 1],
+    ] {
+        model("death_racing_unlink_and_a_new_link", move || {
+            let (a, b, c) = (
+                Arc::new(Actor::new(ids[0])),
+                Arc::new(Actor::new(ids[1])),
+                Arc::new(Actor::new(ids[2])),
+            );
+            assert_eq!(link(&b, &a, 1, false), LinkOutcome::Linked);
+            let dying = {
+                let a = a.clone();
+                spawn(move || die(&a, ExitReason::Panic, &[]))
+            };
+            let linking = {
+                let (a, c) = (a.clone(), c.clone());
+                spawn(move || link(&c, &a, 2, false))
+            };
+            unlink(&b, &a, 1);
+            dying.join().unwrap();
+            let outcome = linking.join().unwrap();
+            assert!(b.log().len() <= 1);
+            let expected = match outcome {
+                LinkOutcome::Linked => ExitReason::Panic,
+                LinkOutcome::NoProc => ExitReason::NoProc,
+                LinkOutcome::Unchanged => panic!("a first link is never unchanged"),
+            };
+            assert_eq!(
+                c.log(),
+                vec![Notice {
+                    from: a.id(),
+                    gen: 2,
+                    reason: expected
+                }]
+            );
+            assert_eq!(a.records() + b.records() + c.records(), 0);
+        });
+    }
 }
 
 /// Both ends die at once: each notice takes effect at most once, and never

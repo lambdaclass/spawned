@@ -1090,12 +1090,14 @@ destruction takes the job set's locks, so running it under one is a Loom
 deadlock). Each model was checked against a planted bug.
 
 `link_fence_loom` shares the link table (`src/link/table.rs`: edge
-generations, the two-lock install, receiver-side fenced delivery, the close at
-the death point) and the observer's monitor table (`src/monitor/fence.rs`)
+generations, the two-lock install in immutable actor-ID order, receiver-side
+fenced delivery, the close at the death point) and the observer's monitor table (`src/monitor/fence.rs`)
 with production in the same way; `ActorId`, `ExitReason` and the receiver are
 stand-ins, and applying a notice is an append under the receiver's lock. Its
-nine tests are explored without a preemption bound (5 to 382 executions
-each): at most one notice per edge generation, none after the receiver's
+ten tests are explored without a preemption bound; the three-actor death,
+unlink and new-link race covers all six actor-ID orderings. Ordering locks by
+immutable IDs makes replay independent of allocator address changes, including
+parallel libtest runs. Properties: at most one notice per edge generation, none after the receiver's
 `unlink` returned or after its own death point, exactly one notice (real
 reason or `NoProc`) for a `link` racing the peer's death and none for a
 `try_link` after it, a stale generation ignored after unlink and relink, one

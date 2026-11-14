@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Link-table transactions order their two locks by immutable actor IDs.
+  Deadlock prevention no longer depends on allocator addresses, making Loom
+  replay stable; the three-actor race covers every ID ordering.
+
 - Actor message loops check a private atomic stop flag instead of locking
   Tokio's cancellation state before every message. Tokio's latched waiter
   still wakes parked actors/helpers; public cancellation and deadline semantics

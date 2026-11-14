@@ -56,6 +56,9 @@ parked loop. The Rust stop core is also included by `stop_token_loom`, which
 checks publication ordering and the registration race. This changes the
 implementation's hot-path check, not the model's actions or bounded inputs.
 Tokio's own waiter internals are an explicit trusted dependency.
+Link-table transactions retain their two-lock total-order rule, using immutable
+actor IDs instead of allocator addresses. Loom covers all six three-actor ID
+orderings; the existing atomic link-install/remove model actions are unchanged.
 
 `ReplyTimer.tla`/`MCReplyTimer` is a receiver-local refinement of request
 deadline bookkeeping, without actor trace events. It separates taking the
