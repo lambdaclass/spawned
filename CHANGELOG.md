@@ -170,6 +170,13 @@ the road to 1.0. Upgrade notes, with an old-call → new-call table, are in
 
 ### Fixed
 
+- Actor message loops use a private atomic stop flag instead of locking
+  Tokio's cancellation state before every message. The latched Tokio waiter
+  still wakes parked actors and helpers. Cancellation and deadlines retain
+  their existing semantics; the real stop core has Loom ordering/race checks.
+- Link-table transactions acquire locks in immutable actor-ID order, keeping
+  the total-order deadlock rule independent of allocator addresses. Loom's
+  three-actor race covers all six ID orderings and parallel model replay.
 - Failed deadline-worker initialization releases its service allocation on
   error or unwind and leaves initialization retryable. Startup still fails
   rather than silently accepting an unserviceable deadline.
