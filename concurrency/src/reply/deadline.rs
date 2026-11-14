@@ -144,7 +144,10 @@ impl DeadlineHeap {
 
 /// The owner died: the service forgets it (its heap is gone).
 pub(crate) fn forget(_registry: &Registry) {
-    #[cfg(not(all(spawned_sim, feature = "async")))]
+    #[cfg(all(spawned_sim, feature = "async"))]
+    if _registry.sim_service().runtime.is_some() {
+        return;
+    }
     thread_service::forget(_registry.key());
 }
 
@@ -156,7 +159,6 @@ pub(crate) fn schedule(registry: &Arc<Registry>, at: u64) {
     thread_service::schedule(registry, at);
 }
 
-#[cfg(not(all(spawned_sim, feature = "async")))]
 mod thread_service {
     use super::*;
     use std::collections::HashMap;
@@ -279,6 +281,10 @@ mod sim {
 
     /// Per-heap service task state, kept by the registry.
     pub(crate) struct SimService {
+        // Capture the owner's world, rather than whichever thread first
+        // arms a deadline. Native owners constructed outside a simulation
+        // retain the real-time service and its separate clock domain.
+        pub(super) runtime: Option<spawned_rt::tasks::Handle>,
         started: AtomicBool,
         earliest: AtomicU64,
         waker: AtomicWaker,
@@ -287,6 +293,7 @@ mod sim {
     impl Default for SimService {
         fn default() -> Self {
             Self {
+                runtime: spawned_rt::tasks::Handle::try_current().ok(),
                 started: AtomicBool::new(false),
                 // Nothing scheduled yet: a first schedule only lowers it, so a
                 // concurrent earlier deadline is never overwritten.
@@ -298,10 +305,14 @@ mod sim {
 
     pub(super) fn schedule(registry: &Arc<Registry>, at: u64) {
         let service = registry.sim_service();
+        let Some(runtime) = &service.runtime else {
+            super::thread_service::schedule(registry, at);
+            return;
+        };
         service.earliest.fetch_min(at, Ordering::AcqRel);
         if !service.started.swap(true, Ordering::AcqRel) {
             let weak = Arc::downgrade(registry);
-            spawned_rt::tasks::spawn(run(weak));
+            runtime.spawn(run(weak));
         }
         service.waker.wake();
     }
@@ -321,6 +332,9 @@ mod sim {
                 let Some(registry) = weak.upgrade() else {
                     return;
                 };
+                // `track` inserts into the heap before publishing `earliest`.
+                // A concurrent insertion whose signal this reset replaces is
+                // therefore seen by service_deadlines and re-published below.
                 registry
                     .sim_service()
                     .earliest

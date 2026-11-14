@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Simulated deadline services retain their owner's runtime when first armed
+  from another context. Foreign-thread scheduling is reported as a determinism
+  escape instead of silently creating an unpolled world; native owners outside
+  a simulation use real time.
+
 - Refused job results and immediate emits contain destructor panics in both
   execution modes. Cancellation, deadlines, keyed replacement and owner
   discharge retain containment for results held behind scheduled emits.
