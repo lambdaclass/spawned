@@ -177,24 +177,81 @@ mod thread_service {
         wake: Condvar,
     }
 
-    static SERVICE: OnceLock<&'static Service> = OnceLock::new();
+    static SERVICE: OnceLock<Arc<Service>> = OnceLock::new();
 
     fn lock(service: &Service) -> std::sync::MutexGuard<'_, State> {
         service.state.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    /// Failed creation owns nothing permanently: both the worker closure
+    /// and this initializer release their Arcs on error or unwind. OnceLock
+    /// remains empty, so a later attempt can retry without leaking a Service.
+    fn initialize(
+        spawn: impl FnOnce(Arc<Service>) -> std::io::Result<()>,
+    ) -> std::io::Result<Arc<Service>> {
+        let service = Arc::new(Service {
+            state: Mutex::new(State::default()),
+            wake: Condvar::new(),
+        });
+        spawn(service.clone())?;
+        Ok(service)
+    }
+
     fn service() -> &'static Service {
-        SERVICE.get_or_init(|| {
-            let service: &'static Service = Box::leak(Box::new(Service {
-                state: Mutex::new(State::default()),
-                wake: Condvar::new(),
+        SERVICE
+            .get_or_init(|| {
+                initialize(|service| {
+                    std::thread::Builder::new()
+                        .name("spawned-deadlines".into())
+                        .spawn(move || run(&service))
+                        .map(|_| ())
+                })
+                // A deadline cannot be accepted without a service. Preserve
+                // fail-fast startup rather than silently leaving it unarmed.
+                .expect("spawn the deadline service thread")
+            })
+            .as_ref()
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn failed_service_start_reclaims_storage_and_allows_retry() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        let cell = OnceLock::<Arc<Service>>::new();
+        let observed = Mutex::new(Weak::<Service>::new());
+        for panic_in_factory in [false, true] {
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                cell.get_or_init(|| {
+                    initialize(|service| {
+                        *observed.lock().unwrap() = Arc::downgrade(&service);
+                        if panic_in_factory {
+                            panic!("injected worker-spawn panic");
+                        }
+                        Err(std::io::Error::other("injected worker-spawn failure"))
+                    })
+                    .expect("injected worker startup failed")
+                });
             }));
-            std::thread::Builder::new()
-                .name("spawned-deadlines".into())
-                .spawn(move || run(service))
-                .expect("spawn the deadline service thread");
-            service
-        })
+            crate::mailbox::dispose_panic(result.unwrap_err());
+            assert!(
+                cell.get().is_none(),
+                "a failed initializer must be retryable"
+            );
+            assert!(
+                observed.lock().unwrap().upgrade().is_none(),
+                "failed startup leaked its Service"
+            );
+        }
+        cell.get_or_init(|| {
+            initialize(|service| {
+                *observed.lock().unwrap() = Arc::downgrade(&service);
+                Ok(())
+            })
+            .unwrap()
+        });
+        assert!(observed.lock().unwrap().upgrade().is_some());
+        drop(cell);
+        assert!(observed.lock().unwrap().upgrade().is_none());
     }
 
     pub(super) fn forget(key: u64) {
@@ -227,7 +284,7 @@ mod thread_service {
         service.wake.notify_one();
     }
 
-    fn run(service: &'static Service) {
+    fn run(service: &Service) {
         let mut state = lock(service);
         loop {
             let now = super::super::now_ticks();

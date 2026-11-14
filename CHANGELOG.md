@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Failed deadline-worker initialization releases its service allocation on
+  error or unwind, and leaves initialization retryable. Startup still fails
+  rather than silently accepting an unserviceable deadline.
+
 - Simulation rejects native actor creation and message/request admission from
   a virtual world instead of comparing real-time and virtual deadline ticks.
   Native-only tests outside a world continue to use real time.
