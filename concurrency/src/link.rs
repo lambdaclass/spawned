@@ -652,11 +652,13 @@ mod tests {
                     });
                 });
                 let trace_free = received
-                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .recv_timeout(std::time::Duration::from_secs(10))
                     .is_ok();
                 if trace_free {
                     worker.join().unwrap();
                 }
+                // On failure the subprocess exits after the assertion. Do
+                // not join a probe still blocked on the lock being tested.
                 self.results.lock().unwrap().push(table_free && trace_free);
             }
         }

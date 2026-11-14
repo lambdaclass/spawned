@@ -293,10 +293,21 @@ mod sim {
     impl Default for SimService {
         fn default() -> Self {
             Self {
-                runtime: spawned_rt::tasks::Handle::try_current().ok(),
+                runtime: Some(spawned_rt::tasks::Handle::current_or_ambient()),
                 started: AtomicBool::new(false),
                 // Nothing scheduled yet: a first schedule only lowers it, so a
                 // concurrent earlier deadline is never overwritten.
+                earliest: AtomicU64::new(u64::MAX),
+                waker: AtomicWaker::new(),
+            }
+        }
+    }
+
+    impl SimService {
+        pub(crate) fn native() -> Self {
+            Self {
+                runtime: None,
+                started: AtomicBool::new(false),
                 earliest: AtomicU64::new(u64::MAX),
                 waker: AtomicWaker::new(),
             }

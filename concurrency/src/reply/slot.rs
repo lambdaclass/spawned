@@ -165,6 +165,8 @@ pub enum Delivery {
     Delivered,
     /// The caller left (abandoned the receiver) or the slot was already
     /// answered (dropped, overloaded).
+    /// No open caller remains, including an internal duplicate publisher
+    /// whose earlier reply already won. The winning value is preserved.
     CallerGone,
     /// The caller's deadline expired the request first (its timer, the
     /// owner's deadline heap, or a deadline check); the value was dropped

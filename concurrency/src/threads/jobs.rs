@@ -135,7 +135,7 @@ where
 
     fn enqueue_terminal(&self, outcome: Contained<JobOutcome<T>>) -> Option<MailboxItem<A>> {
         let done = self.done.lock().unwrap_or_else(|p| p.into_inner()).take()?;
-        let outcome = outcome.into_inner()?;
+        let outcome = outcome.into_inner().expect("the terminal owns its outcome");
         // Execution ended (or is still running past its deadline, and then
         // keeps its hold): return the credit before the terminal message
         // can be dispatched, so `done`'s turn can start the next job at the

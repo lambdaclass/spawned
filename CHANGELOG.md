@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Simulator deadline owners include setup before `block_on`; native actor
+  owners explicitly use real time. Standalone test reply pairs have fresh
+  simulated owners, released after each seed. Runtime-drop regressions check
+  that pending actor tasks cannot retain a world/registry cycle.
+- Async `request_with_timeout` returns an explicitly `Send` future. The
+  `Handler::__spawned_handle_immediate` hook is hidden framework machinery
+  used by generated handlers, with the ordinary future adapter as fallback.
+
 - Simulated deadline services retain their owner's runtime when first armed
   from another context. Foreign-thread scheduling is reported as a determinism
   escape instead of silently creating an unpolled world; native owners outside
@@ -27,8 +35,7 @@
 - Generated await-free async handlers can dispatch without a boxed turn future
   when their message has no destructor. Shared/explicit-lifetime receivers,
   opaque macros/attributes, nested items/anonymous types, suspending handlers
-  and payloads with destructors
-  retain the future adapter. Public direct calls remain lazy; panic fencing,
+  and payloads with destructors retain the future adapter. Public direct calls remain lazy; panic fencing,
   drop order and causal actor tracing are preserved.
 - Request and turn bookkeeping avoids redundant atomic exchanges and dynamic
   default-budget storage. Deferred-token ownership is tracked through the end

@@ -1312,7 +1312,7 @@ impl<A: Actor> ActorRef<A> {
             linked_reason: linked_reason.clone(),
             signal: signal.clone(),
             mailbox: crate::instrumentation::Mailbox::default(),
-            replies: Registry::new(id, A::MAX_OUTSTANDING),
+            replies: Registry::new_native(id, A::MAX_OUTSTANDING),
             jobs: Arc::new(crate::reply::jobs::JobSet::new(
                 id,
                 A::MAX_NATIVE_JOBS.unwrap_or_else(crate::reply::jobs::default_max_native_jobs),
@@ -2675,7 +2675,7 @@ mod idle_stop_regression {
                         token.clone(),
                     ),
                     mailbox: crate::instrumentation::Mailbox::default(),
-                    replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
+                    replies: Registry::new_native(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
                     jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
                     cleaned: Arc::default(),
                 };
@@ -2832,7 +2832,7 @@ mod stop_wakeup_regression {
                         token.clone(),
                     ),
                     mailbox: crate::instrumentation::Mailbox::default(),
-                    replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
+                    replies: Registry::new_native(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
                     jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
                     cleaned: Arc::default(),
                 };
