@@ -1502,7 +1502,7 @@ production builds.
 Enable the optional `metrics` feature on `spawned-concurrency` (available in v0.6.0):
 
 ```toml
-spawned-concurrency = { version = "0.7.1", features = ["metrics"] }
+spawned-concurrency = { version = "0.8", features = ["metrics"] }
 ```
 
 The default build compiles out collection, timing metadata and response observers.
@@ -1645,7 +1645,7 @@ feature; with `default-features = false` it builds Tokio-free with the
 
 ```toml
 [dev-dependencies]
-spawned-test = "0.7.1"
+spawned-test = "0.8"
 ```
 
 ### Mock a dependency

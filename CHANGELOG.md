@@ -2,602 +2,145 @@
 
 ## Unreleased
 
+## 0.8.0 — 2026-11-14
+
+0.8 is a breaking release. It adds deferred replies and jobs, aligns exit
+signals, startup and runtime drop with Erlang/OTP, and cleans up the API before
+the road to 1.0. Upgrade notes, with an old-call → new-call table, are in
+[docs/MIGRATION.md](docs/MIGRATION.md) under "0.7 to 0.8".
+
+### Highlights
+
+- **Deferred replies and jobs (gen_server `noreply` + `reply/2`).** A handler
+  can answer later through a typed `ReplyTo<R>` token with an explicit reply obligation
+  (`PendingReply`, `PendingReplies`, `#[deferred_handler]`). Pipe-to-self jobs
+  (`pipe`, `pipe_blocking`, `pipe_reply`, `pipe_reply_blocking`, permits via
+  `reserve_job`/`reserve_blocking_job`) run work off the actor and deliver the
+  result as a message, with keyed replacement, deadlines, `emit`/`emit_at`,
+  bounded outstanding work (`max_outstanding`, `max_native_jobs`) and fencing
+  when the actor stops.
+- **Exit signals as in OTP.** `kill`/`Killed`, `ctx.exit` with `exit/2`
+  semantics, `NoProc` for links and requests to dead actors, `try_link`,
+  fenced `unlink`/`demonitor` (`demonitor` flushes a queued `Down`, as
+  `demonitor(Ref, [flush])`), `stopped()` skipped on kill or an untrapped
+  signal, supervised non-trapping children skip `stopped()` on shutdown.
+- **One death point.** However an actor dies (normal stop, panic, kill,
+  runtime drop, never polled), outstanding callers are answered and signals
+  fenced before post-death destructor, waker or tracing callbacks run;
+  terminal publication comes last.
+- **Supervision as in OTP.** The restart budget counts recovery rounds, not
+  rebuilt children; first-start failures abort startup
+  (`SupervisorError::FailedToStartChild`); one exit reason when the runtime
+  drops an actor.
+
+### Breaking changes
+
+- Async `request_with_timeout` returns an explicitly `Send` future. Generated
+  handlers use the hidden `Handler::__spawned_handle_immediate` hook where
+  eligible; the ordinary future adapter remains the fallback.
+- `Handler::handle` receives a reply token; send-only handlers use
+  `#[send_handler]`.
+- `request_raw`/`request_raw_until` → `send_request` with one `Deadline` type
+  (`Duration`, `Instant` or `Deadline`); pass `Deadline::Never` to preserve
+  the unbounded 0.7 raw-request behavior. Ordinary `request()` keeps its 5 s
+  timeout. Only the caller's expiry decides timeout; a late reply that wins
+  before expiry is delivered, as in OTP.
+- Job API: one call per shape, options first; `JobOptions`, `SupervisorConfig`,
+  `Backoff` and metrics config are `#[non_exhaustive]` with builders.
+- `ActorError`, `DeferError`, `Delivery`, `InsertError` and other growing
+  enums are `#[non_exhaustive]`; `ActorError` gains `target_gone`,
+  `is_transient`, `is_timeout`, `exit_reason`. `InsertError::kind()` and
+  `into_parts()` let a caller always answer a refused token.
+- `Receiver` is sealed; `Response` no longer fails silently.
+- Behaviour: the restart budget counts rounds; a supervised child that does
+  not trap exits skips `stopped()` on shutdown; `demonitor` flushes.
+
+### Added
+
+- Simulator D1–D3: deterministic clock/entropy interception in the separate
+  simulation-only `spawned-sim-libc` crate, inline simulated blocking work,
+  runtime timer/interval/JoinSet adapters and strict escape diagnostics.
+  Simulated runs use fresh threads; test bodies must be `Sync`. The platform
+  and randomness-interception limits are documented in TESTING and MIGRATION.
+
+- `#[actor]` compile-time lints: shared mutable state (`Arc<Mutex<_>>` and
+  similar) in an actor, and `panic = "abort"`; opt-outs
+  `allow_shared_state`, `allow_panic_abort`.
+- `#[spawned_concurrency::sim_test]` re-exported; deterministic simulation
+  example.
+- The simulator fails a test whose actor turn runs too long without yielding
+  (`SPAWNED_SIM_TURN_BUDGET`).
+
+### Verification and testing
+
+- Await-free generated async handlers dispatch without a boxed turn future
+  when their messages have no destructors and their bodies contain no opaque
+  macros, nested items, closures or async blocks. Other handlers retain the
+  original future adapter. Regressions cover lazy direct calls, local item and
+  anonymous type identity, cooperative scheduling, drop order, panic
+  containment, macro hygiene and causal tracing. Deferred-token retirement
+  and the reduced turn bookkeeping have production-core Loom checks.
+- TLA+ models `Lifecycle`, `DeferredReplies` and `DeferredJobs`, each tied to
+  the code by trace validation with full action coverage, alongside the
+  updated `Supervision`, `Cohorts` and `Coordinator`; named negative
+  controls check key safety and liveness properties.
+- Required CI checks include `sim` (simulated suites), `model-sync`
+  (models must change with the code they model), and `perf-gate` (no gated
+  hot-path benchmark may grow more than 3% in instructions per operation).
+- Request optimization keeps monotonic service deadlines separate from
+  relative runtime waits, and reduces envelope and future storage; no coarse
+  clock is introduced. Paused-clock regressions cover the clock domains.
+  The receiver timer model and production-slot Loom races cover the bookkeeping.
+- Semantics coverage: 47 of 50 guarantees have a check that fails if they
+  break. Planted-bug matrix: 23 of 24 realistic bugs caught, each by two or
+  more layers. Scenario-fuzzer oracles for restarts, budgets, backoff and
+  links. Soak harness for leaks. Bounded waits: hung tests fail by name.
+
+### Fixed
+
 - Failed deadline-worker initialization releases its service allocation on
-  error or unwind, and leaves initialization retryable. Startup still fails
+  error or unwind and leaves initialization retryable. Startup still fails
   rather than silently accepting an unserviceable deadline.
-
 - Simulation rejects native actor creation and message/request admission from
-  a virtual world instead of comparing real-time and virtual deadline ticks.
-  Native-only tests outside a world continue to use real time.
-
-- Simulator deadline owners include setup before `block_on`; native actor
-  owners explicitly use real time. Standalone test reply pairs have fresh
-  simulated owners, released after each seed. Runtime-drop regressions check
-  that pending actor tasks cannot retain a world/registry cycle.
-- Async `request_with_timeout` returns an explicitly `Send` future. The
-  `Handler::__spawned_handle_immediate` hook is hidden framework machinery
-  used by generated handlers, with the ordinary future adapter as fallback.
-
-- Simulated deadline services retain their owner's runtime when first armed
-  from another context. Foreign-thread scheduling is reported as a determinism
-  escape instead of silently creating an unpolled world; native owners outside
-  a simulation use real time.
-
+  a virtual world, preventing comparisons between real and virtual deadline
+  ticks. Native tests outside a world retain real time.
+- Simulator owners include setup before `block_on`; test reply pairs have
+  fresh per-world owners, and pending tasks release owner/runtime cycles
+  during runtime drop. Native helpers retain real time without creating a
+  virtual world.
+- Refused job notifications and emits drop captures outside the trace lock;
+  linked-exit diagnostics and panic-payload disposal run after the receiver
+  table and outermost trace section, including late `NoProc` delivery.
 - Refused job results and immediate emits contain destructor panics in both
   execution modes. Cancellation, deadlines, keyed replacement and owner
-  discharge retain containment for results held behind scheduled emits.
+  discharge retain containment for held results.
+- Simulated deadline services stay with their owner rather than the caller's
+  current context; foreign-thread scheduling fails the owning simulation as
+  a determinism escape. Native owners without a simulation use real time.
+- Compact reply slots keep ordinary values inline and deferred metadata in a
+  cold allocation, with a 56-byte scalar layout budget. Slot handoff uses a
+  non-poisoning parking_lot lock through the Loom synchronization seam. A
+  refused second publisher preserves the first winning reply.
+- Unused job completion factories drop outside the lifecycle trace lock.
+  The destructor regression runs with tracing enabled in CI.
+- The scenario-fuzzer oracle includes cleanup failures when deciding whether
+  a Transient child must restart, even when its published reason is Normal.
+  The original failing tape replays strictly and has additional seed coverage.
 
-- Refused job notifications and emits destroy their captures outside the
-  lifecycle trace lock. Linked-exit delivery disposes caught panic payloads,
-  logs failures and releases removed records after both the receiver table
-  and the outermost trace section, including late links to dead actors.
+- Job completion closes emit admission atomically. Retaining a `JobCtx`
+  cannot schedule new messages during held-result release; blocked emitters
+  wake at completion. Join waiters are deduplicated and woken outside locks.
+- Request envelopes use message presence as their dispatch marker and
+  inline construction. The performance gate also covers manifests, lockfiles
+  and toolchain changes; its 3% instruction limit remains unchanged.
+- Request deadlines remain correct when Tokio time is paused while real
+  time advances. Runtime clock instants are not stored as service deadlines.
 
-- Ordinary reply slots keep the value inline and move deferred metadata to a
-  cold allocation; scalar slots are bounded by a 56-byte layout regression.
-  Slot locking uses parking_lot behind the production/Loom synchronization
-  seam. A refused second publisher preserves the winning reply instead of
-  overwriting it; the regression fails without the terminal pre-check.
-- Job completion drops unused result factories outside the lifecycle trace
-  lock. A reproducing destructor regression runs in trace CI; keyed-job
-  generation retention and link attempts racing exit are documented.
-- Generated await-free async handlers can dispatch without a boxed turn future
-  when their message has no destructor. Shared/explicit-lifetime receivers,
-  opaque macros/attributes, nested items/anonymous types, suspending handlers
-  and payloads with destructors retain the future adapter. Public direct calls remain lazy; panic fencing,
-  drop order and causal actor tracing are preserved.
-- Request and turn bookkeeping avoids redundant atomic exchanges and dynamic
-  default-budget storage. Deferred-token ownership is tracked through the end
-  of destruction; production-core Loom races cover last-token retirement.
-- Performance: request envelopes reuse message presence as their dispatch
-  marker and inline construction, removing duplicate state without moving
-  dispatch or discharge. The instruction gate also covers manifest, lockfile
-  and compiler changes, including release version bumps.
-- Release-review fixes: job completion atomically closes emit admission,
-  including the gap after a held terminal is released; blocked emitters wake
-  on completion. Join waiters are deduplicated and woken outside their lock.
-  Production-core Loom regressions and a TLA+ fault cover retained JobCtx races.
-- Timer regression: paused Tokio time is never stored as a service-clock
-  deadline. Monotonic clock conversion is inlined without caching time.
-
-- Release validation: client compatibility uses the prepared `spawned-v0.8`
-  ports for the breaking API, rather than the incompatible 0.7 client branches.
-
-- **Behaviour (0.8)**: request timeouts are the caller's, as OTP's
-  `gen_server:call`: a reply reads no clock, and only the caller's expiry
-  (its timer, the owner's deadline heap, a deadline check) times a request
-  out. A reply that loses that race is dropped (`Delivery::Expired`, the
-  caller sees `RequestTimeout`); one that lands after the deadline but
-  before the expiry runs is delivered. The `WRITING` slot state is gone and
-  no reply path reads the clock. `DeferredReplies.tla` models it (a reply
-  delivers while the slot is open; `LateSuccess` now overrides an expired
-  slot).
-- Performance (0.8 request path, no API change): the reply slot keeps one
-  lock for value and waker with lazily created deferral state (no condvar:
-  a blocking `recv()` parks its thread); the tasks envelope lends its
-  request slot to the turn instead of cloning it; a turn that finishes in
-  its first poll skips the runtime-drop guard; `request` captures one precise
-  runtime timer before enqueue, keeping its relative budget separate from
-  the service-clock slot deadline so paused clocks stay correct (no coarse clock); a request without a
-  deadline holds no reference to the owner's registry (the owner's close
-  records the final reason in the slot); a caller that owns an answered
-  slot alone takes the value without the lock; and the slot no longer
-  holds its owner at all (two flags became word bits), which keeps it in
-  glibc's fast bins for typical reply sizes. Reply ownership and terminal
-  transitions retain their linearization points. A receiver timer
-  refinement (`ReplyTimer.tla`), two negative controls, production-slot Loom
-  races, and paused-clock/overflow tests cover the timer bookkeeping.
-- `InsertError::kind()` (a `#[non_exhaustive]` `InsertErrorKind`) and
-  `InsertError::into_parts()`: a refused insert's reason and token come
-  together, so a caller answers the token for any reason, including one
-  added later, instead of dropping it in a wildcard arm.
-- Docs: an async job's `work` is a factory run at once in the current turn
-  (its panic is a handler panic; a job refused by the owner's exit has run
-  it); only its future is the job (`pipe` rustdoc, GUIDE).
-- **Behaviour (0.8)**: `demonitor` flushes, as OTP's `demonitor(Ref, [flush])`:
-  once it returns, in both modes, no `Down` of that monitor is enqueued or
-  handled, including one already in the mailbox. Framework `Down`s travel in
-  a private envelope that checks the monitor table at dispatch, so ordinary
-  messages pay nothing and a `Down` user code sends is unaffected. New
-  failpoint site `monitor.down_before_dispatch` (#247).
-- Fix: `PendingReplies::drain` yields live tokens in insertion order. It
-  walked a `HashMap` with a per-process `RandomState`, so deferred replies
-  were answered in a different order in each process, and a same-seed
-  simulator run did not reproduce its schedule (#261). `take` is now a
-  linear scan of the capped table.
-- **Breaking (0.8), API pass before publishing** (each change is a row of the
-  [0.7 to 0.8 call-site table](docs/MIGRATION.md#07-to-08-api-call-site-table)):
-  - Jobs: one call per shape, options first (`pipe`, `pipe_blocking`,
-    `pipe_reply`, `pipe_reply_blocking`, `reserve_job(opts)`,
-    `reserve_blocking_job(opts)`); every `work` receives its `JobCtx` by
-    value. `pipe_with`, `pipe_with_ctx`, `pipe_keyed`, `pipe_blocking_with`,
-    `pipe_reply_with` and `pipe_reply_blocking_with` are gone.
-    `JobOptions` is `#[non_exhaustive]` with a builder (`new`, `key`,
-    `deadline(impl Into<Deadline>)`, `emit_credits(NonZeroU16)`,
-    `cancel_on_caller_gone`, which `debug_assert!`s outside `pipe_reply*`);
-    `deadline_after` is folded into `deadline`. `JobOutcome<T>` is
-    `Result<T, JobError>`. `PipeError` is the `#[non_exhaustive]` enum (no
-    `kind` wrapper); `PipeReplyError` is `#[non_exhaustive]` and its
-    `Failed` variant carries `error`. `Deadline` implements
-    `From<Duration>` and `From<Instant>`. `DEFAULT_EMIT_CREDITS` and
-    `default_max_native_jobs` are no longer public.
-  - Requests and deadlines: `request_raw` and `request_raw_until` become
-    `send_request(msg, impl Into<Deadline>)` (OTP's
-    `gen_server:send_request/2` with an explicit deadline; on `Receiver<M>`, a `Deadline`). 0.7's
-    `request_raw` had no deadline: `Deadline::Never` keeps that.
-    `PendingReply::deadline`, `ReplyTo::deadline` and `ReplyReceiver::deadline`
-    return `Deadline`, so a deadline forwards as is;
-    `ReplyTo::with_deadline` is `shorten_deadline(impl Into<Deadline>)`.
-    Removed: `PendingReply::has_caller` (`defer()` returns `NoCaller`),
-    `PendingReplies::{purge, retained, live}` (now `len`/`is_empty`; purging
-    stays automatic), the public `DEFAULT_MAX_OUTSTANDING` (the default,
-    1024, is documented at `Actor::MAX_OUTSTANDING`).
-    `PendingReply::detached` is hidden (`spawned_test::detached_reply()`).
-    `InsertError<R>` holds `ReplyTo<R>` and is `#[non_exhaustive]`.
-    `DEFAULT_REQUEST_TIMEOUT` is re-exported at the crate root. The
-    `Duration` parameters of `ActorSystem::shutdown`, `Supervisor::shutdown`,
-    `ShutdownReport::wait` and the test kit's waits are named `grace` or
-    `limit` (a deadline is an instant). `PendingReplies` and
-    `Context::deferred_outstanding` are documented as experimental.
-  - `#[non_exhaustive]` on the enums that will grow (`SupervisorError`,
-    `SystemError`, `HelperError`, `RegistryError`, `SupervisorStrategy`,
-    `ExecutionProfile`, `ChildState`, `Backend`, `spawned_test::Outcome`)
-    and on the read-only structs (`Down`, `Exit`, `ChildSnapshot`,
-    `SupervisorReport`, `ActorExit`, `metrics::Snapshot`,
-    `HistogramSnapshot`). `Down` gains `actor`, the monitored `ActorId`
-    (OTP's `Object` in `{'DOWN', Ref, process, Object, Info}`).
-  - `SupervisorConfig`, `Backoff` and `metrics::Config` are
-    `#[non_exhaustive]` with builders (`new()` plus one setter per field;
-    `Backoff::seed(u64)`).
-  - Hidden and sealed surface: `Receiver<M>` is sealed (it gained a
-    required method in 0.8; sealing lets the next one be added freely). The
-    `reply` module is `#[doc(hidden)]` (its types are at the crate root and
-    under `tasks`/`threads`; macros emit root paths). Test hooks
-    (`ActorRef::__in_turn`, `PendingReply::__discharge_stopped`,
-    `reply_pair`, `PendingReply::detached`) move into
-    `#[doc(hidden)] __private`, which spawned-test uses and which carries no
-    semver promise. `lifecycle_trace` is public only with the
-    `lifecycle-trace` feature; `spawned_rt::time`'s tick functions are
-    `#[doc(hidden)]`.
-  - Macros: `#[handler]` is removed (use `#[request_handler]` or
-    `#[send_handler]`), and a `#[send_handler]` method returning a value is
-    a compile error (it used to answer a `request` with it).
-  - Duplicates removed: `Context::from_ref` (use `ActorRef::context`) and
-    `ChildHandle::shutdown` (use `stop_with_reason(ExitReason::Shutdown)`).
-  - `Response<T>` in tasks mode: `unwrap`, `expect`, `map` and the new
-    `into_result` on a response that was not awaited wait for the reply
-    when called off an async runtime and panic inside one (they always
-    panicked); `is_ok`/`is_err` panic on it instead of answering `false`.
-  - Docs: an "Experimental in 0.8" list in the GUIDE (job API,
-    `PendingReplies`, `exit_pending`, registry, helpers, placement
-    experiments, `spawned-rt` re-exports), the stop/exit/kill table on
-    `ChildHandle`, and `start_linked`'s unmanaged placement. The
-    `ActorError` classifiers (`target_gone`, `is_timeout`, `is_transient`,
-    `exit_reason`) are kept, defined per variant and tested for every one.
-- Deferred replies and jobs, fixes from the 0.8 pre-release review: a job
-  deadline still fires while the result waits for scheduled emits, and the
-  job keeps its `MAX_OUTSTANDING` credit until its terminal message; a job
-  admitted while its owner exits is refused in one step with the exit
-  (`pipe_reply*` returns `OwnerStopping` with the token); in `tasks` mode a
-  blocking job's thread (outside a runtime) is created at reservation
-  (`SpawnFailed` instead of a silently lost job) and a managed actor's
-  blocking job keeps its scope until its body ends (a supervisor does not
-  replace the child, and shutdown is not complete, while it runs);
-  shortening a token's deadline no longer cancels a `cancel_on_caller_gone`
-  blocking job and wakes the waiting caller to re-arm its timer; an
-  `emit_at` discarded by a concurrent cancel returns `JobGone`; a refused
-  emit returns its credit once; a panicking payload destructor no longer
-  stops the process-wide deadline service; a tasks handler that panics
-  while building its future is a handler panic (`stopped()` runs).
-- **Breaking (0.8):** `DeferError` and `Delivery` are `#[non_exhaustive]`
-  (like `JobError` and `PipeError`): match them with a wildcard arm.
-- **Breaking (0.8):** the restart budget counts restart actions, as OTP's
-  intensity does (ROADMAP rank 5f): a OneForAll or RestForOne recovery round
-  takes one `max_restarts` grant when the coordinator selects it, before the
-  cohort is stopped, however many children it rebuilds (v0.7 charged every
-  rebuilt child, so a six-child OneForAll round needed six grants). A failed
-  replacement inside a round requests a new round, charged again (OTP's
-  `try_again_restart`); a superseded round keeps its charge; OneForOne and
-  retries before the tree is ready still take one grant per child retry. An
-  exhausted budget fails the supervisor when the round would be selected,
-  naming the round's origin child. `max_restarts` documentation, semantics
-  V5, the guide and the migration notes follow.
-- The death point is one boundary, however the actor dies (run loop or
-  runtime drop): job admission closes, outgoing replies and `ctx.exit`
-  signals are fenced, the reason is sealed, and every deferred token and
-  queued request is answered `ActorStopped(final reason)` before any queued
-  payload or state destructor runs and before death is published. A
-  `ReplyTo::reply` once `NoProc` is observable returns
-  `Delivery::OwnerExited` (the caller gets the final reason); a signal a
-  cloned context sends before its actor's death reaches the target before
-  the death notice. Previously a blocking payload destructor, or a runtime
-  dropping the actor, could leave callers unanswered while it ran.
-- **Breaking (0.8), in progress:** exit signals, startup and runtime-drop
-  semantics as in OTP (ROADMAP ranks 5e, 5f, 5g), implementing
-  [the design](docs/design/otp-exit-signals.md) (#240, stacked on rank 11).
-  Done so far: `ExitReason` is `#[non_exhaustive]` with `Killed` and `NoProc`;
-  `ChildHandle::kill()` (untrappable, ends `Killed`, supersedes any reason
-  until the death point), `ChildHandle::exit(reason)` and
-  `Context::exit(&target, reason)` with `erlang:exit_signal/2` rules
-  (`Normal` ignored by a non-trapping actor, other reasons end it without
-  `stopped()`, trapping actors get an `Exit`), `ActorId::EXTERNAL`;
-  administrative `stop`/`stop_with_reason`/`shutdown` unchanged; one death
-  point after `stopped()` where the reason becomes final and the link table
-  closes; a late untrapped signal replaces the requested reason unless a kill
-  was received (decision 8); a panic in `stopped()` replaces an earlier
-  abnormal reason (except after a kill); `stopped()` is skipped on a kill, an
-  untrapped signal or link notice and a runtime drop; runtime-dropped actors
-  end `Killed` in both modes; `link`/`monitor` to an actor past its death
-  point give `NoProc` (a non-trapping caller of `link` exits `NoProc`;
-  `Context::try_link` returns `Err(NoProc)`); `link` from an actor whose exit
-  began is inert; `unlink`/`demonitor` are fences; a `start_linked` parent's
-  exit ends a trapping child through `stopped()` (never `exit_received`);
-  signals arriving during `started()` are resolved when it returns;
-  supervisor and system shutdown send the parent's `Shutdown` exit signal
-  (a non-trapping child ends `Shutdown` without `stopped()`, a trapping one
-  finishes its backlog and runs `stopped()`), with the kill at
-  `shutdown_timeout` (supervisor, then a second interval before cleanup is
-  stuck) or at grace (system); destructor panics after
-  the death point are cleanup failures (`ChildHandle::cleanup_failure()`,
-  `mailbox_cleanup_failure()` deprecated) that restart a Transient child
-  without changing the reason; `spawned-test` `faults::exit` sends an exact
-  exit signal; metrics `actors_exited_killed_total`,
-  `actors_exited_noproc_total`. Supervisor startup (S1/S2): any failed first
-  start of a child (factory error or panic, panic or stop in `started()`,
-  `startup_timeout`, placement or group closure) fails `start()` whatever the
-  restart type, with no retry, as `SupervisorError::FailedToStartChild
-  { child, cause, rollback_failures }` (a stuck cleanup during the initial
-  start is `StartupCleanupStuck`); a ready child's exit during the initial
-  start is deferred and processed under the strategy once the tree commits
-  ready (OneForOne no longer restarts it at once, OneForAll/RestForOne no
-  longer fail the start); `start()` returns its error only after the
-  rollback (every child terminal, or `Failed` once its cleanup is stuck).
-  `Supervision.tla` (no restart before the tree is ready, deferral actions
-  `DeferExit`/`Undefer`, traced) and `Cohorts.tla` (round 0 once per child,
-  `FirstStartOnce`) follow, with the v0.7 behaviours as negative controls.
-  Caller errors (rank 11 x 5e, decision 4): `ActorError::ActorStopped`
-  carries the actor's final `ExitReason`, the same one `wait_exit`, `Down`
-  and links see (`Killed` after a kill, the signal's reason after an
-  untrapped exit signal, `Panic(..)` after a crash); new
-  `ActorError::NoProc` for a `send` or `request` after the death point (the
-  registry is sealed with the final reason inside the death point's
-  exit-table critical section); a send or request made while the actor exits
-  is admitted and answered at the death point. Exit errors wait for the
-  death point: a request whose handler panicked, a token dropped while the
-  owner exits and an undispatched queued request stay open ("exit pending")
-  and are answered with the final reason, or by the caller's deadline first.
-  `DeferredReplies.tla` models it (`pendA`, invariant `StoppedAtDeath`,
-  control `EarlyStopped`; one more reply trace control); metrics
-  `requests_noproc_total`.
-  Trace validation against `Lifecycle.tla`: with `lifecycle-trace`, the
-  runtime records exit signals, stops, links, monitors, sends, dispatch,
-  panics, `stopped()` run or skip, the death point, runtime drop,
-  publication and notice delivery (schema `lifecycle-v1`,
-  `TraceLifecycle.tla`); `tests/lifecycle_trace.rs` records 14 scenarios
-  (both modes), all accepted, and eleven edited traces (stopped() after a
-  kill, `Kill` for `Killed`, publication before D, real reason instead of
-  `NoProc`, notices after unlink/demonitor, ...) are rejected.
-  Client feedback (ethrex, ethlambda): `ActorError` classification helpers
-  `target_gone()`, `is_timeout()`, `is_transient()` and `exit_reason()`, so
-  clients need no exhaustive match on the `#[non_exhaustive]` enum; a
-  skipped `stopped()` logs `event = "stopped_skipped"` at `debug` (actor,
-  cause `kill`/`exit_signal`/`runtime_drop`, reason);
-  `Context::exit_pending()` (both modes) tells a trapping actor that its exit
-  began or a parent exit is queued behind the current message, so it can
-  refuse late work (advisory, read-only, no per-message cost).
-  Concurrency checks: the link table (`src/link/table.rs`) and the monitor
-  fence (`src/monitor/fence.rs`) are shared with a Loom model
-  (`tests/link_fence_loom.rs`, 9 tests explored exhaustively: one notice per
-  edge, none after `unlink`/`demonitor` or the receiver's death, a link or
-  monitor racing the death point gets the real reason or `NoProc`, never both
-  nor none); `tests/exit_signals_sim.rs` explores six orderings on the
-  simulator with PCT and bounded DFS (kill vs `stopped()`, late signal vs the
-  death point, link/monitor vs the death point, unlink/demonitor fences,
-  supervisor shutdown vs a trapping child's queue and `exit_pending`, a ready
-  child's exit vs the tree commit). GUIDE "Links, monitors and exit signals",
-  the `exit_signals` capability example, and semantics L3-L6, X1-X6, V1, V3,
-  V9 and the OTP differences table.
-  Remaining: the heavy TLC configurations and Apalache after the canaries.
-
-- **Breaking (0.8), in progress:** deferred replies and pipe-to-self
-  (ROADMAP rank 11), implementing
-  [the design](docs/design/deferred-replies.md). Every request now has a reply
-  slot: one packed atomic word (state, token, registry and running-job count)
-  whose transitions are checked with Loom (`reply_slot_loom`, 16 models), as
-  are the owner's turn-phase drop commit (`registry_turn_loom`) and the job
-  core (`job_core_loom`: admission rollback, completed-key replacement, emit
-  versus terminal notification and cancel, native completion versus cleanup
-  join, final destruction after a `Weak` upgrade), each with planted-bug
-  controls. The job model found two destructions under the job set's locks
-  (key-map clear at owner exit, weak-list compaction), now fixed. With
-  `lifecycle-trace`, the job core records `DeferredJobs.tla` actions, and
-  `tests/job_trace.rs` traces (seven scenarios) are checked by TLC
-  (`TraceJobs.tla`, schema `jobs-v1`), with six edited traces as negative
-  controls. Reply slots record `DeferredReplies.tla` actions (send,
-  dispatch, the terminal transition inside the slot CAS, exit, death);
-  `tests/reply_trace.rs` traces (nine scenarios) are checked against
-  `TraceReplies.tla`, with four negative controls. With `metrics`, the
-  `spawned_deferred_*` family (tokens, pending, replied/expired/dropped/
-  stopped/abandoned, overloaded, sampled defer-to-reply latency) and the
-  `spawned_jobs_*` family (started, running, completed/panicked/deadline
-  exceeded, cancelled while running, fenced, rejected at a bound, emits,
-  unfinished at stop); `tests/metrics_deferred.rs` checks each is counted
-  once. Simulator races (`tests/deferred_sim.rs`, PCT and bounded DFS):
-  reply vs expiry vs owner death vs caller drop, keyed replacement, emit vs
-  terminal and cancel. `Handler::handle` takes a `PendingReply<'_, R>`
-  and returns `()`; `#[actor]` generates it, and `#[deferred_handler]` methods
-  receive the obligation and may `defer()` it into a storable `ReplyTo<R>`
-  (bounded by `Actor::MAX_OUTSTANDING`, `Overloaded` at the bound). Dropped
-  obligations answer `ReplyDropped` (in a panicking turn or while exiting
-  they are answered `ActorStopped` at death); at death every open token
-  answers `ActorStopped`. Request
-  deadlines are fixed at send (`Deadline`, `send_request(msg, deadline)`,
-  formerly `request_raw`); a per-actor deadline heap and service expire stored
-  tokens without a polling caller. `PendingReplies<K, R>` is a bounded token
-  table. Pipe-to-self jobs: `ctx.pipe`, `pipe_blocking`, `pipe_reply`,
-  `pipe_reply_blocking` (threads mode: the blocking forms on owned native
-  threads), with `JobOutcome`/`JobError::{Panicked, DeadlineExceeded}`, keyed
-  replacement and cancellation fenced at dispatch, `JobCtx::emit`/
-  `emit_blocking` with emit credits and the terminal message last,
-  `MAX_NATIVE_JOBS`, owner-exit cancellation and a bounded join after death
-  (`unfinished_at_stop`). `ActorError` is `#[non_exhaustive]` with
-  `ReplyDropped` and `Overloaded`; `metrics::Snapshot` gains
-  `requests_reply_dropped_total` and `requests_overloaded_total`. Example:
-  `deferred_replies`. See [migration](docs/MIGRATION.md#unreleased).
-- Rank 11 API refinements from porting ethlambda and ethrex to 0.8:
-  `#[actor(max_outstanding = N, max_native_jobs = N)]` sets the bounds, and
-  `ChildSpec::max_outstanding`/`max_native_jobs` override them per
-  supervised child (the design's per-spec override). `tasks`-mode blocking
-  jobs (`pipe_blocking*`) run on Tokio's blocking pool instead of a fresh OS
-  thread each, still under `MAX_NATIVE_JOBS`, with panics as
-  `JobError::Panicked` and cancellation and fencing unchanged (threads mode
-  keeps owned threads; a reservation pre-spawns the job's thread).
-  Reserve-then-spawn: `ctx.reserve_job(opts)` / `ctx.reserve_blocking_job(opts)`
-  return a `JobPermit` / `BlockingJobPermit` whose `pipe*` cannot fail, so a
-  refused caller keeps what it would have moved into `work` and `done`.
-  `JobCtx::emit_at` / `emit_at_blocking` deliver a fenced, credit-accounted
-  message at an instant; the job's terminal message waits for its scheduled
-  emits (new Loom model `scheduled_emit_vs_finish_and_cancel`).
-  `spawned_concurrency::Instant`
-  (also `tasks::`/`threads::Instant`) re-exports the deadline clock.
-  `#[send_handler]` on a manual `impl Handler<M>` (for `Result = ()`) drops
-  the reply parameter and answers `()` when `handle` returns.
-  `spawned_test::tasks::in_actor` / `threads::in_actor` run a closure in a
-  live actor's turn. GUIDE: hard job deadlines and the soft-deadline
-  pattern, replies carrying a reason through `R = Result<..>`, the
-  `send_request` rows.
-- Verification: retain bounded weekly Lifecycle checks; run full Lifecycle
-  safety/liveness models manually before release, alongside the soak. The
-  full configurations and properties are unchanged; incomplete runs block
-  release rather than counting as successful CI verification.
-
-- CI: a hot-path performance gate (`perf-gate`). `benchmarks/hotpath.py gate`
-  counts instructions per operation with callgrind for async burst, sequential
-  and concurrent `request()` and `send` (on a current-thread runtime, so the
-  counts are deterministic) and threads-mode `request()`, and fails
-  a PR that grows any of them more than 3% over its merge base (it measures
-  only when `concurrency/src`, `rt/src` or `macros/src` changed).
-  `hotpath.py abba` is the wall-clock A/B on fixed cores, now a release
-  checklist step (docs/TESTING.md, "Performance gate").
-- Design (0.9, approved for implementation after round 3): a unified start API
-  (`docs/design/unified-start.md`, rank 5h). OTP's `start`, `start_link` and
-  `start_monitor` wait for `started()`, and `spawn` does not. All four take one
-  typed `StartOptions`. `started()` may fail, ignore or continue (`Init`), and a
-  failed init never runs `stopped()`, as OTP. Every instance has an immutable
-  startup commitment, and readiness is committed by the child, independently
-  of the waiter. Errors are answered after publication with the final exit
-  reason. One global lock order covers the commit, readiness and scope
-  admission. Linked children in the parent's system are owned by its scope,
-  with a polite Shutdown at the parent's publication and absolute,
-  composing deadlines. It replaces `start_on`, `start_with_backend`,
-  `ExecutionGroup::start` and `start_linked`. A new TLA+ model, `Start.tla`,
-  has eight configurations and 40 negative controls, and a client mapping
-  covers 51 sites.
-- TESTING.md: how databases test (FoundationDB, TigerBeetle, SQLite, AWS,
-  Jepsen and others), how each technique maps to spawned, and the gaps.
-- ROADMAP: smaller releases (0.9 introspection and the attachable console,
-  0.10 unified start and the dynamic supervisor, 0.11 the admission package),
-  how each feature is implemented against its approved design, and the code
-  coverage report widened to the whole crate over the simulated suites.
-- Tests: planted-bug follow-ups. New scenario-fuzzer oracles for restart
-  decisions, RestForOne cohorts, Transient restarts, required restarts versus
-  budget exhaustion, backoff delays in virtual time, linked exit reasons,
-  `unlink` and cancelled timers; bounded waits so tests that used to hang under
-  a bug fail with a named assertion (`within!`); a Kani layer in the
-  planted-bug runner; the planted-bug matrix in `docs/TESTING.md` re-run with
-  them. `concurrent_failures_coalesce_into_one_round` no longer flakes on one
-  CPU (it read `current()` after the first crash's round had begun).
-- ROADMAP: a ranked determinism backlog (D1-D10) under priority tier 3, from
-  an audit of what escapes the simulator in Spawned, Ethrex and Ethlambda
-  ([docs/research/determinism-audit.md](docs/research/determinism-audit.md)).
-  Same-seed reruns found no schedule nondeterminism; traces differ only in
-  process-global ids.
-- Removed `legacy/` (archived research, benchmark data and reviews, about 58 MB);
-  it remains in history at [`efba2434`](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy),
-  and live docs link there.
-- ROADMAP: a Path to 1.0 section (0.8, 0.9, 0.10 contents and what 1.0
-  requires: stable API rules, a complete semantics contract, production-safe
-  defaults, introspection, determinism, release gates, production proof and
-  documentation).
-- Toolchain pinned to CI's 1.93.0 in `rust-toolchain.toml`, so local, fede
-  and agent builds match CI; the fuzz job selects its nightly explicitly.
-  `CHANGELOG.md` merges with git's union driver. ROADMAP: the design-review
-  rule now requires a test plan, trace validation against real code,
-  planted bugs, an introspection hook and a no-cost benchmark for every new
-  feature.
-- ROADMAP: Erlang/OTP, Elixir and Gleam gaps table (G1-G23, including a remote
-  console) with tiers and target versions, and the OTP features Spawned will
-- ROADMAP: Erlang/OTP, Elixir and Gleam gaps table (G1-G23, including an attachable
-  console in every binary, targeted at 0.9) with tiers and target versions, and the OTP features Spawned will
-  not add as non-goals; the comparison is in
-  `docs/research/otp-elixir-gleam.md`.
-- CI: model-sync checks. A `model-sync` job fails a PR that changes code a TLA+
-  model covers (`verification/model-map.toml`) without touching that model,
-  unless it carries the `no-model-change` label and a `Model: no change because
-  <reason>` line. Every lifecycle trace event kind must map to a trace-spec
-  action; every model must be trace-validated or allowlisted as TLC-only with
-  a tracking item (Coordinator, Lifecycle, DeferredReplies, DeferredJobs);
-  per-model trace coverage has a floor that may only go up.
-- Design: introspection v1 for 0.9 (priority tier 2), in review:
-  [`docs/design/introspection.md`](docs/design/introspection.md). Per-actor
-  `process_info`, `sys:get_state`/`get_status` answered between turns,
-  supervision-tree and system snapshots, an opt-in stall watchdog (rank 8) and
-  the data model for `spawned-top` (rank 30), an attachable remote console on
-  a local Unix socket (`spawned-ctl`, on by default, read-only by default, no
-  TCP, no eval), with a cost table per field, consistency guarantees and a
-  test plan. TLA+ model `Introspection.tla` (fenced watchdog kill, status
-  between turns and at death) with six negative controls. Design only; no
-  library code change.
-
-- Design: introspection v1 for 0.9 (priority tier 2), revision 2 after two
-  reviews: [`docs/design/introspection.md`](docs/design/introspection.md).
-- Design: introspection v1 for 0.9 (priority tier 2), revision 3 after two
-  review rounds: [`docs/design/introspection.md`](docs/design/introspection.md).
-  `process_info`-style `info()` readable while a handler is wedged (strictly
-  free tier 0, richer with the `introspection` feature), `sys:get_state`/
-  `get_status` as a turn of their own, supervision-tree and system
-  snapshots, structured reports, an opt-in stall watchdog (rank 8) with a
-  fenced kill, and an attachable remote console on a local Unix socket
-  (`spawned-ctl`; on with `ActorSystem::new`, read-only by default, no TCP,
-  no eval). TLA+ model `Introspection.tla` (every activity end, including
-  panics in `started()` and `stopped()`, consumes the kill bit; status between
-  turns and at D; runtime drop; one action per linearization point, status admission included) with 20
-  negative controls; a fork-safe, lock-first socket publication protocol. Design only; no library code change.
-- Tests: coverage follow-ups. `restart_modes_distinguish_normal_shutdown_and_panic`
-  now sends a real `Normal` exit; a per-PR `MCSupervisionTemporary` TLC
-  configuration makes `TemporaryStartsOnce` non-vacuous, with a negative
-  control that restarts a Temporary child; threads-mode clock tests for
-  `send_after`, `send_interval` and the restart window on a `thread_group` (T4).
-- ROADMAP: a Priorities section (soundness, including a smaller stable API and
-  soak tests; introspection; determinism; testing; client-driven features;
-  performance behind a regression gate), and the runtime direction. Keep Tokio; rank 37 becomes the main
-  performance track (generated dispatch, reusable reply slots, a single-wakeup
-  mailbox, batched draining), after profiling; rank 22a becomes actor-owned
-  I/O (`spawned::net`, Erlang ports) with a simulated network so whole client
-  nodes run deterministically; rank 52 (io_uring) reopens only as a
-  `spawned::net` backend.
-- README: centred on why Spawned exists. A "Why Spawned" section first (guarantees
-  verified once and inherited by every application; deterministic, replayable
-  tests), both points leading the feature list, and a "Testing your own actors
-  deterministically" section showing `#[spawned_macros::sim_test]`.
-- ROADMAP: no-cost-on-the-default-path principle, the Erlang gaps table, and new
-  ranks 6b (shared-state and abort lints), 8b (simulator check for handlers
-  that never yield), 8c (per-group stack size) and 44a (execution groups in a
-  separate OS process); rank 18a's tracking allocator is opt-in.
-- Tests: semantics-contract coverage audit. `docs/TESTING.md` has a
-  guarantee-by-guarantee matrix (checks, modes and placements, whether a
-  check fails when the guarantee breaks): 31 of 50 guarantees were fully
-  covered, now 46. New `sim_ordering` checks D1, R2, M1, L1, D3/D4/L7 and X7
-  under PCT and bounded DFS; `semantics_gaps` checks the stop window, D5,
-  M1, M4, M5, L2, L5, R3, T3 and S6 on every placement and V2, V4, V6, V9,
-  S1 and S3 on the simulator. No bugs found; several contract citations
-  corrected.
-- Simulator (rank 8b): under `--cfg spawned_sim`, a test fails when one actor
-  turn runs longer than a wall-clock budget inside a single poll (a blocking
-  call or a loop with no `.await`), naming the actor and the message type,
-  with the usual seed and tape replay lines. Default 250 ms;
-  `SPAWNED_SIM_TURN_BUDGET=ms` tunes it and `0` disables it. Compiled only
-  under the cfg: no cost in normal builds.
-- Testing: planted-bug sensitivity matrix. Hand-written realistic bugs in
-  supervision, links, monitors, exit reasons, registry, mailbox, timers,
-  shutdown ordering and handle lifetimes are applied one at a time and run
-  against the test suite, the simulated suites and the scenario fuzzer
-  (`testing/planted/`, `docs/TESTING.md#planted-bug-sensitivity`); new oracles
-  close the escapes. Work in progress.
-
-- Testing: planted-bug sensitivity matrix (`docs/TESTING.md#planted-bug-sensitivity`).
-  24 hand-written realistic bugs (`verification/planted/patches/`, re-run with
-  `verification/planted/run.sh`) against the test suite, simulated suites,
-  fuzz harness tests, a 600 s fuzz run and TLA+ trace validation: 23 caught
-  (22 by the test suite), one unobservable through the public contract. New
-  oracles: a Temporary nested subtree is never rebuilt, fuzzer oracle X8 (a
-  stopped actor publishes the reason it was stopped with), and unit tests that
-  kill cargo-mutants survivors in `supervision/nested.rs` and `supervision.rs`.
-- `#[actor]` lints (ROADMAP rank 6b), compile time only, no runtime cost:
-  a warning when the `#[actor]` impl block builds or accepts shared mutable
-  state (`Arc<Mutex<_>>`, `Arc<RwLock<_>>`, `Arc<Atomic*>`, `Rc<RefCell<_>>`,
-  std, tokio or parking_lot paths), silenced with
-  `#[actor(allow_shared_state)]`; and a warning, once per crate, when the
-  crate is built with `panic = "abort"`, under which a handler panic ends the
-  process instead of one actor, silenced with `#[actor(allow_panic_abort)]`.
-  Both use the stable `#[deprecated]` technique, so `-D warnings` turns them
-  into errors.
-- `spawned-concurrency` re-exports `#[sim_test]`, so downstream crates write
-  `#[spawned_concurrency::sim_test]` without a `spawned-macros` dependency
-  (they still need `spawned-rt`). New example test
-  `examples/capabilities/tests/deterministic_simulation.rs` (per-sender order
-  over every seed, an hour-long timer in virtual time), run by the `sim` CI job.
-  The README's deterministic-testing section uses the single import.
-- Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
-  examples' `native-tls` dependency; spawned's crates are unaffected).
-- CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`) on
-  every pull request: all integration tests of `spawned-concurrency` and
-  `spawned-rt` plus the executor unit tests, one test per process with a
-  120 s timeout (`scripts/run-sim-tests.py`), decision tapes uploaded on
-  failure. `stack_budget` is compiled out under the simulator: it measures
-  real thread stacks.
-- CI: the core workflows (`ci`, `verification`, `failpoints`) also run on
-  `merge_group`, so pull requests go through GitHub's merge queue, which runs
-  all 19 required checks (including `sim`) on the merged result before
-  anything lands on `main`.
-- Design (not implementation) for rank 11, deferred typed replies and
-  pipe-to-self, revised over four passes after independent reviews:
-  `docs/design/deferred-replies.md`, client mapping for ethrex and ethlambda,
-  and the `DeferredReplies` (reply slots) and `DeferredJobs` (pipe jobs) TLA+
-  models with 22 negative controls, each checked against its named
-  invariant.
-- Design (accepted, not implemented): exit signals, supervisor startup and
-  runtime-drop semantics as in OTP (ROADMAP ranks 5e, 5f, 5g): `kill`/`Killed`,
-  `exit`/`try_link`, `NoProc`, parent exits, `stopped()` skipped on kills and
-  untrapped signals, first-start failures abort supervisor startup. Adds the
-  base actor lifecycle TLA+ model (`Lifecycle.tla`) with negative controls for
-  the v0.7 behaviours and the PR #182/#185 bugs; see
-  `docs/design/otp-exit-signals.md`.
-- Test: coverage-guided scenario fuzzing on the deterministic simulator
-  (`fuzz/`, cargo-fuzz + `arbitrary`): generated operation sequences over
-  actors, links, monitors, timers, supervisors and systems, checked against
-  the semantics contract, with seed/strategy-fixed inputs, decision tapes,
-  `cargo fuzz tmin` -> `repro --emit` regressions, coverage and TLA+ trace
-  sample scripts, and a 60 s CI smoke run on pull requests (no scheduled
-  runs). A first 3-hour campaign found no framework bug. Adds
-  `spawned_rt::tasks::sim::stats()` (simulation builds only).
-- CI: keep the per-PR TLA+ checks fast again (about 52 minutes, sometimes
-  hitting the 60-minute timeout, down to about 8). The per-PR `MCLifecycle`
-  is a smaller instance (7.5M states instead of 43M, fewer reasons, no
-  actor-to-actor message, which moved to `MCLifecycleFence`); every
-  Lifecycle negative control still fails on it on its named invariant. The
-  former instance runs weekly as `MCLifecycleWideDeep`. The TLA+ checks run
-  as parallel jobs (`tla-models` legs, `tla-traces`, weekly `tla-deep` with
-  one runner per deep configuration) behind a required `tla` job. The
-  trace-coverage cache (`coverage-model.json.gz`) is keyed only on the specs
-  it is computed from, so unrelated models no longer invalidate it, and is
-  regenerated (same keys and state counts). `check.sh` gains `--only` and
-  `--exclude`.
-- Tests: a long-running soak harness (`concurrency/benches/soak`, run by hand,
-  not in CI). It churns actors in both modes and every backend, managed
-  groups, supervisors with every strategy, links, monitors, `trap_exit`,
-  timers, the registry, timed-out requests, stream listeners, `ActorSystem`
-  cycles and mailbox bursts from a seed, samples RSS, live heap, OS threads,
-  file descriptors, Tokio tasks, registry size, live actors and the `metrics`
-  gauges into a CSV, fails on growth per hour after warm-up or on any count
-  not returning to its baseline after quiesce, and has a `--inject-leak`
-  negative control. Run it before each release (`docs/TESTING.md`).
-
-- Determinism D1-D3 (priority tier 3). Under `--cfg spawned_sim`:
-  wall-clock and OS-entropy reads made inside a simulated run return virtual
-  time and seeded bytes, so `Instant::now`, `SystemTime::now`,
-  `rand::thread_rng`, `OsRng` and `HashMap` iteration order replay per seed
-  with no call-site change (D1; madsim's technique, in the new sim-only crate
-  `spawned-sim-libc`, which holds all the unsafe interposers so the other
-  crates stay `forbid(unsafe_code)`; Linux/glibc and macOS). Each harness run
-  gets a fresh thread, so bodies passed to `sim_test`/`run_once`/`explore`
-  must be `Sync`. `SPAWNED_SIM_STRICT=1` (`sim::set_strict`) fails the run on
-  such a read, naming the caller. `spawn_blocking` runs inline as one
-  simulator step instead of panicking (D2; not concurrent under simulation).
-  `spawned_rt::tasks` gains `sleep_until`, `interval`/`interval_at`
-  (`Interval`, `MissedTickBehavior`) and `JoinSet` (`AbortHandle`,
-  `JoinError`), virtual under the simulator and Tokio's otherwise, and a
-  direct `tokio::time` timer fails the run with a message naming the
-  replacement (D3). See `docs/TESTING.md` and `docs/MIGRATION.md`.
+- Every finding from three rounds of independent pre-release review of the
+  death boundary, deferred replies and jobs (queued requests answered before
+  destructors, the deadline service surviving a panicking payload, job
+  admission atomic with exit, held results keeping their deadline and credit,
+  and others; see MIGRATION).
 
 ## 0.7.3 — 2026-11-10
 

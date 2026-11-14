@@ -404,7 +404,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "spawned-concurrency"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "futures",
  "parking_lot",
@@ -417,7 +417,7 @@ dependencies = [
 
 [[package]]
 name = "spawned-macros"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -426,7 +426,7 @@ dependencies = [
 
 [[package]]
 name = "spawned-rt"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "ctrlc",
  "loom",
@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "spawned-sim-libc"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "libc",
 ]
