@@ -170,6 +170,9 @@ the road to 1.0. Upgrade notes, with an old-call → new-call table, are in
 
 ### Fixed
 
+- Failed deadline-worker initialization releases its service allocation on
+  error or unwind and leaves initialization retryable. Startup still fails
+  rather than silently accepting an unserviceable deadline.
 - Simulation rejects native actor creation and message/request admission from
   a virtual world, preventing comparisons between real and virtual deadline
   ticks. Native tests outside a world retain real time.
