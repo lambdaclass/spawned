@@ -59,6 +59,7 @@
 - Timer regression: paused Tokio time is never stored as a service-clock
   deadline. Monotonic clock conversion is inlined without caching time.
 ## 0.8.0 — 2026-11-13
+## 0.8.0 — 2026-11-14
 
 0.8 is a breaking release. It adds deferred replies and jobs, aligns exit
 signals, startup and runtime drop with Erlang/OTP, and cleans up the API before
@@ -151,6 +152,15 @@ the road to 1.0. Upgrade notes, with an old-call → new-call table, are in
 
 ### Fixed
 
+- Refused job notifications and emits drop captures outside the trace lock;
+  linked-exit diagnostics and panic-payload disposal run after the receiver
+  table and outermost trace section, including late `NoProc` delivery.
+- Refused job results and immediate emits contain destructor panics in both
+  execution modes. Cancellation, deadlines, keyed replacement and owner
+  discharge retain containment for held results.
+- Simulated deadline services stay with their owner rather than the caller's
+  current context; foreign-thread scheduling fails the owning simulation as
+  a determinism escape. Native owners without a simulation use real time.
 - Compact reply slots keep ordinary values inline and deferred metadata in a
   cold allocation, with a 56-byte scalar layout budget. Slot handoff uses a
   non-poisoning parking_lot lock through the Loom synchronization seam. A
