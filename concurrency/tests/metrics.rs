@@ -42,22 +42,45 @@ impl Actor for Probe {
     }
 }
 impl Handler<metrics_protocol::Query> for Probe {
-    async fn handle(&mut self, _: metrics_protocol::Query, _: &Context<Self>) -> u64 {
-        9
+    async fn handle(
+        &mut self,
+        _: metrics_protocol::Query,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(9);
     }
 }
 impl Handler<Ping> for Probe {
-    async fn handle(&mut self, _: Ping, _: &Context<Self>) {}
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
 }
 impl Handler<Crash> for Probe {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         panic!("metric panic regression");
     }
 }
 impl Handler<Hold> for Probe {
-    async fn handle(&mut self, hold: Hold, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        hold: Hold,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         let _ = hold.entered.send(());
         let _ = hold.release.await;
+        reply.reply(());
     }
 }
 fn runtime() -> tokio::runtime::Runtime {
@@ -71,14 +94,17 @@ fn runtime() -> tokio::runtime::Runtime {
 // reset, and these assertions must not race unrelated actors in other tests.
 #[test]
 fn metrics_conserve_work_across_all_lifecycle_paths() {
-    metrics::configure(metrics::Config {
-        timing_sample_every: 1,
-    })
-    .unwrap();
+    metrics::configure(metrics::Config::default().timing_sample_every(1)).unwrap();
     runtime().block_on(async {
         let (release, gate) = oneshot::channel();
         let actor = Probe { gate: Some(gate) }.start();
-        let replies: Vec<_> = (0..10).map(|_| actor.request_raw(Ping).unwrap()).collect();
+        let replies: Vec<_> = (0..10)
+            .map(|_| {
+                actor
+                    .send_request(Ping, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                    .unwrap()
+            })
+            .collect();
         assert_eq!(actor.mailbox_depth(), 10);
         assert_eq!(actor.context().mailbox_depth(), 10);
         assert!(matches!(
@@ -86,11 +112,17 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
             Err(ActorError::RequestTimeout)
         ));
         assert!(matches!(
-            Response::from_with_timeout(actor.request_raw(Ping), Duration::ZERO).await,
+            Response::from(
+                actor.send_request(Ping, spawned_concurrency::Deadline::after(Duration::ZERO))
+            )
+            .await,
             Err(ActorError::RequestTimeout)
         ));
         // Dropping either kind of caller wrapper does not cancel actor work.
-        drop(Response::from(actor.request_raw(Ping)));
+        drop(Response::from(actor.send_request(
+            Ping,
+            spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+        )));
         let mut cancelled = Box::pin(actor.request(Ping));
         assert!(futures::poll!(cancelled.as_mut()).is_pending());
         drop(cancelled);
@@ -107,28 +139,42 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
         spawned_concurrency::tasks::request(recipient.as_ref(), Ping, Duration::from_secs(2))
             .await
             .unwrap();
-        Response::from(actor.request_raw(Ping)).await.unwrap();
-        Response::from_with_timeout(actor.request_raw(Ping), Duration::from_secs(2))
+        Response::from(actor.send_request(Ping, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT))
             .await
             .unwrap();
+        Response::from(actor.send_request(
+            Ping,
+            spawned_concurrency::Deadline::after(Duration::from_secs(2)),
+        ))
+        .await
+        .unwrap();
         actor.context().stop();
         assert_eq!(within!(actor.wait_exit()).await, ExitReason::Normal);
         assert_eq!(actor.mailbox_depth(), 0);
         assert!(actor.send(Ping).is_err());
         assert!(matches!(
-            Response::from_with_timeout(actor.request_raw(Ping), Duration::from_secs(2)).await,
-            Err(ActorError::ActorStopped)
+            Response::from(actor.send_request(
+                Ping,
+                spawned_concurrency::Deadline::after(Duration::from_secs(2))
+            ))
+            .await,
+            Err(ActorError::NoProc)
         ));
 
         let (release, gate) = oneshot::channel();
         let actor = Probe { gate: Some(gate) }.start();
-        let raw = actor.request_raw(Ping).unwrap();
+        let raw = actor
+            .send_request(Ping, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+            .unwrap();
         actor.send(Ping).unwrap();
         let mut pending = Box::pin(actor.request(Ping));
         assert!(futures::poll!(pending.as_mut()).is_pending());
         actor.context().stop();
         release.send(()).unwrap();
-        assert!(matches!(pending.await, Err(ActorError::ActorStopped)));
+        assert!(matches!(
+            pending.await,
+            Err(ActorError::ActorStopped(ExitReason::Normal))
+        ));
         assert!(raw.await.is_err());
         within!(actor.join()).await;
         assert_eq!(actor.mailbox_depth(), 0);
@@ -136,7 +182,7 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
         let actor = Probe { gate: None }.start();
         assert!(matches!(
             actor.request(Crash).await,
-            Err(ActorError::ActorStopped)
+            Err(ActorError::ActorStopped(ExitReason::Panic(_)))
         ));
         assert!(matches!(
             within!(actor.wait_exit()).await,
@@ -190,7 +236,7 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
             owner.block_on(entered).unwrap();
         }
         drop(owner);
-        assert_eq!(actor.exit_reason(), Some(ExitReason::Kill));
+        assert_eq!(actor.exit_reason(), Some(ExitReason::Killed));
         assert_eq!(actor.mailbox_depth(), 0);
     }
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -215,15 +261,32 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
     struct Native;
     impl ThreadActor for Native {}
     impl ThreadHandler<metrics_protocol::Query> for Native {
-        fn handle(&mut self, _: metrics_protocol::Query, _: &ThreadContext<Self>) -> u64 {
-            9
+        fn handle(
+            &mut self,
+            _: metrics_protocol::Query,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
+            _: &ThreadContext<Self>,
+        ) {
+            reply.reply(9);
         }
     }
     impl ThreadHandler<Ping> for Native {
-        fn handle(&mut self, _: Ping, _: &ThreadContext<Self>) {}
+        fn handle(
+            &mut self,
+            _: Ping,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &ThreadContext<Self>,
+        ) {
+            reply.reply(());
+        }
     }
     impl ThreadHandler<Crash> for Native {
-        fn handle(&mut self, _: Crash, _: &ThreadContext<Self>) {
+        fn handle(
+            &mut self,
+            _: Crash,
+            _reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &ThreadContext<Self>,
+        ) {
             panic!("native metric panic");
         }
     }
@@ -254,6 +317,8 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
             + s.actors_exited_shutdown_total
             + s.actors_exited_panic_total
             + s.actors_exited_kill_total
+            + s.actors_exited_killed_total
+            + s.actors_exited_noproc_total
     );
     assert_eq!(
         s.messages_enqueued_total,
@@ -268,6 +333,8 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
         s.requests_replied_total
             + s.requests_timed_out_total
             + s.requests_actor_stopped_total
+            // Requests to an actor past its death point (rank 11 x 5e).
+            + s.requests_noproc_total
             + s.requests_cancelled_total
     );
     assert!(s.actors_exited_shutdown_total >= 1);

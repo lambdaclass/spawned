@@ -180,7 +180,7 @@ Status of each layer. "Planned" items are tracked in the
 | Design | TLA+ and TLC | Holes in lifecycle, restart and shutdown rules | `Supervision`, `Cohorts`, `NestedSupervision` and `Coordinator` models in `verification/tla`, run in CI |
 | Design, unbounded depth | Apalache inductive invariants | An invariant that a state TLC never reached would break | Safety invariants of all four models proven inductive at fixed sizes, with negative controls; `tla-apalache` CI job |
 | Design, any size | TLAPS or Veil | An invariant that fails only for larger configurations | Planned ([verification tools](research/verification-tools.md)) |
-| Spec and code | Trace validation | The implementation doing something the model forbids | Real OneForOne, cohort and nested traces plus invalid-trace and model-mutation controls |
+| Spec and code | Trace validation | The implementation doing something the model forbids | Real OneForOne, cohort, nested, deferred-reply, job and base-lifecycle (exit signals, links, monitors, D, publication) traces plus invalid-trace and model-mutation controls |
 | Spec and code coverage | Trace coverage (`verification/tla/trace_coverage.py`) | Model actions, states and transitions no test ever reaches | Report on every PR (actions covered by the dedicated trace tests may not regress); whole test suite weekly. See [trace coverage](#trace-coverage) |
 | Spec and code in sync | `scripts/check-model-sync.py`, `verification/model-map.toml` | A PR changing modelled code without its model; a trace event no trace spec replays; a model no real run is checked against; trace coverage going down | `model-sync` job on every PR. See [model sync](#model-sync) |
 | Primitives | Loom | Atomic and memory-ordering bugs in cancellation, ready gate and wakeups | In CI; expand to reply slots and mailbox publication versus shutdown |
@@ -224,7 +224,7 @@ The fuller rationale is archived in the
 
 ```sh
 python3 scripts/check-api.py features
-python3 scripts/check-api.py semver --baseline v0.6.0
+python3 scripts/check-api.py semver   # baseline and release type from verification/api/release.json
 ```
 
 Install cargo-hack 0.6.46 for the first command. CI pins cargo-semver-checks
@@ -282,7 +282,7 @@ This generated suite uses zero backoff and a high, unexhausted restart budget;
 it does not claim budget-exhaustion or shutdown-during-backoff coverage.
 Those are controlled cases in `supervision` (`restart_budget_is_shared_between_siblings_and_exhaustion_closes_tree`,
 `shutdown_during_backoff_prevents_new_factory_invocation`) and
-`supervision_strategies` (`cohort_reconstruction_consumes_shared_factory_attempt_budget`).
+`supervision_strategies` (`cohort_reconstruction_charges_one_restart_per_round`).
 
 ```sh
 cargo test --locked -p spawned-concurrency --test supervisor_policies
@@ -451,10 +451,11 @@ handler panic. The fixed regression case exercises every termination mode.
 
 - A request fence observes every earlier message from the same sender in order,
   exactly once. Dropping a reply receiver does not cancel queued work.
-- A request racing shutdown either returns its matching reply or ActorStopped.
+- A request racing shutdown returns its matching reply, `ActorStopped` or
+  `NoProc`.
   Accepted sends alone do not guarantee execution across termination.
 - Termination resolves within a five-second test watchdog. Post-exit requests
-  return ActorStopped.
+  return `NoProc`.
 - Each uncancelled monitor observes the matching exit reason, including when
   registration races termination. Unknown or duplicate observed notifications
   fail the test. Clean shutdown and injected handler panic remain distinct.
@@ -673,10 +674,22 @@ these limits:
 - One thread: Thread, Blocking, native and pinned placements and dedicated
   runtimes do not run (a Blocking-backend actor fails the run), and
   `spawned_rt::tasks::spawn_blocking` runs inline as one atomic step, never
-  concurrently. A poll with no await point that
-  never returns trips a wall-clock watchdog (`SPAWNED_SIM_POLL_TIMEOUT`,
+  concurrently. Native actor creation and message/request admission from a
+  simulated world fail explicitly instead of mixing real and virtual deadline
+  ticks. Native tests wholly outside a world still use real time. A poll with
+  no await point that never returns trips a wall-clock watchdog (`SPAWNED_SIM_POLL_TIMEOUT`,
   default 60 s) that aborts the process; one that returns after more than
   `SPAWNED_SIM_TURN_BUDGET` (250 ms) inside an actor turn fails the run.
+- Create the simulated `Runtime` before starting actors, preferably with
+  `Runtime::with_seed`. Setup before `block_on` then uses that runtime's
+  ambient world. Starting actors before *any* runtime creates an ambient
+  world, as `spawn` does: attach it with `Runtime::new`, drive it and drop the
+  runtime to drain its pending tasks. `Runtime::with_seed` starts a different
+  world and does not drain a previous unowned ambient one. Without that
+  explicit runtime lifecycle, pending actor tasks stay allocated; dropping
+  actor references or exiting their setup thread does not drain the world.
+  A registry held outside a dropped runtime can retain empty world metadata,
+  but the runtime drop still destroys pending task payloads and timers.
 - `std::thread`, Tokio I/O, and wall-clock and entropy reads the
   interposers cannot see (targets other than Linux/glibc and macOS,
   `getrandom` found with `dlsym` as the `getrandom` crate 0.3+ does on Linux,
@@ -707,7 +720,8 @@ simulated at all): tests that need OS threads or a real Tokio runtime, in
 `cancellation_safety`, `cross_backend` (non-async placements and the fan-out
 and monitor workloads), `dedicated_runtime`, `delivery_simulation`,
 `execution_groups`, `execution_profiles`, `failure_windows`, `leaks`,
-`mailbox_drop_panic`, `nested_supervision`, `panic_safety`,
+`mailbox_drop_panic`, `nested_supervision`, `otp_exit_signals` (whole file;
+`exit_signals_sim` explores its orderings), `panic_safety`,
 `process_failures`, `protocol_compile`, `request_histories`,
 `resource_cleanup`, `semantics_gaps` (its `tasks` and `tasks_contract` modules), `shutdown_publication`, `stack_budget`, `startup_admission`,
 `supervision_strategies` and `supervision`. `leaks` replaces its excluded
@@ -721,6 +735,45 @@ build.
 ```sh
 RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim \
   cargo test -p spawned-concurrency --test supervision --test sim
+```
+
+`deferred_sim` explores deferred-reply and job races with PCT (`d=3`) and
+bounded DFS (`bound=3`), 300 runs each: a stored token's reply against its
+deadline, the owner's stop and the caller dropping its receiver (the caller
+sees `Ok` exactly when the reply reports `Delivered`); keyed replacement
+against the old job's completion (no result of a replaced job after its
+replacement starts); emits against the terminal message and a cancel. Planted
+bugs (no cancel fence at dispatch; a late reply reported `Delivered`) are
+found within the first runs.
+
+```sh
+RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim \
+  cargo test -p spawned-concurrency --test deferred_sim --test deferred_replies --test deferred_jobs
+```
+
+`exit_signals_sim` explores the exit-signal orderings with PCT (`d=3`, 1,000
+runs) and bounded DFS (`bound=3`, `depth=300`, up to 300 runs for each of
+input seeds 0-11): a kill against an administrative stop's slow `stopped()`
+(skipped before it begins, finishes during it, ignored after the death point;
+a monitor sees the same reason), a late untrapped signal against the death
+point (replaces the reason before it; link and monitor agree), a `link` +
+`monitor` or `try_link` against the target's death (one notice each, the real
+reason or `NoProc`, the same for both registrations of one turn), `unlink` +
+`demonitor` against delivery (nothing after a marker sent right after the
+fence), a supervisor's shutdown against a trapping child's queued messages
+(handled in order, `exit_pending` monotone, `stopped()` runs, no
+`exit_received`), and a ready child's kill against the tree's initial commit
+(start succeeds, one restart, after the slow sibling is ready). Each test
+counts the outcomes its assertions distinguish and every one is reached. The
+DFS searches are exhausted for every seed of the four single-actor workloads
+and for 10 of 12 seeds of the supervisor shutdown one; the startup workload
+reaches its 300-run budget for every seed. Planted
+bugs (a late signal ignored, a kill that does not skip `stopped()`, a monitor
+that ignores the death point) are found in the first run.
+
+```sh
+RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim \
+  cargo test -p spawned-concurrency --test exit_signals_sim -- --nocapture
 ```
 
 ### Simulated suites in CI
@@ -968,8 +1021,8 @@ input and, for random schedules, its tape:
 This is generated, model-checked scenario testing on real runtimes, not an
 exhaustive scheduler; the coverage-guided fuzzer above runs on the simulator
 only. It does not cover bounded mailboxes or supervisor restart policies.
-Demonitor races permit an already-queued notification; tests use bounded
-observation windows and do not claim exhaustive delivery verification.
+Demonitor flushes a queued `Down` (X2); these campaigns still observe it
+through bounded windows and do not claim exhaustive delivery verification.
 Do not interpret a passing campaign as proof of race freedom.
 
 ## Additional checks
@@ -995,6 +1048,53 @@ RUSTFLAGS="--cfg spawned_loom" cargo test -p spawned-rt --test cancellation_loom
 The custom cfg isolates instrumentation from Tokio's own Loom configuration.
 These models cover registration/cancellation races and reentrant callbacks,
 not the entire actor runtime. Do not run ordinary actor tests with this cfg.
+
+The reply and job cores of deferred replies share their source with Loom
+models that inject Loom's synchronization types (`super::sync`):
+
+```sh
+RUSTFLAGS="--cfg spawned_scheduler_loom" cargo test --release -p spawned-concurrency \
+  --no-default-features --test reply_slot_loom --test registry_turn_loom --test job_core_loom \
+  --test link_fence_loom
+```
+
+`reply_slot_loom` covers the packed slot word (reply, expiry, shortening,
+abandon, close, defer at the bound, linked jobs, parked receivers), retaining
+a published value when cold metadata is installed and when another publisher
+is refused. Removing the terminal pre-check reproduces a lost winning value.
+The production slot uses `parking_lot::Mutex` behind a small non-poisoning shim;
+Loom substitutes its own mutex in the shared algorithm. This checks the
+protocol under the mutex's acquire/release contract, not parking_lot's internal
+implementation. A scalar-slot size regression bounds the common allocation;
+`registry_turn_loom` the in-turn drop commit against turn end, exit and death,
+including zero external tokens, the last token's retirement and two concurrent
+drops. Its fast path is checked against an early-retirement mutation that loses
+a drop. Ownership holds are distinct from live credits;
+`job_core_loom` job admission and rollback at the credit and native bounds,
+keyed replacement of a completed job, emits against the terminal notification
+and cancel, a delayed emit (`emit_at`) firing against the work's finish (the
+terminal held until it fires) and a cancel, native completion against the
+owner's cleanup join, and a job's
+final destruction after a `Weak` upgrade (modelled `Arc`/`Weak`; the
+destruction takes the job set's locks, so running it under one is a Loom
+deadlock). Each model was checked against a planted bug.
+
+`link_fence_loom` shares the link table (`src/link/table.rs`: edge
+generations, the two-lock install, receiver-side fenced delivery, the close at
+the death point) and the observer's monitor table (`src/monitor/fence.rs`)
+with production in the same way; `ActorId`, `ExitReason` and the receiver are
+stand-ins, and applying a notice is an append under the receiver's lock. Its
+nine tests are explored without a preemption bound (5 to 382 executions
+each): at most one notice per edge generation, none after the receiver's
+`unlink` returned or after its own death point, exactly one notice (real
+reason or `NoProc`) for a `link` racing the peer's death and none for a
+`try_link` after it, a stale generation ignored after unlink and relink, one
+edge from concurrent links; at most one `Down`, none after `demonitor` or the
+observer's close returned, exactly one (real reason or `NoProc`) for a
+`monitor` racing the target's death. Seven planted bugs (no generation check,
+unlink keeping the receiver's record, close keeping records, install ignoring
+the peer's death, `Down` enqueued outside the lock, registration ignoring the
+death point, a close that keeps the table open) each fail at least one test.
 
 Run sustained actor creation, traffic, monitoring, and shutdown:
 
@@ -1073,6 +1173,10 @@ synchronization.
 | `cancellation_safety` | Every public async operation (`request`, `request_with_timeout`, `tasks::request`, protocol calls, monitor/link setup requests, `join`/`wait_exit`/`wait_exit_async`, `ready`, `SupervisorBuilder::start` with instant and in-flight factories, `Supervisor::shutdown`/`join`, `SupervisedChild::wait_ready`/`wait_for_generation`, `ActorSystem::shutdown`, `ShutdownReport::wait`, `ScopedTask::join`) is dropped after N polls for N = 0 until it completes or parks. Afterwards the actor stays usable or stops cleanly, effects occur at most once, monitors/links fire exactly once, registrations are released, actor state is freed and shutdown completes | Drop points are poll boundaries reached by the operation's own wakeups; an operation waiting on an external event is dropped once while parked |
 | `panic_safety` | A panic in `started`, a send handler, a request handler, `stopped`, trapped `exit_received`, the `Down` handler, a message `Drop`, an abandoned reply's `Drop`, a queued message's `Drop` and `ChildSpec` factories (sync and async). Both modes, every tasks backend and both group kinds, plus OneForOne supervision. Checks the exact exit reason, exactly one `Down` and one `Exit`, registry release, a working bystander and complete shutdown | A queued-drop panic is a single destructor; multi-destructor and per-placement counts live in `mailbox_drop_panic` |
 | `foreign_panics` | Panicking global tracing subscribers, process panic hooks and abandoned reply destructors. Bounded subprocesses isolate global state and abort-sensitive cases. Strict enabled tests preserve lifecycle panic reasons and stopped hooks and require supervised replacement to succeed | A panicking process panic hook aborts in plain Rust too; the test documents that limit |
+| Job and link trace-lock regressions | Refused notification/emit captures (cancelled and completed jobs), and linked-delivery panic payloads/subscribers (death and late `NoProc` notices), must allow another thread to enter the trace section. Link diagnostics also probe the receiver table. These tests failed before the fixes and run explicitly in `tla-traces` CI | Checks destructor/diagnostic placement around the existing protocol; model transitions and fences are unchanged |
+| Deadline worker startup | `reply::deadline::thread_service::failed_service_start_reclaims_storage_and_allows_retry` injects creation errors and panics, checks the failed Service allocation is reclaimed, then retries through the same OnceLock | If the OS cannot create the worker, startup panics rather than accepting an unserviceable deadline; normal actor panic handling applies. No failed allocation is leaked |
+| Job payload containment | `refused_job_payload_panics_are_contained` reproduces escaped drops in both modes; `held_job_result_panics_do_not_interrupt_cancellation` covers cancel, deadline, replacement and owner discharge, including deferred disposal until callers are answered | A held terminal already wraps its result in `Contained`; refused immediate results/emits need the same protection |
+| Deadline clock ownership | Simulator-build unit regressions retain the owner's world when another is entered, report foreign-thread scheduling as a determinism leak, and expire a native owner's deadline without any runtime. Setup before `block_on`, runtime-drop cycle breaking and fresh reply-pair owners across seeds are covered too. All run explicitly in sim CI | Native threads themselves are not deterministic; a deadline is serviced in its owner's clock domain |
 
 ```sh
 cargo test --locked -p spawned-concurrency --test cross_backend --test cancellation_safety --test panic_safety --test foreign_panics
@@ -1262,6 +1366,10 @@ seeded random runs, and TLC checks every recorded trace is a behavior of the
 model. Hand-edited traces are rejected at the edited event. Trace validation
 found one model gap (a running child may exit with `Shutdown` while the
 supervisor is open, via `ChildHandle::shutdown`); no implementation deviation.
+`lifecycle_trace` does the same for the base actor lifecycle against
+`Lifecycle.tla` (exit signals, stops, links, monitors, requests, `stopped()`
+run or skip, the death point, runtime drop and publication, in both modes;
+eleven edited traces must be rejected).
 
 Apalache checks that the safety invariants of `Supervision`, `Cohorts`,
 `NestedSupervision` and `Coordinator` are inductive (`Init => IndInv`,
@@ -1273,7 +1381,7 @@ controls must break induction. See [the model README](../verification/tla/README
 ```bash
 nix run .#check-tla                                   # model check (TLC via the flake)
 nix run .#check-apalache -- --negative-controls       # inductive invariants (Apalache)
-cargo test -p spawned-concurrency --features lifecycle-trace --test supervision_trace
+cargo test -p spawned-concurrency --features lifecycle-trace --test supervision_trace --test lifecycle_trace
 nix run .#check-tla -- --traces target/lifecycle-traces
 ```
 
@@ -1622,8 +1730,15 @@ and prints the seed when a test fails. Configuration is process-global.
 | `system.reserve` | yes | Placement failure (`SystemError::Capacity`) |
 | `registry.before_register` | yes | Shutdown racing managed name registration |
 | `registry.before_unregister` | no | Slow removal of an owned name before a replacement starts |
+| `actor.at_death` | no | An external reply racing the death point after `NoProc` is observable (tasks and threads) |
+| `actor.exit_before_deliver` | no | A cloned context's exit signal racing its sender's death (tasks and threads) |
 | `link.before_install` | no | Peer exiting while a link is installed (tasks and threads) |
 | `monitor.before_install` | no | Target exiting while a monitor is installed (tasks and threads) |
+| `job.emit_due` | no | A scheduled `emit_at` coming due during the owner's exit: its payload is held until every caller is answered (`emit_due_during_exit_*`) |
+| `job.native_worker_unused` | no | Threads mode: the parked thread of a dropped, unused blocking-job permit held at its exit; the native slot is already back (`an_unused_permit_returns_its_slot_without_its_thread`) |
+| `reply.close_upgraded` | no | The death point's close holding an already-answered slot while its caller drops the receiver: the unread reply is destroyed only after every caller is answered (tasks and threads) |
+| `reply.recv_parked` | no | Handshake: a blocking `recv()` is parked, so only a notification wakes it (discharge notifies parked receivers before any waker; tasks and threads) |
+| `monitor.down_before_dispatch` | no | `demonitor` on another thread returning while the monitor's `Down` is in dispatch: it is flushed (tasks and threads) |
 
 `tests/failpoints.rs` drives every site and checks invariants through public
 APIs: restarts follow the budget (generation count equals injected failures
@@ -1663,8 +1778,7 @@ cargo test --locked -p spawned-concurrency --no-default-features --test payload_
 `.github/workflows/client-compat.yml` builds and tests the two production
 clients, [ethrex](https://github.com/lambdaclass/ethrex) and
 [ethlambda](https://github.com/lambdaclass/ethlambda), against the spawned
-commit under test. Each client keeps a `spawned-v0.7` branch that tracks
-spawned; one GitHub-hosted job per client checks it out next to spawned.
+commit under test. CI defaults to each client's `spawned-v0.8` port branch for this breaking release; one GitHub-hosted job per client checks it out next to spawned.
 
 `.github/scripts/client-compat-patch.sh` points the client at the local
 checkout without editing its manifests. It reads where the client's
@@ -1700,7 +1814,7 @@ rerun it). To run it by hand, or against another client branch:
 
 ```sh
 gh workflow run client-compat.yml --ref <branch> \
-  -f ethrex_ref=spawned-v0.7 -f ethlambda_ref=spawned-v0.7
+  -f ethrex_ref=spawned-v0.8 -f ethlambda_ref=spawned-v0.8
 # Same gates against the spawned the client pins, without the patch:
 gh workflow run client-compat.yml --ref <branch> -f baseline=true
 ```
@@ -1708,9 +1822,10 @@ gh workflow run client-compat.yml --ref <branch> -f baseline=true
 When a gate fails, first run it with `baseline=true`: if it fails there too,
 the failure is the client's (or already in the released spawned), not the
 change under test. When a spawned change needs a client change, push the client
-change to a branch made from `spawned-v0.7`, dispatch the workflow with that
-ref, and land the spawned PR once both are green; then move the client branch. The `spawned-v0.7` client
-branches back long-lived draft PRs and are never merged from here.
+change to the corresponding port branch, dispatch the workflow with that
+ref, and land the spawned PR once both are green. Move the client ports to
+their long-lived draft PRs after publication; those client PRs are never
+merged from here.
 
 ## Soak harness
 
@@ -1843,7 +1958,9 @@ wall-clock check. The gate fails when any benchmark's instructions per operation
 more than 3% over the merge base (`--threshold`, or `HOTPATH_THRESHOLD` in the
 workflow). The job summary has the per-benchmark table. The workflow always
 reports, so it can be a required check, but it only builds and measures when
-`concurrency/src`, `rt/src`, `macros/src` or the driver changed.
+`concurrency/src`, `rt/src`, `macros/src`, the driver, a Cargo manifest or
+lockfile, or the pinned Rust toolchain changed. Release version bumps run the
+gate too; they cannot inherit a passing source check without measurement.
 
 ```sh
 python3 benchmarks/hotpath.py gate                  # HEAD vs merge base with main
@@ -1866,8 +1983,17 @@ python3 benchmarks/hotpath.py abba --base origin/main --head <release commit> \
 ```
 
 Check `burst` and `rpc` in `benchmarks/run.py` (the baseline driver) the same
-way when a change touches the reply path. The 0.8 gate measured async burst
-37% and the default `request()` 24% slower than main this way.
+way when a change touches the reply path. An earlier 0.8 candidate measured
+async burst 37% and the default `request()` 24% slower than main this way;
+rerun against the final release commit after performance fixes.
+
+Await-free generated dispatch has behavioral regressions in
+`concurrency/tests/immediate_dispatch.rs`: parameter patterns, early returns,
+`?`, name/lifetime hygiene, shared receivers and declared context types, lazy
+direct calls, opaque macros that await, ignored-field destructor order, and
+panics with queued callers. The lifecycle trace suite records and replays a
+direct handler's actor-to-actor send so bypassing its actor context is caught.
+Both the direct path and the future adapter use the same reply/death protocol.
 
 ## Release checklist
 
@@ -1878,7 +2004,30 @@ publishes to crates.io):
    checks.
 2. A 4-hour [soak](#soak-harness) on fede passes on the release commit; link
    its `summary.txt` in the release PR.
-3. The wall-clock [performance](#performance-gate) A/B against the previous
+3. Full Lifecycle safety and liveness model checks pass on the release commit,
+   on a server with sufficient memory and disk. These are manual gates, like
+   the soak, rather than GitHub-hosted jobs: the full safety run took 28,912 s
+   (8h02m) on fede, exploring 2,128,345,702 distinct states; a deep liveness
+   run exhausted its Java heap during temporal checking. An out-of-memory
+   result or a timeout is incomplete verification, never a pass. Record the
+   commit, tool version, worker count, resource settings and complete logs in
+   the release PR. Run each in isolation, not alongside other large TLC jobs:
+
+   ```sh
+   git rev-parse HEAD
+   TLC_WORKERS=4 nix run .#check-tla -- --deep --only MCLifecycleDeep \
+     > lifecycle-safety.log 2>&1
+   TLC_WORKERS=4 nix run .#check-tla -- --deep --only MCLifecycleLiveDeep \
+     > lifecycle-liveness.log 2>&1
+   ```
+
+   Both commands must exit successfully with TLC's "No error has been found"
+   verdict. If liveness exceeds the server's resources, provision more or
+   review a bounded decomposition separately; do not remove the property or
+   report safety exploration as a liveness result. Weekly CI retains
+   `MCLifecycleWideDeep`, while per-PR CI retains `MCLifecycle`,
+   `MCLifecycleFence`, `MCLifecycleLive`, trace replay and negative controls.
+4. The wall-clock [performance](#performance-gate) A/B against the previous
    release on a quiet machine: no hot-path benchmark more than 5% slower.
    Link the table in the release PR.
 
@@ -1906,8 +2055,13 @@ time on the simulator, and only reached by a bug on Tokio, since every such wait
 is a handshake, never a fixed sleep. Tests on paused Tokio time
 (`protocol_timeouts`, `semantics_gaps`) are left alone: paused time
 auto-advances while work runs outside Tokio, which could fire the bound early.
-Unit tests inside `concurrency/src` do not use it yet (see "Planted-bug
-sensitivity" for the ones that still hang under a planted bug).
+Unit tests inside `concurrency/src` that start, call, join or wait on actors
+are bounded the same way (`concurrency/src/test_wait.rs`, 120 s):
+synchronous tests run their whole body, Tokio runtime and its teardown
+included, through `test_wait::bounded`, on a thread named after the test, and
+fail with that name if it does not finish; `#[tokio::test]` bodies go
+through `test_wait::within`. A panic in the body (an assertion, or a
+`#[should_panic]` test's expected panic) is re-raised unchanged.
 
 ### Single-CPU runs
 

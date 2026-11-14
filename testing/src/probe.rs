@@ -34,6 +34,9 @@ impl Drop for Replying<'_> {
     }
 }
 
+// `Receiver` is sealed; the probe is the one implementor outside spawned.
+impl<M: Message> spawned_concurrency::__private::Sealed for ProbeCore<M> {}
+
 impl<M: Message> ProbeCore<M> {
     pub(crate) fn new(reply: Option<ReplyFn<M>>) -> Self {
         Self {
@@ -48,7 +51,7 @@ impl<M: Message> ProbeCore<M> {
     fn open(&self) -> Result<MutexGuard<'_, bool>, ActorError> {
         let closed = lock(&self.closed);
         if *closed {
-            Err(ActorError::ActorStopped)
+            Err(ActorError::NoProc)
         } else {
             Ok(closed)
         }
@@ -65,7 +68,7 @@ impl<M: Message> ProbeCore<M> {
     }
 
     /// `Ok(None)` means the request was logged but there is no reply: the
-    /// caller drops the reply sender and observes `ActorStopped`.
+    /// caller observes `ActorStopped(NoProc)` (no actor stands behind it).
     ///
     /// A request is logged `InFlight` on admission. The returned [`Pending`]
     /// is finished by the caller *after* it has put the reply in the reply

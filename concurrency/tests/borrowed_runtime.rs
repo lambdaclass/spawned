@@ -20,13 +20,23 @@ impl Message for Ambient {
 }
 impl Actor for Worker {}
 impl Handler<Identity> for Worker {
-    async fn handle(&mut self, _: Identity, _: &Context<Self>) -> ThreadId {
-        std::thread::current().id()
+    async fn handle(
+        &mut self,
+        _: Identity,
+        reply: spawned_concurrency::PendingReply<'_, ThreadId>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(std::thread::current().id());
     }
 }
 impl Handler<Ambient> for Worker {
-    async fn handle(&mut self, _: Ambient, _: &Context<Self>) -> ActorRef<Worker> {
-        Worker.start()
+    async fn handle(
+        &mut self,
+        _: Ambient,
+        reply: spawned_concurrency::PendingReply<'_, ActorRef<Worker>>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(Worker.start());
     }
 }
 

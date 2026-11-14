@@ -144,7 +144,7 @@ The return type on each protocol method determines the message kind:
 - `Result<(), ActorError>` — fire-and-forget send (both modes), returns the send result
 - No return / `-> ()` — fire-and-forget send (both modes), discards the send result
 
-**Actors** implement message handlers with `#[actor]`. Each handler method is annotated with `#[request_handler]`, `#[send_handler]`, or `#[handler]` and receives a single message struct plus a `Context`. The macro generates the `Actor` trait impl and one `Handler<M>` impl per method.
+**Actors** implement message handlers with `#[actor]`. Each handler method is annotated with `#[request_handler]` (answers with its return value), `#[send_handler]` (returns `()`) or `#[deferred_handler]` (answers through its `PendingReply`, now or later) and receives a single message struct plus a `Context`. The macro generates the `Actor` trait impl and one `Handler<M>` impl per method.
 
 **Using an actor** is just calling trait methods on its `ActorRef`. Because `#[protocol]` generates `impl NameServerProtocol for ActorRef<NameServer>`, you write `ns.add(...)` and `ns.find(...)` — the macro handles message construction and mailbox dispatch behind the scenes.
 

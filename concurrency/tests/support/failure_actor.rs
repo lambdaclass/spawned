@@ -159,40 +159,50 @@ impl spawned_concurrency::tasks::Handler<Command> for AsyncWorker {
     async fn handle(
         &mut self,
         command: Command,
+        reply: spawned_concurrency::PendingReply<'_, Reply>,
         _: &spawned_concurrency::tasks::Context<Self>,
-    ) -> Reply {
-        match command {
-            Command::Payload { id, payload } => {
-                assert_eq!(payload.bytes[0], (id % 251) as u8);
-                self.0.execute(id)
-            }
-            Command::Read => Reply::Values(self.0.values.clone()),
-            Command::Panic => panic!("controlled handler panic"),
-            Command::Append {
-                id,
-                before,
-                after,
-                panic_after,
-            } => {
-                if let Some(gate) = before {
-                    gate.wait().await;
+    ) {
+        let __reply_value: Reply = {
+            match command {
+                Command::Payload { id, payload } => {
+                    assert_eq!(payload.bytes[0], (id % 251) as u8);
+                    self.0.execute(id)
                 }
-                let result = self.0.execute(id);
-                if let Some(gate) = after {
-                    gate.wait().await;
+                Command::Read => Reply::Values(self.0.values.clone()),
+                Command::Panic => panic!("controlled handler panic"),
+                Command::Append {
+                    id,
+                    before,
+                    after,
+                    panic_after,
+                } => {
+                    if let Some(gate) = before {
+                        gate.wait().await;
+                    }
+                    let result = self.0.execute(id);
+                    if let Some(gate) = after {
+                        gate.wait().await;
+                    }
+                    assert!(!panic_after, "controlled panic after effect");
+                    result
                 }
-                assert!(!panic_after, "controlled panic after effect");
-                result
             }
-        }
+        };
+        reply.reply(__reply_value);
     }
 }
 #[cfg(feature = "async")]
 impl spawned_concurrency::tasks::Handler<Down> for AsyncWorker {
-    async fn handle(&mut self, down: Down, _: &spawned_concurrency::tasks::Context<Self>) {
+    async fn handle(
+        &mut self,
+        down: Down,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &spawned_concurrency::tasks::Context<Self>,
+    ) {
         if let Some(sender) = &self.0.down {
             let _ = sender.send(down);
         }
+        reply.reply(());
     }
 }
 pub struct NativeWorker(pub Worker);
@@ -213,39 +223,49 @@ impl spawned_concurrency::threads::Handler<Command> for NativeWorker {
     fn handle(
         &mut self,
         command: Command,
+        reply: spawned_concurrency::PendingReply<'_, Reply>,
         _: &spawned_concurrency::threads::Context<Self>,
-    ) -> Reply {
-        match command {
-            Command::Payload { id, payload } => {
-                assert_eq!(payload.bytes[0], (id % 251) as u8);
-                self.0.execute(id)
-            }
-            Command::Read => Reply::Values(self.0.values.clone()),
-            Command::Panic => panic!("controlled handler panic"),
-            Command::Append {
-                id,
-                before,
-                after,
-                panic_after,
-            } => {
-                if let Some(gate) = before {
-                    futures::executor::block_on(gate.wait());
+    ) {
+        let __reply_value: Reply = {
+            match command {
+                Command::Payload { id, payload } => {
+                    assert_eq!(payload.bytes[0], (id % 251) as u8);
+                    self.0.execute(id)
                 }
-                let result = self.0.execute(id);
-                if let Some(gate) = after {
-                    futures::executor::block_on(gate.wait());
+                Command::Read => Reply::Values(self.0.values.clone()),
+                Command::Panic => panic!("controlled handler panic"),
+                Command::Append {
+                    id,
+                    before,
+                    after,
+                    panic_after,
+                } => {
+                    if let Some(gate) = before {
+                        futures::executor::block_on(gate.wait());
+                    }
+                    let result = self.0.execute(id);
+                    if let Some(gate) = after {
+                        futures::executor::block_on(gate.wait());
+                    }
+                    assert!(!panic_after, "controlled panic after effect");
+                    result
                 }
-                assert!(!panic_after, "controlled panic after effect");
-                result
             }
-        }
+        };
+        reply.reply(__reply_value);
     }
 }
 impl spawned_concurrency::threads::Handler<Down> for NativeWorker {
-    fn handle(&mut self, down: Down, _: &spawned_concurrency::threads::Context<Self>) {
+    fn handle(
+        &mut self,
+        down: Down,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &spawned_concurrency::threads::Context<Self>,
+    ) {
         if let Some(sender) = &self.0.down {
             let _ = sender.send(down);
         }
+        reply.reply(());
     }
 }
 #[derive(Clone)]
@@ -254,10 +274,12 @@ pub enum Handle {
     Async(spawned_concurrency::tasks::ActorRef<AsyncWorker>),
     Native(spawned_concurrency::threads::ActorRef<NativeWorker>),
 }
+/// A raw request sent without a deadline; [`Response::wait`] is the caller
+/// giving up after `duration` (dropping the receiver abandons the request).
 pub enum Response {
     #[cfg(feature = "async")]
-    Async(tokio::sync::oneshot::Receiver<Reply>),
-    Native(mpsc::Receiver<Reply>),
+    Async(spawned_concurrency::ReplyReceiver<Reply>),
+    Native(spawned_concurrency::ReplyReceiver<Reply>),
 }
 impl Response {
     pub fn wait(
@@ -267,13 +289,23 @@ impl Response {
     ) -> Result<Reply, ActorError> {
         match self {
             #[cfg(feature = "async")]
-            Self::Async(receiver) => _rt.block_on(
-                spawned_concurrency::Response::from_with_timeout(Ok(receiver), duration),
-            ),
-            Self::Native(receiver) => receiver.recv_timeout(duration).map_err(|e| match e {
-                mpsc::RecvTimeoutError::Timeout => ActorError::RequestTimeout,
-                mpsc::RecvTimeoutError::Disconnected => ActorError::ActorStopped,
+            Self::Async(receiver) => _rt.block_on(async {
+                tokio::time::timeout(duration, receiver)
+                    .await
+                    .unwrap_or(Err(ActorError::RequestTimeout))
             }),
+            Self::Native(mut receiver) => {
+                let give_up = std::time::Instant::now() + duration;
+                loop {
+                    if let Some(result) = receiver.try_recv() {
+                        return result;
+                    }
+                    if std::time::Instant::now() >= give_up {
+                        return Err(ActorError::RequestTimeout);
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
         }
     }
 }
@@ -303,8 +335,12 @@ impl Handle {
     pub fn raw(&self, command: Command) -> Result<Response, ActorError> {
         match self {
             #[cfg(feature = "async")]
-            Self::Async(actor) => actor.request_raw(command).map(Response::Async),
-            Self::Native(actor) => actor.request_raw(command).map(Response::Native),
+            Self::Async(actor) => actor
+                .send_request(command, spawned_concurrency::Deadline::Never)
+                .map(Response::Async),
+            Self::Native(actor) => actor
+                .send_request(command, spawned_concurrency::Deadline::Never)
+                .map(Response::Native),
         }
     }
     pub fn request(

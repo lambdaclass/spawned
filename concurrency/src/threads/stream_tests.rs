@@ -28,99 +28,125 @@ impl Message for GetItems {
 impl Actor for Collector {}
 
 impl Handler<Push> for Collector {
-    fn handle(&mut self, msg: Push, _ctx: &Context<Self>) {
+    fn handle(
+        &mut self,
+        msg: Push,
+        reply: crate::reply::PendingReply<'_, ()>,
+        _ctx: &Context<Self>,
+    ) {
         self.items.push(msg.value);
         self.done.fetch_add(1, Ordering::SeqCst);
+        reply.reply(());
     }
 }
 
 impl Handler<GetItems> for Collector {
-    fn handle(&mut self, _msg: GetItems, _ctx: &Context<Self>) -> Vec<i32> {
-        self.items.clone()
+    fn handle(
+        &mut self,
+        _msg: GetItems,
+        reply: crate::reply::PendingReply<'_, Vec<i32>>,
+        _ctx: &Context<Self>,
+    ) {
+        reply.reply(self.items.clone());
     }
 }
 
 #[test]
 fn listener_consumes_iterator() {
-    let done = Arc::new(AtomicU64::new(0));
-    let actor = Collector {
-        items: vec![],
-        done: done.clone(),
-    }
-    .start();
+    crate::test_wait::bounded(
+        concat!(module_path!(), "::listener_consumes_iterator"),
+        move || {
+            let done = Arc::new(AtomicU64::new(0));
+            let actor = Collector {
+                items: vec![],
+                done: done.clone(),
+            }
+            .start();
 
-    let ctx = Context::from_ref(&actor);
-    let items = vec![
-        Push { value: 1 },
-        Push { value: 2 },
-        Push { value: 3 },
-        Push { value: 4 },
-        Push { value: 5 },
-    ];
-    let handle = spawn_listener(ctx, items);
-    handle.join().unwrap();
-    // Give the actor time to process all messages
-    while done.load(Ordering::SeqCst) < 5 {
-        rt::sleep(Duration::from_millis(10));
-    }
+            let ctx = actor.context();
+            let items = vec![
+                Push { value: 1 },
+                Push { value: 2 },
+                Push { value: 3 },
+                Push { value: 4 },
+                Push { value: 5 },
+            ];
+            let handle = spawn_listener(ctx, items);
+            handle.join().unwrap();
+            // Give the actor time to process all messages
+            while done.load(Ordering::SeqCst) < 5 {
+                rt::sleep(Duration::from_millis(10));
+            }
 
-    let result = actor.request(GetItems).unwrap();
-    assert_eq!(result, vec![1, 2, 3, 4, 5]);
+            let result = actor.request(GetItems).unwrap();
+            assert_eq!(result, vec![1, 2, 3, 4, 5]);
+        },
+    );
 }
 
 #[test]
 fn listener_stops_on_cancellation() {
-    let done = Arc::new(AtomicU64::new(0));
-    let actor = Collector {
-        items: vec![],
-        done: done.clone(),
-    }
-    .start();
+    crate::test_wait::bounded(
+        concat!(module_path!(), "::listener_stops_on_cancellation"),
+        move || {
+            let done = Arc::new(AtomicU64::new(0));
+            let actor = Collector {
+                items: vec![],
+                done: done.clone(),
+            }
+            .start();
 
-    let ctx = Context::from_ref(&actor);
+            let ctx = actor.context();
 
-    // An iterator that blocks between items, giving us time to cancel
-    let iter = (1..=100).map(move |i| {
-        if i > 1 {
-            rt::sleep(Duration::from_millis(50));
-        }
-        Push { value: i }
-    });
+            // An iterator that blocks between items, giving us time to cancel
+            let iter = (1..=100).map(move |i| {
+                if i > 1 {
+                    rt::sleep(Duration::from_millis(50));
+                }
+                Push { value: i }
+            });
 
-    let _handle = spawn_listener(ctx, iter);
+            let _handle = spawn_listener(ctx, iter);
 
-    // Let at least one item through, then stop the actor
-    let first = wait_for(|| done.load(Ordering::SeqCst), |n| *n > 0);
-    assert!(first > 0, "listener never delivered an item");
-    actor.context().stop();
-    actor.join();
+            // Let at least one item through, then stop the actor
+            let first = wait_for(|| done.load(Ordering::SeqCst), |n| *n > 0);
+            assert!(first > 0, "listener never delivered an item");
+            actor.context().stop();
+            actor.join();
 
-    let processed = done.load(Ordering::SeqCst);
-    assert!(
-        processed < 100,
-        "Expected partial processing, but all 100 items were processed"
-    );
-    assert!(
-        processed > 0,
-        "Expected at least some items to be processed"
+            let processed = done.load(Ordering::SeqCst);
+            assert!(
+                processed < 100,
+                "Expected partial processing, but all 100 items were processed"
+            );
+            assert!(
+                processed > 0,
+                "Expected at least some items to be processed"
+            );
+        },
     );
 }
 
 #[test]
 fn stopped_actor_does_not_poll_iterator() {
-    let polls = Arc::new(AtomicU64::new(0));
-    let actor = Collector {
-        items: vec![],
-        done: Default::default(),
-    }
-    .start();
-    actor.child_handle().stop();
-    actor.join();
-    let count = polls.clone();
-    let iter = std::iter::from_fn(move || {
-        count.fetch_add(1, Ordering::SeqCst);
-        None::<Push>
-    });
-    spawn_listener(actor.context(), iter).join().unwrap();
-    assert_eq!(polls.load(Ordering::SeqCst), 0);
+    crate::test_wait::bounded(
+        concat!(module_path!(), "::stopped_actor_does_not_poll_iterator"),
+        move || {
+            let polls = Arc::new(AtomicU64::new(0));
+            let actor = Collector {
+                items: vec![],
+                done: Default::default(),
+            }
+            .start();
+            actor.child_handle().stop();
+            actor.join();
+            let count = polls.clone();
+            let iter = std::iter::from_fn(move || {
+                count.fetch_add(1, Ordering::SeqCst);
+                None::<Push>
+            });
+            spawn_listener(actor.context(), iter).join().unwrap();
+            assert_eq!(polls.load(Ordering::SeqCst), 0);
+        },
+    );
 }

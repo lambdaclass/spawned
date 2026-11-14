@@ -1,0 +1,5 @@
+error: #[deferred_handler] method must have 4 parameters (&mut self, msg: M, reply: PendingReply<'_, R>, ctx: &Context<Self>), found 3
+  --> tests/ui/deferred_handler_without_reply.rs:13:5
+   |
+13 |     fn read(&mut self, _msg: Read, _ctx: &Context<Self>) {}
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

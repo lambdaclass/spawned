@@ -30,17 +30,15 @@ use std::{
 const LIMIT: Duration = Duration::from_secs(4);
 
 fn config(max_restarts: usize) -> SupervisorConfig {
-    SupervisorConfig {
-        max_restarts,
-        backoff: Backoff {
-            initial: Duration::from_millis(1),
-            maximum: Duration::from_millis(4),
-            jitter: false,
-            seed: Some(7),
-            ..Backoff::default()
-        },
-        ..SupervisorConfig::default()
-    }
+    SupervisorConfig::default()
+        .max_restarts(max_restarts)
+        .backoff(
+            Backoff::default()
+                .initial(Duration::from_millis(1))
+                .maximum(Duration::from_millis(4))
+                .jitter(false)
+                .seed(7),
+        )
 }
 
 /// Wait until a site has been reached `n` times.
@@ -71,6 +69,8 @@ impl Started {
 }
 struct Worker {
     started: Started,
+    /// Trap exits, so stopped() runs on a parent's shutdown (v0.8, E3).
+    trap: bool,
     name: Option<&'static str>,
     registration: Arc<Mutex<Option<bool>>>,
 }
@@ -78,6 +78,7 @@ impl Worker {
     fn new(started: &Started) -> Self {
         Self {
             started: started.clone(),
+            trap: false,
             name: None,
             registration: Default::default(),
         }
@@ -85,6 +86,9 @@ impl Worker {
 }
 impl Actor for Worker {
     async fn started(&mut self, ctx: &Context<Self>) {
+        if self.trap {
+            ctx.trap_exit(true);
+        }
         self.started
             .0
             .lock()
@@ -96,12 +100,24 @@ impl Actor for Worker {
     }
 }
 impl Handler<Crash> for Worker {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         panic!("injected child failure");
     }
 }
 impl Handler<Ping> for Worker {
-    async fn handle(&mut self, _: Ping, _: &Context<Self>) {}
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
 }
 
 // ---------------------------------------------------------------- child.factory
@@ -109,7 +125,6 @@ impl Handler<Ping> for Worker {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn factory_errors_restart_within_budget_and_count_generations() {
     let _scenario = FailScenario::setup();
-    failpoints::configure("child.factory", FailPoint::new(Action::Error).times(3)).unwrap();
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("fp-factory", 1).unwrap();
     let started = Started::default();
@@ -126,13 +141,17 @@ async fn factory_errors_restart_within_budget_and_count_generations() {
         }))
         .unwrap();
     let tree = within!(tree.start()).await.unwrap();
-    let current = child.wait_ready().await.unwrap();
+    // v0.8 (S1): a first start is never retried, so the failures are
+    // injected into the replacements after a crash.
+    failpoints::configure("child.factory", FailPoint::new(Action::Error).times(3)).unwrap();
+    child.wait_ready().await.unwrap().send(Crash).unwrap();
+    let current = child.wait_for_generation(1).await.unwrap();
     // Three injected failures, each its own generation, then one success.
     assert_eq!(failpoints::stats("child.factory").fired, 3);
-    assert_eq!(child.snapshot().generation, 4);
-    assert_eq!(constructed.load(Ordering::SeqCst), 1);
-    assert_eq!(started.handles().len(), 1);
-    assert_eq!(started.handles()[0].id(), current.id());
+    assert_eq!(child.snapshot().generation, 5);
+    assert_eq!(constructed.load(Ordering::SeqCst), 2);
+    assert_eq!(started.handles().len(), 2);
+    assert_eq!(started.handles()[1].id(), current.id());
     assert!(tree.failure().is_none());
     let report = tree.shutdown(LIMIT).await;
     assert!(report.complete && report.failure.is_none());
@@ -140,7 +159,7 @@ async fn factory_errors_restart_within_budget_and_count_generations() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn persistent_factory_failure_exhausts_budget_and_fails_startup() {
+async fn persistent_factory_failure_fails_startup_without_retry() {
     let _scenario = FailScenario::setup();
     failpoints::configure("child.factory", Action::Error).unwrap();
     let system = ActorSystem::new().unwrap();
@@ -155,13 +174,14 @@ async fn persistent_factory_failure_exhausts_budget_and_fails_startup() {
         }))
         .unwrap();
     match within!(tree.start()).await {
-        Err(SupervisorError::Failed(error)) => {
-            assert!(error.contains("restart budget exhausted"), "{error}")
+        Err(SupervisorError::FailedToStartChild { child, cause, .. }) => {
+            assert_eq!(child, "worker");
+            assert!(cause.contains("failpoint child.factory"), "{cause}")
         }
-        other => panic!("expected budget failure, got {:?}", other.err()),
+        other => panic!("expected a first-start failure, got {:?}", other.err()),
     }
-    // One initial attempt plus max_restarts retries.
-    assert_eq!(failpoints::stats("child.factory").fired, 3);
+    // v0.8 (S1): one attempt; a first start is not retried.
+    assert_eq!(failpoints::stats("child.factory").fired, 1);
     assert!(started.handles().is_empty());
     assert!(child.current().is_err());
     assert!(system.shutdown(LIMIT).await.complete);
@@ -170,7 +190,6 @@ async fn persistent_factory_failure_exhausts_budget_and_fails_startup() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn factory_panic_is_a_failed_start_not_a_controller_failure() {
     let _scenario = FailScenario::setup();
-    failpoints::configure("child.factory", FailPoint::new(Action::Panic).times(1)).unwrap();
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("fp-factory-panic", 1).unwrap();
     let started = Started::default();
@@ -183,9 +202,12 @@ async fn factory_panic_is_a_failed_start_not_a_controller_failure() {
         }))
         .unwrap();
     let tree = within!(tree.start()).await.unwrap();
-    child.wait_ready().await.unwrap();
+    // v0.8 (S1): injected into the replacement; a first start is not retried.
+    failpoints::configure("child.factory", FailPoint::new(Action::Panic).times(1)).unwrap();
+    child.wait_ready().await.unwrap().send(Crash).unwrap();
+    child.wait_for_generation(1).await.unwrap();
     let snapshot = child.snapshot();
-    assert_eq!(snapshot.generation, 2);
+    assert_eq!(snapshot.generation, 3);
     assert!(snapshot
         .last_error
         .as_deref()
@@ -198,11 +220,6 @@ async fn factory_panic_is_a_failed_start_not_a_controller_failure() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn seeded_probabilistic_factory_failures_match_generation_count() {
     let _scenario = FailScenario::setup();
-    failpoints::configure(
-        "child.factory",
-        FailPoint::new(Action::Error).probability(0.5),
-    )
-    .unwrap();
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("fp-probability", 1).unwrap();
     let started = Started::default();
@@ -216,6 +233,13 @@ async fn seeded_probabilistic_factory_failures_match_generation_count() {
         .unwrap();
     let tree = within!(tree.start()).await.unwrap();
     let mut actor = child.wait_ready().await.unwrap();
+    // Armed after the initial start: since S1 any failed first start fails
+    // `start()`, so only replacements may fail (and are retried).
+    failpoints::configure(
+        "child.factory",
+        FailPoint::new(Action::Error).probability(0.5),
+    )
+    .unwrap();
     for _ in 0..8 {
         let generation = child.snapshot().generation;
         actor.send(Crash).unwrap();
@@ -240,11 +264,6 @@ async fn seeded_probabilistic_factory_failures_match_generation_count() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ready_generation_discarded_before_publication_is_never_current() {
     let _scenario = FailScenario::setup();
-    failpoints::configure(
-        "child.after_ready_before_publish",
-        FailPoint::new(Action::Error).times(1),
-    )
-    .unwrap();
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("fp-discard", 1).unwrap();
     let started = Started::default();
@@ -257,17 +276,25 @@ async fn ready_generation_discarded_before_publication_is_never_current() {
         }))
         .unwrap();
     let tree = within!(tree.start()).await.unwrap();
-    let current = child.wait_ready().await.unwrap();
+    // v0.8 (S1): a discarded first start fails start(), so discard a
+    // replacement.
+    failpoints::configure(
+        "child.after_ready_before_publish",
+        FailPoint::new(Action::Error).times(1),
+    )
+    .unwrap();
+    child.wait_ready().await.unwrap().send(Crash).unwrap();
+    let current = child.wait_for_generation(1).await.unwrap();
     let handles = started.handles();
-    assert_eq!(handles.len(), 2);
-    assert_ne!(handles[0].id(), current.id());
-    assert_eq!(handles[1].id(), current.id());
+    assert_eq!(handles.len(), 3);
+    assert_ne!(handles[1].id(), current.id());
+    assert_eq!(handles[2].id(), current.id());
     // The discarded generation was stopped, not leaked.
-    let reason = tokio::time::timeout(LIMIT, handles[0].wait_exit_async())
+    let reason = tokio::time::timeout(LIMIT, handles[1].wait_exit_async())
         .await
         .unwrap();
     assert_eq!(reason, ExitReason::Shutdown);
-    assert_eq!(child.snapshot().generation, 2);
+    assert_eq!(child.snapshot().generation, 3);
     assert!(tree.shutdown(LIMIT).await.complete);
     assert!(system.shutdown(LIMIT).await.complete);
 }
@@ -528,20 +555,14 @@ async fn placement_failure_is_reported_and_fails_the_supervisor() {
         }))
         .unwrap();
     match within!(tree.start()).await {
-        Err(SupervisorError::Failed(error)) => {
-            assert!(error.contains("placement failed"), "{error}")
+        Err(SupervisorError::FailedToStartChild { child, cause, .. }) => {
+            assert_eq!(child, "worker");
+            assert!(cause.contains("placement failed"), "{cause}")
         }
         other => panic!("expected placement failure, got {:?}", other.err()),
     }
-    // start() returns once the supervisor has failed; the child's controller
-    // publishes its terminal state afterwards. Never started: `Failed` is
-    // sticky, so the outcome does not depend on whether the unstarted-child
-    // sweep or the controller finishes last.
-    let began = Instant::now();
-    while child.snapshot().state == ChildState::Waiting {
-        assert!(began.elapsed() < LIMIT, "child never left Waiting");
-        tokio::time::sleep(Duration::from_millis(2)).await;
-    }
+    // v0.8 (S2): start() returns after the rollback, so the never-started
+    // child is already terminal (#223 polled for it).
     assert_eq!(child.snapshot().state, ChildState::Failed);
     assert_eq!(child.snapshot().generation, 0);
     failpoints::remove("system.reserve");
@@ -653,21 +674,46 @@ struct Linker {
 }
 impl Actor for Linker {}
 impl Handler<LinkTo> for Linker {
-    async fn handle(&mut self, msg: LinkTo, ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: LinkTo,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
         ctx.link(&msg.0);
+        reply.reply(());
     }
 }
 impl Handler<Watch> for Linker {
-    async fn handle(&mut self, msg: Watch, ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Watch,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
         ctx.monitor(&msg.0);
+        reply.reply(());
     }
 }
 impl Handler<Ping> for Linker {
-    async fn handle(&mut self, _: Ping, _: &Context<Self>) {}
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
 }
 impl Handler<Down> for Linker {
-    async fn handle(&mut self, msg: Down, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Down,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         let _ = self.downs.send(msg.reason);
+        reply.reply(());
     }
 }
 
@@ -694,7 +740,7 @@ async fn peer_exit_during_link_install_still_propagates() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn target_exit_during_monitor_install_still_delivers_down() {
+async fn target_exit_during_monitor_install_delivers_noproc() {
     let _scenario = FailScenario::setup();
     failpoints::configure(
         "monitor.before_install",
@@ -708,11 +754,13 @@ async fn target_exit_during_monitor_install_still_delivers_down() {
     reached("monitor.before_install", 1).await;
     target.send(Crash).unwrap();
     within!(target.wait_exit()).await;
+    // The registration completes after the target's death point: exactly
+    // one Down, carrying NoProc (E4).
     let reason = tokio::time::timeout(LIMIT, received.recv())
         .await
         .unwrap()
         .unwrap();
-    assert!(matches!(reason, ExitReason::Panic(_)));
+    assert_eq!(reason, ExitReason::NoProc);
     watcher.context().stop();
     within!(watcher.join()).await;
 }
@@ -739,11 +787,16 @@ async fn injected_started_panic_is_an_abnormal_exit_seen_by_monitors() {
         other => panic!("expected panic exit, got {other:?}"),
     }
     assert!(started.handles().is_empty());
+    // The monitor races the target's death point: before it, the Down
+    // carries the panic; after it, NoProc.
     let reason = tokio::time::timeout(LIMIT, received.recv())
         .await
         .unwrap()
         .unwrap();
-    assert!(matches!(reason, ExitReason::Panic(_)));
+    assert!(
+        matches!(reason, ExitReason::Panic(_) | ExitReason::NoProc),
+        "got {reason:?}"
+    );
     watcher.context().stop();
     within!(watcher.join()).await;
 }
@@ -775,14 +828,18 @@ async fn slow_stopped_reports_at_deadline_then_completes() {
     .unwrap();
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("fp-stopped", 1).unwrap();
-    let actor = group.start(Worker::new(&Started::default())).unwrap();
+    let mut worker = Worker::new(&Started::default());
+    worker.trap = true;
+    let actor = group.start(worker).unwrap();
     within!(actor.ready()).await.unwrap();
     let report = system.shutdown(Duration::from_millis(100)).await;
     assert!(!report.complete);
     assert_eq!(report.unfinished_actors, [actor.id()]);
     let report = report.wait(LIMIT).await;
     assert!(report.complete);
-    assert_eq!(actor.exit_reason(), Some(ExitReason::Shutdown));
+    // The kill at grace arrived while stopped() ran: it finishes, but the
+    // reason becomes Killed (E1).
+    assert_eq!(actor.exit_reason(), Some(ExitReason::Killed));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -879,6 +936,560 @@ async fn system_shutdown_coordinator_panic_is_reported_and_contained() {
 
 // ------------------------------------------------------------ actor.* (threads)
 
+// ------------------------------------------------- actor.at_death (D fence)
+
+/// Holds deferred tokens for an outside replier.
+#[derive(Default)]
+struct Holder;
+struct Hold(std::sync::mpsc::Sender<spawned_concurrency::ReplyTo<u32>>);
+impl Message for Hold {
+    type Result = u32;
+}
+impl Actor for Holder {}
+impl Handler<Hold> for Holder {
+    async fn handle(
+        &mut self,
+        msg: Hold,
+        reply: spawned_concurrency::PendingReply<'_, u32>,
+        _: &Context<Self>,
+    ) {
+        msg.0.send(reply.defer().unwrap()).unwrap();
+    }
+}
+impl Handler<Ping> for Holder {
+    async fn handle(
+        &mut self,
+        _: Ping,
+        _: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+    }
+}
+
+/// Review P1 (Codex 4): once `NoProc` is observable (a send to the dead
+/// owner fails), an external `ReplyTo::reply` must not succeed: the caller
+/// gets the owner's final reason. Replies were admitted until the registry
+/// closed the slot, after D: a reply could land after `NoProc`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_reply_succeeds_after_noproc_is_observable() {
+    let _scenario = FailScenario::setup();
+    let holder = Holder.start();
+    let (tokens, token) = std::sync::mpsc::channel();
+    let caller = holder
+        .send_request(Hold(tokens), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+        .unwrap();
+    let token = token.recv_timeout(LIMIT).unwrap();
+    failpoints::configure(
+        "actor.at_death",
+        FailPoint::new(Action::Delay(Duration::from_millis(300))).times(1),
+    )
+    .unwrap();
+    holder.context().stop();
+    let began = Instant::now();
+    while holder.send(Ping).is_ok() {
+        assert!(began.elapsed() < LIMIT, "the owner never died");
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    // `NoProc` is observable: the death point passed.
+    let delivery = token.reply(7);
+    assert_ne!(
+        delivery,
+        spawned_concurrency::Delivery::Delivered,
+        "a reply succeeded after NoProc was observable"
+    );
+    assert!(
+        matches!(
+            caller.await,
+            Err(spawned_concurrency::ActorError::ActorStopped(
+                ExitReason::Normal
+            ))
+        ),
+        "the caller did not get the final reason"
+    );
+    holder.join().await;
+}
+
+// ---------------------------------------- actor.exit_before_deliver (fence)
+
+/// Traps exits and records them in arrival order.
+struct Recorder(Arc<Mutex<Vec<(spawned_concurrency::ActorId, ExitReason)>>>);
+impl Actor for Recorder {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        ctx.trap_exit(true);
+    }
+    async fn exit_received(&mut self, exit: spawned_concurrency::Exit, _: &Context<Self>) {
+        self.0.lock().unwrap().push((exit.from, exit.reason));
+    }
+}
+impl Handler<Ping> for Recorder {
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
+}
+struct SignalSender;
+impl Actor for SignalSender {}
+impl Handler<LinkTo> for SignalSender {
+    async fn handle(
+        &mut self,
+        msg: LinkTo,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
+        ctx.link(&msg.0);
+        reply.reply(());
+    }
+}
+
+/// Review P1 (Codex 10): a signal a cloned context sends before its
+/// sender's death reaches the target before the sender's death notice
+/// (`ExitAfterMessages`, OTP's per-pair signal order). A helper passed the
+/// sender-lifetime check, paused, and delivered after the death notice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_exit_signal_is_not_overtaken_by_its_senders_death_notice() {
+    let _scenario = FailScenario::setup();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let recorder = Recorder(seen.clone()).start();
+    recorder.request(Ping).await.unwrap(); // trapping now
+    let sender = SignalSender.start();
+    sender
+        .request(LinkTo(recorder.child_handle()))
+        .await
+        .unwrap();
+    failpoints::configure(
+        "actor.exit_before_deliver",
+        FailPoint::new(Action::Delay(Duration::from_millis(300))).times(1),
+    )
+    .unwrap();
+    let ctx = sender.context();
+    let target = recorder.child_handle();
+    let helper = std::thread::spawn(move || ctx.exit(&target, ExitReason::Shutdown));
+    reached("actor.exit_before_deliver", 1).await;
+    // The sender dies while its helper's signal is in flight.
+    sender.context().stop();
+    let began = Instant::now();
+    while seen.lock().unwrap().len() < 2 {
+        assert!(
+            began.elapsed() < LIMIT,
+            "exits seen: {:?}",
+            seen.lock().unwrap()
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    helper.join().unwrap();
+    let reasons: Vec<_> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, r)| r.clone())
+        .collect();
+    assert_eq!(
+        reasons,
+        [ExitReason::Shutdown, ExitReason::Normal],
+        "the death notice overtook the sender's own signal"
+    );
+    recorder.context().stop();
+    recorder.join().await;
+}
+
+// ---------------------------------- monitor.down_before_dispatch (flush)
+
+struct WatchDown(ChildHandle);
+impl Message for WatchDown {
+    type Result = spawned_concurrency::MonitorRef;
+}
+
+/// Monitors on request and counts the `Down`s its handler runs.
+struct Observer(Arc<AtomicUsize>);
+impl Actor for Observer {}
+impl Handler<WatchDown> for Observer {
+    async fn handle(
+        &mut self,
+        msg: WatchDown,
+        reply: spawned_concurrency::PendingReply<'_, spawned_concurrency::MonitorRef>,
+        ctx: &Context<Self>,
+    ) {
+        reply.reply(ctx.monitor(&msg.0));
+    }
+}
+impl Handler<Down> for Observer {
+    async fn handle(
+        &mut self,
+        _: Down,
+        _: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+impl Handler<Ping> for Observer {
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
+}
+struct Quiet;
+impl Actor for Quiet {}
+
+/// OTP `demonitor(Ref, [flush])`: a `demonitor` on another thread returns
+/// while the observer is dispatching the monitor's `Down` (paused before the
+/// flush check); the `Down` never reaches `Handler<Down>`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn demonitor_flushes_a_down_in_dispatch() {
+    let _scenario = FailScenario::setup();
+    let handled = Arc::new(AtomicUsize::new(0));
+    let observer = Observer(handled.clone()).start();
+    let target = Quiet.start();
+    let monitor = observer
+        .request(WatchDown(target.child_handle()))
+        .await
+        .unwrap();
+    failpoints::configure(
+        "monitor.down_before_dispatch",
+        FailPoint::new(Action::Delay(Duration::from_millis(300))).times(1),
+    )
+    .unwrap();
+    target.context().stop();
+    target.join().await;
+    reached("monitor.down_before_dispatch", 1).await;
+    observer.context().demonitor(monitor);
+    // FIFO, one turn at a time: the Down's dispatch finished before this.
+    observer.request(Ping).await.unwrap();
+    assert_eq!(
+        handled.load(Ordering::SeqCst),
+        0,
+        "a Down was handled after demonitor returned"
+    );
+    observer.context().stop();
+    observer.join().await;
+}
+
+// ------------------------------------- death-boundary discharge (final review)
+
+type SharedReceiver = Arc<Mutex<Option<spawned_concurrency::ReplyReceiver<()>>>>;
+
+/// An unread reply whose destructor waits (at most 3 s) for a queued
+/// caller's answer and records whether it came.
+struct WaitsForCaller {
+    caller: SharedReceiver,
+    answered: Arc<AtomicUsize>,
+}
+impl Drop for WaitsForCaller {
+    fn drop(&mut self) {
+        let began = Instant::now();
+        while began.elapsed() < Duration::from_secs(3) {
+            if let Some(receiver) = self.caller.lock().unwrap().as_mut() {
+                if receiver.try_recv().is_some() {
+                    self.answered.store(1, Ordering::SeqCst);
+                    return;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+/// Deferred, then answered at once with a `WaitsForCaller` nobody reads.
+struct AnswerLater(WaitsForCaller);
+impl Message for AnswerLater {
+    type Result = WaitsForCaller;
+}
+/// Blocks the actor until released; reports entry.
+struct Gate(std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>);
+impl Message for Gate {
+    type Result = ();
+}
+struct Answer;
+impl Message for Answer {
+    type Result = ();
+}
+struct Discharger;
+impl Actor for Discharger {}
+impl Handler<AnswerLater> for Discharger {
+    async fn handle(
+        &mut self,
+        msg: AnswerLater,
+        reply: spawned_concurrency::PendingReply<'_, WaitsForCaller>,
+        _: &Context<Self>,
+    ) {
+        reply.defer().unwrap().reply(msg.0);
+    }
+}
+impl Handler<Gate> for Discharger {
+    async fn handle(
+        &mut self,
+        msg: Gate,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        let _ = msg.1.send(());
+        let _ = msg.0.recv_timeout(LIMIT);
+        reply.reply(());
+    }
+}
+impl Handler<Answer> for Discharger {
+    async fn handle(
+        &mut self,
+        _: Answer,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
+}
+
+/// Final review (Codex P1 1): the death point's close holds an upgraded,
+/// already-answered deferred slot while its caller drops the receiver. The
+/// close's reference was then the last: the unread reply's destructor ran
+/// inside the close, before the queued caller was answered (and here waited
+/// for that answer). Every slot the discharge meets is now retained until
+/// every caller is answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unread_reply_is_destroyed_after_every_caller_is_answered() {
+    let _scenario = FailScenario::setup();
+    let actor = Discharger.start();
+    let caller: SharedReceiver = Arc::default();
+    let answered = Arc::new(AtomicUsize::new(0));
+    let unread = actor
+        .send_request(
+            AnswerLater(WaitsForCaller {
+                caller: caller.clone(),
+                answered: answered.clone(),
+            }),
+            spawned_concurrency::Deadline::Never,
+        )
+        .unwrap();
+    let (release, gate) = std::sync::mpsc::channel();
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    actor.send(Gate(gate, entered_tx)).unwrap();
+    entered.recv_timeout(LIMIT).unwrap(); // AnswerLater was handled
+    *caller.lock().unwrap() = Some(
+        actor
+            .send_request(Answer, spawned_concurrency::Deadline::Never)
+            .unwrap(),
+    );
+    failpoints::configure(
+        "reply.close_upgraded",
+        FailPoint::new(Action::Delay(Duration::from_millis(300))).times(1),
+    )
+    .unwrap();
+    actor.context().stop();
+    release.send(()).unwrap();
+    reached("reply.close_upgraded", 1).await;
+    // The caller gives up on its unread reply while the close holds it.
+    drop(unread);
+    tokio::time::timeout(LIMIT * 2, actor.join()).await.unwrap();
+    assert_eq!(
+        answered.load(Ordering::SeqCst),
+        1,
+        "an unread reply was destroyed before every caller was answered"
+    );
+}
+
+/// Final review (Codex P1 3): the discharge batch wakes parked blocking
+/// receivers before any arbitrary waker. Caller A's waker waits for caller
+/// B, parked in `recv()`, to return; B used to be notified only after A's
+/// waker, so neither proceeded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn parked_receivers_wake_before_any_waker() {
+    use std::task::{Wake, Waker};
+    struct WaitForB(Arc<AtomicUsize>, Arc<AtomicUsize>);
+    impl Wake for WaitForB {
+        fn wake(self: Arc<Self>) {
+            let began = Instant::now();
+            while began.elapsed() < Duration::from_secs(3) {
+                if self.0.load(Ordering::SeqCst) == 1 {
+                    self.1.store(1, Ordering::SeqCst);
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+    let _scenario = FailScenario::setup();
+    let actor = Discharger.start();
+    let (release, gate) = std::sync::mpsc::channel();
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    actor.send(Gate(gate, entered_tx)).unwrap();
+    entered.recv_timeout(LIMIT).unwrap();
+    let never = spawned_concurrency::Deadline::Never;
+    let a = actor.send_request(Answer, never).unwrap();
+    let b = actor.send_request(Answer, never).unwrap();
+    let (b_returned, a_saw_b) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let waker = Waker::from(Arc::new(WaitForB(b_returned.clone(), a_saw_b.clone())));
+    let mut a = Box::pin(std::future::IntoFuture::into_future(a));
+    assert!(
+        std::future::Future::poll(a.as_mut(), &mut std::task::Context::from_waker(&waker))
+            .is_pending()
+    );
+    failpoints::configure("reply.recv_parked", FailPoint::new(Action::Off)).unwrap();
+    let parked = {
+        let b_returned = b_returned.clone();
+        std::thread::spawn(move || {
+            let _ = b.recv();
+            b_returned.store(1, Ordering::SeqCst);
+        })
+    };
+    reached("reply.recv_parked", 1).await; // B is parked in recv()
+    actor.context().stop();
+    release.send(()).unwrap();
+    tokio::time::timeout(LIMIT * 2, actor.join()).await.unwrap();
+    parked.join().unwrap();
+    assert_eq!(
+        a_saw_b.load(Ordering::SeqCst),
+        1,
+        "a parked blocking receiver was woken only after another caller's waker"
+    );
+}
+
+// ------------------------------- job.emit_due (exit holds payload drops)
+
+/// A message whose destructor records, when it starts, whether a queued
+/// caller was already answered.
+struct Probe {
+    caller: SharedReceiver,
+    answered: Arc<AtomicUsize>,
+    started: std::sync::mpsc::Sender<()>,
+}
+impl Drop for Probe {
+    fn drop(&mut self) {
+        if let Some(receiver) = self.caller.lock().unwrap().as_mut() {
+            if receiver.try_recv().is_some() {
+                self.answered.store(1, Ordering::SeqCst);
+            }
+        }
+        let _ = self.started.send(());
+    }
+}
+struct Probed(#[allow(dead_code)] Probe);
+impl Message for Probed {
+    type Result = ();
+}
+/// Its `stopped()` waits for the test's release.
+struct SlowStop(std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>);
+struct ScheduleProbe(Probe, std::sync::mpsc::Sender<()>);
+impl Message for ScheduleProbe {
+    type Result = ();
+}
+impl Actor for SlowStop {
+    async fn stopped(&mut self, _: &Context<Self>) {
+        let _ = self.1.send(());
+        let _ = self.0.recv_timeout(LIMIT);
+    }
+}
+impl Handler<ScheduleProbe> for SlowStop {
+    async fn handle(
+        &mut self,
+        msg: ScheduleProbe,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
+        let ScheduleProbe(probe, scheduled) = msg;
+        ctx.pipe(
+            spawned_concurrency::tasks::JobOptions::new(),
+            move |job| async move {
+                let at = spawned_concurrency::Instant::now() + Duration::from_millis(100);
+                job.emit_at(at, Probed(probe)).await.unwrap();
+                let _ = scheduled.send(());
+                job.cancelled().await;
+            },
+            |_| Answer,
+        )
+        .unwrap();
+        reply.reply(());
+    }
+}
+impl Handler<Gate> for SlowStop {
+    async fn handle(
+        &mut self,
+        msg: Gate,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        let _ = msg.1.send(());
+        let _ = msg.0.recv_timeout(LIMIT);
+        reply.reply(());
+    }
+}
+impl Handler<Answer> for SlowStop {
+    async fn handle(
+        &mut self,
+        _: Answer,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
+}
+impl Handler<Probed> for SlowStop {
+    async fn handle(
+        &mut self,
+        _: Probed,
+        _: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+    }
+}
+
+/// Final review (agy P1 1): a scheduled `emit_at` that comes due while the
+/// owner runs `stopped()` (its jobs already cancelled) is refused, and its
+/// payload used to be destroyed right there on the deadline service, before
+/// the queued caller was answered. The owner's payload drops are now held
+/// from the start of its exit until every caller is answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn emit_due_during_exit_is_destroyed_after_every_caller_is_answered() {
+    let _scenario = FailScenario::setup();
+    let (stop_release, stop_gate) = std::sync::mpsc::channel();
+    let (stopping_tx, stopping) = std::sync::mpsc::channel();
+    let actor = SlowStop(stop_gate, stopping_tx).start();
+    let caller: SharedReceiver = Arc::default();
+    let answered = Arc::new(AtomicUsize::new(0));
+    let (started_tx, started) = std::sync::mpsc::channel();
+    let (scheduled_tx, scheduled) = std::sync::mpsc::channel();
+    let probe = Probe {
+        caller: caller.clone(),
+        answered: answered.clone(),
+        started: started_tx,
+    };
+    actor
+        .request(ScheduleProbe(probe, scheduled_tx))
+        .await
+        .unwrap();
+    scheduled.recv_timeout(LIMIT).unwrap(); // the emit is armed
+    let (release, gate) = std::sync::mpsc::channel();
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    actor.send(Gate(gate, entered_tx)).unwrap();
+    entered.recv_timeout(LIMIT).unwrap();
+    *caller.lock().unwrap() = Some(
+        actor
+            .send_request(Answer, spawned_concurrency::Deadline::Never)
+            .unwrap(),
+    );
+    failpoints::configure("job.emit_due", FailPoint::new(Action::Off)).unwrap();
+    actor.context().stop();
+    release.send(()).unwrap();
+    stopping.recv_timeout(LIMIT).unwrap(); // in stopped(), jobs cancelled
+                                           // The emit came due during stopped(). Its payload must not be destroyed
+                                           // now: give a wrong implementation the chance to, then let stopped()
+                                           // return.
+    reached("job.emit_due", 1).await;
+    let _ = started.recv_timeout(Duration::from_millis(500));
+    stop_release.send(()).unwrap();
+    tokio::time::timeout(LIMIT * 2, actor.join()).await.unwrap();
+    assert_eq!(
+        answered.load(Ordering::SeqCst),
+        1,
+        "a scheduled emit's payload was destroyed before every caller was answered"
+    );
+}
+
 mod native {
     use super::*;
     use spawned_concurrency::threads::{
@@ -888,15 +1499,153 @@ mod native {
     struct Target;
     impl NativeActor for Target {}
     impl NativeHandler<Crash> for Target {
-        fn handle(&mut self, _: Crash, _: &NativeContext<Self>) {
+        fn handle(
+            &mut self,
+            _: Crash,
+            _reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &NativeContext<Self>,
+        ) {
             panic!("injected native failure");
         }
     }
+    /// Holds deferred tokens for an outside replier (threads mode).
+    struct NativeHolder;
+    impl NativeActor for NativeHolder {}
+    impl NativeHandler<Hold> for NativeHolder {
+        fn handle(
+            &mut self,
+            msg: Hold,
+            reply: spawned_concurrency::PendingReply<'_, u32>,
+            _: &NativeContext<Self>,
+        ) {
+            msg.0.send(reply.defer().unwrap()).unwrap();
+        }
+    }
+    impl NativeHandler<Ping> for NativeHolder {
+        fn handle(
+            &mut self,
+            _: Ping,
+            _: spawned_concurrency::PendingReply<'_, ()>,
+            _: &NativeContext<Self>,
+        ) {
+        }
+    }
+
+    /// Review P1 (Codex 4), threads mode: no external reply succeeds once
+    /// `NoProc` is observable.
+    #[test]
+    fn no_reply_succeeds_after_noproc_is_observable() {
+        let _scenario = FailScenario::setup();
+        let holder = NativeHolder.start();
+        let (tokens, token) = std::sync::mpsc::channel();
+        let caller = holder
+            .send_request(Hold(tokens), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+            .unwrap();
+        let token = token.recv_timeout(LIMIT).unwrap();
+        failpoints::configure(
+            "actor.at_death",
+            FailPoint::new(Action::Delay(Duration::from_millis(300))).times(1),
+        )
+        .unwrap();
+        holder.context().stop();
+        let began = Instant::now();
+        while holder.send(Ping).is_ok() {
+            assert!(began.elapsed() < LIMIT, "the owner never died");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_ne!(
+            token.reply(7),
+            spawned_concurrency::Delivery::Delivered,
+            "a reply succeeded after NoProc was observable"
+        );
+        assert!(
+            matches!(
+                caller.recv(),
+                Err(spawned_concurrency::ActorError::ActorStopped(
+                    ExitReason::Normal
+                ))
+            ),
+            "the caller did not get the final reason"
+        );
+        holder.join();
+    }
+
+    /// Traps exits and records them (threads mode).
+    struct NativeRecorder(Arc<Mutex<Vec<ExitReason>>>);
+    impl NativeActor for NativeRecorder {
+        fn started(&mut self, ctx: &NativeContext<Self>) {
+            ctx.trap_exit(true);
+        }
+        fn exit_received(&mut self, exit: spawned_concurrency::Exit, _: &NativeContext<Self>) {
+            self.0.lock().unwrap().push(exit.reason);
+        }
+    }
+    struct NativeSender;
+    impl NativeActor for NativeSender {}
+    impl NativeHandler<LinkTo> for NativeSender {
+        fn handle(
+            &mut self,
+            msg: LinkTo,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            ctx: &NativeContext<Self>,
+        ) {
+            ctx.link(&msg.0);
+            reply.reply(());
+        }
+    }
+
+    /// Review P1 (Codex 10), threads mode: a cloned context's signal sent
+    /// before its actor's death reaches the target before the death notice.
+    #[test]
+    fn an_exit_signal_is_not_overtaken_by_its_senders_death_notice() {
+        let _scenario = FailScenario::setup();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorder = NativeRecorder(seen.clone()).start();
+        let sender = NativeSender.start();
+        sender.request(LinkTo(recorder.child_handle())).unwrap();
+        failpoints::configure(
+            "actor.exit_before_deliver",
+            FailPoint::new(Action::Delay(Duration::from_millis(300))).times(1),
+        )
+        .unwrap();
+        let ctx = sender.context();
+        let target = recorder.child_handle();
+        let helper = std::thread::spawn(move || ctx.exit(&target, ExitReason::Shutdown));
+        let began = Instant::now();
+        while failpoints::stats("actor.exit_before_deliver").hits < 1 {
+            assert!(began.elapsed() < LIMIT);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        sender.context().stop();
+        while seen.lock().unwrap().len() < 2 {
+            assert!(
+                began.elapsed() < LIMIT,
+                "exits seen: {:?}",
+                seen.lock().unwrap()
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        helper.join().unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [ExitReason::Shutdown, ExitReason::Normal],
+            "the death notice overtook the sender's own signal"
+        );
+        recorder.context().stop();
+        recorder.join();
+    }
+
     struct Peer;
     impl NativeActor for Peer {}
     impl NativeHandler<LinkTo> for Peer {
-        fn handle(&mut self, msg: LinkTo, ctx: &NativeContext<Self>) {
+        fn handle(
+            &mut self,
+            msg: LinkTo,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            ctx: &NativeContext<Self>,
+        ) {
             ctx.link(&msg.0);
+            reply.reply(());
         }
     }
 
@@ -955,5 +1704,346 @@ mod native {
             assert!(began.elapsed() < LIMIT, "linked peer did not stop");
             std::thread::sleep(Duration::from_millis(2));
         }
+    }
+
+    struct NativeObserver(Arc<AtomicUsize>);
+    impl NativeActor for NativeObserver {}
+    impl NativeHandler<WatchDown> for NativeObserver {
+        fn handle(
+            &mut self,
+            msg: WatchDown,
+            reply: spawned_concurrency::reply::PendingReply<'_, spawned_concurrency::MonitorRef>,
+            ctx: &NativeContext<Self>,
+        ) {
+            reply.reply(ctx.monitor(&msg.0));
+        }
+    }
+    impl NativeHandler<Down> for NativeObserver {
+        fn handle(
+            &mut self,
+            _: Down,
+            _: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &NativeContext<Self>,
+        ) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    impl NativeHandler<Ping> for NativeObserver {
+        fn handle(
+            &mut self,
+            _: Ping,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &NativeContext<Self>,
+        ) {
+            reply.reply(());
+        }
+    }
+    struct NativeQuiet;
+    impl NativeActor for NativeQuiet {}
+
+    /// Threads mode: a `demonitor` on another thread returns while the
+    /// observer dispatches the monitor's `Down`; it is never handled.
+    #[test]
+    fn demonitor_flushes_a_down_in_dispatch() {
+        let _scenario = FailScenario::setup();
+        let handled = Arc::new(AtomicUsize::new(0));
+        let observer = NativeObserver(handled.clone()).start();
+        let target = NativeQuiet.start();
+        let monitor = observer.request(WatchDown(target.child_handle())).unwrap();
+        failpoints::configure(
+            "monitor.down_before_dispatch",
+            FailPoint::new(Action::Delay(Duration::from_millis(300))).times(1),
+        )
+        .unwrap();
+        target.context().stop();
+        target.join();
+        let began = Instant::now();
+        while failpoints::stats("monitor.down_before_dispatch").hits < 1 {
+            assert!(began.elapsed() < LIMIT, "the Down was not dispatched");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        observer.context().demonitor(monitor);
+        observer.request(Ping).unwrap();
+        assert_eq!(
+            handled.load(Ordering::SeqCst),
+            0,
+            "a Down was handled after demonitor returned"
+        );
+        observer.context().stop();
+        observer.join();
+    }
+
+    struct NativeDischarger;
+    impl NativeActor for NativeDischarger {}
+    impl NativeHandler<AnswerLater> for NativeDischarger {
+        fn handle(
+            &mut self,
+            msg: AnswerLater,
+            reply: spawned_concurrency::reply::PendingReply<'_, WaitsForCaller>,
+            _: &NativeContext<Self>,
+        ) {
+            reply.defer().unwrap().reply(msg.0);
+        }
+    }
+    impl NativeHandler<Gate> for NativeDischarger {
+        fn handle(
+            &mut self,
+            msg: Gate,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &NativeContext<Self>,
+        ) {
+            let _ = msg.1.send(());
+            let _ = msg.0.recv_timeout(LIMIT);
+            reply.reply(());
+        }
+    }
+    impl NativeHandler<Answer> for NativeDischarger {
+        fn handle(
+            &mut self,
+            _: Answer,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &NativeContext<Self>,
+        ) {
+            reply.reply(());
+        }
+    }
+    fn wait_hits(site: &str) {
+        let began = Instant::now();
+        while failpoints::stats(site).hits < 1 {
+            assert!(began.elapsed() < LIMIT, "site {site} not reached");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// Threads mode of `an_unread_reply_is_destroyed_after_every_caller_is_answered`.
+    #[test]
+    fn an_unread_reply_is_destroyed_after_every_caller_is_answered() {
+        let _scenario = FailScenario::setup();
+        let actor = NativeDischarger.start();
+        let caller: SharedReceiver = Arc::default();
+        let answered = Arc::new(AtomicUsize::new(0));
+        let unread = actor
+            .send_request(
+                AnswerLater(WaitsForCaller {
+                    caller: caller.clone(),
+                    answered: answered.clone(),
+                }),
+                spawned_concurrency::Deadline::Never,
+            )
+            .unwrap();
+        let (release, gate) = std::sync::mpsc::channel();
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        actor.send(Gate(gate, entered_tx)).unwrap();
+        entered.recv_timeout(LIMIT).unwrap();
+        *caller.lock().unwrap() = Some(
+            actor
+                .send_request(Answer, spawned_concurrency::Deadline::Never)
+                .unwrap(),
+        );
+        failpoints::configure(
+            "reply.close_upgraded",
+            FailPoint::new(Action::Delay(Duration::from_millis(300))).times(1),
+        )
+        .unwrap();
+        actor.context().stop();
+        release.send(()).unwrap();
+        wait_hits("reply.close_upgraded");
+        drop(unread);
+        actor.join();
+        assert_eq!(
+            answered.load(Ordering::SeqCst),
+            1,
+            "an unread reply was destroyed before every caller was answered"
+        );
+    }
+
+    /// Threads mode of `parked_receivers_wake_before_any_waker`.
+    #[test]
+    fn parked_receivers_wake_before_any_waker() {
+        use std::task::{Wake, Waker};
+        struct WaitForB(Arc<AtomicUsize>, Arc<AtomicUsize>);
+        impl Wake for WaitForB {
+            fn wake(self: Arc<Self>) {
+                let began = Instant::now();
+                while began.elapsed() < Duration::from_secs(3) {
+                    if self.0.load(Ordering::SeqCst) == 1 {
+                        self.1.store(1, Ordering::SeqCst);
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
+        let _scenario = FailScenario::setup();
+        let actor = NativeDischarger.start();
+        let (release, gate) = std::sync::mpsc::channel();
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        actor.send(Gate(gate, entered_tx)).unwrap();
+        entered.recv_timeout(LIMIT).unwrap();
+        let never = spawned_concurrency::Deadline::Never;
+        let a = actor.send_request(Answer, never).unwrap();
+        let b = actor.send_request(Answer, never).unwrap();
+        let (b_returned, a_saw_b) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::new(WaitForB(b_returned.clone(), a_saw_b.clone())));
+        let mut a = Box::pin(std::future::IntoFuture::into_future(a));
+        assert!(
+            std::future::Future::poll(a.as_mut(), &mut std::task::Context::from_waker(&waker))
+                .is_pending()
+        );
+        failpoints::configure("reply.recv_parked", FailPoint::new(Action::Off)).unwrap();
+        let parked = {
+            let b_returned = b_returned.clone();
+            std::thread::spawn(move || {
+                let _ = b.recv();
+                b_returned.store(1, Ordering::SeqCst);
+            })
+        };
+        wait_hits("reply.recv_parked");
+        actor.context().stop();
+        release.send(()).unwrap();
+        actor.join();
+        parked.join().unwrap();
+        assert_eq!(
+            a_saw_b.load(Ordering::SeqCst),
+            1,
+            "a parked blocking receiver was woken only after another caller's waker"
+        );
+    }
+
+    /// Final review (Codex P2 4): dropping an unused blocking-job permit
+    /// returns its native slot on the dropping thread. With the parked
+    /// thread held at its exit (`job.native_worker_unused`), the next
+    /// reservation at `MAX_NATIVE_JOBS = 1` must still succeed; the slot
+    /// used to be released only when that thread ended.
+    #[test]
+    fn an_unused_permit_returns_its_slot_without_its_thread() {
+        struct One;
+        impl NativeActor for One {
+            const MAX_NATIVE_JOBS: Option<usize> = Some(1);
+        }
+        let _scenario = FailScenario::setup();
+        failpoints::configure(
+            "job.native_worker_unused",
+            FailPoint::new(Action::Delay(Duration::from_millis(500))).times(1),
+        )
+        .unwrap();
+        let owner = One.start();
+        let ctx = owner.context();
+        let opts = spawned_concurrency::threads::JobOptions::new;
+        drop(ctx.reserve_blocking_job(opts()).unwrap());
+        wait_hits("job.native_worker_unused"); // the old thread is held
+        let again = ctx.reserve_blocking_job(opts());
+        assert!(
+            again.is_ok(),
+            "the slot waited for the unused permit's thread: {again:?}"
+        );
+        drop(again);
+        ctx.stop();
+        owner.join();
+    }
+
+    struct NativeSlowStop(std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>);
+    impl NativeActor for NativeSlowStop {
+        fn stopped(&mut self, _: &NativeContext<Self>) {
+            let _ = self.1.send(());
+            let _ = self.0.recv_timeout(LIMIT);
+        }
+    }
+    impl NativeHandler<ScheduleProbe> for NativeSlowStop {
+        fn handle(
+            &mut self,
+            msg: ScheduleProbe,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            ctx: &NativeContext<Self>,
+        ) {
+            let ScheduleProbe(probe, scheduled) = msg;
+            ctx.pipe_blocking(
+                spawned_concurrency::threads::JobOptions::new(),
+                move |job| {
+                    let at = spawned_concurrency::Instant::now() + Duration::from_millis(100);
+                    job.emit_at_blocking(at, Probed(probe)).unwrap();
+                    let _ = scheduled.send(());
+                    while !job.is_cancelled() {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                },
+                |_| Answer,
+            )
+            .unwrap();
+            reply.reply(());
+        }
+    }
+    impl NativeHandler<Gate> for NativeSlowStop {
+        fn handle(
+            &mut self,
+            msg: Gate,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &NativeContext<Self>,
+        ) {
+            let _ = msg.1.send(());
+            let _ = msg.0.recv_timeout(LIMIT);
+            reply.reply(());
+        }
+    }
+    impl NativeHandler<Answer> for NativeSlowStop {
+        fn handle(
+            &mut self,
+            _: Answer,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &NativeContext<Self>,
+        ) {
+            reply.reply(());
+        }
+    }
+    impl NativeHandler<Probed> for NativeSlowStop {
+        fn handle(
+            &mut self,
+            _: Probed,
+            _: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &NativeContext<Self>,
+        ) {
+        }
+    }
+
+    /// Threads mode of `emit_due_during_exit_is_destroyed_after_every_caller_is_answered`.
+    #[test]
+    fn emit_due_during_exit_is_destroyed_after_every_caller_is_answered() {
+        let _scenario = FailScenario::setup();
+        let (stop_release, stop_gate) = std::sync::mpsc::channel();
+        let (stopping_tx, stopping) = std::sync::mpsc::channel();
+        let actor = NativeSlowStop(stop_gate, stopping_tx).start();
+        let caller: SharedReceiver = Arc::default();
+        let answered = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started) = std::sync::mpsc::channel();
+        let (scheduled_tx, scheduled) = std::sync::mpsc::channel();
+        let probe = Probe {
+            caller: caller.clone(),
+            answered: answered.clone(),
+            started: started_tx,
+        };
+        actor.request(ScheduleProbe(probe, scheduled_tx)).unwrap();
+        scheduled.recv_timeout(LIMIT).unwrap();
+        let (release, gate) = std::sync::mpsc::channel();
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        actor.send(Gate(gate, entered_tx)).unwrap();
+        entered.recv_timeout(LIMIT).unwrap();
+        *caller.lock().unwrap() = Some(
+            actor
+                .send_request(Answer, spawned_concurrency::Deadline::Never)
+                .unwrap(),
+        );
+        failpoints::configure("job.emit_due", FailPoint::new(Action::Off)).unwrap();
+        actor.context().stop();
+        release.send(()).unwrap();
+        stopping.recv_timeout(LIMIT).unwrap();
+        wait_hits("job.emit_due");
+        let _ = started.recv_timeout(Duration::from_millis(500));
+        stop_release.send(()).unwrap();
+        actor.join();
+        assert_eq!(
+            answered.load(Ordering::SeqCst),
+            1,
+            "a scheduled emit's payload was destroyed before every caller was answered"
+        );
     }
 }

@@ -30,6 +30,7 @@ use group::GroupInner;
 /// Resource models are opt-in; thread pools reserve one native thread per live
 /// actor, while pinned shards multiplex actors cooperatively on fixed CPUs.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ExecutionProfile {
     AsyncPool {
         workers: usize,
@@ -90,6 +91,7 @@ fn next_admission() -> Result<u64, SystemError> {
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum SystemError {
     #[error("no free persistent actor thread; stop/join a scope before admission")]
     Capacity,
@@ -116,6 +118,7 @@ pub enum SystemError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum HelperError {
     #[error("owned helper was cancelled before completion")]
     Cancelled,
@@ -413,8 +416,8 @@ impl ActorSystem {
     /// Close admission and request ordered shutdown. At expiry the report owns
     /// pending shutdown state, which can be awaited again. Blocking Rust is not
     /// forcibly killed and runtime destruction never blocks this caller thread.
-    pub async fn shutdown(&self, deadline: Duration) -> ShutdownReport {
-        self.inner.begin_shutdown(deadline);
+    pub async fn shutdown(&self, grace: Duration) -> ShutdownReport {
+        self.inner.begin_shutdown(grace);
         ShutdownReport {
             pending: Some(self.inner.clone()),
             complete: false,
@@ -425,8 +428,9 @@ impl ActorSystem {
             supervisor_failures: Vec::new(),
             group_failures: Vec::new(),
             coordinator_failures: Vec::new(),
+            unfinished_jobs: Vec::new(),
         }
-        .wait(deadline)
+        .wait(grace)
         .await
     }
 
@@ -523,15 +527,27 @@ impl SystemInner {
                             }
                         }
                         ShutdownTarget::Scope(scope) => {
-                            scope.stop(ExitReason::Shutdown);
+                            // The system is a standalone actor's parent: its
+                            // Shutdown is a parent exit signal (E3).
+                            scope.set_cleanup_timeout(remaining);
+                            scope.signal_parent(ExitReason::Shutdown);
                             let _ = rt::timeout(remaining, scope.joined()).await;
                         }
                     }
                 }
-                // At grace expiry, no nested child may remain unsignalled behind
-                // a stuck sibling's longer per-child cleanup timeout.
+                // The ordered pass ended: every target joined, or the grace
+                // expired. At grace expiry every remaining actor gets the kill
+                // (E3), so no nested child remains unsignalled behind a stuck
+                // sibling's longer per-child cleanup timeout. Before it, the
+                // remaining scopes only get the parent's Shutdown (a no-op for
+                // actors already past their death point).
+                let expired = began.elapsed() >= grace;
                 for scope in scopes.iter().rev() {
-                    scope.stop(ExitReason::Shutdown);
+                    if expired {
+                        scope.kill();
+                    } else {
+                        scope.signal_parent(ExitReason::Shutdown);
+                    }
                 }
                 // Runtime teardown still requires actual completion, independently
                 // of the ordering grace and the caller's report timeout.
@@ -663,8 +679,12 @@ pub struct ShutdownReport {
     pub group_failures: Vec<String>,
     /// Coordinator panics recovered through emergency stop-and-join.
     pub coordinator_failures: Vec<String>,
+    /// Dead actors whose job cleanup is incomplete: `(actor, running jobs)`
+    /// still executing after the cleanup deadline (deferred-replies §5).
+    pub unfinished_jobs: Vec<(crate::ActorId, usize)>,
 }
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ActorExit {
     pub id: crate::ActorId,
     pub reason: ExitReason,
@@ -683,11 +703,11 @@ pub struct ActorDiagnostic {
     pub turn_age: Option<Duration>,
 }
 impl ShutdownReport {
-    pub async fn wait(mut self, deadline: Duration) -> Self {
+    pub async fn wait(mut self, grace: Duration) -> Self {
         let Some(owner) = self.pending.as_ref() else {
             return self;
         };
-        self.complete = rt::timeout(deadline, wait_true(owner.control.done.clone()))
+        self.complete = rt::timeout(grace, wait_true(owner.control.done.clone()))
             .await
             .unwrap_or(false);
         let state = lock(&owner.state);
@@ -705,6 +725,14 @@ impl ShutdownReport {
             .filter_map(|s| s.diagnostic())
             .collect();
         self.unfinished_actors = self.unfinished_actor_details.iter().map(|d| d.id).collect();
+        self.unfinished_jobs = state
+            .shutdown_scopes
+            .iter()
+            .filter_map(|s| {
+                let running = s.unfinished_jobs();
+                (running > 0).then(|| s.child().map(|c| (c.id(), running)))?
+            })
+            .collect();
         self.exits = state
             .shutdown_scopes
             .iter()
@@ -853,6 +881,11 @@ impl ExecutionGroup {
             active_turn: Mutex::new(None),
             ready,
             done,
+            cleanup_timeout: std::sync::atomic::AtomicU64::new(
+                crate::tasks::DEFAULT_STOP_DEADLINE.as_nanos() as u64,
+            ),
+            jobs: Mutex::new(None),
+            bounds: Mutex::new(Default::default()),
         });
         state.scopes.insert(id, scope.clone());
         Ok((scope.clone(), Lease { scope, root: true }))
@@ -890,8 +923,46 @@ pub(crate) struct Scope {
     active_turn: Mutex<Option<(&'static str, Instant)>>,
     ready: watch::Sender<StartupState>,
     done: watch::Sender<bool>,
+    /// The actor's cleanup deadline (deferred-replies §5): the supervisor's
+    /// `shutdown_timeout` or the system's remaining grace, in nanoseconds.
+    cleanup_timeout: std::sync::atomic::AtomicU64,
+    /// The actor's job set, for unfinished-job reporting.
+    jobs: Mutex<Option<std::sync::Weak<crate::reply::jobs::JobSet>>>,
+    /// Per-`ChildSpec` overrides of `Actor::MAX_OUTSTANDING` and
+    /// `Actor::MAX_NATIVE_JOBS`, read when the actor instance is created.
+    bounds: Mutex<crate::reply::jobs::Bounds>,
 }
 impl Scope {
+    pub(crate) fn set_bounds(&self, bounds: crate::reply::jobs::Bounds) {
+        *lock(&self.bounds) = bounds;
+    }
+    pub(crate) fn bounds(&self) -> crate::reply::jobs::Bounds {
+        *lock(&self.bounds)
+    }
+    /// Shorten the cleanup deadline that bounds the actor's job join.
+    pub(crate) fn set_cleanup_timeout(&self, timeout: Duration) {
+        let nanos = u64::try_from(timeout.as_nanos()).unwrap_or(u64::MAX);
+        self.cleanup_timeout
+            .fetch_min(nanos, std::sync::atomic::Ordering::AcqRel);
+    }
+    pub(crate) fn cleanup_timeout(&self) -> Duration {
+        Duration::from_nanos(
+            self.cleanup_timeout
+                .load(std::sync::atomic::Ordering::Acquire),
+        )
+    }
+    pub(crate) fn set_jobs(&self, jobs: std::sync::Weak<crate::reply::jobs::JobSet>) {
+        *lock(&self.jobs) = Some(jobs);
+    }
+    /// Jobs still running after the actor's death (job cleanup incomplete).
+    fn unfinished_jobs(&self) -> usize {
+        // Upgrade outside the lock: the upgraded set may be the last
+        // reference, and its destruction must not run under it.
+        let jobs = lock(&self.jobs).clone();
+        jobs.as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .map_or(0, |jobs| jobs.running())
+    }
     pub(crate) fn group(&self) -> ExecutionGroup {
         ExecutionGroup {
             inner: self.group.clone(),
@@ -932,10 +1003,44 @@ impl Scope {
                 state.ended_at = Some(Instant::now());
             }
         }
-        link::stop_with_reason(&self.cause, reason, || self.token.cancel());
+        link::request_stop(&self.cause, reason, || self.token.cancel());
     }
     pub(crate) fn close_admission(&self) {
         lock(&self.state).open = false;
+    }
+    /// The parent's exit signal to this scope's actor (design E3): the
+    /// supervisor or system is the parent. Admission closes for the managed
+    /// tree at once (B), but nothing is committed for the actor: a
+    /// non-trapping actor begins exit with `reason` without `stopped()`
+    /// (`Normal` is ignored), a trapping one gets a parent exit queued behind
+    /// its messages, which ends it through `stopped()`. Before the actor is
+    /// attached this is an ordinary stop.
+    pub(crate) fn signal_parent(&self, reason: ExitReason) {
+        let child = {
+            let mut state = lock(&self.state);
+            state.open = false;
+            if state.ended_at.is_none() {
+                state.ended_at = Some(Instant::now());
+            }
+            state.actor.clone()
+        };
+        match child {
+            Some(child) => child.exit_from(crate::ActorId::EXTERNAL, reason, true),
+            None => self.stop(reason),
+        }
+    }
+    /// The parent's kill (E3 escalation at `shutdown_timeout` or grace): the
+    /// actor ends `Killed`, skipping a `stopped()` that has not begun.
+    pub(crate) fn kill(&self) {
+        let child = {
+            let mut state = lock(&self.state);
+            state.open = false;
+            state.actor.clone()
+        };
+        match child {
+            Some(child) => child.exit_from(crate::ActorId::EXTERNAL, ExitReason::Kill, true),
+            None => self.stop(ExitReason::Killed),
+        }
     }
     pub(crate) fn register(
         &self,
@@ -1073,6 +1178,11 @@ impl Scope {
     }
     pub(crate) fn actor_lease(self: &Arc<Self>) -> Result<Lease, SystemError> {
         self.lease(true)
+    }
+    /// A blocking job's lease, held until its native body ends: the scope
+    /// is not joined (cleanup incomplete) while the work still runs.
+    pub(crate) fn job_lease(self: &Arc<Self>) -> Result<Lease, SystemError> {
+        self.lease(false)
     }
     /// Dispatch the actor root to its reserved worker or runtime shard.
     pub(crate) fn dispatch_actor<F>(&self, future: F) -> Result<(), SystemError>
@@ -1227,8 +1337,12 @@ impl Drop for Lease {
                     .scope
                     .child()
                     .and_then(|c| c.exit_reason())
-                    .or_else(|| lock(&self.scope.cause).clone())
-                    .unwrap_or(ExitReason::Kill);
+                    .or_else(|| {
+                        crate::link::lock_request(&self.scope.cause)
+                            .reason()
+                            .cloned()
+                    })
+                    .unwrap_or(ExitReason::Killed);
                 self.scope.ready.send_replace(StartupState::Failed(reason));
             }
         }
@@ -1301,70 +1415,88 @@ mod coordinator_tests {
     }
     #[tokio::test]
     async fn coordinator_fault_stops_all_targets_and_retains_owned_cleanup() {
-        use crate::tasks::ActorStart;
-        let system = ActorSystem::new().unwrap();
-        let group = system.async_group("coordinator-fault", 1).unwrap();
-        let stopped = Arc::new(AtomicUsize::new(0));
-        let first = Worker(stopped.clone()).start_on(&group).unwrap();
-        let second = Worker(stopped.clone()).start_on(&group).unwrap();
-        first.ready().await.unwrap();
-        second.ready().await.unwrap();
-        let (done, _) = watch::channel(false);
-        let fault = Arc::new(FaultUnit {
-            allow_emergency: AtomicBool::new(false),
-            done,
-        });
-        system.inner.register_unit(fault.clone()).unwrap();
-        let mut report = system.shutdown(Duration::from_millis(30)).await;
-        assert!(!report.complete);
-        // The report is a snapshot, not an acknowledgement that the coordinator
-        // ran. Under full-suite load its 30ms deadline can precede the fault.
-        // Refresh with bounded, yielding waits until that diagnostic is visible.
-        report = rt::timeout(LIMIT, async move {
-            while !report
-                .coordinator_failures
-                .iter()
-                .any(|e| e.contains("injected system coordinator fault"))
-            {
-                // Yield even if a regressed coordinator closes its done watch:
-                // wait() can then return immediately, and LIMIT must still fire.
-                rt::sleep(Duration::from_millis(1)).await;
-                report = report.wait(Duration::ZERO).await;
-            }
-            report
-        })
-        .await
-        .expect("coordinator did not report its injected failure");
-        assert!(report
-            .coordinator_failures
-            .iter()
-            .any(|e| e.contains("injected system coordinator fault")));
-        tokio::time::timeout(LIMIT, first.join()).await.unwrap();
-        tokio::time::timeout(LIMIT, second.join()).await.unwrap();
-        assert_eq!(stopped.load(Ordering::SeqCst), 2);
-        assert!(!*system.inner.control.done.borrow());
-        drop(system); // pending report + coordinator retain runtime ownership
-        fault.allow_emergency.store(true, Ordering::SeqCst);
-        let report = report.wait(LIMIT).await;
-        assert!(report.complete);
-        assert!(!report.coordinator_failures.is_empty());
-        assert!(report.coordinator_failures.len() <= 16);
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::coordinator_fault_stops_all_targets_and_retains_owned_cleanup"
+            ),
+            async move {
+                use crate::tasks::ActorStart;
+                let system = ActorSystem::new().unwrap();
+                let group = system.async_group("coordinator-fault", 1).unwrap();
+                let stopped = Arc::new(AtomicUsize::new(0));
+                let first = Worker(stopped.clone()).start_on(&group).unwrap();
+                let second = Worker(stopped.clone()).start_on(&group).unwrap();
+                first.ready().await.unwrap();
+                second.ready().await.unwrap();
+                let (done, _) = watch::channel(false);
+                let fault = Arc::new(FaultUnit {
+                    allow_emergency: AtomicBool::new(false),
+                    done,
+                });
+                system.inner.register_unit(fault.clone()).unwrap();
+                let mut report = system.shutdown(Duration::from_millis(30)).await;
+                assert!(!report.complete);
+                // The report is a snapshot, not an acknowledgement that the coordinator
+                // ran. Under full-suite load its 30ms deadline can precede the fault.
+                // Refresh with bounded, yielding waits until that diagnostic is visible.
+                report = rt::timeout(LIMIT, async move {
+                    while !report
+                        .coordinator_failures
+                        .iter()
+                        .any(|e| e.contains("injected system coordinator fault"))
+                    {
+                        // Yield even if a regressed coordinator closes its done watch:
+                        // wait() can then return immediately, and LIMIT must still fire.
+                        rt::sleep(Duration::from_millis(1)).await;
+                        report = report.wait(Duration::ZERO).await;
+                    }
+                    report
+                })
+                .await
+                .expect("coordinator did not report its injected failure");
+                assert!(report
+                    .coordinator_failures
+                    .iter()
+                    .any(|e| e.contains("injected system coordinator fault")));
+                tokio::time::timeout(LIMIT, first.join()).await.unwrap();
+                tokio::time::timeout(LIMIT, second.join()).await.unwrap();
+                assert_eq!(stopped.load(Ordering::SeqCst), 2);
+                assert!(!*system.inner.control.done.borrow());
+                drop(system); // pending report + coordinator retain runtime ownership
+                fault.allow_emergency.store(true, Ordering::SeqCst);
+                let report = report.wait(LIMIT).await;
+                assert!(report.complete);
+                assert!(!report.coordinator_failures.is_empty());
+                assert!(report.coordinator_failures.len() <= 16);
+            },
+        )
+        .await;
     }
     #[tokio::test]
     async fn emergency_cleanup_does_not_resignal_an_already_finished_faulting_unit() {
-        let system = ActorSystem::new().unwrap();
-        let (done, _) = watch::channel(false);
-        let fault = Arc::new(FaultUnit {
-            allow_emergency: AtomicBool::new(false),
-            done,
-        });
-        system.inner.register_unit(fault.clone()).unwrap();
-        let report = system.shutdown(Duration::from_millis(30)).await;
-        assert!(!report.complete);
-        // Another owner finishes it; its stop method remains permanently broken.
-        fault.done.send_replace(true);
-        let report = report.wait(LIMIT).await;
-        assert!(report.complete);
-        assert!(!report.coordinator_failures.is_empty());
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::emergency_cleanup_does_not_resignal_an_already_finished_faulting_unit"
+            ),
+            async move {
+                let system = ActorSystem::new().unwrap();
+                let (done, _) = watch::channel(false);
+                let fault = Arc::new(FaultUnit {
+                    allow_emergency: AtomicBool::new(false),
+                    done,
+                });
+                system.inner.register_unit(fault.clone()).unwrap();
+                let report = system.shutdown(Duration::from_millis(30)).await;
+                assert!(!report.complete);
+                // Another owner finishes it; its stop method remains permanently broken.
+                fault.done.send_replace(true);
+                let report = report.wait(LIMIT).await;
+                assert!(report.complete);
+                assert!(!report.coordinator_failures.is_empty());
+            },
+        )
+        .await;
     }
 }

@@ -49,8 +49,14 @@ mod linux {
         type Result = ();
     }
     impl Handler<Wire> for Stage {
-        async fn handle(&mut self, m: Wire, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            m: Wire,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.next = m.0;
+            reply.reply(());
         }
     }
     struct Work {
@@ -63,19 +69,27 @@ mod linux {
         type Result = ();
     }
     impl Handler<Work> for Stage {
-        async fn handle(&mut self, mut m: Work, _: &Context<Self>) {
-            for _ in 0..self.iterations {
-                m.value = black_box(m.value.wrapping_mul(MUL).wrapping_add(1));
+        async fn handle(
+            &mut self,
+            mut m: Work,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            {
+                for _ in 0..self.iterations {
+                    m.value = black_box(m.value.wrapping_mul(MUL).wrapping_add(1));
+                }
+                m.hops += 1;
+                self.handled += 1;
+                if let Some(next) = &self.next {
+                    next.send(m).unwrap();
+                } else {
+                    m.reply
+                        .send((m.id, m.value, m.hops, Instant::now()))
+                        .unwrap();
+                }
             }
-            m.hops += 1;
-            self.handled += 1;
-            if let Some(next) = &self.next {
-                next.send(m).unwrap();
-            } else {
-                m.reply
-                    .send((m.id, m.value, m.hops, Instant::now()))
-                    .unwrap();
-            }
+            reply.reply(());
         }
     }
     struct Audit;
@@ -83,19 +97,27 @@ mod linux {
         type Result = (String, String, u64);
     }
     impl Handler<Audit> for Stage {
-        async fn handle(&mut self, _: Audit, _: &Context<Self>) -> (String, String, u64) {
-            let status = fs::read_to_string("/proc/thread-self/status").unwrap();
-            let affinity = status
-                .lines()
-                .find_map(|s| s.strip_prefix("Cpus_allowed_list:"))
-                .unwrap()
-                .trim()
-                .to_owned();
-            (
-                std::thread::current().name().unwrap_or("main").to_owned(),
-                affinity,
-                self.handled,
-            )
+        async fn handle(
+            &mut self,
+            _: Audit,
+            reply: spawned_concurrency::PendingReply<'_, (String, String, u64)>,
+            _: &Context<Self>,
+        ) {
+            let __reply_value: (String, String, u64) = {
+                let status = fs::read_to_string("/proc/thread-self/status").unwrap();
+                let affinity = status
+                    .lines()
+                    .find_map(|s| s.strip_prefix("Cpus_allowed_list:"))
+                    .unwrap()
+                    .trim()
+                    .to_owned();
+                (
+                    std::thread::current().name().unwrap_or("main").to_owned(),
+                    affinity,
+                    self.handled,
+                )
+            };
+            reply.reply(__reply_value);
         }
     }
     fn pin(mask: &str) {

@@ -1,4 +1,4 @@
-error: unknown parameter, expected `protocol`, `allow_shared_state` or `allow_panic_abort`
+error: unknown parameter, expected `protocol`, `max_outstanding`, `max_native_jobs`, `allow_shared_state` or `allow_panic_abort`
   --> tests/ui/actor_unknown_param.rs:11:9
    |
 11 | #[actor(protocols = CounterProtocol)]

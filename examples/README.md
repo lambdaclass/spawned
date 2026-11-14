@@ -25,12 +25,14 @@ Usage of each feature is documented in the [guide](../docs/GUIDE.md).
 | Dedicated-thread actor with async helpers | [dedicated_thread](capabilities/src/bin/dedicated_thread.rs) | n/a |
 | Global registry (`registry::register`/`whereis`) | [service_discovery](service_discovery), [registrations and fakes](capabilities/src/bin/registrations_and_fakes.rs) | [registrations and fakes](capabilities/src/bin/registrations_and_fakes.rs), [thread_only](thread_only/README.md) |
 | Exit reasons, `join`, `wait_exit`, monitors, links, trapped exits | [exit_reason](exit_reason) | [native_lifecycle](capabilities/src/bin/native_lifecycle.rs) |
+| Exit signals as in OTP (`exit`/`kill`, trapping, `NoProc`, `try_link`, parent exits, `exit_pending`), v0.8 | [exit_signals](capabilities/src/bin/exit_signals.rs) | gap (threads mode is tested in `otp_exit_signals::threads_mode`) |
 | Execution groups (`ActorSystem`, `start_on`, owned helpers), v0.7 | [execution_groups](capabilities/src/bin/execution_groups.rs) | n/a |
 | Supervision, v0.7 | [supervision_recovery](capabilities/src/bin/supervision_recovery.rs) | n/a |
 | Fixed native actor pools / parked Linux pinned shards, v0.7 | [execution_profiles](capabilities/src/bin/execution_profiles.rs) | n/a |
 | Nested supervisors, OneForAll / RestForOne, v0.7 | [supervision_tree](capabilities/src/bin/supervision_tree.rs) | n/a |
 | Tokio-free dependency graph, protocols, lifecycle, monitors and links, v0.7 | n/a | [thread_only](thread_only/README.md) (isolated workspace) |
 | Actors on separate runtimes | [runtime_isolation](capabilities/src/bin/runtime_isolation.rs) | n/a |
+| Deferred replies and pipe-to-self (rank 11) | [deferred_replies](capabilities/src/bin/deferred_replies.rs): delegation with `pipe_reply`, CPU offload with a job deadline, requests by id in `PendingReplies`, waiters instead of polling, owner stop | gap (native jobs are tested in `deferred_jobs`) |
 | Request timeout outcomes | [timeout_outcomes](capabilities/src/bin/timeout_outcomes.rs), [protocol_timeouts](capabilities/src/bin/protocol_timeouts.rs) | [protocol_timeouts](capabilities/src/bin/protocol_timeouts.rs) |
 | Draining a finite batch before stop | [graceful_drain](capabilities/src/bin/graceful_drain.rs) | gap |
 | Byte-budgeted pipeline (application adapter) | [byte_budget_pipeline](capabilities/src/bin/byte_budget_pipeline.rs) | gap |

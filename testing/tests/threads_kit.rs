@@ -150,37 +150,38 @@ impl Message for Ping {
     type Result = ();
 }
 impl Handler<Ping> for Idle {
-    fn handle(&mut self, _: Ping, _: &Context<Self>) {}
+    fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
 }
 
 #[test]
 fn native_exit_injection() {
-    for reason in [
-        ExitReason::Normal,
-        ExitReason::Shutdown,
-        ExitReason::Panic("injected".into()),
-    ] {
+    for reason in [ExitReason::Shutdown, ExitReason::Panic("injected".into())] {
         let actor = Idle.start();
         settle(&actor, Ping, WAIT);
         faults::exit(&actor.child_handle(), reason.clone());
-        let observed = join_within(&actor, WAIT);
-        match reason {
-            ExitReason::Panic(msg) => {
-                assert_eq!(
-                    observed,
-                    ExitReason::Panic(format!("panic in handler: {msg}"))
-                )
-            }
-            other => assert_eq!(observed, other),
-        }
+        assert_eq!(join_within(&actor, WAIT), reason);
     }
+    // Normal is ignored by a non-trapping target.
+    let actor = Idle.start();
+    faults::exit(&actor.child_handle(), ExitReason::Normal);
+    settle(&actor, Ping, WAIT);
+    assert_eq!(actor.child_handle().exit_reason(), None);
+    actor.context().stop();
+    assert_eq!(join_within(&actor, WAIT), ExitReason::Normal);
 }
 
 #[test]
 fn native_kill_injection() {
     let actor = Idle.start();
     faults::exit(&actor.child_handle(), ExitReason::Kill);
-    assert_eq!(join_within(&actor, WAIT), ExitReason::Kill);
+    assert_eq!(join_within(&actor, WAIT), ExitReason::Killed);
 }
 
 #[test]
@@ -234,7 +235,9 @@ fn native_expect_no_message_reports_in_flight_messages() {
             q.0
         })
         .start();
-    let _reply = mock.request_raw(Quote(1)).unwrap();
+    let _reply = mock
+        .send_request(Quote(1), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+        .unwrap();
     wait_until(WAIT, "the quote arrived", || mock.count::<Quote>() == 1);
     mock.expect_no_message(Duration::from_millis(5));
 }
@@ -287,9 +290,11 @@ fn native_nothing_is_logged_after_close_returns() {
 #[test]
 fn native_panic_injection_into_an_exited_target_is_a_no_op() {
     let actor = Idle.start();
-    actor.child_handle().shutdown();
+    actor
+        .child_handle()
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
     assert_eq!(join_within(&actor, WAIT), ExitReason::Shutdown);
-    // The target's link stops the fuse before it detonates: not an error.
+    // A signal to an actor past its death point is dropped.
     faults::exit(&actor.child_handle(), ExitReason::Panic("late".into()));
 }
 
@@ -299,7 +304,7 @@ fn native_kill_injection_is_reliable() {
     for _ in 0..200 {
         let actor = Idle.start();
         faults::exit(&actor.child_handle(), ExitReason::Kill);
-        assert_eq!(join_within(&actor, WAIT), ExitReason::Kill);
+        assert_eq!(join_within(&actor, WAIT), ExitReason::Killed);
     }
 }
 
@@ -406,18 +411,52 @@ fn native_helpers_name_their_caller() {
 }
 
 #[test]
-fn direct_kill_and_shutdown_stop_trapping_targets_without_killing_trapping_peers() {
-    for reason in [ExitReason::Kill, ExitReason::Shutdown] {
-        let target = Idle.start();
-        let observer = Idle.start();
-        target.context().trap_exit(true);
-        observer.context().trap_exit(true);
-        observer.context().link(&target.child_handle());
-        faults::exit(&target.child_handle(), reason.clone());
-        assert_eq!(join_within(&target, WAIT), reason);
-        settle(&observer, Ping, WAIT);
-        assert_eq!(observer.child_handle().exit_reason(), None);
-        observer.context().stop();
-        assert_eq!(join_within(&observer, WAIT), ExitReason::Normal);
+fn kill_stops_a_trapping_target_and_other_signals_are_trapped() {
+    let target = Idle.start();
+    let observer = Idle.start();
+    target.context().trap_exit(true);
+    observer.context().trap_exit(true);
+    observer.context().link(&target.child_handle());
+    faults::exit(&target.child_handle(), ExitReason::Kill);
+    assert_eq!(join_within(&target, WAIT), ExitReason::Killed);
+    settle(&observer, Ping, WAIT);
+    assert_eq!(observer.child_handle().exit_reason(), None);
+    observer.context().stop();
+    assert_eq!(join_within(&observer, WAIT), ExitReason::Normal);
+    let target = Idle.start();
+    target.context().trap_exit(true);
+    faults::exit(&target.child_handle(), ExitReason::Shutdown);
+    settle(&target, Ping, WAIT);
+    assert_eq!(target.child_handle().exit_reason(), None);
+    target
+        .child_handle()
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
+    assert_eq!(join_within(&target, WAIT), ExitReason::Shutdown);
+}
+
+/// `in_actor` runs a closure in one of the actor's turns, after the messages
+/// sent before it, with the state and the `Context`.
+#[test]
+fn native_in_actor_runs_a_closure_in_a_turn() {
+    struct Tally(u32);
+    #[actor]
+    impl Tally {
+        #[send_handler]
+        fn add(&mut self, msg: AddOne, _: &Context<Self>) {
+            self.0 += msg.0;
+        }
     }
+    struct AddOne(u32);
+    impl Message for AddOne {
+        type Result = ();
+    }
+    let tally = Tally(0).start();
+    tally.send(AddOne(2)).unwrap();
+    let (seen, own) = spawned_test::threads::in_actor(&tally, |state, ctx| {
+        state.0 += 1;
+        (state.0, ctx.id())
+    });
+    assert_eq!((seen, own), (3, tally.id()));
+    tally.context().stop();
+    tally.join();
 }

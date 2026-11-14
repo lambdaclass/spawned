@@ -125,9 +125,10 @@ Read from `concurrency/src/supervision.rs`, `supervision/nested.rs` and the
   abnormal exit), `Temporary`: OTP's three types. Supervisor or system shutdown
   suppresses every mode. Stopping a Permanent child individually restarts it.
 - **Intensity:** `max_restarts` 5 per rolling `restart_window` 30 s, **shared by
-  the supervisor**, as in OTP. Initial construction is free; every later factory
-  call counts, including collateral reconstruction in a cohort and failed
-  factories. Exhaustion fails the whole supervisor and stops its children;
+  the supervisor**, as in OTP. Initial construction is free; a OneForOne retry
+  (including a failed factory) counts once, and since 0.8 a OneForAll or
+  RestForOne recovery round counts once however many children it rebuilds
+  (0.7 charged each collateral reconstruction). Exhaustion fails the whole supervisor and stops its children;
   `max_restarts = 0` fails at once. A nested subtree's failure "escalates
   through the adapter to its parent's restart policy" (`SupervisorSpec`).
 - **Backoff:** per child, capped exponential (`initial` 10 ms, `maximum` 5 s)

@@ -28,8 +28,17 @@ impl Message for Nap {
     type Result = ();
 }
 impl Handler<Nap> for Worker {
-    async fn handle(&mut self, _msg: Nap, _ctx: &Context<Self>) {
-        std::thread::sleep(OVER);
+    async fn handle(
+        &mut self,
+        _msg: Nap,
+        __reply: spawned_concurrency::PendingReply<'_, ()>,
+        _ctx: &Context<Self>,
+    ) {
+        let __value: () = async {
+            std::thread::sleep(OVER);
+        }
+        .await;
+        __reply.reply(__value);
     }
 }
 
@@ -39,15 +48,24 @@ impl Message for Spin {
     type Result = u64;
 }
 impl Handler<Spin> for Worker {
-    async fn handle(&mut self, _msg: Spin, _ctx: &Context<Self>) -> u64 {
-        // The real clock: `std::time::Instant` is virtual inside a
-        // simulated poll and does not move while a handler spins.
-        let start = spawned_rt::tasks::sim::wall_now();
-        let mut n = 0u64;
-        while spawned_rt::tasks::sim::wall_now() - start < OVER {
-            n = std::hint::black_box(n.wrapping_add(1));
+    async fn handle(
+        &mut self,
+        _msg: Spin,
+        __reply: spawned_concurrency::PendingReply<'_, u64>,
+        _ctx: &Context<Self>,
+    ) {
+        let __value: u64 = async {
+            // The real clock: `std::time::Instant` is virtual inside a
+            // simulated poll and does not move while a handler spins.
+            let start = spawned_rt::tasks::sim::wall_now();
+            let mut n = 0u64;
+            while spawned_rt::tasks::sim::wall_now() - start < OVER {
+                n = std::hint::black_box(n.wrapping_add(1));
+            }
+            n
         }
-        n
+        .await;
+        __reply.reply(__value);
     }
 }
 
@@ -58,12 +76,21 @@ impl Message for Chunked {
     type Result = ();
 }
 impl Handler<Chunked> for Worker {
-    async fn handle(&mut self, _msg: Chunked, _ctx: &Context<Self>) {
-        for _ in 0..25 {
-            std::thread::sleep(Duration::from_millis(20));
-            sim::yield_now().await;
+    async fn handle(
+        &mut self,
+        _msg: Chunked,
+        __reply: spawned_concurrency::PendingReply<'_, ()>,
+        _ctx: &Context<Self>,
+    ) {
+        let __value: () = async {
+            for _ in 0..25 {
+                std::thread::sleep(Duration::from_millis(20));
+                sim::yield_now().await;
+            }
+            sim::sleep(Duration::from_secs(1)).await;
         }
-        sim::sleep(Duration::from_secs(1)).await;
+        .await;
+        __reply.reply(__value);
     }
 }
 

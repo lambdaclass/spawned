@@ -1,13 +1,21 @@
 //! Items identical in the `tasks` and `threads` modules, expanded in each.
 //!
-//! The two modes differ in their actor traits, `oneshot` channels and whether
+//! The two modes differ in their actor traits and whether
 //! waits are `async`; everything else about mocks and probes is written once
 //! here. Each macro resolves `Mock`, `MockRef`, `Probe`, `Recipient`,
-//! `Receiver`, `oneshot` and friends in the module that invokes it.
+//! `Receiver` and friends in the module that invokes it.
 
 /// Builder methods of `Mock`, except `delay` and `start`.
 macro_rules! mock_builder {
     () => {
+        /// Defer every `M` request: the mock takes its reply obligation
+        /// (`PendingReply::defer`) and stores the token; take it with
+        /// `MockRef::deferred` to reply later, drop it, or never reply.
+        pub fn defer<M: Message>(mut self) -> Self {
+            self.rules.defer::<M>();
+            self
+        }
+
         /// A strict mock: every message type needs a rule.
         ///
         /// The receive log keeps one entry per message for the mock's
@@ -54,11 +62,11 @@ macro_rules! mock_builder {
         /// Fault: log each `M` as [`crate::Outcome::Discarded`] and do nothing
         /// else, as if the message were lost after a successful send.
         ///
-        /// Meant for fire-and-forget messages. A handler cannot tell a send
-        /// from a request, so a *request* `M` (a protocol method returning
-        /// `Response<()>`) still gets its `()` reply and the caller sees
-        /// success, whereas a genuinely lost request would time out; use
-        /// [`delay`](Self::delay) beyond the caller's timeout for that. A
+        /// Meant for fire-and-forget messages. A *request* `M` (a protocol
+        /// method returning `Response<()>`) has its reply obligation dropped
+        /// unanswered, so the caller gets `ReplyDropped`; use
+        /// [`delay`](Self::delay) beyond the caller's timeout to simulate a
+        /// request that is never answered. A
         /// discarded message stays `Discarded` even if the mock dies during
         /// a `delay` on it.
         pub fn discard<M: Message<Result = ()>>(mut self) -> Self {
@@ -67,7 +75,8 @@ macro_rules! mock_builder {
         }
 
         /// Fault: panic with `reason` on each `M`. The mock exits with
-        /// `ExitReason::Panic` and pending callers see `ActorStopped`.
+        /// `ExitReason::Panic` and pending callers see `ActorStopped` with that
+        /// `Panic` reason.
         pub fn crash_on<M: Message>(mut self, reason: impl Into<String>) -> Self {
             self.rules.crash_on::<M>(reason.into());
             self
@@ -117,6 +126,13 @@ macro_rules! mock_ref_common {
                 self.inbox.count::<M>()
             }
 
+            /// Take the reply tokens of the `M` requests the mock deferred
+            /// (`Mock::defer`), oldest first: reply later, drop them
+            /// (`ReplyDropped`), or keep them unanswered.
+            pub fn deferred<M: Message>(&self) -> Vec<spawned_concurrency::ReplyTo<M::Result>> {
+                self.inbox.take_deferred::<M>()
+            }
+
             /// Take every not-yet-expected `M`, oldest first.
             pub fn take_all<M: Message>(&self) -> Vec<M> {
                 self.inbox.take_all::<M>()
@@ -152,12 +168,21 @@ macro_rules! probe_common {
             fn send(&self, msg: M) -> Result<(), ActorError> {
                 ProbeCore::send(self, msg)
             }
-            fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError> {
-                let (tx, rx) = oneshot::channel();
-                if let Some((value, record)) = self.request(msg)? {
-                    let _ = tx.send(value);
-                    // Logged `Handled` only once the reply is in the channel.
-                    record.finish();
+            fn send_request(
+                &self,
+                msg: M,
+                deadline: Deadline,
+            ) -> Result<ReplyReceiver<M::Result>, ActorError> {
+                let (reply, rx) = spawned_concurrency::__private::reply_pair(deadline);
+                match self.request(msg)? {
+                    Some((value, record)) => {
+                        reply.reply(value);
+                        // Logged `Handled` only once the reply is in the slot.
+                        record.finish();
+                    }
+                    // An unexpected request is discharged as `ActorStopped`
+                    // (`NoProc`: no actor stands behind a probe).
+                    None => spawned_concurrency::__private::discharge_stopped(reply),
                 }
                 Ok(rx)
             }
@@ -209,8 +234,8 @@ macro_rules! probe_common {
                 self.core.inbox.take_all::<M>()
             }
 
-            /// Fault: behave like a stopped actor; later sends and requests
-            /// return `ActorStopped`.
+            /// Fault: behave like an actor past its death point; later sends
+            /// and requests return `NoProc`.
             pub fn close(&self) {
                 self.core.close();
             }

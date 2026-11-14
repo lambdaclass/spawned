@@ -23,22 +23,25 @@ impl Message for Crash {
     type Result = ();
 }
 impl Handler<Crash> for Worker {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         panic!("nested trace failure");
     }
 }
 fn config(strategy: SupervisorStrategy) -> SupervisorConfig {
-    SupervisorConfig {
-        strategy,
-        max_restarts: 10,
-        backoff: Backoff {
-            initial: Duration::from_millis(1),
-            maximum: Duration::from_millis(2),
-            jitter: false,
-            ..Backoff::default()
-        },
-        ..SupervisorConfig::default()
-    }
+    SupervisorConfig::default()
+        .strategy(strategy)
+        .max_restarts(10)
+        .backoff(
+            Backoff::default()
+                .initial(Duration::from_millis(1))
+                .maximum(Duration::from_millis(2))
+                .jitter(false),
+        )
 }
 #[path = "support/tree_record.rs"]
 mod tree_record;
@@ -59,10 +62,7 @@ async fn mixed_strategy_three_level_shutdown_and_subtree_replacement() {
             .add_supervisor(SupervisorSpec::new(
                 "branch",
                 &group,
-                SupervisorConfig {
-                    max_restarts: 0,
-                    ..config(SupervisorStrategy::RestForOne)
-                },
+                config(SupervisorStrategy::RestForOne).max_restarts(0),
                 move |middle| {
                     let placement = placement.clone();
                     let expose = expose.clone();
@@ -70,10 +70,7 @@ async fn mixed_strategy_three_level_shutdown_and_subtree_replacement() {
                     middle.add_supervisor(SupervisorSpec::new(
                         "nested",
                         &control,
-                        SupervisorConfig {
-                            max_restarts: 0,
-                            ..config(SupervisorStrategy::OneForAll)
-                        },
+                        config(SupervisorStrategy::OneForAll).max_restarts(0),
                         move |inner| {
                             *expose.lock().unwrap() =
                                 Some(inner.add(ChildSpec::new("leaf", &placement, |_| async {

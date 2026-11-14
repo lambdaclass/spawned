@@ -20,17 +20,15 @@ use std::{
 };
 const LIMIT: Duration = Duration::from_secs(4);
 fn config(max_restarts: usize) -> SupervisorConfig {
-    SupervisorConfig {
-        max_restarts,
-        backoff: Backoff {
-            initial: Duration::from_millis(1),
-            maximum: Duration::from_millis(8),
-            jitter: false,
-            seed: Some(7),
-            ..Backoff::default()
-        },
-        ..SupervisorConfig::default()
-    }
+    SupervisorConfig::default()
+        .max_restarts(max_restarts)
+        .backoff(
+            Backoff::default()
+                .initial(Duration::from_millis(1))
+                .maximum(Duration::from_millis(8))
+                .jitter(false)
+                .seed(7),
+        )
 }
 struct Next;
 impl Message for Next {
@@ -43,14 +41,29 @@ impl Message for Crash {
 struct Counter(usize);
 impl Actor for Counter {}
 impl Handler<Next> for Counter {
-    async fn handle(&mut self, _: Next, _: &Context<Self>) -> usize {
-        self.0 += 1;
-        self.0
+    async fn handle(
+        &mut self,
+        _: Next,
+        reply: spawned_concurrency::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: usize = {
+            self.0 += 1;
+            self.0
+        };
+        reply.reply(__reply_value);
     }
 }
 impl Handler<Crash> for Counter {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("injected child failure");
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("injected child failure");
+        }
     }
 }
 
@@ -138,7 +151,9 @@ async fn restart_modes_distinguish_normal_shutdown_and_panic() {
             let generation = child.snapshot().generation;
             match &exit {
                 ExitReason::Normal => old.child_handle().stop(),
-                ExitReason::Shutdown => old.child_handle().shutdown(),
+                ExitReason::Shutdown => old
+                    .child_handle()
+                    .stop_with_reason(spawned_concurrency::ExitReason::Shutdown),
                 _ => assert!(old.request(Crash).await.is_err()),
             }
             // The child really exited with the reason under test.
@@ -235,9 +250,11 @@ async fn failed_factories_cancel_owned_helpers_before_retry_and_catch_panics() {
                     })
                     .unwrap();
                 drop(helper);
+                // v0.8 (S1): a first start is never retried, so the failed
+                // constructions are replacements after a crash.
                 match attempt {
-                    0 => Err("injected construction error".to_string()),
-                    1 => panic!("injected factory panic"),
+                    1 => Err("injected construction error".to_string()),
+                    2 => panic!("injected factory panic"),
                     _ => Ok(Counter(0)),
                 }
             }
@@ -247,9 +264,14 @@ async fn failed_factories_cancel_owned_helpers_before_retry_and_catch_panics() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(attempts.load(Ordering::SeqCst), 3);
-    assert_eq!(child.snapshot().generation, 3);
-    assert_eq!(child.current().unwrap().request(Next).await.unwrap(), 1);
+    assert!(child.current().unwrap().request(Crash).await.is_err());
+    let replacement = spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(1))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(attempts.load(Ordering::SeqCst), 4);
+    assert_eq!(child.snapshot().generation, 4);
+    assert_eq!(replacement.request(Next).await.unwrap(), 1);
     assert!(supervisor.shutdown(LIMIT).await.complete);
     assert!(!live.load(Ordering::SeqCst));
     assert!(system.shutdown(LIMIT).await.complete);
@@ -294,8 +316,15 @@ impl Actor for SlowHelper {
     }
 }
 impl Handler<Crash> for SlowHelper {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("injected failure with active helper");
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("injected failure with active helper");
+        }
     }
 }
 // Not simulated: a helper blocks an OS worker on purpose.
@@ -355,14 +384,25 @@ struct SlowStop {
     release: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 impl Actor for SlowStop {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        // Traps exits so stopped() also runs on its parent's shutdown (E3).
+        ctx.trap_exit(true);
+    }
     async fn stopped(&mut self, _: &Context<Self>) {
         let _ = self.entered.take().unwrap().send(());
         let _ = self.release.take().unwrap().await;
     }
 }
 impl Handler<Crash> for SlowStop {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("failure before stuck stopped hook");
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("failure before stuck stopped hook");
+        }
     }
 }
 // Not simulated: a helper blocks an OS worker on purpose.
@@ -398,7 +438,9 @@ async fn stuck_stopped_hook_triggers_cleanup_deadline_before_terminal_publicatio
         .unwrap();
     let supervisor = within!(tree.start()).await.unwrap();
     let old = child.current().unwrap();
-    let response = old.request_raw(Crash).unwrap();
+    let response = old
+        .send_request(Crash, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+        .unwrap();
     spawned_rt::tasks::timeout(LIMIT, entered)
         .await
         .unwrap()
@@ -416,11 +458,16 @@ async fn stuck_stopped_hook_triggers_cleanup_deadline_before_terminal_publicatio
     let report = system.shutdown(Duration::from_millis(5)).await;
     assert!(!report.complete);
     assert!(report.unfinished_actors.contains(&old.id()));
+    // Let the system's kill at grace land before releasing stopped(): the
+    // report can return before the kill reaches the actor under load.
+    spawned_rt::tasks::sleep(Duration::from_millis(100)).await;
     release.send(()).unwrap();
     let report = report.wait(LIMIT).await;
     assert!(report.complete);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert!(matches!(old.exit_reason(), Some(ExitReason::Panic(_))));
+    // The system's kill at grace reached the actor inside its stuck
+    // stopped() (before its death point): Killed replaces the panic (E1).
+    assert_eq!(old.exit_reason(), Some(ExitReason::Killed));
 }
 
 struct Ordered {
@@ -428,7 +475,10 @@ struct Ordered {
     log: Arc<std::sync::Mutex<Vec<String>>>,
 }
 impl Actor for Ordered {
-    async fn started(&mut self, _: &Context<Self>) {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        // v0.8: only a trapping child runs stopped() on its parent's
+        // shutdown (E3, decision 2); the order is observed through it.
+        ctx.trap_exit(true);
         self.log
             .lock()
             .unwrap()
@@ -546,14 +596,29 @@ impl Drop for RaceActor {
 }
 impl Actor for RaceActor {}
 impl Handler<Crash> for RaceActor {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("racing child failure");
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("racing child failure");
+        }
     }
 }
 impl Handler<Next> for RaceActor {
-    async fn handle(&mut self, _: Next, _: &Context<Self>) -> usize {
-        self.count += 1;
-        self.count
+    async fn handle(
+        &mut self,
+        _: Next,
+        reply: spawned_concurrency::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: usize = {
+            self.count += 1;
+            self.count
+        };
+        reply.reply(__reply_value);
     }
 }
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
@@ -778,18 +843,18 @@ async fn stuck_supervisor_does_not_prevent_earlier_standalone_shutdown_after_sys
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        spawned_rt::tasks::timeout(LIMIT, earlier.wait_exit())
+    // Signalled after the system's grace expired, they also get the kill
+    // at grace (E3): Shutdown if they reached their death point first,
+    // otherwise Killed.
+    for actor in [earlier.child_handle(), inner_actor.child_handle()] {
+        let reason = spawned_rt::tasks::timeout(LIMIT, actor.wait_exit_async())
             .await
-            .unwrap(),
-        ExitReason::Shutdown
-    );
-    assert_eq!(
-        spawned_rt::tasks::timeout(LIMIT, inner_actor.wait_exit())
-            .await
-            .unwrap(),
-        ExitReason::Shutdown
-    );
+            .unwrap();
+        assert!(
+            matches!(reason, ExitReason::Shutdown | ExitReason::Killed),
+            "{reason:?}"
+        );
+    }
     release.send(()).unwrap();
     assert!(report.wait(LIMIT).await.complete);
 }
@@ -836,8 +901,15 @@ impl Actor for ExitOnceDuringRestart {
     }
 }
 impl Handler<Crash> for ExitOnceDuringRestart {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("injected child failure");
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("injected child failure");
+        }
     }
 }
 
@@ -994,8 +1066,10 @@ async fn transient_startup_timeout_retries_after_actual_cleanup() {
             ChildSpec::new("slow-init", &group, move |ctx| {
                 attempts.fetch_add(1, Ordering::SeqCst);
                 async move {
+                    // v0.8 (S1): a first start is never retried, so the
+                    // slow start is the first replacement's.
                     Ok::<_, String>(SlowInit {
-                        first: ctx.generation() == 1,
+                        first: ctx.generation() == 2,
                     })
                 }
             })
@@ -1007,8 +1081,13 @@ async fn transient_startup_timeout_retries_after_actual_cleanup() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
-    assert_eq!(child.snapshot().generation, 2);
+    child.current().unwrap().child_handle().kill();
+    spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(2))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    assert_eq!(child.snapshot().generation, 3);
     assert_eq!(child.snapshot().last_exit, Some(ExitReason::Shutdown));
     assert!(child.current().is_ok());
     assert!(supervisor.shutdown(LIMIT).await.complete);
@@ -1088,17 +1167,16 @@ async fn backoff_exponent_resets_only_after_a_stable_generation() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("backoff-reset", 1).unwrap();
     let mut tree = system
-        .supervisor(SupervisorConfig {
-            max_restarts: 20,
-            backoff: Backoff {
-                initial: Duration::from_millis(20),
-                maximum: Duration::from_secs(2),
-                stable_after: Duration::from_millis(300),
-                jitter: false,
-                seed: Some(7),
-            },
-            ..SupervisorConfig::default()
-        })
+        .supervisor(
+            SupervisorConfig::default().max_restarts(20).backoff(
+                Backoff::default()
+                    .initial(Duration::from_millis(20))
+                    .maximum(Duration::from_secs(2))
+                    .stable_after(Duration::from_millis(300))
+                    .jitter(false)
+                    .seed(7),
+            ),
+        )
         .unwrap();
     let child = tree
         .add(ChildSpec::new("flappy", &group, |_| async {
@@ -1264,11 +1342,15 @@ async fn system_deadline_signals_remaining_supervised_siblings() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        spawned_rt::tasks::timeout(Duration::from_secs(1), actor.wait_exit())
-            .await
-            .expect("earlier sibling was not stopped after the system deadline"),
-        ExitReason::Shutdown
+    let reason = spawned_rt::tasks::timeout(Duration::from_secs(1), actor.wait_exit())
+        .await
+        .expect("earlier sibling was not stopped after the system deadline");
+    // Signalled after the system deadline: by the supervisor's `Shutdown`
+    // or by the grace-expiry kill (E3), whichever reaches it first (on one
+    // CPU the shutdown can).
+    assert!(
+        matches!(reason, ExitReason::Killed | ExitReason::Shutdown),
+        "{reason:?}"
     );
     release.send(()).unwrap();
     assert!(report.wait(LIMIT).await.complete);
@@ -1305,8 +1387,15 @@ impl Actor for Named {
     }
 }
 impl Handler<Crash> for Named {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("crash a registered child");
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("crash a registered child");
+        }
     }
 }
 
@@ -1374,18 +1463,18 @@ async fn one_for_all_restart_waits_for_its_backoff() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("ofa-backoff", 1).unwrap();
     let mut tree = system
-        .supervisor(SupervisorConfig {
-            strategy: SupervisorStrategy::OneForAll,
-            max_restarts: 5,
-            backoff: Backoff {
-                initial: Duration::from_millis(300),
-                maximum: Duration::from_secs(2),
-                jitter: false,
-                seed: Some(1),
-                ..Backoff::default()
-            },
-            ..SupervisorConfig::default()
-        })
+        .supervisor(
+            SupervisorConfig::default()
+                .strategy(SupervisorStrategy::OneForAll)
+                .max_restarts(5)
+                .backoff(
+                    Backoff::default()
+                        .initial(Duration::from_millis(300))
+                        .maximum(Duration::from_secs(2))
+                        .jitter(false)
+                        .seed(1),
+                ),
+        )
         .unwrap();
     let child = tree
         .add(ChildSpec::new("a", &group, |_| async {
@@ -1420,43 +1509,19 @@ fn supervisor_config_limits_are_validated_at_their_boundaries() {
     };
     let base = SupervisorConfig::default;
     assert!(accepts(base()));
-    assert!(rejects(SupervisorConfig {
-        restart_window: Duration::ZERO,
-        ..base()
-    }));
-    assert!(rejects(SupervisorConfig {
-        max_children: 0,
-        ..base()
-    }));
-    assert!(accepts(SupervisorConfig {
-        max_children: 65536,
-        ..base()
-    }));
-    assert!(rejects(SupervisorConfig {
-        max_children: 65537,
-        ..base()
-    }));
-    assert!(accepts(SupervisorConfig {
-        max_restarts: 65536,
-        ..base()
-    }));
-    assert!(rejects(SupervisorConfig {
-        max_restarts: 65537,
-        ..base()
-    }));
-    let backoff = |initial, maximum| Backoff {
-        initial: Duration::from_millis(initial),
-        maximum: Duration::from_millis(maximum),
-        ..Backoff::default()
+    assert!(rejects(base().restart_window(Duration::ZERO)));
+    assert!(rejects(base().max_children(0)));
+    assert!(accepts(base().max_children(65536)));
+    assert!(rejects(base().max_children(65537)));
+    assert!(accepts(base().max_restarts(65536)));
+    assert!(rejects(base().max_restarts(65537)));
+    let backoff = |initial, maximum| {
+        Backoff::default()
+            .initial(Duration::from_millis(initial))
+            .maximum(Duration::from_millis(maximum))
     };
-    assert!(accepts(SupervisorConfig {
-        backoff: backoff(10, 10),
-        ..base()
-    }));
-    assert!(rejects(SupervisorConfig {
-        backoff: backoff(11, 10),
-        ..base()
-    }));
+    assert!(accepts(base().backoff(backoff(10, 10))));
+    assert!(rejects(base().backoff(backoff(11, 10))));
 }
 
 /// T4/V5: on native threads (`thread_group`) the restart window runs on the
@@ -1477,11 +1542,7 @@ fn native_restart_window_expires_on_the_monotonic_clock() {
         let system = ActorSystem::new().unwrap();
         let group = system.thread_group("window", 4).unwrap();
         let mut tree = system
-            .supervisor(SupervisorConfig {
-                max_restarts: 1,
-                restart_window: window,
-                ..config(1)
-            })
+            .supervisor(config(1).max_restarts(1).restart_window(window))
             .unwrap();
         let child = tree
             .add(ChildSpec::new("native", &group, |_| async {

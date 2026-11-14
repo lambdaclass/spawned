@@ -2,6 +2,374 @@
 
 ## Unreleased
 
+- Failed deadline-worker initialization releases its service allocation on
+  error or unwind, and leaves initialization retryable. Startup still fails
+  rather than silently accepting an unserviceable deadline.
+
+- Simulation rejects native actor creation and message/request admission from
+  a virtual world instead of comparing real-time and virtual deadline ticks.
+  Native-only tests outside a world continue to use real time.
+
+- Simulator deadline owners include setup before `block_on`; native actor
+  owners explicitly use real time. Standalone test reply pairs have fresh
+  simulated owners, released after each seed. Runtime-drop regressions check
+  that pending actor tasks cannot retain a world/registry cycle.
+- Async `request_with_timeout` returns an explicitly `Send` future. The
+  `Handler::__spawned_handle_immediate` hook is hidden framework machinery
+  used by generated handlers, with the ordinary future adapter as fallback.
+
+- Simulated deadline services retain their owner's runtime when first armed
+  from another context. Foreign-thread scheduling is reported as a determinism
+  escape instead of silently creating an unpolled world; native owners outside
+  a simulation use real time.
+
+- Refused job results and immediate emits contain destructor panics in both
+  execution modes. Cancellation, deadlines, keyed replacement and owner
+  discharge retain containment for results held behind scheduled emits.
+
+- Refused job notifications and emits destroy their captures outside the
+  lifecycle trace lock. Linked-exit delivery disposes caught panic payloads,
+  logs failures and releases removed records after both the receiver table
+  and the outermost trace section, including late links to dead actors.
+
+- Ordinary reply slots keep the value inline and move deferred metadata to a
+  cold allocation; scalar slots are bounded by a 56-byte layout regression.
+  Slot locking uses parking_lot behind the production/Loom synchronization
+  seam. A refused second publisher preserves the winning reply instead of
+  overwriting it; the regression fails without the terminal pre-check.
+- Job completion drops unused result factories outside the lifecycle trace
+  lock. A reproducing destructor regression runs in trace CI; keyed-job
+  generation retention and link attempts racing exit are documented.
+- Generated await-free async handlers can dispatch without a boxed turn future
+  when their message has no destructor. Shared/explicit-lifetime receivers,
+  opaque macros/attributes, nested items/anonymous types, suspending handlers
+  and payloads with destructors retain the future adapter. Public direct calls remain lazy; panic fencing,
+  drop order and causal actor tracing are preserved.
+- Request and turn bookkeeping avoids redundant atomic exchanges and dynamic
+  default-budget storage. Deferred-token ownership is tracked through the end
+  of destruction; production-core Loom races cover last-token retirement.
+- Performance: request envelopes reuse message presence as their dispatch
+  marker and inline construction, removing duplicate state without moving
+  dispatch or discharge. The instruction gate also covers manifest, lockfile
+  and compiler changes, including release version bumps.
+- Release-review fixes: job completion atomically closes emit admission,
+  including the gap after a held terminal is released; blocked emitters wake
+  on completion. Join waiters are deduplicated and woken outside their lock.
+  Production-core Loom regressions and a TLA+ fault cover retained JobCtx races.
+- Timer regression: paused Tokio time is never stored as a service-clock
+  deadline. Monotonic clock conversion is inlined without caching time.
+
+- Release validation: client compatibility uses the prepared `spawned-v0.8`
+  ports for the breaking API, rather than the incompatible 0.7 client branches.
+
+- **Behaviour (0.8)**: request timeouts are the caller's, as OTP's
+  `gen_server:call`: a reply reads no clock, and only the caller's expiry
+  (its timer, the owner's deadline heap, a deadline check) times a request
+  out. A reply that loses that race is dropped (`Delivery::Expired`, the
+  caller sees `RequestTimeout`); one that lands after the deadline but
+  before the expiry runs is delivered. The `WRITING` slot state is gone and
+  no reply path reads the clock. `DeferredReplies.tla` models it (a reply
+  delivers while the slot is open; `LateSuccess` now overrides an expired
+  slot).
+- Performance (0.8 request path, no API change): the reply slot keeps one
+  lock for value and waker with lazily created deferral state (no condvar:
+  a blocking `recv()` parks its thread); the tasks envelope lends its
+  request slot to the turn instead of cloning it; a turn that finishes in
+  its first poll skips the runtime-drop guard; `request` captures one precise
+  runtime timer before enqueue, keeping its relative budget separate from
+  the service-clock slot deadline so paused clocks stay correct (no coarse clock); a request without a
+  deadline holds no reference to the owner's registry (the owner's close
+  records the final reason in the slot); a caller that owns an answered
+  slot alone takes the value without the lock; and the slot no longer
+  holds its owner at all (two flags became word bits), which keeps it in
+  glibc's fast bins for typical reply sizes. Reply ownership and terminal
+  transitions retain their linearization points. A receiver timer
+  refinement (`ReplyTimer.tla`), two negative controls, production-slot Loom
+  races, and paused-clock/overflow tests cover the timer bookkeeping.
+- `InsertError::kind()` (a `#[non_exhaustive]` `InsertErrorKind`) and
+  `InsertError::into_parts()`: a refused insert's reason and token come
+  together, so a caller answers the token for any reason, including one
+  added later, instead of dropping it in a wildcard arm.
+- Docs: an async job's `work` is a factory run at once in the current turn
+  (its panic is a handler panic; a job refused by the owner's exit has run
+  it); only its future is the job (`pipe` rustdoc, GUIDE).
+- **Behaviour (0.8)**: `demonitor` flushes, as OTP's `demonitor(Ref, [flush])`:
+  once it returns, in both modes, no `Down` of that monitor is enqueued or
+  handled, including one already in the mailbox. Framework `Down`s travel in
+  a private envelope that checks the monitor table at dispatch, so ordinary
+  messages pay nothing and a `Down` user code sends is unaffected. New
+  failpoint site `monitor.down_before_dispatch` (#247).
+- Fix: `PendingReplies::drain` yields live tokens in insertion order. It
+  walked a `HashMap` with a per-process `RandomState`, so deferred replies
+  were answered in a different order in each process, and a same-seed
+  simulator run did not reproduce its schedule (#261). `take` is now a
+  linear scan of the capped table.
+- **Breaking (0.8), API pass before publishing** (each change is a row of the
+  [0.7 to 0.8 call-site table](docs/MIGRATION.md#07-to-08-api-call-site-table)):
+  - Jobs: one call per shape, options first (`pipe`, `pipe_blocking`,
+    `pipe_reply`, `pipe_reply_blocking`, `reserve_job(opts)`,
+    `reserve_blocking_job(opts)`); every `work` receives its `JobCtx` by
+    value. `pipe_with`, `pipe_with_ctx`, `pipe_keyed`, `pipe_blocking_with`,
+    `pipe_reply_with` and `pipe_reply_blocking_with` are gone.
+    `JobOptions` is `#[non_exhaustive]` with a builder (`new`, `key`,
+    `deadline(impl Into<Deadline>)`, `emit_credits(NonZeroU16)`,
+    `cancel_on_caller_gone`, which `debug_assert!`s outside `pipe_reply*`);
+    `deadline_after` is folded into `deadline`. `JobOutcome<T>` is
+    `Result<T, JobError>`. `PipeError` is the `#[non_exhaustive]` enum (no
+    `kind` wrapper); `PipeReplyError` is `#[non_exhaustive]` and its
+    `Failed` variant carries `error`. `Deadline` implements
+    `From<Duration>` and `From<Instant>`. `DEFAULT_EMIT_CREDITS` and
+    `default_max_native_jobs` are no longer public.
+  - Requests and deadlines: `request_raw` and `request_raw_until` become
+    `send_request(msg, impl Into<Deadline>)` (OTP's
+    `gen_server:send_request/2` with an explicit deadline; on `Receiver<M>`, a `Deadline`). 0.7's
+    `request_raw` had no deadline: `Deadline::Never` keeps that.
+    `PendingReply::deadline`, `ReplyTo::deadline` and `ReplyReceiver::deadline`
+    return `Deadline`, so a deadline forwards as is;
+    `ReplyTo::with_deadline` is `shorten_deadline(impl Into<Deadline>)`.
+    Removed: `PendingReply::has_caller` (`defer()` returns `NoCaller`),
+    `PendingReplies::{purge, retained, live}` (now `len`/`is_empty`; purging
+    stays automatic), the public `DEFAULT_MAX_OUTSTANDING` (the default,
+    1024, is documented at `Actor::MAX_OUTSTANDING`).
+    `PendingReply::detached` is hidden (`spawned_test::detached_reply()`).
+    `InsertError<R>` holds `ReplyTo<R>` and is `#[non_exhaustive]`.
+    `DEFAULT_REQUEST_TIMEOUT` is re-exported at the crate root. The
+    `Duration` parameters of `ActorSystem::shutdown`, `Supervisor::shutdown`,
+    `ShutdownReport::wait` and the test kit's waits are named `grace` or
+    `limit` (a deadline is an instant). `PendingReplies` and
+    `Context::deferred_outstanding` are documented as experimental.
+  - `#[non_exhaustive]` on the enums that will grow (`SupervisorError`,
+    `SystemError`, `HelperError`, `RegistryError`, `SupervisorStrategy`,
+    `ExecutionProfile`, `ChildState`, `Backend`, `spawned_test::Outcome`)
+    and on the read-only structs (`Down`, `Exit`, `ChildSnapshot`,
+    `SupervisorReport`, `ActorExit`, `metrics::Snapshot`,
+    `HistogramSnapshot`). `Down` gains `actor`, the monitored `ActorId`
+    (OTP's `Object` in `{'DOWN', Ref, process, Object, Info}`).
+  - `SupervisorConfig`, `Backoff` and `metrics::Config` are
+    `#[non_exhaustive]` with builders (`new()` plus one setter per field;
+    `Backoff::seed(u64)`).
+  - Hidden and sealed surface: `Receiver<M>` is sealed (it gained a
+    required method in 0.8; sealing lets the next one be added freely). The
+    `reply` module is `#[doc(hidden)]` (its types are at the crate root and
+    under `tasks`/`threads`; macros emit root paths). Test hooks
+    (`ActorRef::__in_turn`, `PendingReply::__discharge_stopped`,
+    `reply_pair`, `PendingReply::detached`) move into
+    `#[doc(hidden)] __private`, which spawned-test uses and which carries no
+    semver promise. `lifecycle_trace` is public only with the
+    `lifecycle-trace` feature; `spawned_rt::time`'s tick functions are
+    `#[doc(hidden)]`.
+  - Macros: `#[handler]` is removed (use `#[request_handler]` or
+    `#[send_handler]`), and a `#[send_handler]` method returning a value is
+    a compile error (it used to answer a `request` with it).
+  - Duplicates removed: `Context::from_ref` (use `ActorRef::context`) and
+    `ChildHandle::shutdown` (use `stop_with_reason(ExitReason::Shutdown)`).
+  - `Response<T>` in tasks mode: `unwrap`, `expect`, `map` and the new
+    `into_result` on a response that was not awaited wait for the reply
+    when called off an async runtime and panic inside one (they always
+    panicked); `is_ok`/`is_err` panic on it instead of answering `false`.
+  - Docs: an "Experimental in 0.8" list in the GUIDE (job API,
+    `PendingReplies`, `exit_pending`, registry, helpers, placement
+    experiments, `spawned-rt` re-exports), the stop/exit/kill table on
+    `ChildHandle`, and `start_linked`'s unmanaged placement. The
+    `ActorError` classifiers (`target_gone`, `is_timeout`, `is_transient`,
+    `exit_reason`) are kept, defined per variant and tested for every one.
+- Deferred replies and jobs, fixes from the 0.8 pre-release review: a job
+  deadline still fires while the result waits for scheduled emits, and the
+  job keeps its `MAX_OUTSTANDING` credit until its terminal message; a job
+  admitted while its owner exits is refused in one step with the exit
+  (`pipe_reply*` returns `OwnerStopping` with the token); in `tasks` mode a
+  blocking job's thread (outside a runtime) is created at reservation
+  (`SpawnFailed` instead of a silently lost job) and a managed actor's
+  blocking job keeps its scope until its body ends (a supervisor does not
+  replace the child, and shutdown is not complete, while it runs);
+  shortening a token's deadline no longer cancels a `cancel_on_caller_gone`
+  blocking job and wakes the waiting caller to re-arm its timer; an
+  `emit_at` discarded by a concurrent cancel returns `JobGone`; a refused
+  emit returns its credit once; a panicking payload destructor no longer
+  stops the process-wide deadline service; a tasks handler that panics
+  while building its future is a handler panic (`stopped()` runs).
+- **Breaking (0.8):** `DeferError` and `Delivery` are `#[non_exhaustive]`
+  (like `JobError` and `PipeError`): match them with a wildcard arm.
+- **Breaking (0.8):** the restart budget counts restart actions, as OTP's
+  intensity does (ROADMAP rank 5f): a OneForAll or RestForOne recovery round
+  takes one `max_restarts` grant when the coordinator selects it, before the
+  cohort is stopped, however many children it rebuilds (v0.7 charged every
+  rebuilt child, so a six-child OneForAll round needed six grants). A failed
+  replacement inside a round requests a new round, charged again (OTP's
+  `try_again_restart`); a superseded round keeps its charge; OneForOne and
+  retries before the tree is ready still take one grant per child retry. An
+  exhausted budget fails the supervisor when the round would be selected,
+  naming the round's origin child. `max_restarts` documentation, semantics
+  V5, the guide and the migration notes follow.
+- The death point is one boundary, however the actor dies (run loop or
+  runtime drop): job admission closes, outgoing replies and `ctx.exit`
+  signals are fenced, the reason is sealed, and every deferred token and
+  queued request is answered `ActorStopped(final reason)` before any queued
+  payload or state destructor runs and before death is published. A
+  `ReplyTo::reply` once `NoProc` is observable returns
+  `Delivery::OwnerExited` (the caller gets the final reason); a signal a
+  cloned context sends before its actor's death reaches the target before
+  the death notice. Previously a blocking payload destructor, or a runtime
+  dropping the actor, could leave callers unanswered while it ran.
+- **Breaking (0.8), in progress:** exit signals, startup and runtime-drop
+  semantics as in OTP (ROADMAP ranks 5e, 5f, 5g), implementing
+  [the design](docs/design/otp-exit-signals.md) (#240, stacked on rank 11).
+  Done so far: `ExitReason` is `#[non_exhaustive]` with `Killed` and `NoProc`;
+  `ChildHandle::kill()` (untrappable, ends `Killed`, supersedes any reason
+  until the death point), `ChildHandle::exit(reason)` and
+  `Context::exit(&target, reason)` with `erlang:exit_signal/2` rules
+  (`Normal` ignored by a non-trapping actor, other reasons end it without
+  `stopped()`, trapping actors get an `Exit`), `ActorId::EXTERNAL`;
+  administrative `stop`/`stop_with_reason`/`shutdown` unchanged; one death
+  point after `stopped()` where the reason becomes final and the link table
+  closes; a late untrapped signal replaces the requested reason unless a kill
+  was received (decision 8); a panic in `stopped()` replaces an earlier
+  abnormal reason (except after a kill); `stopped()` is skipped on a kill, an
+  untrapped signal or link notice and a runtime drop; runtime-dropped actors
+  end `Killed` in both modes; `link`/`monitor` to an actor past its death
+  point give `NoProc` (a non-trapping caller of `link` exits `NoProc`;
+  `Context::try_link` returns `Err(NoProc)`); `link` from an actor whose exit
+  began is inert; `unlink`/`demonitor` are fences; a `start_linked` parent's
+  exit ends a trapping child through `stopped()` (never `exit_received`);
+  signals arriving during `started()` are resolved when it returns;
+  supervisor and system shutdown send the parent's `Shutdown` exit signal
+  (a non-trapping child ends `Shutdown` without `stopped()`, a trapping one
+  finishes its backlog and runs `stopped()`), with the kill at
+  `shutdown_timeout` (supervisor, then a second interval before cleanup is
+  stuck) or at grace (system); destructor panics after
+  the death point are cleanup failures (`ChildHandle::cleanup_failure()`,
+  `mailbox_cleanup_failure()` deprecated) that restart a Transient child
+  without changing the reason; `spawned-test` `faults::exit` sends an exact
+  exit signal; metrics `actors_exited_killed_total`,
+  `actors_exited_noproc_total`. Supervisor startup (S1/S2): any failed first
+  start of a child (factory error or panic, panic or stop in `started()`,
+  `startup_timeout`, placement or group closure) fails `start()` whatever the
+  restart type, with no retry, as `SupervisorError::FailedToStartChild
+  { child, cause, rollback_failures }` (a stuck cleanup during the initial
+  start is `StartupCleanupStuck`); a ready child's exit during the initial
+  start is deferred and processed under the strategy once the tree commits
+  ready (OneForOne no longer restarts it at once, OneForAll/RestForOne no
+  longer fail the start); `start()` returns its error only after the
+  rollback (every child terminal, or `Failed` once its cleanup is stuck).
+  `Supervision.tla` (no restart before the tree is ready, deferral actions
+  `DeferExit`/`Undefer`, traced) and `Cohorts.tla` (round 0 once per child,
+  `FirstStartOnce`) follow, with the v0.7 behaviours as negative controls.
+  Caller errors (rank 11 x 5e, decision 4): `ActorError::ActorStopped`
+  carries the actor's final `ExitReason`, the same one `wait_exit`, `Down`
+  and links see (`Killed` after a kill, the signal's reason after an
+  untrapped exit signal, `Panic(..)` after a crash); new
+  `ActorError::NoProc` for a `send` or `request` after the death point (the
+  registry is sealed with the final reason inside the death point's
+  exit-table critical section); a send or request made while the actor exits
+  is admitted and answered at the death point. Exit errors wait for the
+  death point: a request whose handler panicked, a token dropped while the
+  owner exits and an undispatched queued request stay open ("exit pending")
+  and are answered with the final reason, or by the caller's deadline first.
+  `DeferredReplies.tla` models it (`pendA`, invariant `StoppedAtDeath`,
+  control `EarlyStopped`; one more reply trace control); metrics
+  `requests_noproc_total`.
+  Trace validation against `Lifecycle.tla`: with `lifecycle-trace`, the
+  runtime records exit signals, stops, links, monitors, sends, dispatch,
+  panics, `stopped()` run or skip, the death point, runtime drop,
+  publication and notice delivery (schema `lifecycle-v1`,
+  `TraceLifecycle.tla`); `tests/lifecycle_trace.rs` records 14 scenarios
+  (both modes), all accepted, and eleven edited traces (stopped() after a
+  kill, `Kill` for `Killed`, publication before D, real reason instead of
+  `NoProc`, notices after unlink/demonitor, ...) are rejected.
+  Client feedback (ethrex, ethlambda): `ActorError` classification helpers
+  `target_gone()`, `is_timeout()`, `is_transient()` and `exit_reason()`, so
+  clients need no exhaustive match on the `#[non_exhaustive]` enum; a
+  skipped `stopped()` logs `event = "stopped_skipped"` at `debug` (actor,
+  cause `kill`/`exit_signal`/`runtime_drop`, reason);
+  `Context::exit_pending()` (both modes) tells a trapping actor that its exit
+  began or a parent exit is queued behind the current message, so it can
+  refuse late work (advisory, read-only, no per-message cost).
+  Concurrency checks: the link table (`src/link/table.rs`) and the monitor
+  fence (`src/monitor/fence.rs`) are shared with a Loom model
+  (`tests/link_fence_loom.rs`, 9 tests explored exhaustively: one notice per
+  edge, none after `unlink`/`demonitor` or the receiver's death, a link or
+  monitor racing the death point gets the real reason or `NoProc`, never both
+  nor none); `tests/exit_signals_sim.rs` explores six orderings on the
+  simulator with PCT and bounded DFS (kill vs `stopped()`, late signal vs the
+  death point, link/monitor vs the death point, unlink/demonitor fences,
+  supervisor shutdown vs a trapping child's queue and `exit_pending`, a ready
+  child's exit vs the tree commit). GUIDE "Links, monitors and exit signals",
+  the `exit_signals` capability example, and semantics L3-L6, X1-X6, V1, V3,
+  V9 and the OTP differences table.
+  Remaining: the heavy TLC configurations and Apalache after the canaries.
+
+- **Breaking (0.8), in progress:** deferred replies and pipe-to-self
+  (ROADMAP rank 11), implementing
+  [the design](docs/design/deferred-replies.md). Every request now has a reply
+  slot: one packed atomic word (state, token, registry and running-job count)
+  whose transitions are checked with Loom (`reply_slot_loom`, 16 models), as
+  are the owner's turn-phase drop commit (`registry_turn_loom`) and the job
+  core (`job_core_loom`: admission rollback, completed-key replacement, emit
+  versus terminal notification and cancel, native completion versus cleanup
+  join, final destruction after a `Weak` upgrade), each with planted-bug
+  controls. The job model found two destructions under the job set's locks
+  (key-map clear at owner exit, weak-list compaction), now fixed. With
+  `lifecycle-trace`, the job core records `DeferredJobs.tla` actions, and
+  `tests/job_trace.rs` traces (seven scenarios) are checked by TLC
+  (`TraceJobs.tla`, schema `jobs-v1`), with six edited traces as negative
+  controls. Reply slots record `DeferredReplies.tla` actions (send,
+  dispatch, the terminal transition inside the slot CAS, exit, death);
+  `tests/reply_trace.rs` traces (nine scenarios) are checked against
+  `TraceReplies.tla`, with four negative controls. With `metrics`, the
+  `spawned_deferred_*` family (tokens, pending, replied/expired/dropped/
+  stopped/abandoned, overloaded, sampled defer-to-reply latency) and the
+  `spawned_jobs_*` family (started, running, completed/panicked/deadline
+  exceeded, cancelled while running, fenced, rejected at a bound, emits,
+  unfinished at stop); `tests/metrics_deferred.rs` checks each is counted
+  once. Simulator races (`tests/deferred_sim.rs`, PCT and bounded DFS):
+  reply vs expiry vs owner death vs caller drop, keyed replacement, emit vs
+  terminal and cancel. `Handler::handle` takes a `PendingReply<'_, R>`
+  and returns `()`; `#[actor]` generates it, and `#[deferred_handler]` methods
+  receive the obligation and may `defer()` it into a storable `ReplyTo<R>`
+  (bounded by `Actor::MAX_OUTSTANDING`, `Overloaded` at the bound). Dropped
+  obligations answer `ReplyDropped` (in a panicking turn or while exiting
+  they are answered `ActorStopped` at death); at death every open token
+  answers `ActorStopped`. Request
+  deadlines are fixed at send (`Deadline`, `send_request(msg, deadline)`,
+  formerly `request_raw`); a per-actor deadline heap and service expire stored
+  tokens without a polling caller. `PendingReplies<K, R>` is a bounded token
+  table. Pipe-to-self jobs: `ctx.pipe`, `pipe_blocking`, `pipe_reply`,
+  `pipe_reply_blocking` (threads mode: the blocking forms on owned native
+  threads), with `JobOutcome`/`JobError::{Panicked, DeadlineExceeded}`, keyed
+  replacement and cancellation fenced at dispatch, `JobCtx::emit`/
+  `emit_blocking` with emit credits and the terminal message last,
+  `MAX_NATIVE_JOBS`, owner-exit cancellation and a bounded join after death
+  (`unfinished_at_stop`). `ActorError` is `#[non_exhaustive]` with
+  `ReplyDropped` and `Overloaded`; `metrics::Snapshot` gains
+  `requests_reply_dropped_total` and `requests_overloaded_total`. Example:
+  `deferred_replies`. See [migration](docs/MIGRATION.md#unreleased).
+- Rank 11 API refinements from porting ethlambda and ethrex to 0.8:
+  `#[actor(max_outstanding = N, max_native_jobs = N)]` sets the bounds, and
+  `ChildSpec::max_outstanding`/`max_native_jobs` override them per
+  supervised child (the design's per-spec override). `tasks`-mode blocking
+  jobs (`pipe_blocking*`) run on Tokio's blocking pool instead of a fresh OS
+  thread each, still under `MAX_NATIVE_JOBS`, with panics as
+  `JobError::Panicked` and cancellation and fencing unchanged (threads mode
+  keeps owned threads; a reservation pre-spawns the job's thread).
+  Reserve-then-spawn: `ctx.reserve_job(opts)` / `ctx.reserve_blocking_job(opts)`
+  return a `JobPermit` / `BlockingJobPermit` whose `pipe*` cannot fail, so a
+  refused caller keeps what it would have moved into `work` and `done`.
+  `JobCtx::emit_at` / `emit_at_blocking` deliver a fenced, credit-accounted
+  message at an instant; the job's terminal message waits for its scheduled
+  emits (new Loom model `scheduled_emit_vs_finish_and_cancel`).
+  `spawned_concurrency::Instant`
+  (also `tasks::`/`threads::Instant`) re-exports the deadline clock.
+  `#[send_handler]` on a manual `impl Handler<M>` (for `Result = ()`) drops
+  the reply parameter and answers `()` when `handle` returns.
+  `spawned_test::tasks::in_actor` / `threads::in_actor` run a closure in a
+  live actor's turn. GUIDE: hard job deadlines and the soft-deadline
+  pattern, replies carrying a reason through `R = Result<..>`, the
+  `send_request` rows.
+- Verification: retain bounded weekly Lifecycle checks; run full Lifecycle
+  safety/liveness models manually before release, alongside the soak. The
+  full configurations and properties are unchanged; incomplete runs block
+  release rather than counting as successful CI verification.
+
 - CI: a hot-path performance gate (`perf-gate`). `benchmarks/hotpath.py gate`
   counts instructions per operation with callgrind for async burst, sequential
   and concurrent `request()` and `send` (on a current-thread runtime, so the

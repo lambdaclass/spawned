@@ -6,30 +6,30 @@
 mod deadline;
 use spawned_concurrency::{
     message::Message,
-    supervision::{Backoff, ChildSpec, RestartMode, SupervisorConfig, SupervisorStrategy},
+    supervision::{
+        Backoff, ChildSpec, RestartMode, SupervisorConfig, SupervisorError, SupervisorStrategy,
+    },
     system::ActorSystem,
     tasks::{Actor, Context, Handler},
 };
 use std::{
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::Duration,
 };
 const LIMIT: Duration = Duration::from_secs(5);
 fn policy(strategy: SupervisorStrategy) -> SupervisorConfig {
-    SupervisorConfig {
-        strategy,
-        max_restarts: 100,
-        backoff: Backoff {
-            initial: Duration::from_millis(1),
-            maximum: Duration::from_millis(4),
-            jitter: false,
-            ..Backoff::default()
-        },
-        ..SupervisorConfig::default()
-    }
+    SupervisorConfig::default()
+        .strategy(strategy)
+        .max_restarts(100)
+        .backoff(
+            Backoff::default()
+                .initial(Duration::from_millis(1))
+                .maximum(Duration::from_millis(4))
+                .jitter(false),
+        )
 }
 struct Next;
 impl Message for Next {
@@ -73,20 +73,42 @@ impl Drop for Probe {
     }
 }
 impl Handler<Next> for Probe {
-    async fn handle(&mut self, _: Next, _: &Context<Self>) -> usize {
-        self.value += 1;
-        self.value
+    async fn handle(
+        &mut self,
+        _: Next,
+        reply: spawned_concurrency::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: usize = {
+            self.value += 1;
+            self.value
+        };
+        reply.reply(__reply_value);
     }
 }
 impl Handler<Crash> for Probe {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("injected cohort failure");
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("injected cohort failure");
+        }
     }
 }
 impl Handler<CrashTogether> for Probe {
-    async fn handle(&mut self, msg: CrashTogether, _: &Context<Self>) {
-        msg.0.wait().await;
-        panic!("simultaneous cohort failure");
+    async fn handle(
+        &mut self,
+        msg: CrashTogether,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            msg.0.wait().await;
+            panic!("simultaneous cohort failure");
+        }
     }
 }
 
@@ -149,6 +171,7 @@ async fn strategies_select_affected_children_and_reconstruct_in_dependency_order
                 SupervisorStrategy::OneForOne => index == 1,
                 SupervisorStrategy::OneForAll => true,
                 SupervisorStrategy::RestForOne => index >= 1,
+                other => unreachable!("strategy {other:?} not under test"),
             };
             if affected {
                 let next =
@@ -315,49 +338,91 @@ async fn failed_cohort_construction_rebuilds_the_whole_cohort_like_otp() {
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
+/// OTP charges one restart per restart action: a OneForAll or RestForOne
+/// recovery round costs one grant however many children it rebuilds. With
+/// three children and `max_restarts = 2`, two rounds rebuild the cohort and
+/// the third failure exhausts the budget (per-child charging would have
+/// failed the supervisor while rebuilding the first round).
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
-async fn cohort_reconstruction_consumes_shared_factory_attempt_budget() {
-    let system = ActorSystem::new().unwrap();
-    let group = system.async_group("cohort-budget", 1).unwrap();
-    let mut config = policy(SupervisorStrategy::OneForAll);
-    config.max_restarts = 2;
-    let mut tree = system.supervisor(config).unwrap();
-    let mut children = Vec::new();
-    let live = Arc::new((0..3).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>());
-    let events = Arc::new(Mutex::new(Vec::new()));
-    for index in 0..3 {
-        let live = live.clone();
-        let events = events.clone();
-        children.push(
-            tree.add(ChildSpec::new(
-                format!("child-{index}"),
-                &group,
-                move |ctx| {
-                    let live = live.clone();
-                    let events = events.clone();
-                    async move {
-                        assert_eq!(live[index].fetch_add(1, Ordering::SeqCst), 0);
-                        Ok::<_, String>(Probe {
-                            index,
-                            generation: ctx.generation() as usize,
-                            value: 0,
-                            live,
-                            events,
-                        })
-                    }
-                },
-            ))
-            .unwrap(),
+async fn cohort_reconstruction_charges_one_restart_per_round() {
+    for strategy in [
+        SupervisorStrategy::OneForAll,
+        SupervisorStrategy::RestForOne,
+    ] {
+        let system = ActorSystem::new().unwrap();
+        let group = system.async_group("cohort-budget", 1).unwrap();
+        let mut config = policy(strategy);
+        config.max_restarts = 2;
+        let mut tree = system.supervisor(config).unwrap();
+        let mut children = Vec::new();
+        let live = Arc::new((0..3).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>());
+        let events = Arc::new(Mutex::new(Vec::new()));
+        for index in 0..3 {
+            let live = live.clone();
+            let events = events.clone();
+            children.push(
+                tree.add(ChildSpec::new(
+                    format!("child-{index}"),
+                    &group,
+                    move |ctx| {
+                        let live = live.clone();
+                        let events = events.clone();
+                        async move {
+                            assert_eq!(live[index].fetch_add(1, Ordering::SeqCst), 0);
+                            Ok::<_, String>(Probe {
+                                index,
+                                generation: ctx.generation() as usize,
+                                value: 0,
+                                live,
+                                events,
+                            })
+                        }
+                    },
+                ))
+                .unwrap(),
+            );
+        }
+        let supervisor = tree.start().await.unwrap();
+        // Two rounds, each rebuilding all three children (the first child
+        // is the origin, so RestForOne rebuilds the whole tail too).
+        for round in 1..=2u64 {
+            assert!(children[0].current().unwrap().request(Crash).await.is_err());
+            for child in &children {
+                spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(round))
+                    .await
+                    .unwrap()
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "{strategy:?} round {round}: {e:?} {:?}",
+                            supervisor.failure()
+                        )
+                    });
+            }
+            assert!(
+                supervisor.failure().is_none(),
+                "{strategy:?}: round {round} charged per rebuilt child: {:?}",
+                supervisor.failure()
+            );
+        }
+        assert!(children
+            .iter()
+            .all(|child| child.snapshot().generation == 3));
+        // The third failure is the third restart action in the window.
+        assert!(children[0].current().unwrap().request(Crash).await.is_err());
+        spawned_rt::tasks::timeout(LIMIT, supervisor.join())
+            .await
+            .unwrap();
+        let failure = supervisor.failure().unwrap();
+        assert!(
+            failure.contains("restart budget exhausted by child-0"),
+            "{strategy:?}: {failure}"
         );
+        assert!(children
+            .iter()
+            .all(|child| child.snapshot().generation == 3));
+        assert!(system.shutdown(LIMIT).await.complete);
+        assert!(live.iter().all(|n| n.load(Ordering::SeqCst) == 0));
     }
-    let supervisor = within!(tree.start()).await.unwrap();
-    assert!(children[0].current().unwrap().request(Crash).await.is_err());
-    spawned_rt::tasks::timeout(LIMIT, supervisor.join())
-        .await
-        .unwrap();
-    assert!(supervisor.failure().unwrap().contains("budget exhausted"));
-    assert!(system.shutdown(LIMIT).await.complete);
-    assert!(live.iter().all(|n| n.load(Ordering::SeqCst) == 0));
 }
 
 // Not simulated: children meet at a std::sync::Barrier, which needs OS threads.
@@ -583,7 +648,11 @@ async fn upstream_failure_supersedes_a_round_while_a_dependent_factory_is_pendin
 }
 
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
-async fn ready_dependency_failure_rolls_back_slow_initial_tree_startup() {
+/// S1: a ready dependency's exit during the initial start is deferred: the
+/// start continues (v0.7 rolled back at once), the dependency is not replaced
+/// alone, and when a later first start fails the deferred exit is part of the
+/// rollback.
+async fn ready_dependency_exit_is_deferred_during_slow_initial_tree_startup() {
     for strategy in [
         SupervisorStrategy::OneForAll,
         SupervisorStrategy::RestForOne,
@@ -620,21 +689,41 @@ async fn ready_dependency_failure_rolls_back_slow_initial_tree_startup() {
                             })
                         }
                     })
-                    .startup_timeout(Duration::from_secs(30)),
+                    .startup_timeout(if index == 2 {
+                        Duration::from_millis(500)
+                    } else {
+                        Duration::from_secs(30)
+                    }),
                 )
                 .unwrap(),
             );
         }
-        let startup = spawned_rt::tasks::spawn(tree.start());
+        let finished = Arc::new(AtomicBool::new(false));
+        let flag = finished.clone();
+        let startup = spawned_rt::tasks::spawn(async move {
+            let result = tree.start().await;
+            flag.store(true, Ordering::SeqCst);
+            result
+        });
         spawned_rt::tasks::timeout(LIMIT, entered.notified())
             .await
             .unwrap();
         assert!(children[0].current().unwrap().request(Crash).await.is_err());
-        assert!(spawned_rt::tasks::timeout(LIMIT, startup)
+        spawned_rt::tasks::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !finished.load(Ordering::SeqCst),
+            "{strategy:?}: start rolled back at once"
+        );
+        match spawned_rt::tasks::timeout(LIMIT, startup)
             .await
             .unwrap()
             .unwrap()
-            .is_err());
+        {
+            Err(SupervisorError::FailedToStartChild { child, .. }) => {
+                assert_eq!(child, "startup-dependency-2")
+            }
+            other => panic!("{strategy:?}: {:?}", other.err()),
+        }
         assert_eq!(
             children[0].snapshot().generation,
             1,
@@ -708,7 +797,14 @@ impl Actor for MaybeStop {
     }
 }
 impl Handler<CrashPlain> for MaybeStop {
-    async fn handle(&mut self, _: CrashPlain, _: &Context<Self>) {
-        panic!("injected cohort failure");
+    async fn handle(
+        &mut self,
+        _: CrashPlain,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("injected cohort failure");
+        }
     }
 }

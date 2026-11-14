@@ -59,10 +59,14 @@ jobs:
       - uses: DeterminateSystems/magic-nix-cache-action@v8
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: Swatinem/rust-cache@v2
+      - name: Payloads and panic diagnostics release protocol locks
+        run: |
+          cargo test --locked -p spawned-concurrency --lib --features lifecycle-trace reply::jobs::tests:: -- --test-threads=1
+          cargo test --locked -p spawned-concurrency --lib --features lifecycle-trace link::tests::delivery_diagnostics_run_outside_protocol_locks -- --exact
       - name: Record supervisor lifecycle traces
         env:
           LIFECYCLE_TRACE_DIR: ${{ github.workspace }}/lifecycle-traces
-        run: cargo test --locked -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace
+        run: cargo test --locked -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace --test job_trace --test reply_trace --test lifecycle_trace
       - name: Validate traces and negative controls
         run: nix run .#check-tla -- --traces-only lifecycle-traces --negative-controls
       # Which model actions, projected states and transitions the recorded
@@ -98,8 +102,11 @@ jobs:
           name: trace-coverage
           path: trace-coverage.json
 
-  # Weekly and on dispatch: the deep configurations (*Deep.cfg), one runner
-  # each. MCLifecycleWideDeep is the former per-PR MCLifecycle (43M states).
+  # Weekly and on dispatch: bounded deep configurations, one runner each.
+  # Keep the broad Lifecycle safety check here. Full MCLifecycleDeep and
+  # MCLifecycleLiveDeep are manual pre-release checks (like the soak): the
+  # safety run alone took >8 hours on fede, beyond a hosted runner's limit.
+  # Their configurations/properties stay intact; see docs/TESTING.md.
   tla-deep:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -112,8 +119,6 @@ jobs:
           - MCDeferredRepliesDeep
           - MCDeferredJobsDeep
           - MCLifecycleWideDeep
-          - MCLifecycleLiveDeep
-          - MCLifecycleDeep
           - MCStartDeep
     steps:
       - uses: actions/checkout@v4
@@ -172,6 +177,10 @@ jobs:
         env:
           RUSTFLAGS: --cfg spawned_scheduler_loom
         run: cargo test --locked -p spawned-concurrency --no-default-features --test mailbox_admission_loom
+      - name: Model-check the reply slot, job core, link table and monitor fence
+        env:
+          RUSTFLAGS: --cfg spawned_scheduler_loom
+        run: cargo test --locked --release -p spawned-concurrency --no-default-features --test reply_slot_loom --test registry_turn_loom --test job_core_loom --test link_fence_loom
 
   # Data races in the runtime and its dependencies. The crates forbid
   # unsafe code, so ThreadSanitizer is the sanitizer that matters here.

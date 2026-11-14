@@ -15,9 +15,9 @@ this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 | `Introspection.tla`, `MCIntrospection.tla/.cfg` | Introspection v1 design model, revision 4 (not implemented, [design](../../docs/design/introspection.md)): one actor whose every activity (`started()`, messages, the status turn, `stopped()`) opens a turn id on an activity word; activities that may suspend forever; panics in `started()`, handlers and `stopped()`, and a caught status-callback panic; the status request with a deadline, callback admission, answer and turn end as separate steps, and the skip of abandoned callbacks; stop, unfenced kill, the runtime drop's swap and D as separate steps, publication; the watchdog's observe, CAS (successful and failed) and record. Each action is one implementation linearization point; ghosts are derived from state changes, never from the fault selector. Twenty named negative controls. 47,968 states (4 messages: 80,482). |
 | `Coordinator.tla`, `MCCoordinator.tla/.cfg` | System shutdown coordinator: ordered stop of admitted roots, panic fallback that signals all remaining roots, records failure and retains runtime ownership until joins; ordered-shutdown invariants, cooperative cleanup liveness and four negative mutations. |
 | `NestedSupervision.tla`, `MCNested.tla/.cfg` | Dynamic subtree ownership and shutdown delivery; parent scope completion waits for descendant completion. Bounded three-node/two-generation model with fair cleanup. |
-| `DeferredReplies.tla`, `MCDeferredReplies*.tla/.cfg` | Rank 11 design model (not implemented), part 1: reply slots, send-time deadlines with shortening, deferral credits shared by a token and its first linked job, the exiting phase with unwind-local drops, a stuck phase (cleanup deadline passed while `stopped()` runs: nothing closed early, death later or never), death, and downstream request cleanup. Thirteen named negative controls. |
-| `DeferredJobs.tla`, `MCDeferredJobs*.tla/.cfg` | Rank 11 design model, part 2: pipe jobs with separate execution, cancellation and notification states; keyed replacement including notified jobs; optional job deadlines; a FIFO mailbox with emit credits and the terminal message last; `ActorId` fencing. `MCDeferredJobsEmits` is the fast configuration with emits. Nine named negative controls. |
-| `Lifecycle.tla`, `MCLifecycle{,Live,Fence,Deep,LiveDeep,WideDeep}.tla/.cfg` | Base actor lifecycle as proposed for v0.8 ([design](../../docs/design/otp-exit-signals.md)): links, monitors, `trap_exit`, exit signals (`Killed`, ignored `Normal`, `NoProc`, parent exits), administrative stops, requests around death, `Exit`/`Down` ordering. Seventeen negative-control faults (17 safety checks, 2 liveness checks): the v0.7 exit-signal behaviours (direct stops ignoring `trap_exit`, kills ending `Kill`, unfenced `unlink`/`demonitor`, real reasons for late registrations, `stopped()` after kills and untrapped signals, late signals ignored during exit), the PR #182/#185 bugs, early exit errors, kill and panic precedence, runtime-drop reasons, early notification, a split death point and a parent exit reaching `exit_received`. Per PR: `MCLifecycle` (7.5M states, fewer reasons, where the safety controls run), `MCLifecycleFence`, `MCLifecycleLive`; weekly: `MCLifecycleWideDeep` (the former 43M-state per-PR instance), `MCLifecycleDeep`, `MCLifecycleLiveDeep`. |
+| `DeferredReplies.tla`, `MCDeferredReplies*.tla/.cfg` | Rank 11 design model (not implemented), part 1: reply slots, send-time deadlines with shortening, deferral credits shared by a token and its first linked job, the exiting phase with exit-pending drops (unwound or dropped while exiting, answered at death with the final reason), a stuck phase (cleanup deadline passed while `stopped()` runs: nothing closed early, death later or never), death, and downstream request cleanup. Fourteen named negative controls. |
+| `DeferredJobs.tla`, `MCDeferredJobs*.tla/.cfg` | Rank 11 design model, part 2: pipe jobs with separate execution, cancellation and notification states; keyed replacement including notified jobs; optional job deadlines; a FIFO mailbox with emit credits and the terminal message last; `ActorId` fencing. `MCDeferredJobsEmits` is the fast configuration with emits; `MCDeferredJobsHeld` the one with delayed emits (`emit_at`) and held results (completion, held notification, scheduled emits and credit ownership as separate steps). Twelve named negative controls; `MCDeferredJobsEmitRace` checks retained emit admission at held-result release (306 states). |
+| `Lifecycle.tla`, `MCLifecycle{,Live,Fence,Deep,LiveDeep,WideDeep}.tla/.cfg` | Base actor lifecycle as proposed for v0.8 ([design](../../docs/design/otp-exit-signals.md)): links, monitors, `trap_exit`, exit signals (`Killed`, ignored `Normal`, `NoProc`, parent exits), administrative stops, requests around death, `Exit`/`Down` ordering. Nineteen negative-control faults (19 safety checks, 2 liveness checks): the v0.7 exit-signal behaviours (direct stops ignoring `trap_exit`, kills ending `Kill`, unfenced `unlink`/`demonitor`, real reasons for late registrations, `stopped()` after kills and untrapped signals, late signals ignored during exit), the PR #182/#185 bugs, early exit errors, kill and panic precedence, runtime-drop reasons, early notification, a split death point, a parent exit reaching `exit_received`, an exit signal past the sender's death point (`NoSignalFence`) and publication before the queued requests were answered (`PublishBeforeDischarge`). Death is two steps, as in `actor_cleanup.rs`: the death point (`Die`/`RuntimeDrop`: signal fence, seal, table closed) and `Discharge` (queued and exit-pending requests answered), with other actors' steps in between; `Publish` waits for `Discharge`. Per PR: `MCLifecycle` (10.0M states, fewer reasons, where the safety controls run), `MCLifecycleFence`, `MCLifecycleLive`; weekly: `MCLifecycleWideDeep` (the former 43M-state per-PR instance); manual pre-release: `MCLifecycleDeep`, `MCLifecycleLiveDeep`. |
 | `Start.tla`, `MCStart{,Names,Cap,Timeout,Continue,Scope,Live,Deep}.tla/.cfg` | Unified start API, 0.9 design (approved after three review rounds) ([design](../../docs/design/unified-start.md), not implemented; TLC-only in `model-map.toml` until trace validation lands with the implementation): `spawn`, `start`, `start_link`, `start_monitor`; placement inheritance; an atomic stage-1 commit with the owner gate; an immutable startup commitment and a waiter; death as D, release, then publication, for the child and the parent; the final reason fixed at D; fallible init with held-signal precedence; the continuation; S8 scope ownership with the polite Shutdown and the scope deadline. 40 negative controls (37 safety, 3 liveness); see [Unified start](#unified-start-09-design). Per PR: `MCStart`, `MCStartNames`, `MCStartCap`, `MCStartTimeout`, `MCStartContinue`, `MCStartScope`, `MCStartLive` (CI leg `start`); weekly: `MCStartDeep`. |
 | `TraceCohorts.tla`, `TraceNested.tla` | Policy and ownership projections of real cohort/nested Rust executions. |
 | `trace_check.py`, `negative_checks.py` | Replay recorded traces; deliberately wrong selections, premature resume/join and broken propagation must be rejected or produce counterexamples. |
@@ -40,10 +40,26 @@ nix develop -c tlc MCSupervision -workers auto   # ad hoc, from verification/tla
 configurations run as parallel `tla-models` legs (`supervision`, `lifecycle`,
 `deferred`, `start`, and `other` for every configuration no leg names), next to
 `tla-traces` (trace validation, negative controls, trace coverage). Weekly and
-on dispatch, `tla-deep` checks each `*Deep.cfg` on its own runner. The
-required check `tla` passes only if all of them passed.
+on dispatch, `tla-deep` checks the explicitly listed bounded deep configurations
+on separate runners, including `MCLifecycleWideDeep`. Full `MCLifecycleDeep`
+and `MCLifecycleLiveDeep` run manually before release, alongside the soak;
+see the [release checklist](../../docs/TESTING.md#release-checklist). Their
+models, bounds and properties are unchanged. `--deep` still selects all deep
+configurations when run locally. The required check `tla` passes only if
+every selected CI job passed; it does not certify the manual release checks.
 
 ## Trace validation
+
+`ReplyTimer.tla`/`MCReplyTimer` is a receiver-local refinement of request
+deadline bookkeeping, without actor trace events. It separates taking the
+shortening mark, reading the deadline and installing the timer, checking
+`NeverEarly`, `NoLostRearm` and `EventuallyExpires`, with bounded timer lag
+at `MaxTime = 4`. `ClearLate` and `ForgetFlag` are negative controls for
+`NoLostRearm`. Loom runs the production slot operations for the corresponding
+races; `request_timer` covers paused runtime clocks and overflowing durations.
+The initial service deadline and relative runtime timer are captured before
+enqueue; their lag is explicit. Paused Tokio clock-domain handling is checked
+by the Rust regression tests, not this model. It does not model Tokio internals.
 
 Model checking explores the configured bounded abstraction; trace validation checks that recorded implementation executions conform to it. Neither proves all Rust executions correct. With the `lifecycle-trace` feature
 (off by default, compiled out otherwise) `run_supervisor` and `run_child`
@@ -53,7 +69,7 @@ runs real actors through the scenarios below and writes each trace as JSON;
 TLC then checks that each trace is a behavior of `Supervision.tla`.
 
 ```bash
-cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace
+cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace --test job_trace --test reply_trace --test lifecycle_trace
 nix run .#check-tla -- --traces-only target/lifecycle-traces --negative-controls   # or --traces DIR to also model-check
 nix develop -c python3 verification/tla/trace_check.py target/lifecycle-traces
 ```
@@ -66,8 +82,11 @@ keeps the generated modules and TLC logs.
 Scenarios: normal start and stop of three children with mixed modes;
 Permanent and Transient panics and restarts; Transient normal exit (no
 restart); Temporary exit; `ChildHandle::shutdown` of running children;
-factory error then success; non-restartable startup failure; restart budget
-exhaustion and disabled retries; shutdown during backoff; startup timeout;
+replacement factory error then success; first-start factory error and
+first-start timeout (both fail the start, S1); a ready child's exit deferred
+during the initial start (`DeferExit`/`Undefer`, S1); non-restartable startup
+failure; restart budget exhaustion and disabled retries; shutdown during
+backoff; replacement startup timeout;
 `Supervisor::shutdown` with a short deadline and a hanging `stopped()`
 (`ShutdownDeadline`, `SupChildTimeout`, `CleanupStuck`); and seeded random
 crashes, normal exits and external shutdowns racing a stop or shutdown.
@@ -137,10 +156,21 @@ in the same PR; the `model-sync` CI job enforces it
 Trace validation says every recorded run is a behavior of the model. Trace
 coverage asks the converse: which parts of the model's reachable behavior do
 the recorded runs never exercise? `trace_coverage.py` reports it per model with
-trace validation (`Supervision`, `Cohorts`, `NestedSupervision`).
+trace validation (`Supervision`, `Cohorts`, `NestedSupervision`, and by
+action keys only `Lifecycle`, `DeferredJobs`, `DeferredReplies`).
+
+**Action-only models.** For `Lifecycle.tla`, `DeferredJobs.tla` and
+`DeferredReplies.tla` the keys are the log-event arms of their trace spec
+(`TraceLifecycle.tla`, `TraceJobs.tla`, `TraceReplies.tla`; each arm is one
+model action or a named group of them, `A|Send`, `A|Fire`, ...): the model
+side is the set of arms, a trace covers the arms its accepted replay takes,
+and no state space is explored for them. `coverage-baseline.json` and the
+`coverage_floor` of `verification/model-map.toml` hold them like the others.
+Model actions without an arm are listed in the map's `[trace.unlogged]` with
+the reason.
 
 ```bash
-cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace
+cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace --test job_trace --test reply_trace --test lifecycle_trace
 nix develop -c python3 verification/tla/trace_coverage.py --traces dedicated=target/lifecycle-traces \
     --model-keys verification/tla/coverage-model.json.gz --baseline verification/tla/coverage-baseline.json
 # every test binary: each finished supervisor dumps its traces
@@ -411,7 +441,7 @@ and `--negative-controls` removes one guard at a time and requires induction
 to fail: for `Supervision` the retry limit, ordered start, join wait, restart
 table, cleanup, unpublish-on-stop, admission gate on `Attempt` and the
 reverse-shutdown wait; for `Cohorts` and `NestedSupervision` the existing
-`Fault` mutations (`Selection`, `Cleanup`, `Retirement`, `Closed`, `InPlaceRetry`, `Join`);
+`Fault` mutations (`Selection`, `Cleanup`, `Retirement`, `Closed`, `InPlaceRetry`, `FirstStartRetry`, `PerChildCharge`, `Join`);
 for `Coordinator` see below.
 
 The type annotations are `\* @type:` comments, ignored by TLC. Apalache also
@@ -439,8 +469,11 @@ existing reason model. A negative control erases Kill and must reject the
 resulting transient restart; the entry point adds no new model transition.
 `queued_drop_panic` checks a queued destructor fault during ordinary stop and
 the resulting transient restart. Erasing its Panic exit must reject the tape.
-`queued_drop_preserves_shutdown` retains a committed Shutdown despite a destructor
-failure; escalating it to Panic must reject transient retirement.
+`queued_drop_shutdown_restarts` keeps the raw Shutdown reason but records the
+destructor failure after the death point as a cleanup failure, which the trace
+projects to the abnormal class (v0.8, otp-exit-signals.md "Phases of an
+exit"): the Transient child restarts. Projecting the raw Shutdown instead must
+reject the restart.
 All library crates continue to forbid unsafe Rust; native synchronization and
 Linux affinity use safe interfaces. No unsafe exemption was introduced.
 
@@ -492,9 +525,41 @@ message is dispatched after stop; each monitor's `Down` is delivered at most
 once and, unless its observer died, exactly once; linked non-trapping peers of
 an abnormal exit stop; and the exit-signal rules of rank 5e. Reintroducing the
 PR #182 bug (`Fault = "Retain182"`) and the PR #185 bug (`"Dispatch185"`) each
-produce a counterexample (`negative_checks.py`). Still to do with the
-implementation: lifecycle-trace events for exit signals, links, monitors and
-requests so real runs replay against it, as supervision traces do.
+produce a counterexample (`negative_checks.py`).
+
+**Lifecycle trace validation.** With `lifecycle-trace`, the runtime records
+one `LifeEvent` per `Lifecycle.tla` action for the actors spawned while
+`lifecycle_trace::record_lifecycle()` is on (both `tasks` and `threads`):
+`Trap`, `Send` (a request from `Ext`, admitted or `NoProc`), `Dispatch` (with
+the mailbox item kind), `Panic`, `Stop`, `Signal` (also a supervisor's
+Shutdown or kill), `Link`/`Unlink`/`Monitor`/`Demonitor`, `Deliver` (a link
+notice or `Down` applied by its receiver), `Hook` (`stopped()` runs or is
+skipped), `Die` (D, final reason), `Drop` (runtime drop) and `Publish`. Each
+is recorded in the critical section of the change it describes: the
+dispatch with the run loop's stop check, the stop with its cancel, the
+admission check with the push, D with the exit-table close. A
+recorded actor's sections take the process-wide trace section first, so the
+log is a linearization. `TraceLifecycle.tla` replays it with no unlogged
+steps; its header lists the mapping (actors `a1`, `a2` in spawn order,
+`start_linked` parents as `LinkParent`, every send a request from `Ext`,
+folded request panics, the late `NoProc` notice of a non-trapping caller,
+and `Hook` "skip" accepted after a kill that arrived before `stopped()`
+began, which the model's `Kill` leaves out). Phase 0 (signals held during
+`started()`; not in `Lifecycle.tla` either: actors start in `run`), managed
+scopes' own stops and actor-to-actor sends are not mapped: they reject. `concurrency/tests/lifecycle_trace.rs` records 14
+scenarios (`lifecycle_*.json`, schema `lifecycle-v1`): kill with a queued
+request answered `Killed` and a later `NoProc`, kill during `stopped()`,
+untrapped and `Normal` signals, trapped exits (also from an actor, then a
+kill), late link/try_link/monitor (`NoProc`), a late link ending a
+non-trapping caller, the unlink and demonitor fences between D and
+publication, a monitor's `Down`, a `start_linked` parent exit to a trapping
+child, a link notice ending a non-trapping peer, runtime drop (`Killed`), and
+one threads-mode run. Controls (`lifecycle_trace_controls`): `stopped()`
+after a kill or after an untrapped signal, `Kill` instead of `Killed`,
+publication before D, a `Normal` signal stopping an actor, a late `Down` or
+link notice with the real reason, a notice after unlink, a `Down` after
+demonitor, a parent exit dispatched as an `Exit`, and a runtime drop ending
+`Normal`: all eleven are rejected. Actor-to-actor messages (`Send`, recorded with their sender) add three controls: a send after the sender's death point, the death notice overtaking the earlier message, a message dispatched as an outside request. `trace_coverage.py` covers this schema by action keys (see [Trace coverage](#trace-coverage)).
 Source: [verification strategy](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/verification-strategy.md#acceptance).
 
 `Coordinator.tla` checks coordinator failure ownership independently of the actor
@@ -530,8 +595,11 @@ turns, a running-linked-job count per request, and downstream actor B.
   open and no other job of that request runs.
 - **Job notifications** hand the token back to a turn; after a job deadline
   the work keeps running.
-- **Exit.** While exiting, stored tokens can still be answered and drops
-  answer `Stopped`. At the cleanup deadline, a still-running `stopped()`
+- **Exit.** While exiting, stored tokens can still be answered. A token
+  dropped while exiting, or unwound by a panicking turn, is *exit pending*
+  (`pendA`): it stays open and death answers it `Stopped` with the final
+  reason (rank 5e, [otp-exit-signals.md](../../docs/design/otp-exit-signals.md#required-changes-to-rank-11-221-design-239-implementation)),
+  unless the caller's deadline or abandonment comes first. At the cleanup deadline, a still-running `stopped()`
   makes A stuck: nothing is closed early, `stopped()` may still reply, and
   callers are bounded by their own deadlines. Only death closes the registry
   and discards the mailbox.
@@ -543,7 +611,10 @@ Invariants:
 - `AtMostOneDischarge`, `NoOrphan`, `NoSuccessAfterDeadline`, `TimelyExpiry`,
   `DeadlineWithinCaller`;
 - `BoundedA` (combined credits) and `BoundedB`;
-- `PanicStopped`, `NoEarlyClose`, `DownstreamOwned`, `CallerConsistent`.
+- `PanicStopped`, `StoppedAtDeath` (a `Stopped` discharge happens only in
+  the death step, where the reason is final; the model has no reasons, so
+  this is how it shows callers get the final one), `NoEarlyClose`,
+  `DownstreamOwned`, `CallerConsistent`.
 
 Liveness is `EveryAcceptedDischarged` and `CallerNeverHangs`, with fairness
 only on the clock and the deadline service.
@@ -571,6 +642,10 @@ exactly the property it targets:
 
 | Model (configuration) | Mutation | Breaks |
 |---|---|---|
+| `Supervision` (`MCSupervision`, a rewrite of `Supervision.tla`: no `Fault` constant) | `FirstStartRetry` (v0.7 retried a failed first start) | `RestartFollowsPolicy` |
+| `Supervision` (`MCSupervision`, rewrite) | `NoDeferral` (v0.7 decided on a ready child's exit during the initial start) | `RestartFollowsPolicy` |
+| `Cohorts` (`MCCohortsAll`) | `FirstStartRetry` | `FirstStartOnce` (in `Safety`) |
+| `Cohorts` (`MCCohortsAll`) | `PerChildCharge` (v0.7 charged the restart budget per rebuilt child, not per round) | `RoundCharged` |
 | `DeferredReplies` | `NoAutoReply` | `NoOrphan` |
 | `DeferredReplies` | `NoAtomicExpiry` (abstract double discharge; the real race needs Loom) | `AtMostOneDischarge` |
 | `DeferredReplies` | `LateSuccess` | `NoSuccessAfterDeadline` |
@@ -584,6 +659,9 @@ exactly the property it targets:
 | `DeferredReplies` | `AttachClosed` | `BoundedA` |
 | `DeferredReplies` | `LeakDownstream` | `DownstreamOwned` |
 | `DeferredReplies` | `EarlyClose` (closes the registry at the cleanup deadline) | `NoEarlyClose` |
+| `DeferredReplies` | `EarlyStopped` (rank 11 before 5e: a token dropped while exiting or unwound answers `Stopped` at once) | `StoppedAtDeath` |
+| `DeferredReplies` | `NoReplyFence` (a stored token's reply is admitted after the death point) | `NoReplyAfterDeath` |
+| `DeferredReplies` | `CallbackBeforeDischarge` (an answer's wake-up runs before the last answer of the death batch) | `WokenAfterDischarge` |
 | `DeferredJobs` | `NoInstanceCheck` | `NoLateResult` |
 | `DeferredJobs` | `NoCancelFence` | `NoStaleAfterCancel` |
 | `DeferredJobs` | `DoubleTerminal` | `AtMostOneTerminal` |
@@ -593,18 +671,82 @@ exactly the property it targets:
 | `DeferredJobs` (`MCDeferredJobsEmits`) | `NoCancelFence` | `NoStaleAfterCancel` |
 | `DeferredJobs` (`MCDeferredJobsEmits`) | `EmitAfterTerminal` | `TerminalLast` |
 | `DeferredJobs` (`MCDeferredJobsEmits`) | `NoEmitCredit` | `EmitCreditsBounded` |
+| `DeferredJobs` (`MCDeferredJobsHeld`) | `EarlyCredit` (a held result returns its credit when the work ends) | `HeldCounted` |
+| `DeferredJobs` (`MCDeferredJobsHeld`) | `HeldDeadlineLost` (the deadline cannot take a held result) | `DeadlineArmedWhileHeld` |
+| `DeferredJobs` (`MCDeferredJobsHeld`) | `ExitKeepsHeld` (owner exit cancels running work only, not held results or scheduled emits) | `ExitCancelsJobs` |
+| `DeferredJobs` | `NoAdmissionFence` (a job admitted after the exit cancelled the job set) | `ExitCancelsJobs` |
 
-Measured 2026-11-10 (TLC 2.19, fede):
+Measured 2026-11-10 (TLC 2.19, fede; the two `MCDeferredReplies` rows on
+2026-11-11, after the exit-pending change):
 
 | Configuration | Distinct states | Generated | Depth | Time |
 |---|---|---|---|---|
-| `MCDeferredReplies` (fast: 2 requests, `BoundA` 2, `BoundB` 1, clock 2; safety and liveness) | 2,932,280 | 16,385,809 | 33 | 56 s, 10 workers |
-| `MCDeferredRepliesDeep` (clock 3; safety) | 8,172,070 | 45,538,582 | 34 | 21 s, 10 workers |
+| `MCDeferredReplies` (fast: 2 requests, `BoundA` 2, `BoundB` 1, clock 2; safety and liveness; death split into D and the answer batch, 2026-11-11) | 4,864,810 | 25,029,343 | 34 | 4 min 22 s, 4 workers (fede shared) |
+| `MCDeferredRepliesDeep` (clock 3; safety) | 11,016,668 | 58,096,711 | 34 | 55 s, 4 workers |
 | `MCDeferredJobs` (fast: 3 jobs, 2 keyed, 2 permits, 2 instances, no emits; safety and liveness) | 229,070 | 487,283 | 17 | 5 s, 8 workers |
-| `MCDeferredJobsEmits` (fast: 2 keyed jobs, 1 instance, 2 emits each, 1 credit; safety and liveness) | 20,422 | 37,220 | 18 | 1 s, 8 workers |
-| `MCDeferredJobsDeep` (3 jobs, 2 instances, 1 emit each; safety) | 5,876,658 | 12,792,039 | 23 | 25 s, 12 workers |
+| `MCDeferredJobsEmits` (fast: 2 keyed jobs, 1 instance, 2 emits each, 1 credit; safety and liveness) | 24,842 | 50,944 | 18 | 1 s, 2 workers |
+| `MCDeferredJobsHeld` (fast: 3 unkeyed jobs, 2 permits, 1 instance, 1 emit or scheduled emit each, 1 credit; safety and liveness) | 1,946,047 | 6,230,609 | 22 | 1 min 30 s, 4 workers (with `ExitCancelsJobs`, 2026-11-11) |
+| `MCDeferredJobsDeep` (3 jobs, 2 instances, 1 emit or scheduled emit each; safety) | 7,980,942 | 19,676,218 | 23 | 82 s, 2 workers |
 
-All 22 named controls find their counterexample, each in a few seconds.
+All 24 named controls find their counterexample, each in a few seconds.
+
+### Job trace validation
+
+With `lifecycle-trace`, for owners a test opts in with
+`lifecycle_trace::watch_deferred(id)`, the job core (`concurrency/src/reply/jobs.rs`) records
+one `DeferredJobs.tla` action per owner instance: `Start` (keyed, with a job
+deadline), `Emit`, `Finish` (whether it enqueued the terminal message),
+`JobDeadline`, `Cancel`, `Exit` and `Dispatch` (kind and fence verdict). Each
+is recorded in the trace section together with its effect (the flag change
+under the job lock, the enqueue, the fence read), so the log is a
+linearization. `concurrency/tests/job_trace.rs` records seven scenarios (plain
+result, a finished keyed job replaced and fenced, emits with one credit,
+handle cancel, job deadline with the work still running, owner exit with a
+running job, a blocking job emitting, and delayed emits: a held result
+released by its last fire in both modes, an emit already due, the job
+deadline taking a held result, a cancel dropping a scheduled emit);
+`trace_check.py` checks them (schema
+`jobs-v1`) against `TraceJobs.tla` with one owner instance and one key. The
+permit bound is not checked (`JobBound = J`): the code returns a job's credit
+just before `Finish`, and rejected admissions are not model actions.
+
+```bash
+cargo test -p spawned-concurrency --features lifecycle-trace --test job_trace
+python3 verification/tla/trace_check.py target/lifecycle-traces
+```
+
+`negative_checks.py` requires twelve edited job traces to be rejected (six
+for delayed emits: a release before the last fire, a terminal while an emit
+is scheduled, a release by a fire that did not take the result, a delayed
+emit after the deadline took the result, a fire without a schedule, a drop
+while the job still accepts), and the first six: the
+replaced job's terminal message delivered, an emit after the terminal
+message, a second emit with its credit in flight, a second terminal message
+after the deadline's, a quiet finish without a cancel, and a dispatch after
+the owner's exit.
+
+### Reply trace validation
+
+The reply transport records `DeferredReplies.tla` actions per owner
+instance: `Send` (slot created), `Dispatch` (its turn starts), `Discharge`
+(the slot's one `OPEN` -> terminal transition, recorded in the trace section
+together with the CAS in `Slot::cas`; a reply counts at `WRITING`), `Exit`
+(after the registry commits the turn's drops) and `Death` (the closes that
+death and mailbox disposal perform are that one model step and are not
+logged). `TraceReplies.tla` takes the turn-internal steps that leave no trace
+silently (a `Defer` that takes a credit, `Store`, `DropInTurn`, a turn end
+that answers nothing, a drop while exiting that makes the slot exit pending,
+the clock); a `Discharge` must be the model action that
+discharges exactly that request with that kind. Linked jobs and the
+downstream actor are not traced (their notifications and job ends are not
+logged). `concurrency/tests/reply_trace.rs` records nine scenarios (reply in
+the turn, stored then answered or dropped from a later non-request turn, an
+unused obligation, `Overloaded` at the bound, deadline expiry by the
+service, the caller giving up, death with a stored token, a panicking turn);
+`negative_checks.py` requires five edited traces to be rejected (`Overloaded`
+below the bound, a reply after death, a second discharge, a drop before the
+turn, and a `Stopped` discharge of the panicking turn's token before its
+`Exit`, the rank 11 behaviour before 5e).
 
 ## Unified start (0.9 design)
 

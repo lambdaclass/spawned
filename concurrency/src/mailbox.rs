@@ -7,19 +7,61 @@ use std::{
     },
 };
 
+/// An owner's sink for the user payloads its framework code drops (refused
+/// or undelivered messages, job outcomes, scheduled emits): each drop is
+/// contained, its first failure recorded. From the start of the owner's
+/// exit until its death point has answered every caller, drops are held
+/// instead ([`hold`](Self::hold), [`release`](Self::release)): no user
+/// destructor runs before the last answer, on whatever thread drops it.
 #[derive(Default)]
-pub(crate) struct DropFailures(Mutex<Option<String>>);
+pub(crate) struct DropFailures {
+    first: Mutex<Option<String>>,
+    held: Mutex<Option<Vec<Box<dyn Send>>>>,
+}
 impl DropFailures {
     pub(crate) fn first(&self) -> Option<String> {
-        self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        self.first.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
-    pub(crate) fn discard<T>(&self, value: T) {
+    /// Record a cleanup failure; the first one is kept.
+    pub(crate) fn record(&self, message: String) {
+        self.first
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_or_insert(message);
+    }
+    /// The owner's exit began: hold every later drop until `release`.
+    pub(crate) fn hold(&self) {
+        self.held
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_or_insert_with(Vec::new);
+    }
+    /// Every caller was answered: drop what was held (contained), and drop
+    /// at once from now on. Idempotent.
+    pub(crate) fn release(&self) {
+        let held = self.held.lock().unwrap_or_else(|p| p.into_inner()).take();
+        for value in held.into_iter().flatten() {
+            self.drop_contained(value);
+        }
+    }
+    pub(crate) fn discard<T: Send + 'static>(&self, value: T) {
+        let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(held) = held.as_mut() {
+            // Moved, not dropped: no user code under the lock.
+            held.push(Box::new(value));
+            return;
+        }
+        drop(held);
+        self.drop_contained(value);
+    }
+    /// Drop at once (contained): the mailbox's own items, destroyed after
+    /// the death point's discharge.
+    pub(crate) fn discard_now<T>(&self, value: T) {
+        self.drop_contained(value);
+    }
+    fn drop_contained<T>(&self, value: T) {
         if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(value))) {
-            let message = crate::error::panic_message(&*payload);
-            self.0
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .get_or_insert(message);
+            self.record(crate::error::panic_message(&*payload));
             dispose_panic(payload);
         }
     }
@@ -37,7 +79,8 @@ pub(crate) fn dispose_panic(payload: Box<dyn std::any::Any + Send>) {
 
 #[path = "mailbox_admission.rs"]
 mod admission;
-use admission::SendGate;
+/// Also the death point's fences (reply and exit-signal admission).
+pub(crate) use admission::{SendGate, SendPermit};
 #[derive(Default)]
 struct Admission {
     gate: SendGate,
@@ -98,17 +141,34 @@ pub(crate) mod tasks {
             &mut self.inner
         }
     }
-    impl<T> Drop for Receiver<T> {
-        fn drop(&mut self) {
+    impl<T> Receiver<T> {
+        /// Close admission and take everything accepted, without dropping
+        /// it: the death point answers queued requests before any payload
+        /// destructor runs ([`discard_all`](Self::discard_all) then).
+        pub(crate) fn drain(&mut self) -> Vec<T> {
             self.inner.close();
+            let mut items = Vec::new();
             // Sends remain synchronous and unbounded. EOF waits only for raw
             // reservations to publish, never for this runtime thread to run work.
             // Suppress Tokio's coop deferral while the owning task is destroyed.
             block_on_drop(spawned_rt::tasks::unconstrained(async {
                 while let Some(value) = self.inner.recv().await {
-                    self.failures.discard(value);
+                    items.push(value);
                 }
             }));
+            items
+        }
+        /// Destroy drained items; a destructor panic is a cleanup failure.
+        pub(crate) fn discard_all(&self, items: Vec<T>) {
+            for item in items {
+                self.failures.discard_now(item);
+            }
+        }
+    }
+    impl<T> Drop for Receiver<T> {
+        fn drop(&mut self) {
+            let items = self.drain();
+            self.discard_all(items);
         }
     }
     pub(crate) fn channel<T>() -> (Sender<T>, Receiver<T>) {
@@ -170,12 +230,28 @@ pub(crate) mod threads {
             &self.inner
         }
     }
+    impl<T> Receiver<T> {
+        /// Close admission (waiting for in-flight sends) and take everything
+        /// accepted, without dropping it (see the async receiver).
+        pub(crate) fn drain(&mut self) -> Vec<T> {
+            self.admission.close();
+            let mut items = Vec::new();
+            while let Ok(value) = self.inner.try_recv() {
+                items.push(value);
+            }
+            items
+        }
+        /// Destroy drained items; a destructor panic is a cleanup failure.
+        pub(crate) fn discard_all(&self, items: Vec<T>) {
+            for item in items {
+                self.admission.failures.discard_now(item);
+            }
+        }
+    }
     impl<T> Drop for Receiver<T> {
         fn drop(&mut self) {
-            self.admission.close();
-            while let Ok(value) = self.inner.try_recv() {
-                self.admission.failures.discard(value);
-            }
+            let items = self.drain();
+            self.discard_all(items);
         }
     }
     pub(crate) fn channel<T>() -> (Sender<T>, Receiver<T>) {
@@ -224,152 +300,186 @@ mod tests {
 
     #[test]
     fn accepted_sends_are_drained_even_when_senders_outlive_receiver() {
-        struct Item {
-            dropped: Arc<AtomicUsize>,
-            accepted: bool,
-        }
-        impl Drop for Item {
-            fn drop(&mut self) {
-                if self.accepted {
-                    self.dropped.fetch_add(1, Ordering::SeqCst);
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::accepted_sends_are_drained_even_when_senders_outlive_receiver"
+            ),
+            move || {
+                struct Item {
+                    dropped: Arc<AtomicUsize>,
+                    accepted: bool,
                 }
-            }
-        }
-        macro_rules! check {
-            ($channel:path) => {
-                for _ in 0..50 {
-                    let (sender, receiver) = $channel();
-                    let accepted = Arc::new(AtomicUsize::new(1));
-                    let dropped = Arc::new(AtomicUsize::new(0));
-                    assert!(sender
-                        .send(Item {
-                            dropped: dropped.clone(),
-                            accepted: true
-                        })
-                        .is_ok());
-                    let gate = Arc::new(std::sync::Barrier::new(3));
-                    let publishers: Vec<_> = (0..2)
-                        .map(|_| {
-                            let sender = sender.clone();
-                            let accepted = accepted.clone();
-                            let dropped = dropped.clone();
-                            let gate = gate.clone();
-                            std::thread::spawn(move || {
-                                gate.wait();
-                                for _ in 0..64 {
-                                    match sender.send(Item {
-                                        dropped: dropped.clone(),
-                                        accepted: true,
-                                    }) {
-                                        Ok(()) => {
-                                            accepted.fetch_add(1, Ordering::SeqCst);
-                                        }
-                                        Err(mut rejected) => {
-                                            rejected.0.accepted = false;
-                                        }
-                                    }
-                                }
-                            })
-                        })
-                        .collect();
-                    gate.wait();
-                    drop(receiver);
-                    for publisher in publishers {
-                        publisher.join().unwrap();
+                impl Drop for Item {
+                    fn drop(&mut self) {
+                        if self.accepted {
+                            self.dropped.fetch_add(1, Ordering::SeqCst);
+                        }
                     }
-                    assert_eq!(
-                        accepted.load(Ordering::SeqCst),
-                        dropped.load(Ordering::SeqCst)
-                    );
-                    assert!(sender.failures().first().is_none());
                 }
-            };
-        }
-        check!(threads::channel);
-        #[cfg(feature = "async")]
-        check!(tasks::channel);
+                macro_rules! check {
+                    ($channel:path) => {
+                        for _ in 0..50 {
+                            let (sender, receiver) = $channel();
+                            let accepted = Arc::new(AtomicUsize::new(1));
+                            let dropped = Arc::new(AtomicUsize::new(0));
+                            assert!(sender
+                                .send(Item {
+                                    dropped: dropped.clone(),
+                                    accepted: true
+                                })
+                                .is_ok());
+                            let gate = Arc::new(std::sync::Barrier::new(3));
+                            let publishers: Vec<_> = (0..2)
+                                .map(|_| {
+                                    let sender = sender.clone();
+                                    let accepted = accepted.clone();
+                                    let dropped = dropped.clone();
+                                    let gate = gate.clone();
+                                    std::thread::spawn(move || {
+                                        gate.wait();
+                                        for _ in 0..64 {
+                                            match sender.send(Item {
+                                                dropped: dropped.clone(),
+                                                accepted: true,
+                                            }) {
+                                                Ok(()) => {
+                                                    accepted.fetch_add(1, Ordering::SeqCst);
+                                                }
+                                                Err(mut rejected) => {
+                                                    rejected.0.accepted = false;
+                                                }
+                                            }
+                                        }
+                                    })
+                                })
+                                .collect();
+                            gate.wait();
+                            drop(receiver);
+                            for publisher in publishers {
+                                publisher.join().unwrap();
+                            }
+                            assert_eq!(
+                                accepted.load(Ordering::SeqCst),
+                                dropped.load(Ordering::SeqCst)
+                            );
+                            assert!(sender.failures().first().is_none());
+                        }
+                    };
+                }
+                check!(threads::channel);
+                #[cfg(feature = "async")]
+                check!(tasks::channel);
+            },
+        );
     }
 
     #[test]
     fn close_waits_for_publication_and_rejects_late_senders() {
-        let (sender, receiver) = threads::channel();
-        let held = sender.admission.enter().unwrap();
-        let (done, completion) = mpsc::channel();
-        let owner = std::thread::spawn(move || {
-            drop(receiver);
-            done.send(()).unwrap();
-        });
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while !sender.admission.gate.is_closed() {
-            assert!(std::time::Instant::now() < deadline, "close did not start");
-            std::thread::yield_now();
-        }
-        assert!(sender.send(1).is_err());
-        assert!(completion.try_recv().is_err());
-        // Model a producer paused between reservation and raw publication.
-        sender.inner.send(2).unwrap();
-        drop(held);
-        completion.recv_timeout(Duration::from_secs(5)).unwrap();
-        owner.join().unwrap();
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::close_waits_for_publication_and_rejects_late_senders"
+            ),
+            move || {
+                let (sender, receiver) = threads::channel();
+                let held = sender.admission.enter().unwrap();
+                let (done, completion) = mpsc::channel();
+                let owner = std::thread::spawn(move || {
+                    drop(receiver);
+                    done.send(()).unwrap();
+                });
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while !sender.admission.gate.is_closed() {
+                    assert!(std::time::Instant::now() < deadline, "close did not start");
+                    std::thread::yield_now();
+                }
+                assert!(sender.send(1).is_err());
+                assert!(completion.try_recv().is_err());
+                // Model a producer paused between reservation and raw publication.
+                sender.inner.send(2).unwrap();
+                drop(held);
+                completion.recv_timeout(Duration::from_secs(5)).unwrap();
+                owner.join().unwrap();
+            },
+        );
     }
 
     #[cfg(feature = "async")]
     #[tokio::test]
     async fn compact_async_senders_close_after_their_last_owner() {
-        let (send, mut receive) = tasks::channel();
-        let other = send.clone();
-        send.send(1).unwrap();
-        drop(send);
-        assert_eq!(receive.recv().await, Some(1));
-        other.send(2).unwrap();
-        drop(other);
-        assert_eq!(receive.recv().await, Some(2));
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(5), receive.recv())
-                .await
-                .unwrap(),
-            None
-        );
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::compact_async_senders_close_after_their_last_owner"
+            ),
+            async move {
+                let (send, mut receive) = tasks::channel();
+                let other = send.clone();
+                send.send(1).unwrap();
+                drop(send);
+                assert_eq!(receive.recv().await, Some(1));
+                other.send(2).unwrap();
+                drop(other);
+                assert_eq!(receive.recv().await, Some(2));
+                assert_eq!(
+                    tokio::time::timeout(Duration::from_secs(5), receive.recv())
+                        .await
+                        .unwrap(),
+                    None
+                );
+            },
+        )
+        .await;
     }
 
     #[cfg(feature = "async")]
     #[tokio::test]
     async fn unpolled_tracked_unwind_drains_before_releasing_lease() {
-        struct State;
-        impl Drop for State {
-            fn drop(&mut self) {
-                panic!("state destructor");
-            }
-        }
-        struct Bomb(Arc<AtomicUsize>);
-        impl Drop for Bomb {
-            fn drop(&mut self) {
-                self.0.fetch_add(1, Ordering::SeqCst);
-                panic!("queued destructor");
-            }
-        }
-        let system = crate::system::ActorSystem::new().unwrap();
-        let group = system.async_group("unpolled-tracked-drop", 1).unwrap();
-        let (scope, lease) = group.reserve(None).unwrap();
-        let (sender, receiver) = tasks::channel();
-        let dropped = Arc::new(AtomicUsize::new(0));
-        for _ in 0..2 {
-            assert!(sender.send(Bomb(dropped.clone())).is_ok());
-        }
-        let payload = (State, receiver);
-        let future = async move {
-            drop(payload);
-        };
-        let tracked = crate::system::Tracked { future, lease };
-        assert!(catch_unwind(AssertUnwindSafe(|| drop(tracked))).is_err());
-        assert_eq!(dropped.load(Ordering::SeqCst), 2);
-        assert_eq!(
-            sender.failures().first().as_deref(),
-            Some("queued destructor")
-        );
-        tokio::time::timeout(Duration::from_secs(5), scope.joined())
-            .await
-            .unwrap();
-        assert!(system.shutdown(Duration::from_secs(5)).await.complete);
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::unpolled_tracked_unwind_drains_before_releasing_lease"
+            ),
+            async move {
+                struct State;
+                impl Drop for State {
+                    fn drop(&mut self) {
+                        panic!("state destructor");
+                    }
+                }
+                struct Bomb(Arc<AtomicUsize>);
+                impl Drop for Bomb {
+                    fn drop(&mut self) {
+                        self.0.fetch_add(1, Ordering::SeqCst);
+                        panic!("queued destructor");
+                    }
+                }
+                let system = crate::system::ActorSystem::new().unwrap();
+                let group = system.async_group("unpolled-tracked-drop", 1).unwrap();
+                let (scope, lease) = group.reserve(None).unwrap();
+                let (sender, receiver) = tasks::channel();
+                let dropped = Arc::new(AtomicUsize::new(0));
+                for _ in 0..2 {
+                    assert!(sender.send(Bomb(dropped.clone())).is_ok());
+                }
+                let payload = (State, receiver);
+                let future = async move {
+                    drop(payload);
+                };
+                let tracked = crate::system::Tracked { future, lease };
+                assert!(catch_unwind(AssertUnwindSafe(|| drop(tracked))).is_err());
+                assert_eq!(dropped.load(Ordering::SeqCst), 2);
+                assert_eq!(
+                    sender.failures().first().as_deref(),
+                    Some("queued destructor")
+                );
+                tokio::time::timeout(Duration::from_secs(5), scope.joined())
+                    .await
+                    .unwrap();
+                assert!(system.shutdown(Duration::from_secs(5)).await.complete);
+            },
+        )
+        .await;
     }
 }

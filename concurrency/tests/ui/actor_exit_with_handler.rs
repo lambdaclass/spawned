@@ -12,7 +12,7 @@ use spawned_concurrency::Exit;
 #[actor]
 impl Counter {
     #[exit_received]
-    #[handler]
+    #[send_handler]
     fn on_exit(&mut self, _exit: Exit, _ctx: &Context<Self>) {}
 }
 fn main() {}

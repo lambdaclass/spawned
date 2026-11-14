@@ -1,4 +1,4 @@
-error: a method can carry only one of #[handler], #[send_handler] and #[request_handler]
+error: a method can carry only one of #[send_handler], #[request_handler] and #[deferred_handler]
   --> tests/ui/actor_two_handler_attributes.rs:14:5
    |
 14 |     #[request_handler]

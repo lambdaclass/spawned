@@ -1,4 +1,5 @@
 //! Full actors, explicit DAG placement and independently scheduled offered load.
+use std::future::IntoFuture as _;
 #[path = "support/args.rs"]
 mod cli;
 #[path = "support/profiling.rs"]
@@ -230,7 +231,12 @@ struct Node {
 }
 impl Actor for Node {}
 impl Handler<Wire> for Node {
-    async fn handle(&mut self, msg: Wire, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Wire,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         if std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").as_deref() == Ok("sharded") {
             assert_eq!(
                 std::thread::current().name().unwrap(),
@@ -238,6 +244,7 @@ impl Handler<Wire> for Node {
             );
         }
         self.children = msg.children;
+        reply.reply(());
     }
 }
 #[inline(never)]
@@ -248,41 +255,55 @@ fn cpu_work(mut value: u64, iterations: u32) -> u64 {
     value
 }
 impl Handler<Route> for Node {
-    async fn handle(&mut self, msg: Route, _: &Context<Self>) -> Ack {
-        let started = Instant::now();
-        if msg.measured {
-            self.meter.started.fetch_add(1, Ordering::Relaxed);
-        }
-        let value = cpu_work(msg.id ^ (self.id as u64), msg.iterations);
-        // Start all fan-out requests before awaiting any; chains have one child.
-        let replies: Vec<_> = self
-            .children
-            .iter()
-            .map(|c| c.request_raw(msg.clone()).unwrap())
-            .collect();
-        let mut nodes = 1;
-        let mut tag = self.id as u64 + 1;
-        let mut checksum = value;
-        for reply in futures::future::join_all(replies).await {
-            let ack = reply.unwrap();
-            assert_eq!(ack.id, msg.id);
-            nodes += ack.nodes;
-            tag += ack.tag;
-            checksum ^= ack.checksum;
-        }
-        let completed = Instant::now();
-        if msg.measured {
-            self.meter.completed.fetch_add(1, Ordering::Relaxed);
-        }
-        Ack {
-            id: msg.id,
-            nodes,
-            tag,
-            checksum,
-            completed,
-            queue_ns: started.duration_since(msg.enqueued).as_nanos() as u64,
-            service_ns: completed.duration_since(started).as_nanos() as u64,
-        }
+    async fn handle(
+        &mut self,
+        msg: Route,
+        reply: spawned_concurrency::PendingReply<'_, Ack>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: Ack = {
+            let started = Instant::now();
+            if msg.measured {
+                self.meter.started.fetch_add(1, Ordering::Relaxed);
+            }
+            let value = cpu_work(msg.id ^ (self.id as u64), msg.iterations);
+            // Start all fan-out requests before awaiting any; chains have one child.
+            let replies: Vec<_> = self
+                .children
+                .iter()
+                .map(|c| {
+                    // A `ReplyReceiver` is `IntoFuture`; `join_all` takes futures.
+                    std::future::IntoFuture::into_future(
+                        c.send_request(msg.clone(), spawned_concurrency::Deadline::Never)
+                            .unwrap(),
+                    )
+                })
+                .collect();
+            let mut nodes = 1;
+            let mut tag = self.id as u64 + 1;
+            let mut checksum = value;
+            for reply in futures::future::join_all(replies).await {
+                let ack = reply.unwrap();
+                assert_eq!(ack.id, msg.id);
+                nodes += ack.nodes;
+                tag += ack.tag;
+                checksum ^= ack.checksum;
+            }
+            let completed = Instant::now();
+            if msg.measured {
+                self.meter.completed.fetch_add(1, Ordering::Relaxed);
+            }
+            Ack {
+                id: msg.id,
+                nodes,
+                tag,
+                checksum,
+                completed,
+                queue_ns: started.duration_since(msg.enqueued).as_nanos() as u64,
+                service_ns: completed.duration_since(started).as_nanos() as u64,
+            }
+        };
+        reply.reply(__reply_value);
     }
 }
 fn layout(c: &Config) -> (Vec<usize>, Vec<usize>) {
@@ -352,7 +373,7 @@ struct Meta {
 }
 struct Pending {
     meta: Meta,
-    reply: tokio::sync::oneshot::Receiver<Ack>,
+    reply: spawned_concurrency::ReplyReceiver<Ack>,
 }
 fn sample(
     p: Meta,
@@ -585,24 +606,31 @@ fn main() {
         runtime
             .block_on(
                 nodes[id]
-                    .request_raw(Wire {
-                        children,
-                        expected_shard: assignment[id],
-                    })
-                    .unwrap(),
+                    .send_request(
+                        Wire {
+                            children,
+                            expected_shard: assignment[id],
+                        },
+                        spawned_concurrency::Deadline::Never,
+                    )
+                    .unwrap()
+                    .into_future(),
             )
             .unwrap();
     }
     for (id, node) in nodes.iter().enumerate() {
         let reply = node
-            .request_raw(Route {
-                id: id as u64,
-                enqueued: Instant::now(),
-                iterations: c.iterations,
-                measured: false,
-            })
+            .send_request(
+                Route {
+                    id: id as u64,
+                    enqueued: Instant::now(),
+                    iterations: c.iterations,
+                    measured: false,
+                },
+                spawned_concurrency::Deadline::Never,
+            )
             .unwrap();
-        runtime.block_on(reply).unwrap();
+        runtime.block_on(reply.into_future()).unwrap();
     }
     let done = Arc::new(AtomicBool::new(false));
     let observed = Arc::new(AtomicU64::new(0));
@@ -659,12 +687,15 @@ fn main() {
                                             let enqueued = Instant::now();
                                             let (target, hot) = c.target(id);
                                             let reply = nodes[target]
-                                                .request_raw(Route {
-                                                    id: id as u64,
-                                                    enqueued,
-                                                    iterations: c.iterations,
-                                                    measured: false,
-                                                })
+                                                .send_request(
+                                                    Route {
+                                                        id: id as u64,
+                                                        enqueued,
+                                                        iterations: c.iterations,
+                                                        measured: false,
+                                                    },
+                                                    spawned_concurrency::Deadline::Never,
+                                                )
                                                 .unwrap();
                                             let ack = reply.await.unwrap();
                                             samples.push(sample(
@@ -774,12 +805,15 @@ fn main() {
                                     meters[target].submitted.fetch_add(1, Ordering::Relaxed);
                                 }
                                 let reply = nodes[target]
-                                    .request_raw(Route {
-                                        id: id as u64,
-                                        enqueued,
-                                        iterations,
-                                        measured: c.mode != "graph",
-                                    })
+                                    .send_request(
+                                        Route {
+                                            id: id as u64,
+                                            enqueued,
+                                            iterations,
+                                            measured: c.mode != "graph",
+                                        },
+                                        spawned_concurrency::Deadline::Never,
+                                    )
                                     .unwrap();
                                 let meta = Meta {
                                     id,
@@ -791,7 +825,8 @@ fn main() {
                                 if let Some(tx) = &tx {
                                     tx.send(Pending { meta, reply }).unwrap();
                                 } else {
-                                    let ack = futures::executor::block_on(reply).unwrap();
+                                    let ack =
+                                        futures::executor::block_on(reply.into_future()).unwrap();
                                     samples.push(sample(
                                         meta,
                                         Some(ack),
@@ -844,11 +879,15 @@ fn main() {
             for (id, node) in nodes.iter().enumerate() {
                 runtime
                     .block_on(
-                        node.request_raw(Wire {
-                            children: Vec::new(),
-                            expected_shard: assignment[id],
-                        })
-                        .unwrap(),
+                        node.send_request(
+                            Wire {
+                                children: Vec::new(),
+                                expected_shard: assignment[id],
+                            },
+                            spawned_concurrency::Deadline::Never,
+                        )
+                        .unwrap()
+                        .into_future(),
                     )
                     .unwrap();
             }

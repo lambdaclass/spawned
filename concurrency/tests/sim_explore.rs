@@ -56,20 +56,39 @@ impl Message for Log {
     type Result = Vec<Access>;
 }
 impl Handler<Get> for Store {
-    async fn handle(&mut self, _: Get, _: &Context<Self>) -> u64 {
-        self.log.push(Access::Read(self.value));
-        self.value
+    async fn handle(
+        &mut self,
+        _: Get,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: u64 = {
+            self.log.push(Access::Read(self.value));
+            self.value
+        };
+        reply.reply(__reply_value);
     }
 }
 impl Handler<Set> for Store {
-    async fn handle(&mut self, Set(value): Set, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        Set(value): Set,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.log.push(Access::Write(value));
         self.value = value;
+        reply.reply(());
     }
 }
 impl Handler<Log> for Store {
-    async fn handle(&mut self, _: Log, _: &Context<Self>) -> Vec<Access> {
-        self.log.clone()
+    async fn handle(
+        &mut self,
+        _: Log,
+        reply: spawned_concurrency::PendingReply<'_, Vec<Access>>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(self.log.clone());
     }
 }
 
@@ -87,12 +106,18 @@ impl Message for Bump {
     type Result = ();
 }
 impl Handler<Bump> for Worker {
-    async fn handle(&mut self, _: Bump, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Bump,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         for _ in 0..self.noise {
             spawned_rt::tasks::yield_now().await;
         }
         let value = self.store.request(Get).await.unwrap();
         self.store.request(Set(value + 1)).await.unwrap();
+        reply.reply(());
     }
 }
 
@@ -116,7 +141,10 @@ async fn bump_all(noises: &[u32]) -> Vec<Access> {
         .collect();
     let replies: Vec<_> = workers
         .iter()
-        .map(|w| w.request_raw(Bump).unwrap())
+        .map(|w| {
+            w.send_request(Bump, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                .unwrap()
+        })
         .collect();
     for reply in replies {
         reply.await.unwrap();
@@ -180,55 +208,46 @@ async fn lost_update_three_workers() {
 // terminal state depends on which of two finishes runs last.
 // ---------------------------------------------------------------------------
 
-struct Crash;
-impl Message for Crash {
-    type Result = ();
-}
 struct Node {
-    crash: bool,
+    fail_start: bool,
 }
-/// As in `tests/sim.rs` with zero yields: `started()` spawns a task that sends
-/// the actor a panicking message.
+/// As in `tests/sim.rs` with zero yields: `started()` panics, so the first
+/// child's first start fails and the initial start aborts (S1 in
+/// docs/design/otp-exit-signals.md).
 impl Actor for Node {
-    async fn started(&mut self, ctx: &Context<Self>) {
-        if self.crash {
-            let actor = ctx.actor_ref();
-            drop(spawned_rt::tasks::spawn(async move {
-                let _ = actor.send(Crash);
-            }));
+    async fn started(&mut self, _: &Context<Self>) {
+        if self.fail_start {
+            panic!("injected first-start failure");
         }
-    }
-}
-impl Handler<Crash> for Node {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("injected crash after readiness");
     }
 }
 
 /// States (`Debug` of the state, generation) of three OneForAll children
-/// whose first child crashes right after `started()`.
+/// whose first child fails its first start.
 async fn initial_failure() -> Vec<(String, u64)> {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("explore-initial", 2).unwrap();
     let mut tree = system
-        .supervisor(SupervisorConfig {
-            strategy: SupervisorStrategy::OneForAll,
-            max_restarts: 3,
-            backoff: Backoff {
-                initial: Duration::from_millis(1),
-                maximum: Duration::from_millis(4),
-                jitter: false,
-                seed: Some(7),
-                ..Backoff::default()
-            },
-            ..SupervisorConfig::default()
-        })
+        .supervisor(
+            SupervisorConfig::default()
+                .strategy(SupervisorStrategy::OneForAll)
+                .max_restarts(3)
+                .backoff(
+                    Backoff::default()
+                        .initial(Duration::from_millis(1))
+                        .maximum(Duration::from_millis(4))
+                        .jitter(false)
+                        .seed(7),
+                ),
+        )
         .unwrap();
     let children: Vec<_> = (0..3)
         .map(|index| {
             tree.add(
                 ChildSpec::new(format!("c{index}"), &group, move |_| async move {
-                    Ok::<_, String>(Node { crash: index == 0 })
+                    Ok::<_, String>(Node {
+                        fail_start: index == 0,
+                    })
                 })
                 .restart(RestartMode::Permanent),
             )

@@ -46,16 +46,29 @@ mod linux {
         type Result = (u64, u64, Instant);
     }
     impl Handler<Work> for Stage {
-        async fn handle(&mut self, m: Work, _: &Context<Self>) -> (u64, u64, Instant) {
-            self.handled += 1;
-            if let Some(next) = &self.next {
-                return next.request_raw(m).unwrap().await.unwrap();
+        async fn handle(
+            &mut self,
+            m: Work,
+            reply: spawned_concurrency::PendingReply<'_, (u64, u64, Instant)>,
+            _: &Context<Self>,
+        ) {
+            let __reply_value: (u64, u64, Instant) = async {
+                self.handled += 1;
+                if let Some(next) = &self.next {
+                    return next
+                        .send_request(m, spawned_concurrency::Deadline::Never)
+                        .unwrap()
+                        .await
+                        .unwrap();
+                }
+                let mut value = m.0;
+                for _ in 0..self.iterations {
+                    value = black_box(value.wrapping_mul(MUL).wrapping_add(1));
+                }
+                (m.0, value, Instant::now())
             }
-            let mut value = m.0;
-            for _ in 0..self.iterations {
-                value = black_box(value.wrapping_mul(MUL).wrapping_add(1));
-            }
-            (m.0, value, Instant::now())
+            .await;
+            reply.reply(__reply_value);
         }
     }
     struct Audit;
@@ -63,17 +76,25 @@ mod linux {
         type Result = (String, u64);
     }
     impl Handler<Audit> for Stage {
-        async fn handle(&mut self, _: Audit, _: &Context<Self>) -> (String, u64) {
-            let status = fs::read_to_string("/proc/thread-self/status").unwrap();
-            (
-                status
-                    .lines()
-                    .find_map(|s| s.strip_prefix("Cpus_allowed_list:"))
-                    .unwrap()
-                    .trim()
-                    .into(),
-                self.handled,
-            )
+        async fn handle(
+            &mut self,
+            _: Audit,
+            reply: spawned_concurrency::PendingReply<'_, (String, u64)>,
+            _: &Context<Self>,
+        ) {
+            let __reply_value: (String, u64) = {
+                let status = fs::read_to_string("/proc/thread-self/status").unwrap();
+                (
+                    status
+                        .lines()
+                        .find_map(|s| s.strip_prefix("Cpus_allowed_list:"))
+                        .unwrap()
+                        .trim()
+                        .into(),
+                    self.handled,
+                )
+            };
+            reply.reply(__reply_value);
         }
     }
     fn pin(mask: &str) {
@@ -199,7 +220,11 @@ mod linux {
                 barrier.wait().await;
                 let mut n = 0u64;
                 while Instant::now() < *finish.get().unwrap() {
-                    let reply = actor.request_raw(Work(n)).unwrap().await.unwrap();
+                    let reply = actor
+                        .send_request(Work(n), spawned_concurrency::Deadline::Never)
+                        .unwrap()
+                        .await
+                        .unwrap();
                     check(reply, n, ab, bb);
                     n += 1;
                 }
@@ -219,7 +244,11 @@ mod linux {
             let mut n = 0;
             while Instant::now() < *cfinish.get().unwrap() {
                 let start = Instant::now();
-                let reply = endpoint.request_raw(Work(n)).unwrap().await.unwrap();
+                let reply = endpoint
+                    .send_request(Work(n), spawned_concurrency::Deadline::Never)
+                    .unwrap()
+                    .await
+                    .unwrap();
                 let end = Instant::now();
                 check(reply, n, ac, bc);
                 latency.push(end.duration_since(start).as_nanos() as u64);

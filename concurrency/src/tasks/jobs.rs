@@ -1,0 +1,1286 @@
+//! `tasks` mode pipe-to-self jobs (docs/design/deferred-replies.md §9):
+//! `ctx.pipe*` and `ctx.pipe_reply*`, their envelopes and `JobCtx`.
+//!
+//! A child module of `tasks::actor`, so it reaches the private envelope and
+//! shared-state types.
+
+use super::{dispatched, Actor, Context, Dispatch, Envelope, Handler};
+use crate::message::Message;
+use crate::reply::deadline::Expirable;
+use crate::reply::jobs::{
+    Contained, JobCredit, JobDeadline, JobError, JobGone, JobHandle, JobOptions, JobOutcome,
+    JobState, PipeError, PipeReplyError, SendScheduled,
+};
+use crate::reply::slot::{Refused, Slot};
+use crate::reply::{now_ticks, PendingReply, ReplyTo};
+use futures::future::{self, FutureExt as _};
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
+use std::pin::pin;
+use std::sync::{Arc, Mutex, Weak};
+
+// ---------------------------------------------------------------------------
+// Envelopes
+// ---------------------------------------------------------------------------
+
+/// Returns one emit credit when the emitted message is dispatched, fenced or
+/// dropped with the mailbox.
+struct EmitCredit(Arc<JobState>);
+impl Drop for EmitCredit {
+    fn drop(&mut self) {
+        self.0.return_emit_credit();
+    }
+}
+
+/// A message emitted by a job; fenced at dispatch when the job is cancelled
+/// or belongs to another instance.
+struct EmitEnvelope<M> {
+    msg: Option<M>,
+    credit: Option<EmitCredit>,
+}
+
+impl<A, M> Envelope<A> for EmitEnvelope<M>
+where
+    A: Actor + Handler<M>,
+    M: Message,
+{
+    #[cfg(feature = "diagnostics")]
+    fn message_type(&self) -> &'static str {
+        std::any::type_name::<M>()
+    }
+    fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
+        let msg = dispatched(&mut self.msg);
+        let credit = dispatched(&mut self.credit);
+        let fenced = credit.0.fenced(ctx.id(), "emit");
+        // The credit returns at dispatch (or here, when fenced).
+        drop(credit);
+        if fenced {
+            ctx.shared.sender.failures().discard(msg);
+            return (Some(Box::pin(async {})), None);
+        }
+        (
+            Some(Box::pin(actor.handle(msg, PendingReply::detached(), ctx))),
+            None,
+        )
+    }
+}
+
+type Done<T, M> = Box<dyn FnOnce(JobOutcome<T>) -> M + Send>;
+
+/// A job's terminal message: `done(outcome)` runs in the owner's turn and the
+/// produced message is dispatched in the same turn.
+struct TerminalEnvelope<T, M> {
+    job: Arc<JobState>,
+    /// `done` and the outcome, taken at dispatch.
+    payload: Option<(Done<T, M>, JobOutcome<T>)>,
+}
+
+impl<A, T, M> Envelope<A> for TerminalEnvelope<T, M>
+where
+    A: Actor + Handler<M>,
+    M: Message,
+    T: Send + 'static,
+{
+    #[cfg(feature = "diagnostics")]
+    fn message_type(&self) -> &'static str {
+        std::any::type_name::<M>()
+    }
+    fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
+        let Self { job, payload } = self;
+        let job: &'a Arc<JobState> = job;
+        let (done, outcome) = dispatched(payload);
+        let kind = if matches!(outcome, Err(JobError::DeadlineExceeded)) {
+            "deadline"
+        } else {
+            "done"
+        };
+        // Everything runs inside the returned future, so a panicking `done`
+        // is a handler panic caught by the run loop (`stopped()`, turn end
+        // and job cancellation still run).
+        let turn = Box::pin(async move {
+            if job.fenced(ctx.id(), kind) {
+                // Fenced: `done` and its captures (a linked token) are
+                // discarded in the turn, through the mailbox drop path.
+                ctx.shared.sender.failures().discard((done, outcome));
+                return;
+            }
+            let msg = done(outcome);
+            actor.handle(msg, PendingReply::detached(), ctx).await
+        });
+        (Some(turn), None)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Job runs
+// ---------------------------------------------------------------------------
+
+/// The parts shared by a job's completion path and its deadline.
+struct Run<A: Actor, T: 'static, M: 'static> {
+    state: Arc<JobState>,
+    ctx: Context<A>,
+    done: Mutex<Option<Done<T, M>>>,
+    /// The job's deadline (the heap holds a `Weak`): owned until the run is
+    /// dropped, so it still fires while a result waits for scheduled emits.
+    deadline: std::sync::OnceLock<Arc<JobDeadline>>,
+    /// What execution held (its credit, or its place in a linked slot),
+    /// handed over when execution ends and released when the terminal
+    /// message is enqueued (or the run is dropped): a result waiting for
+    /// scheduled emits keeps it, so `MAX_OUTSTANDING` still bounds it.
+    hold: Mutex<Option<Box<dyn Send>>>,
+}
+
+fn end_of<T>(outcome: &JobOutcome<T>) -> &'static str {
+    match outcome {
+        Ok(_) => "ok",
+        Err(JobError::Panicked(_)) => "panicked",
+        Err(JobError::DeadlineExceeded) => "deadline",
+    }
+}
+
+impl<A, T, M> Run<A, T, M>
+where
+    A: Actor + Handler<M>,
+    M: Message,
+    T: Send + 'static,
+{
+    /// Take the terminal notification and enqueue `(done, outcome)`.
+    fn notify(&self, outcome: JobOutcome<T>) {
+        let end = end_of(&outcome);
+        let outcome = Contained::new(outcome, self.ctx.shared.sender.failures());
+        let (_, unsent) = self.state.notify(end, || self.enqueue_terminal(outcome));
+        // A refused terminal message (`done` and the outcome) may drop on
+        // the deadline service thread: contained.
+        self.ctx.shared.sender.failures().discard(unsent);
+    }
+
+    fn enqueue_terminal(
+        &self,
+        outcome: Contained<JobOutcome<T>>,
+    ) -> Option<Box<dyn Envelope<A> + Send>> {
+        let done = self.done.lock().unwrap_or_else(|p| p.into_inner()).take()?;
+        let outcome = outcome.into_inner().expect("the terminal owns its outcome");
+        // Execution ended (or is still running past its deadline, and then
+        // keeps its hold): return the credit before the terminal message
+        // can be dispatched, so `done`'s turn can start the next job at the
+        // bound. Only atomics run here (a credit or the slot's job count).
+        let hold = self.hold.lock().unwrap_or_else(|p| p.into_inner()).take();
+        drop(hold);
+        let envelope: Box<dyn Envelope<A> + Send> = Box::new(TerminalEnvelope {
+            job: self.state.clone(),
+            payload: Some((done, outcome)),
+        });
+        self.ctx.shared.sender.send(envelope).err().map(|e| e.0)
+    }
+
+    /// The work's result: notify now, or, while delayed emits are still
+    /// scheduled, hold it for the last of them so the terminal message
+    /// stays last. `hold` is what execution held; the terminal message
+    /// releases it.
+    fn finish(self: &Arc<Self>, outcome: JobOutcome<T>, hold: Box<dyn Send>) {
+        *self.hold.lock().unwrap_or_else(|p| p.into_inner()) = Some(hold);
+        let end = end_of(&outcome);
+        let outcome = std::cell::Cell::new(Some(Contained::new(
+            outcome,
+            self.ctx.shared.sender.failures(),
+        )));
+        let unsent = self.state.finish(
+            end,
+            || self.enqueue_terminal(outcome.take()?),
+            || {
+                let run = self.clone();
+                // Dropped unrun (a deadline or a cancel overtook it) possibly
+                // on the deadline service thread: contained.
+                let outcome = outcome.take();
+                Box::new(move || {
+                    if let Some(outcome) = outcome.and_then(|o| o.into_inner()) {
+                        run.notify(outcome);
+                    }
+                })
+            },
+        );
+        self.ctx.shared.sender.failures().discard(unsent);
+    }
+}
+
+impl<A: Actor, T: 'static, M: 'static> Drop for Run<A, T, M> {
+    /// The last reference may go on the deadline service thread (a deadline
+    /// or a held result firing): `done` and its captures drop contained.
+    fn drop(&mut self) {
+        let done = self
+            .done
+            .get_mut()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        self.ctx.shared.sender.failures().discard(done);
+    }
+}
+
+/// Holds a `pipe_reply` job's place in its slot's `JOBS` count.
+struct LinkedJob<R: Send + 'static>(Arc<Slot<R>>);
+impl<R: Send + 'static> Drop for LinkedJob<R> {
+    fn drop(&mut self) {
+        self.0.job_end();
+    }
+}
+
+/// What a job holds while it executes; released when execution ends.
+enum Hold<R: Send + 'static> {
+    Credit(#[allow(dead_code)] JobCredit),
+    Linked(#[allow(dead_code)] LinkedJob<R>),
+}
+
+/// Native slot (`MAX_NATIVE_JOBS`) held by a blocking job.
+struct NativeSlot<A: Actor> {
+    ctx: Context<A>,
+    /// Where the job will run, reserved with the slot (`None` once used).
+    runner: Option<NativeRunner>,
+}
+impl<A: Actor> Drop for NativeSlot<A> {
+    fn drop(&mut self) {
+        self.ctx.shared.jobs.release_native();
+    }
+}
+
+/// Where a blocking job's body runs, fixed when its native slot is reserved
+/// so that launching it cannot fail (threads mode reserves its thread the
+/// same way).
+struct NativeRunner {
+    /// A managed actor's scope lease, taken when the job is admitted (never
+    /// by an unused permit, which must not keep a dead actor's scope owned)
+    /// and held until the body physically ends: the actor's cleanup is not
+    /// complete (no supervisor replacement, no complete system shutdown)
+    /// while its native work still runs.
+    lease: Option<crate::system::Lease>,
+    pool: RunnerPool,
+}
+
+enum RunnerPool {
+    /// Tokio's blocking pool: the managed actor's group runtime, or the
+    /// current one.
+    #[cfg(not(spawned_sim))]
+    Tokio(spawned_rt::tasks::Handle),
+    /// Outside a Tokio runtime: an owned thread, spawned at reservation and
+    /// parked until the job starts (dropping the sender unused lets it exit).
+    #[cfg(not(spawned_sim))]
+    Thread(std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>>),
+    /// Under the simulator: `spawned_rt::tasks::spawn_blocking`, which runs
+    /// the body inline as one step of a simulated task (determinism D2), so
+    /// its clock reads, emits and result are part of the seeded schedule.
+    #[cfg(spawned_sim)]
+    Sim,
+}
+
+impl NativeRunner {
+    /// Run `task`, then release the lease (after the body, and everything
+    /// it drops, ended).
+    fn run(self, task: impl FnOnce() + Send + 'static) {
+        let NativeRunner { lease, pool } = self;
+        let task = move || {
+            task();
+            drop(lease);
+        };
+        match pool {
+            #[cfg(not(spawned_sim))]
+            RunnerPool::Tokio(handle) => drop(handle.spawn_blocking(task)),
+            // The thread is parked on `recv` until this send (or the
+            // sender's drop); it cannot have exited.
+            #[cfg(not(spawned_sim))]
+            RunnerPool::Thread(start) => {
+                let _ = start.send(Box::new(task));
+            }
+            #[cfg(spawned_sim)]
+            RunnerPool::Sim => drop(spawned_rt::tasks::spawn_blocking(task)),
+        }
+    }
+}
+
+/// Marks the job ended in the owner's job set when execution ends.
+struct Ended<A: Actor>(Context<A>, Arc<JobState>);
+impl<A: Actor> Drop for Ended<A> {
+    fn drop(&mut self) {
+        self.0.shared.jobs.ended(&self.1);
+    }
+}
+
+fn caught<T>(result: std::thread::Result<T>) -> JobOutcome<T> {
+    result.map_err(|panic| {
+        let message = crate::error::panic_message(&*panic);
+        crate::mailbox::dispose_panic(panic);
+        JobError::Panicked(message)
+    })
+}
+
+/// The job's handle on its owner while it runs.
+pub struct JobCtx<A: Actor> {
+    state: Arc<JobState>,
+    ctx: Context<A>,
+}
+
+impl<A: Actor> std::fmt::Debug for JobCtx<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JobCtx")
+            .field("cancelled", &self.state.is_cancelled())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<A: Actor> JobCtx<A> {
+    /// Whether the job was cancelled (handle, key replacement, owner exit,
+    /// or opt-in caller give-up). Cancellation suppresses later results.
+    pub fn is_cancelled(&self) -> bool {
+        self.state.is_cancelled()
+    }
+
+    /// Resolves when the job is cancelled.
+    pub async fn cancelled(&self) {
+        self.state.cancellation().cancelled().await;
+    }
+
+    /// Send `msg` to the owner as one of this job's messages, fenced like the
+    /// terminal one and never after it. Waits while `emit_credits` messages
+    /// are in flight; fails with [`JobGone`] once the job is cancelled or its
+    /// terminal notification was taken.
+    pub async fn emit<M>(&self, msg: M) -> Result<(), JobGone>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        std::future::poll_fn(|cx| self.state.poll_acquire(cx)).await?;
+        self.enqueue(msg)
+    }
+
+    /// [`emit`](Self::emit) delivered at `at` instead of now (OTP's
+    /// `erlang:send_after` to the owner, fenced with the job). Takes an emit
+    /// credit now (waiting while all are in flight) and keeps it until the
+    /// message is dispatched. At `at` the message is enqueued like an
+    /// `emit`: dropped if the job was cancelled or replaced, or its deadline
+    /// passed. The job's terminal message waits for its scheduled emits, so
+    /// it stays last even when the work finishes first. Fails with
+    /// [`JobGone`] at the call once the job is cancelled or its notification
+    /// was taken.
+    ///
+    /// `at` is an instant of the monotonic deadline clock. One already
+    /// reached (or in the past) is an immediate emit: the message is
+    /// enqueued at the call, ahead of later emits, so there is no need to
+    /// branch to [`emit`](Self::emit). An `at` past `JobOptions::deadline`
+    /// is accepted; the deadline fences it (the emit is dropped at `at`).
+    pub async fn emit_at<M>(&self, at: crate::Instant, msg: M) -> Result<(), JobGone>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        std::future::poll_fn(|cx| self.state.poll_acquire(cx)).await?;
+        self.schedule(at, msg)
+    }
+
+    /// Blocking [`emit_at`](Self::emit_at), for `pipe_blocking*` jobs.
+    pub fn emit_at_blocking<M>(&self, at: crate::Instant, msg: M) -> Result<(), JobGone>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        self.state.acquire_blocking()?;
+        self.schedule(at, msg)
+    }
+
+    fn schedule<M>(&self, at: crate::Instant, msg: M) -> Result<(), JobGone>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        let credit = EmitCredit(self.state.clone());
+        let ctx = self.ctx.clone();
+        let send: SendScheduled = Box::new(move || {
+            let envelope: Box<dyn Envelope<A> + Send> = Box::new(EmitEnvelope {
+                msg: Some(msg),
+                credit: Some(credit),
+            });
+            ctx.shared
+                .sender
+                .send(envelope)
+                .map_err(|refused| Box::new(refused.0) as Box<dyn Send>)
+        });
+        JobState::schedule_emit(
+            &self.state,
+            spawned_rt::time::to_ticks(at),
+            send,
+            self.ctx.shared.sender.failures(),
+            |at, item| self.ctx.shared.replies.track(at, item),
+        )
+    }
+
+    /// Blocking [`emit`](Self::emit), for `pipe_blocking*` jobs.
+    pub fn emit_blocking<M>(&self, msg: M) -> Result<(), JobGone>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        self.state.acquire_blocking()?;
+        self.enqueue(msg)
+    }
+
+    fn enqueue<M>(&self, msg: M) -> Result<(), JobGone>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        let credit = EmitCredit(self.state.clone());
+        let msg = Contained::new(msg, self.ctx.shared.sender.failures());
+        self.state
+            .enqueue_emit(|| {
+                let msg = msg.into_inner().expect("the emit owns its message");
+                let envelope: Box<dyn Envelope<A> + Send> = Box::new(EmitEnvelope {
+                    msg: Some(msg),
+                    credit: Some(credit),
+                });
+                self.ctx.shared.sender.send(envelope)
+            })
+            .map_err(|(gone, unsent)| {
+                self.ctx.shared.sender.failures().discard(unsent);
+                gone
+            })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Context API
+// ---------------------------------------------------------------------------
+
+/// A job admission reserved ahead of building the work:
+/// `ctx.reserve_job(opts)` takes the credit (and checks the owner is not
+/// stopping) without consuming anything, so a caller that is refused still
+/// holds what it would have moved into `work` and `done`. Spawning from a
+/// permit cannot fail. Dropping an unused permit returns its credit.
+#[must_use = "an unused permit only holds a credit; spawn the job with it or drop it"]
+pub struct JobPermit<A: Actor> {
+    ctx: Context<A>,
+    opts: JobOptions,
+    credit: JobCredit,
+}
+
+/// [`JobPermit`] for a blocking job: it also holds a native slot
+/// (`MAX_NATIVE_JOBS`). From `ctx.reserve_blocking_job(opts)`.
+#[must_use = "an unused permit only holds a credit and a native slot; spawn the job with it or drop it"]
+pub struct BlockingJobPermit<A: Actor> {
+    ctx: Context<A>,
+    opts: JobOptions,
+    credit: JobCredit,
+    native: NativeSlot<A>,
+}
+
+impl<A: Actor> std::fmt::Debug for JobPermit<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JobPermit").finish_non_exhaustive()
+    }
+}
+
+impl<A: Actor> std::fmt::Debug for BlockingJobPermit<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlockingJobPermit").finish_non_exhaustive()
+    }
+}
+
+impl<A: Actor> JobPermit<A> {
+    /// [`Context::pipe`] with this permit's options and credit; cannot
+    /// fail. If the owner began exiting since the reservation, nothing runs:
+    /// `work` and `done` are dropped and the handle reports the job
+    /// cancelled (as owner exit cancels every job).
+    pub fn pipe<T, M, F, W, D>(self, work: F, done: D) -> JobHandle
+    where
+        A: Handler<M>,
+        M: Message,
+        T: Send + 'static,
+        F: FnOnce(JobCtx<A>) -> W,
+        W: Future<Output = T> + Send + 'static,
+        D: FnOnce(JobOutcome<T>) -> M + Send + 'static,
+    {
+        let JobPermit { ctx, opts, credit } = self;
+        let Some(state) = ctx.start_job(&opts) else {
+            return ctx.refused_job(&opts, (work, done));
+        };
+        let job = JobCtx {
+            state: state.clone(),
+            ctx: ctx.clone(),
+        };
+        let work = work(job);
+        // Admitted after `work` was built (user code): an owner that exited
+        // meanwhile refuses the job, which then never runs.
+        if !ctx.admit_job(&state, &opts) {
+            return ctx.refuse(state, (work, done, credit));
+        }
+        ctx.launch_async::<T, M, (), W>(
+            opts,
+            state,
+            Hold::Credit(credit),
+            work,
+            Box::new(done),
+            None,
+        )
+    }
+}
+
+impl<A: Actor> BlockingJobPermit<A> {
+    /// [`Context::pipe_blocking`] with this permit's options, credit and
+    /// native slot; cannot fail. If the owner began exiting since the
+    /// reservation, nothing runs (see [`JobPermit::pipe`]).
+    pub fn pipe_blocking<T, M, W, D>(self, work: W, done: D) -> JobHandle
+    where
+        A: Handler<M>,
+        M: Message,
+        T: Send + 'static,
+        W: FnOnce(JobCtx<A>) -> T + Send + 'static,
+        D: FnOnce(JobOutcome<T>) -> M + Send + 'static,
+    {
+        let BlockingJobPermit {
+            ctx,
+            opts,
+            credit,
+            mut native,
+        } = self;
+        let Some(state) = ctx.start_job(&opts) else {
+            return ctx.refused_job(&opts, (work, done, native));
+        };
+        if !ctx.admit_native(&state, &opts, &mut native) {
+            return ctx.refuse(state, (work, done, native, credit));
+        }
+        ctx.launch_blocking::<T, M, (), W>(
+            opts,
+            state,
+            Hold::Credit(credit),
+            native,
+            work,
+            Box::new(done),
+        )
+    }
+}
+
+impl<A: Actor> Context<A> {
+    /// The job's state, or `None` once the owner is exiting.
+    fn start_job(&self, opts: &JobOptions) -> Option<Arc<JobState>> {
+        (!self.shared.replies.is_exiting()).then(|| JobState::new(self.id(), opts.emit_credits))
+    }
+
+    /// A permit used after the owner began exiting: nothing runs, the parts
+    /// drop here (outside locks), and the handle reports cancelled.
+    fn refused_job<P>(&self, opts: &JobOptions, parts: P) -> JobHandle {
+        self.refuse(JobState::new(self.id(), opts.emit_credits), parts)
+    }
+
+    /// `state`'s admission was refused: as [`refused_job`](Self::refused_job).
+    fn refuse<P>(&self, state: Arc<JobState>, parts: P) -> JobHandle {
+        drop(parts);
+        state.never_started();
+        JobHandle::new(state)
+    }
+
+    /// Admit `state` into the owner's job set (the model's `Start`), after
+    /// every reversible reservation and before anything that cannot be
+    /// undone: refused once the owner's exit closed admission, in one step
+    /// with that close, so an admitted job is always cancelled (and joined)
+    /// by the owner's exit.
+    fn admit_job(&self, state: &Arc<JobState>, opts: &JobOptions) -> bool {
+        self.shared
+            .jobs
+            .admit(state, opts.key.clone(), opts.deadline.is_some())
+    }
+
+    fn reserve_credit(&self) -> Result<JobCredit, PipeError> {
+        if self.shared.replies.is_exiting() {
+            return Err(PipeError::OwnerStopping);
+        }
+        JobCredit::reserve(&self.shared.replies).ok_or(PipeError::Overloaded)
+    }
+
+    /// Reserve a native slot (`MAX_NATIVE_JOBS`) and where the job will run:
+    /// the blocking pool, or an owned thread spawned now (`SpawnFailed`
+    /// here, never at launch). A failure releases the slot. A managed
+    /// actor's scope lease is taken later, at admission
+    /// ([`admit_native`](Self::admit_native)).
+    fn reserve_native(&self) -> Result<NativeSlot<A>, PipeError> {
+        if !self.shared.jobs.reserve_native() {
+            return Err(PipeError::NativeBudget);
+        }
+        let mut slot = NativeSlot {
+            ctx: self.clone(),
+            runner: None,
+        };
+        #[cfg(not(spawned_sim))]
+        let handle = match &self.shared.managed {
+            Some(scope) => Some(scope.handle.clone()),
+            None => spawned_rt::tasks::Handle::try_current().ok(),
+        };
+        #[cfg(spawned_sim)]
+        let pool = RunnerPool::Sim;
+        #[cfg(not(spawned_sim))]
+        let pool = match handle {
+            Some(handle) => RunnerPool::Tokio(handle),
+            None => {
+                let (start, started) = std::sync::mpsc::channel::<Box<dyn FnOnce() + Send>>();
+                std::thread::Builder::new()
+                    .name("spawned-job".into())
+                    .spawn(move || {
+                        if let Ok(task) = started.recv() {
+                            task();
+                        }
+                    })
+                    .map_err(PipeError::SpawnFailed)?;
+                RunnerPool::Thread(start)
+            }
+        };
+        slot.runner = Some(NativeRunner { lease: None, pool });
+        Ok(slot)
+    }
+
+    /// Admit a blocking job: a managed actor's scope lease (refused once
+    /// its scope is closing, as the owner exits), then
+    /// [`admit_job`](Self::admit_job). The lease goes to the native runner
+    /// and lives until the body ends; refused, it is released here.
+    fn admit_native(
+        &self,
+        state: &Arc<JobState>,
+        opts: &JobOptions,
+        native: &mut NativeSlot<A>,
+    ) -> bool {
+        let lease = match &self.shared.managed {
+            Some(scope) => match scope.job_lease() {
+                Ok(lease) => Some(lease),
+                Err(_) => return false,
+            },
+            None => None,
+        };
+        if !self.admit_job(state, opts) {
+            return false;
+        }
+        if let Some(runner) = &mut native.runner {
+            runner.lease = lease;
+        }
+        true
+    }
+
+    /// Reserve an unlinked job's admission (the owner is running, one
+    /// `MAX_OUTSTANDING` credit) before building `work` and `done`: a
+    /// refusal leaves the caller everything it would have moved into them,
+    /// and spawning from the permit cannot fail.
+    ///
+    /// ```ignore
+    /// let Ok(permit) = ctx.reserve_job(JobOptions::new()) else {
+    ///     return self.report(id, Verdict::Overloaded); // `id` was not moved
+    /// };
+    /// permit.pipe(|_| fetch(object), move |res| Fetched { id, res });
+    /// ```
+    pub fn reserve_job(&self, opts: JobOptions) -> Result<JobPermit<A>, PipeError> {
+        debug_assert!(
+            !opts.cancel_on_caller_gone,
+            "cancel_on_caller_gone applies to pipe_reply* only"
+        );
+        Ok(JobPermit {
+            ctx: self.clone(),
+            credit: self.reserve_credit()?,
+            opts,
+        })
+    }
+
+    /// [`reserve_job`](Self::reserve_job) for a blocking job: also takes a
+    /// native slot (`MAX_NATIVE_JOBS`, `NativeBudget` at the bound).
+    pub fn reserve_blocking_job(
+        &self,
+        opts: JobOptions,
+    ) -> Result<BlockingJobPermit<A>, PipeError> {
+        debug_assert!(
+            !opts.cancel_on_caller_gone,
+            "cancel_on_caller_gone applies to pipe_reply* only"
+        );
+        let credit = self.reserve_credit()?;
+        let native = self.reserve_native()?;
+        Ok(BlockingJobPermit {
+            ctx: self.clone(),
+            opts,
+            credit,
+            native,
+        })
+    }
+
+    fn arm_deadline<T, M>(&self, opts: &JobOptions, run: &Arc<Run<A, T, M>>)
+    where
+        A: Handler<M>,
+        M: Message,
+        T: Send + 'static,
+    {
+        let Some(at) = opts.deadline.map(spawned_rt::time::to_ticks) else {
+            return;
+        };
+        let weak = Arc::downgrade(run);
+        let deadline = Arc::new(JobDeadline {
+            at,
+            state: run.state.clone(),
+            notify: Mutex::new(Some(Box::new(move || {
+                if let Some(run) = weak.upgrade() {
+                    run.notify(Err(JobError::DeadlineExceeded));
+                }
+            }))),
+        });
+        // The run owns it; the heap only refers to it.
+        let _ = run.deadline.set(deadline.clone());
+        if at <= now_ticks() {
+            deadline.expire(at);
+        } else {
+            let item: Weak<dyn Expirable> = Arc::downgrade(&deadline) as Weak<dyn Expirable>;
+            self.shared.replies.track(at, item);
+        }
+    }
+
+    fn launch_async<T, M, R, W>(
+        &self,
+        opts: JobOptions,
+        state: Arc<JobState>,
+        hold: Hold<R>,
+        work: W,
+        done: Done<T, M>,
+        caller_gone: Option<Arc<Slot<R>>>,
+    ) -> JobHandle
+    where
+        A: Handler<M>,
+        M: Message,
+        T: Send + 'static,
+        R: Send + 'static,
+        W: Future<Output = T> + Send + 'static,
+    {
+        let run = Arc::new(Run {
+            state: state.clone(),
+            ctx: self.clone(),
+            done: Mutex::new(Some(done)),
+            deadline: std::sync::OnceLock::new(),
+            hold: Mutex::new(None),
+        });
+        self.arm_deadline(&opts, &run);
+        let ended = Ended(self.clone(), state.clone());
+        let handle = JobHandle::new(state.clone());
+        self.spawn_framework(async move {
+            let _ended = ended;
+            let cancelled = pin!(state.cancellation().cancelled());
+            let gone = pin!(async {
+                match &caller_gone {
+                    Some(slot) => {
+                        std::future::poll_fn(|cx| slot.poll_closed(cx.waker(), &now_ticks)).await
+                    }
+                    None => std::future::pending().await,
+                }
+            });
+            let work = pin!(AssertUnwindSafe(work).catch_unwind());
+            let stop = future::select(cancelled, gone);
+            match future::select(work, stop).await {
+                // Execution ended: its credit (and linked-job count) goes to
+                // the run, which returns it when the terminal message is
+                // enqueued.
+                future::Either::Left((result, _)) => run.finish(caught(result), Box::new(hold)),
+                // Cancelled (or the opt-in caller give-up): the work future is
+                // dropped here, and with it any downstream receiver.
+                future::Either::Right(_) => {
+                    state.cancel();
+                    state.ended_cancelled();
+                }
+            }
+        });
+        handle
+    }
+
+    fn launch_blocking<T, M, R, W>(
+        &self,
+        opts: JobOptions,
+        state: Arc<JobState>,
+        hold: Hold<R>,
+        mut native: NativeSlot<A>,
+        work: W,
+        done: Done<T, M>,
+    ) -> JobHandle
+    where
+        A: Handler<M>,
+        M: Message,
+        T: Send + 'static,
+        R: Send + 'static,
+        W: FnOnce(JobCtx<A>) -> T + Send + 'static,
+    {
+        let run = Arc::new(Run {
+            state: state.clone(),
+            ctx: self.clone(),
+            done: Mutex::new(Some(done)),
+            deadline: std::sync::OnceLock::new(),
+            hold: Mutex::new(None),
+        });
+        self.arm_deadline(&opts, &run);
+        let ended = Ended(self.clone(), state.clone());
+        let job = JobCtx {
+            state: state.clone(),
+            ctx: self.clone(),
+        };
+        let runner = native
+            .runner
+            .take()
+            .expect("a native slot is reserved with its runner");
+        runner.run(move || {
+            let _ended = ended;
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| work(job)));
+            // Execution ended: release the native slot now; the run returns
+            // the credit when the terminal message is enqueued.
+            drop(native);
+            run.finish(caught(result), Box::new(hold));
+        });
+        JobHandle::new(state)
+    }
+
+    /// Run async work as a job owned by this actor instance and deliver
+    /// `done(outcome)` as one message in a later turn (`handle_info`), as
+    /// `Task.async` + `handle_info` would. `work` receives the job's
+    /// [`JobCtx`] (to check cancellation and `emit` fenced messages, bounded
+    /// by `emit_credits`; the terminal message is always last) and returns
+    /// the future to run; `|_| fut` when it needs neither. A panic in the
+    /// future arrives as `Err(JobError::Panicked)`.
+    ///
+    /// `work` itself is a factory that runs **at once, in this turn, on the
+    /// calling thread**: only the future it returns is the job. Code before
+    /// its `async` block runs in the handler, so a panic there is a handler
+    /// panic (the actor's panic boundary, not `JobError::Panicked`), and if
+    /// the owner's exit closes admission meanwhile the job is refused after
+    /// the factory ran (its future is dropped unpolled). Put fallible or slow
+    /// preparation inside the `async` block. (`pipe_blocking` runs its
+    /// closure on the job's thread, under the job's panic boundary.)
+    ///
+    /// Holds one `MAX_OUTSTANDING` credit
+    /// while it executes. Rejects at once at a bound; never waits. On `Err`,
+    /// `work` and `done` are dropped: use [`reserve_job`](Self::reserve_job)
+    /// to keep them.
+    ///
+    /// ```ignore
+    /// ctx.pipe(JobOptions::new().key("fetch"), |_| fetch(url), Fetched)?;
+    /// ```
+    pub fn pipe<T, M, F, W, D>(
+        &self,
+        opts: JobOptions,
+        work: F,
+        done: D,
+    ) -> Result<JobHandle, PipeError>
+    where
+        A: Handler<M>,
+        M: Message,
+        T: Send + 'static,
+        F: FnOnce(JobCtx<A>) -> W,
+        W: Future<Output = T> + Send + 'static,
+        D: FnOnce(JobOutcome<T>) -> M + Send + 'static,
+    {
+        Ok(self.reserve_job(opts)?.pipe(work, done))
+    }
+
+    /// Run blocking `work` on Tokio's blocking pool, under the actor's
+    /// `MAX_NATIVE_JOBS` budget (cancellation stays cooperative: the job
+    /// checks its [`JobCtx`]). `work` gets the [`JobCtx`] to check
+    /// cancellation and `emit_blocking` fenced messages; a panic arrives as
+    /// `JobError::Panicked`. On `Err`, `work` and `done` are dropped: use
+    /// [`reserve_blocking_job`](Self::reserve_blocking_job) to keep them.
+    pub fn pipe_blocking<T, M, W, D>(
+        &self,
+        opts: JobOptions,
+        work: W,
+        done: D,
+    ) -> Result<JobHandle, PipeError>
+    where
+        A: Handler<M>,
+        M: Message,
+        T: Send + 'static,
+        W: FnOnce(JobCtx<A>) -> T + Send + 'static,
+        D: FnOnce(JobOutcome<T>) -> M + Send + 'static,
+    {
+        Ok(self.reserve_blocking_job(opts)?.pipe_blocking(work, done))
+    }
+
+    /// Delegate a deferred reply: run async work as a job linked to
+    /// `token`'s request and deliver `done(outcome, token)` in a later turn.
+    /// `work` receives the [`JobCtx`] as in [`pipe`](Self::pipe). The
+    /// obligation and credit stay in this actor: the token and its first
+    /// linked job share one credit. With
+    /// [`JobOptions::cancel_on_caller_gone`] the job is cancelled when the
+    /// caller leaves or the request's deadline passes (off by default, as
+    /// in OTP). On every error the token comes back.
+    pub fn pipe_reply<R, T, M, F, W, D>(
+        &self,
+        opts: JobOptions,
+        token: ReplyTo<R>,
+        work: F,
+        done: D,
+    ) -> Result<JobHandle, PipeReplyError<R>>
+    where
+        A: Handler<M>,
+        M: Message,
+        R: Send + 'static,
+        T: Send + 'static,
+        F: FnOnce(JobCtx<A>) -> W,
+        W: Future<Output = T> + Send + 'static,
+        D: FnOnce(JobOutcome<T>, ReplyTo<R>) -> M + Send + 'static,
+    {
+        let (state, slot, token) = self.link_reply(&opts, token)?;
+        let watch = opts.cancel_on_caller_gone.then(|| slot.clone());
+        #[cfg(feature = "lifecycle-trace")]
+        let link = (self.id().raw(), Arc::as_ptr(&slot) as u64);
+        let hold = Hold::Linked(LinkedJob(slot));
+        let job = JobCtx {
+            state: state.clone(),
+            ctx: self.clone(),
+        };
+        // User code; a panic here drops the hold, which detaches the
+        // linked job from the slot.
+        let work = work(job);
+        // Reply traces: requests the work makes are this request's
+        // downstream calls.
+        #[cfg(feature = "lifecycle-trace")]
+        let work = {
+            let mut work = Box::pin(work);
+            std::future::poll_fn(move |cx| {
+                crate::lifecycle_trace::in_link(Some(link), || work.as_mut().poll(cx))
+            })
+        };
+        if !self.admit_job(&state, &opts) {
+            // Dropping the hold detaches the linked job from the slot.
+            drop((hold, watch, work));
+            return Err(PipeReplyError::Failed {
+                token,
+                error: PipeError::OwnerStopping,
+            });
+        }
+        #[cfg(feature = "lifecycle-trace")]
+        state.linked(link.1);
+        Ok(self.launch_async(opts, state, hold, work, linked_done(token, done), watch))
+    }
+
+    /// Blocking [`pipe_reply`](Self::pipe_reply) on Tokio's blocking pool,
+    /// under the `MAX_NATIVE_JOBS` budget.
+    pub fn pipe_reply_blocking<R, T, M, W, D>(
+        &self,
+        opts: JobOptions,
+        token: ReplyTo<R>,
+        work: W,
+        done: D,
+    ) -> Result<JobHandle, PipeReplyError<R>>
+    where
+        A: Handler<M>,
+        M: Message,
+        R: Send + 'static,
+        T: Send + 'static,
+        W: FnOnce(JobCtx<A>) -> T + Send + 'static,
+        D: FnOnce(JobOutcome<T>, ReplyTo<R>) -> M + Send + 'static,
+    {
+        let (state, slot, token) = self.link_reply(&opts, token)?;
+        let hold = Hold::Linked(LinkedJob(slot.clone()));
+        let mut native = match self.reserve_native() {
+            Ok(native) => native,
+            // Dropping the hold detaches the linked job from the slot.
+            Err(error) => {
+                drop(hold);
+                return Err(PipeReplyError::Failed { token, error });
+            }
+        };
+        if !self.admit_native(&state, &opts, &mut native) {
+            drop((hold, native));
+            return Err(PipeReplyError::Failed {
+                token,
+                error: PipeError::OwnerStopping,
+            });
+        }
+        if opts.cancel_on_caller_gone {
+            crate::reply::jobs::cancel_when_closed(&slot, &state);
+        }
+        #[cfg(feature = "lifecycle-trace")]
+        let work = {
+            let link = (self.id().raw(), Arc::as_ptr(&slot) as u64);
+            state.linked(link.1);
+            move |job| crate::lifecycle_trace::in_link(Some(link), || work(job))
+        };
+        Ok(self.launch_blocking(opts, state, hold, native, work, linked_done(token, done)))
+    }
+
+    /// Checks shared by the `pipe_reply*` calls: owner, owner exit, and the
+    /// attach CAS on the token's slot (which reserves a credit only when a
+    /// linked job already runs).
+    #[allow(clippy::type_complexity)]
+    fn link_reply<R: Send + 'static>(
+        &self,
+        opts: &JobOptions,
+        token: ReplyTo<R>,
+    ) -> Result<(Arc<JobState>, Arc<Slot<R>>, ReplyTo<R>), PipeReplyError<R>> {
+        if token.owner() != self.id() {
+            return Err(PipeReplyError::WrongOwner(token));
+        }
+        let Some(state) = self.start_job(opts) else {
+            return Err(PipeReplyError::Failed {
+                token,
+                error: PipeError::OwnerStopping,
+            });
+        };
+        let slot = token.slot_arc().clone();
+        let attached = slot.attach(&now_ticks);
+        // The slot refused the job (reply traces: `PipeReply` handing the
+        // token back).
+        #[cfg(feature = "lifecycle-trace")]
+        if attached.is_err() {
+            crate::lifecycle_trace::reply(
+                self.id().raw(),
+                "PipeReply",
+                Arc::as_ptr(&slot) as u64,
+                "refused",
+            );
+        }
+        match attached {
+            Ok(()) => Ok((state, slot, token)),
+            Err(Refused::Closed) => Err(PipeReplyError::Closed(token)),
+            Err(Refused::Overloaded) => Err(PipeReplyError::Failed {
+                token,
+                error: PipeError::Overloaded,
+            }),
+        }
+    }
+}
+
+fn linked_done<R, T, M, D>(token: ReplyTo<R>, done: D) -> Done<T, M>
+where
+    R: Send + 'static,
+    T: Send + 'static,
+    M: Message,
+    D: FnOnce(JobOutcome<T>, ReplyTo<R>) -> M + Send + 'static,
+{
+    Box::new(move |outcome| done(outcome, token))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tasks::ActorStart;
+
+    struct Owner;
+    impl Actor for Owner {}
+    struct Note;
+    impl Message for Note {
+        type Result = ();
+    }
+    impl Handler<Note> for Owner {
+        async fn handle(&mut self, _: Note, _: PendingReply<'_, ()>, _: &Context<Self>) {}
+    }
+
+    #[tokio::test]
+    async fn pipe_reply_retires_the_external_token_hold() {
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::pipe_reply_retires_the_external_token_hold"
+            ),
+            async {
+                let owner = Owner.start();
+                let ctx = owner.context();
+                let registry = ctx.shared.replies.clone();
+                let (mut handle, receiver) =
+                    crate::reply::reply_slot(crate::reply::NEVER_TICKS, Some(&registry), false);
+                let token = PendingReply::new(handle.take(), &registry).defer().unwrap();
+                assert_eq!(registry.external_count(), 1);
+                let (finished, completion) = tokio::sync::oneshot::channel();
+                let observed = registry.clone();
+                ctx.pipe_reply(
+                    JobOptions::new(),
+                    token,
+                    |_| async { 17u32 },
+                    move |outcome, token| {
+                        assert!(matches!(outcome, JobOutcome::Ok(17)));
+                        assert_eq!(observed.external_count(), 1);
+                        token.reply(17u32);
+                        assert_eq!(observed.external_count(), 0);
+                        let _ = finished.send(());
+                        Note
+                    },
+                )
+                .unwrap();
+                completion.await.unwrap();
+                assert_eq!(receiver.await.unwrap(), 17);
+                assert_eq!(registry.external_count(), 0);
+                ctx.stop();
+                owner.join().await;
+            },
+        )
+        .await;
+    }
+
+    struct Bomb;
+    impl Drop for Bomb {
+        fn drop(&mut self) {
+            panic!("refused job payload destructor");
+        }
+    }
+    impl Message for Bomb {
+        type Result = ();
+    }
+    impl Handler<Bomb> for Owner {
+        async fn handle(&mut self, _: Bomb, _: PendingReply<'_, ()>, _: &Context<Self>) {}
+    }
+
+    #[tokio::test]
+    async fn refused_job_payload_panics_are_contained() {
+        let owner = Owner.start();
+        let ctx = owner.context();
+        let failures = ctx.shared.sender.failures();
+        for finish in [false, true] {
+            let state = JobState::new(owner.id(), 1);
+            state.cancel();
+            let run = Arc::new(Run::<Owner, Bomb, Note> {
+                state,
+                ctx: ctx.clone(),
+                done: Mutex::new(Some(Box::new(|_| Note))),
+                deadline: std::sync::OnceLock::new(),
+                hold: Mutex::new(None),
+            });
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                if finish {
+                    run.finish(Ok(Bomb), Box::new(()));
+                } else {
+                    run.notify(Ok(Bomb));
+                }
+            }));
+            assert!(result.is_ok(), "refused outcome escaped, finish={finish}");
+        }
+        let state = JobState::new(owner.id(), 1);
+        state.acquire_blocking().unwrap();
+        state.cancel();
+        let job = JobCtx {
+            state: state.clone(),
+            ctx: ctx.clone(),
+        };
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| job.enqueue(Bomb)));
+        assert!(matches!(result, Ok(Err(JobGone))), "refused emit escaped");
+        assert_eq!(state.emit_credits(), 1);
+        assert_eq!(
+            failures.first().as_deref(),
+            Some("refused job payload destructor")
+        );
+        ctx.stop();
+        owner.join().await;
+    }
+
+    #[tokio::test]
+    async fn held_job_result_panics_do_not_interrupt_cancellation() {
+        for action in ["cancel", "deadline", "replace", "owner_exit"] {
+            let owner = Owner.start();
+            let ctx = owner.context();
+            let failures = ctx.shared.sender.failures();
+            let set = crate::reply::jobs::JobSet::new(owner.id(), 1);
+            let state = JobState::new(owner.id(), 1);
+            assert!(set.admit(&state, Some("held".into()), false));
+            state.acquire_blocking().unwrap();
+            let credit = EmitCredit(state.clone());
+            state
+                .schedule_emit(
+                    u64::MAX - 1,
+                    Box::new(move || {
+                        drop(credit);
+                        Ok(())
+                    }),
+                    failures.clone(),
+                    |_, _| {},
+                )
+                .unwrap();
+            let run = Arc::new(Run::<Owner, Bomb, Note> {
+                state: state.clone(),
+                ctx: ctx.clone(),
+                done: Mutex::new(Some(Box::new(|_| Note))),
+                deadline: std::sync::OnceLock::new(),
+                hold: Mutex::new(None),
+            });
+            run.finish(Ok(Bomb), Box::new(()));
+            set.ended(&state);
+            assert!(
+                failures.first().is_none(),
+                "a scheduled emit holds the result"
+            );
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| match action {
+                "cancel" => state.cancel(),
+                "deadline" => {
+                    let _ = state.notify("deadline", || None::<()>);
+                }
+                "replace" => {
+                    let replacement = JobState::new(owner.id(), 1);
+                    assert!(set.admit(&replacement, Some("held".into()), false));
+                    set.ended(&replacement);
+                }
+                "owner_exit" => {
+                    failures.hold();
+                    set.cancel_all();
+                    set.dispose_cancelled();
+                    assert!(failures.first().is_none(), "discharge holds user payloads");
+                    failures.release();
+                }
+                _ => unreachable!(),
+            }));
+            assert!(result.is_ok(), "held result escaped during {action}");
+            assert_eq!(
+                failures.first().as_deref(),
+                Some("refused job payload destructor")
+            );
+            // Dispose the scheduled emit and its credit even after the
+            // deadline displaced the held terminal.
+            state.cancel();
+            assert_eq!(state.emit_credits(), 1);
+            ctx.stop();
+            owner.join().await;
+        }
+    }
+
+    /// Review P1 (Codex 13): an emit refused after its credit was taken
+    /// (the job was cancelled in between) returns that credit once, through
+    /// its guard. It used to be returned by the refusal and again by the
+    /// guard, so the job ended with more credits than it was given (and
+    /// `u16::MAX` credits overflowed).
+    #[tokio::test]
+    async fn a_refused_emit_returns_its_credit_once() {
+        crate::test_wait::within(
+            concat!(module_path!(), "::a_refused_emit_returns_its_credit_once"),
+            async move {
+                let owner = Owner.start();
+                for credits in [1, u16::MAX] {
+                    let state = JobState::new(owner.id(), credits);
+                    let job = JobCtx {
+                        state: state.clone(),
+                        ctx: owner.context(),
+                    };
+                    state.acquire_blocking().unwrap();
+                    state.cancel();
+                    assert_eq!(job.enqueue(Note), Err(JobGone));
+                    assert_eq!(state.emit_credits(), credits, "credit returned twice");
+                }
+                owner.context().stop();
+                owner.join().await;
+            },
+        )
+        .await;
+    }
+
+    /// `cancel_on_caller_gone` applies to reply jobs only: a plain job has no
+    /// caller, so setting it there is a bug, caught in debug builds.
+    #[cfg(debug_assertions)]
+    #[tokio::test]
+    async fn cancel_on_caller_gone_on_a_plain_job_is_a_bug() {
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::cancel_on_caller_gone_on_a_plain_job_is_a_bug"
+            ),
+            async move {
+                let owner = Owner.start();
+                let ctx = owner.context();
+                let refused = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    ctx.reserve_blocking_job(JobOptions::new().cancel_on_caller_gone())
+                        .map(drop)
+                }));
+                assert!(refused.is_err(), "the option was accepted on a plain job");
+                let plain = ctx.reserve_blocking_job(JobOptions::new()).map(drop);
+                assert!(plain.is_ok());
+                ctx.stop();
+                owner.join().await;
+            },
+        )
+        .await;
+    }
+}

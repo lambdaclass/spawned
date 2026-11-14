@@ -94,7 +94,14 @@ fn main() {
             }
         }
         impl Handler<Noop> for PanicOnStart {
-            async fn handle(&mut self, _msg: Noop, _ctx: &Context<Self>) {}
+            async fn handle(
+                &mut self,
+                _msg: Noop,
+                reply: spawned_concurrency::PendingReply<'_, ()>,
+                _ctx: &Context<Self>,
+            ) {
+                reply.reply(());
+            }
         }
         let worker3 = PanicOnStart.start();
         let reason = worker3.wait_exit().await;
@@ -170,23 +177,40 @@ fn main() {
         }
         impl Actor for Observer {}
         impl Handler<StartMonitor> for Observer {
-            async fn handle(&mut self, msg: StartMonitor, ctx: &Context<Self>) -> MonitorRef {
-                ctx.monitor(&msg.0)
+            async fn handle(
+                &mut self,
+                msg: StartMonitor,
+                reply: spawned_concurrency::PendingReply<'_, MonitorRef>,
+                ctx: &Context<Self>,
+            ) {
+                reply.reply(ctx.monitor(&msg.0));
             }
         }
         impl Handler<StopMonitor> for Observer {
-            async fn handle(&mut self, msg: StopMonitor, ctx: &Context<Self>) {
+            async fn handle(
+                &mut self,
+                msg: StopMonitor,
+                reply: spawned_concurrency::PendingReply<'_, ()>,
+                ctx: &Context<Self>,
+            ) {
                 ctx.demonitor(msg.0);
+                reply.reply(());
             }
         }
         impl Handler<Down> for Observer {
-            async fn handle(&mut self, msg: Down, _ctx: &Context<Self>) {
+            async fn handle(
+                &mut self,
+                msg: Down,
+                reply: spawned_concurrency::PendingReply<'_, ()>,
+                _ctx: &Context<Self>,
+            ) {
                 tracing::info!(
                     "[observer] received Down for {} ({})",
                     msg.monitor_ref,
                     msg.reason
                 );
                 self.log.lock().unwrap().push(msg);
+                reply.reply(());
             }
         }
 
@@ -259,8 +283,14 @@ fn main() {
             }
         }
         impl Handler<LinkChild> for Supervisor {
-            async fn handle(&mut self, msg: LinkChild, ctx: &Context<Self>) {
+            async fn handle(
+                &mut self,
+                msg: LinkChild,
+                reply: spawned_concurrency::PendingReply<'_, ()>,
+                ctx: &Context<Self>,
+            ) {
                 ctx.link(&msg.0);
+                reply.reply(());
             }
         }
 

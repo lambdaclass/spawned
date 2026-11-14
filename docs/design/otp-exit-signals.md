@@ -6,8 +6,12 @@ maintainer settled every open question (see [Decisions](#decisions)).
 
 - Covers ROADMAP rank 5e (exit signals), the startup part of rank 5f, rank 5g
   (runtime-dropped actors) and the supervisor `start()` ordering found by the
-  quality pass (#223). Counting the restart budget per recovery round (the
-  other half of 5f) is a separate change.
+  quality pass (#223). The other half of 5f, counting the restart budget per
+  recovery round, shipped in the same 0.8 stack: a OneForAll/RestForOne
+  round takes one grant when the coordinator selects it (OTP's
+  `add_restart` once per restart action), its rebuilds take none, and a
+  failed replacement requests a new round that is charged again (semantics
+  V5).
 - Target: v0.8. Changes L3, L4, L6, L7, X1-X7, V3, V7, V9 and §11 of the
   [semantics contract](semantics.md), and refines the death boundary of
   [deferred-replies.md §5](deferred-replies.md#5-owner-lifecycle) (rank 11,
@@ -33,7 +37,7 @@ maintainer settled every open question (see [Decisions](#decisions)).
 | E3 | a trapping gen_server that gets `'EXIT'` from its parent runs `terminate(Reason)` | supervisor shutdown cancels a trapping child directly; a `start_linked` parent's exit reaches `exit_received` | a signal from the actor's parent is queued and, when dispatched, runs normal termination; it never reaches `exit_received` |
 | E4 | `link`/`monitor` on a process that no longer exists give `noproc` | the target's real exit reason | `NoProc` after D |
 | E5 | exit reasons are any term | closed four-variant enum | `#[non_exhaustive]`, adds `Killed` and `NoProc` |
-| E6 | `unlink`/`demonitor` stop every later effect of the edge | a notice already taken for delivery still arrives | fenced at the receiver; only a message already queued stays |
+| E6 | `unlink`/`demonitor` stop every later effect of the edge (`demonitor(Ref, [flush])` also removes a queued `'DOWN'`) | a notice already taken for delivery still arrives | fenced at the receiver; an `Exit` already queued stays, a queued `Down` is flushed |
 | E7 | signals between a pair of processes keep their order | death notices follow earlier messages | unchanged for death notices; direct signals are per-sender FIFO with messages |
 | S1 | `start_link` aborts on any child start error; exits of started children wait until `init` returns | Permanent/Transient children retry a failed first start; a ready child's exit during startup is handled at once | any first-start failure aborts; ready children's exits are processed after the initial start completes |
 | S2 | `start_link` returns its error after the failed child exited and started children were terminated | `start()` can return `Err` before the failed child is `Failed` | `start()` returns `Err` after rollback (or its deadlines) |
@@ -510,8 +514,13 @@ signal in flight").
   pending, removes it, and enqueues the `Exit`/`Down` (or, for a
   non-trapping receiver, requests its exit) **inside that critical section**.
 - `unlink` and `demonitor` remove the record under the same lock, live or
-  pending. After they return nothing of that edge takes effect; a message
+  pending. After they return nothing of that edge takes effect; an `Exit`
   already queued stays.
+- **Flush (0.8).** A monitor's record outlives its delivery: delivery marks
+  it *queued*, and the `Down`'s dispatch takes it (a private envelope, so no
+  user-sent `Down` is affected). `demonitor` removes a queued record too, so
+  the dispatch then skips the `Down`, as `demonitor(Ref, [flush])`. Ordinary
+  messages pay nothing; a `Down` pays one table lock at dispatch.
 - A late `monitor` or late `link` leaves a pending record for its `NoProc`
   notice, so `demonitor` or `unlink` cancels it, as OTP keeps the caller's
   link record while the `noproc` response is pending.
@@ -764,7 +773,7 @@ uses `stop_with_reason`, `Kill`, `is_abnormal`, `exit_reason()` or
 |---|---|---|
 | E1 Killed | none | none |
 | E2 exit signals | none, because `Context::stop` stays a self-exit. Two sites call `stop()` on a `Context` clone from outside the handler: [`rlpx/connection/server.rs:1162`](https://github.com/lambdaclass/ethrex/blob/0dd4c105f65d544b0fb5e92d8634a1699127f826/crates/networking/p2p/rlpx/connection/server.rs#L1162) (a stream listener stopping its own actor) and the test [`shutdown_order_tests.rs:197`](https://github.com/lambdaclass/ethrex/blob/0dd4c105f65d544b0fb5e92d8634a1699127f826/test/tests/p2p/shutdown_order_tests.rs#L197) (`table.actor_ref().context().stop()` on a mock, then `join`) | none: [`http_server.rs:87`](https://github.com/lambdaclass/ethlambda/blob/6a12bc753ae18c9d63f3dbf930edc700c4c4704c/bin/ethlambda/src/http_server.rs#L87) stops its own actor from a helper so the Permanent supervisor restarts it |
-| E3 parent exit | none (no trapping actors; supervised and system-owned actors stop as today) | none |
+| E3 parent exit | **behaviour change**: no actor traps exits, so a supervised or system-owned actor stopped by supervisor or system shutdown now ends `Shutdown` **without `stopped()`** (decision 2, as OTP skips `terminate` for a non-trapping gen_server); an actor that needs `stopped()` for cleanup on shutdown must call `ctx.trap_exit(true)` in `started()`. The two ethrex actors with a `stopped()` ([`rlpx/connection/server.rs:624`](https://github.com/lambdaclass/ethrex/blob/0dd4c105f65d544b0fb5e92d8634a1699127f826/crates/networking/p2p/rlpx/connection/server.rs#L624), `tooling/monitor/src/app.rs:126`) are started with `.start()` (no parent) and are unaffected | none (no actor defines `stopped()`) |
 | E4 NoProc, E6 fences | none | none |
 | E5 non_exhaustive | no break ([`discovery/supervised.rs:261`](https://github.com/lambdaclass/ethrex/blob/0dd4c105f65d544b0fb5e92d8634a1699127f826/crates/networking/p2p/discovery/supervised.rs#L261) uses `matches!`); `shutdown.rs:170` logs with `Display` | no break ([`http_server.rs:242`](https://github.com/lambdaclass/ethlambda/blob/6a12bc753ae18c9d63f3dbf930edc700c4c4704c/bin/ethlambda/src/http_server.rs#L242)) |
 | S1 startup aborts | **behaviour change**: the Transient discovery child's factory [`DiscoveryServer::build`](https://github.com/lambdaclass/ethrex/blob/0dd4c105f65d544b0fb5e92d8634a1699127f826/crates/networking/p2p/discovery/supervised.rs#L145) can fail at boot (a UDP send error pinging a bootnode); v0.7 retries it, v0.8 fails `start()` and `init_network` panics on `.expect("Network starts")`. Fix: make the bootnode ping best-effort | none: the HTTP child's factory is infallible; a bind failure happens after readiness and is a normal restart |

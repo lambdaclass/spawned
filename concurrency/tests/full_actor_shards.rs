@@ -36,11 +36,18 @@ impl Message for Thread {
     type Result = String;
 }
 impl Handler<Thread> for Worker {
-    async fn handle(&mut self, _: Thread, _: &Context<Self>) -> String {
-        std::thread::current()
-            .name()
-            .unwrap_or("unnamed")
-            .to_owned()
+    async fn handle(
+        &mut self,
+        _: Thread,
+        reply: spawned_concurrency::PendingReply<'_, String>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(
+            std::thread::current()
+                .name()
+                .unwrap_or("unnamed")
+                .to_owned(),
+        );
     }
 }
 struct Hold {
@@ -51,10 +58,18 @@ impl Message for Hold {
     type Result = u64;
 }
 impl Handler<Hold> for Worker {
-    async fn handle(&mut self, msg: Hold, _: &Context<Self>) -> u64 {
-        let _ = msg.started.send(());
-        msg.release.await.unwrap();
-        42
+    async fn handle(
+        &mut self,
+        msg: Hold,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: u64 = {
+            let _ = msg.started.send(());
+            msg.release.await.unwrap();
+            42
+        };
+        reply.reply(__reply_value);
     }
 }
 struct Nested(std::net::SocketAddr);
@@ -62,24 +77,32 @@ impl Message for Nested {
     type Result = u64;
 }
 impl Handler<Nested> for Worker {
-    async fn handle(&mut self, msg: Nested, _: &Context<Self>) -> u64 {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let child = Worker(Default::default()).start();
-        let _ = child.request(Thread).await.unwrap();
-        child.child_handle().stop();
-        within!(child.join()).await;
-        let helper = tokio::spawn(async {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-            42u64
-        });
-        let mut socket = tokio::net::TcpStream::connect(msg.0).await.unwrap();
-        socket
-            .write_all(&helper.await.unwrap().to_le_bytes())
-            .await
-            .unwrap();
-        let mut reply = [0; 8];
-        socket.read_exact(&mut reply).await.unwrap();
-        u64::from_le_bytes(reply)
+    async fn handle(
+        &mut self,
+        msg: Nested,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: u64 = {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let child = Worker(Default::default()).start();
+            let _ = child.request(Thread).await.unwrap();
+            child.child_handle().stop();
+            within!(child.join()).await;
+            let helper = tokio::spawn(async {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                42u64
+            });
+            let mut socket = tokio::net::TcpStream::connect(msg.0).await.unwrap();
+            socket
+                .write_all(&helper.await.unwrap().to_le_bytes())
+                .await
+                .unwrap();
+            let mut reply = [0; 8];
+            socket.read_exact(&mut reply).await.unwrap();
+            u64::from_le_bytes(reply)
+        };
+        reply.reply(__reply_value);
     }
 }
 fn runtime() -> tokio::runtime::Runtime {
@@ -131,13 +154,18 @@ fn stop_finishes_in_flight_handler_and_rejects_queued_work() {
         let (started, rx) = tokio::sync::oneshot::channel();
         let (release, gate) = tokio::sync::oneshot::channel();
         let reply = actor
-            .request_raw(Hold {
-                started,
-                release: gate,
-            })
+            .send_request(
+                Hold {
+                    started,
+                    release: gate,
+                },
+                spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+            )
             .unwrap();
         tokio::time::timeout(LIMIT, rx).await.unwrap().unwrap();
-        let queued = actor.request_raw(Thread).unwrap();
+        let queued = actor
+            .send_request(Thread, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+            .unwrap();
         actor.child_handle().stop();
         assert!(actor.exit_reason().is_none());
         release.send(()).unwrap();
@@ -185,10 +213,13 @@ fn suspended_actor_does_not_block_another_actor_on_its_shard() {
         let (started, rx) = tokio::sync::oneshot::channel();
         let (release, gate) = tokio::sync::oneshot::channel();
         let held = actors[a]
-            .request_raw(Hold {
-                started,
-                release: gate,
-            })
+            .send_request(
+                Hold {
+                    started,
+                    release: gate,
+                },
+                spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+            )
             .unwrap();
         tokio::time::timeout(LIMIT, rx).await.unwrap().unwrap();
         assert_eq!(
@@ -242,9 +273,15 @@ impl Message for Freeze {
     type Result = ();
 }
 impl Handler<Freeze> for Worker {
-    async fn handle(&mut self, msg: Freeze, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Freeze,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         let _ = msg.started.send(());
         msg.release.recv_timeout(LIMIT).unwrap();
+        reply.reply(());
     }
 }
 #[test]
@@ -276,17 +313,19 @@ fn blocking_handler_stalls_its_shard_while_another_shard_progresses() {
         let (started, rx) = tokio::sync::oneshot::channel();
         let (release, gate) = std::sync::mpsc::channel();
         let frozen = actors[a]
-            .request_raw(Freeze {
-                started,
-                release: gate,
-            })
+            .send_request(
+                Freeze {
+                    started,
+                    release: gate,
+                },
+                spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+            )
             .unwrap();
         tokio::time::timeout(LIMIT, rx).await.unwrap().unwrap();
-        let mut queued = actors[b].request_raw(Thread).unwrap();
-        assert!(matches!(
-            queued.try_recv(),
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-        ));
+        let mut queued = actors[b]
+            .send_request(Thread, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+            .unwrap();
+        assert!(queued.try_recv().is_none());
         if let Some(other) = (0..actors.len()).find(|&id| names[id] != names[a]) {
             assert_eq!(
                 actors[other]
@@ -318,9 +357,17 @@ impl Message for Tick {
     type Result = u64;
 }
 impl Handler<Tick> for Worker {
-    async fn handle(&mut self, _: Tick, _: &Context<Self>) -> u64 {
-        tokio::time::sleep(Duration::from_millis(1)).await;
-        42
+    async fn handle(
+        &mut self,
+        _: Tick,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: u64 = {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            42
+        };
+        reply.reply(__reply_value);
     }
 }
 struct SpawnBlockingChild;
@@ -331,9 +378,13 @@ impl Handler<SpawnBlockingChild> for Worker {
     async fn handle(
         &mut self,
         _: SpawnBlockingChild,
+        reply: spawned_concurrency::PendingReply<'_, spawned_concurrency::tasks::ActorRef<Worker>>,
         _: &Context<Self>,
-    ) -> spawned_concurrency::tasks::ActorRef<Worker> {
-        Worker(Default::default()).start_with_backend(spawned_concurrency::tasks::Backend::Blocking)
+    ) {
+        reply.reply(
+            Worker(Default::default())
+                .start_with_backend(spawned_concurrency::tasks::Backend::Blocking),
+        );
     }
 }
 struct Helper(tokio::sync::oneshot::Receiver<()>);
@@ -341,12 +392,17 @@ impl Message for Helper {
     type Result = tokio::task::JoinHandle<u64>;
 }
 impl Handler<Helper> for Worker {
-    async fn handle(&mut self, msg: Helper, _: &Context<Self>) -> tokio::task::JoinHandle<u64> {
-        tokio::spawn(async move {
+    async fn handle(
+        &mut self,
+        msg: Helper,
+        reply: spawned_concurrency::PendingReply<'_, tokio::task::JoinHandle<u64>>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(tokio::spawn(async move {
             msg.0.await.unwrap();
             tokio::time::sleep(Duration::from_millis(1)).await;
             42
-        })
+        }));
     }
 }
 #[test]
@@ -385,13 +441,25 @@ impl Message for InstallMonitor {
     type Result = ();
 }
 impl Handler<InstallMonitor> for Worker {
-    async fn handle(&mut self, msg: InstallMonitor, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: InstallMonitor,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         msg.observer.monitor(&msg.target);
+        reply.reply(());
     }
 }
 impl Handler<spawned_concurrency::Down> for Worker {
-    async fn handle(&mut self, _: spawned_concurrency::Down, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: spawned_concurrency::Down,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.0.lock().unwrap().push("down");
+        reply.reply(());
     }
 }
 struct Events;
@@ -399,8 +467,13 @@ impl Message for Events {
     type Result = Vec<&'static str>;
 }
 impl Handler<Events> for Worker {
-    async fn handle(&mut self, _: Events, _: &Context<Self>) -> Vec<&'static str> {
-        self.0.lock().unwrap().clone()
+    async fn handle(
+        &mut self,
+        _: Events,
+        reply: spawned_concurrency::PendingReply<'_, Vec<&'static str>>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(self.0.lock().unwrap().clone());
     }
 }
 #[test]

@@ -1,0 +1,1409 @@
+//! Pipe-to-self jobs: the mode-independent core
+//! (docs/design/deferred-replies.md §8, §9).
+//!
+//! Each job has one shared `JobState` with three parts:
+//!
+//! - **execution** (running or finished), physical: cancelled or timed-out
+//!   work may keep running, and keeps its credit (or native slot) until it
+//!   ends;
+//! - **cancellation**, a flag set by `JobHandle::cancel`, a newer job with the
+//!   same key, owner exit, or (opt-in) the linked caller leaving; it wakes
+//!   blocked emitters and suppresses later results;
+//! - **terminal notification** (pending, notified, suppressed): a one-shot
+//!   under the job's lock. The result, a caught panic, or the job deadline
+//!   takes it and enqueues the terminal message; emits check the same lock,
+//!   so no emit follows the terminal message.
+//!
+//! Messages a job produces carry its `JobState` and the owner's `ActorId` and
+//! are fenced at dispatch when the job is cancelled.
+
+use super::deadline::Expirable;
+use super::registry::Registry;
+use super::slot::CreditPool;
+use crate::ActorId;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+
+/// Default emit credits per job (`JobOptions::emit_credits`).
+pub(crate) const DEFAULT_EMIT_CREDITS: u16 = 16;
+
+/// Default `Actor::MAX_NATIVE_JOBS`: `min(4, available_parallelism)`.
+pub(crate) fn default_max_native_jobs() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(4)
+}
+
+/// Per-instance overrides of `Actor::MAX_OUTSTANDING` and
+/// `Actor::MAX_NATIVE_JOBS` (set per `ChildSpec`); `None` keeps the actor's
+/// constant.
+#[cfg(feature = "async")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Bounds {
+    pub(crate) max_outstanding: Option<usize>,
+    pub(crate) max_native_jobs: Option<usize>,
+}
+
+#[cfg(feature = "async")]
+impl Bounds {
+    /// The effective `(max_outstanding, max_native_jobs)` for an actor whose
+    /// constants are `outstanding` and `native`.
+    pub(crate) fn resolve(self, outstanding: usize, native: Option<usize>) -> (usize, usize) {
+        (
+            self.max_outstanding.unwrap_or(outstanding),
+            self.max_native_jobs
+                .or(native)
+                .unwrap_or_else(default_max_native_jobs),
+        )
+    }
+}
+
+/// A key for cancel-previous jobs (`JobOptions::key`).
+///
+/// Reuse a bounded set of keys. The owner retains the last generation per
+/// distinct key until it stops, so a replacement can fence queued results
+/// even after the old work finished. `MAX_OUTSTANDING` does not bound this
+/// history; leave unrelated, per-request work unkeyed.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct JobKey(std::borrow::Cow<'static, str>);
+
+impl JobKey {
+    pub const fn new(name: &'static str) -> Self {
+        Self(std::borrow::Cow::Borrowed(name))
+    }
+    pub fn owned(name: String) -> Self {
+        Self(std::borrow::Cow::Owned(name))
+    }
+}
+impl From<&'static str> for JobKey {
+    fn from(name: &'static str) -> Self {
+        Self::new(name)
+    }
+}
+
+/// Options of a job, passed first to every `pipe*` call and to
+/// `reserve_*_job` (as OTP's `*_opt` functions take an option list).
+/// Non-exhaustive: build it with the methods, starting from
+/// [`JobOptions::new`] (or `default()`).
+///
+/// ```ignore
+/// ctx.pipe(JobOptions::new().key("fetch").deadline(Duration::from_secs(2)), work, done)?;
+/// ```
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct JobOptions {
+    pub(crate) deadline: Option<spawned_rt::time::Instant>,
+    pub(crate) key: Option<JobKey>,
+    pub(crate) cancel_on_caller_gone: bool,
+    pub(crate) emit_credits: u16,
+}
+
+impl JobOptions {
+    /// No deadline, no key, 16 emit credits, not cancelled when the caller
+    /// leaves.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Cancel the previous job with this key (whatever its notification
+    /// state) and fence its queued messages: the replacement is the only
+    /// live job of the key. Reuse a bounded set: the last generation of each
+    /// distinct key is retained until owner shutdown (see [`JobKey`]).
+    pub fn key(mut self, key: impl Into<JobKey>) -> Self {
+        self.key = Some(key.into());
+        self
+    }
+
+    /// A hard deadline: a `Duration` from now or an `Instant` (on the
+    /// runtime's clock, the simulated one under `spawned_sim`), or
+    /// `Deadline::Never`. When it passes, `done` receives
+    /// `Err(JobError::DeadlineExceeded)`, the job's later emits fail with
+    /// [`JobGone`] and its eventual result is dropped; the work keeps
+    /// running (cooperative cancellation) and keeps its credit. For a soft
+    /// deadline (stop starting new work, finish what is in hand), check the
+    /// time inside the work instead.
+    pub fn deadline(mut self, deadline: impl Into<super::Deadline>) -> Self {
+        self.deadline = match deadline.into() {
+            super::Deadline::At(at) => Some(at),
+            super::Deadline::Never => None,
+        };
+        self
+    }
+
+    /// Emits in flight before `emit` waits (`emit_blocking` blocks). The
+    /// default is 16.
+    pub fn emit_credits(mut self, credits: std::num::NonZeroU16) -> Self {
+        self.emit_credits = credits.get();
+        self
+    }
+
+    /// Reply jobs (`pipe_reply*`) only: cancel the job when its caller
+    /// leaves or the request's deadline passes. Off by default, as in OTP.
+    /// Plain `pipe*` jobs have no caller: setting it there is a bug
+    /// (`debug_assert!`).
+    pub fn cancel_on_caller_gone(mut self) -> Self {
+        self.cancel_on_caller_gone = true;
+        self
+    }
+}
+
+impl Default for JobOptions {
+    fn default() -> Self {
+        Self {
+            deadline: None,
+            key: None,
+            cancel_on_caller_gone: false,
+            emit_credits: DEFAULT_EMIT_CREDITS,
+        }
+    }
+}
+
+/// How a job ended, delivered to `done` in the owner's turn: the work's
+/// value, or why there is none. A plain `Result`, so `?` and every
+/// `Result` combinator work.
+pub type JobOutcome<T> = Result<T, JobError>;
+
+/// Why a job produced no value.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum JobError {
+    /// The work panicked; caught at the job boundary.
+    #[error("job panicked: {0}")]
+    Panicked(String),
+    /// The job's deadline (`JobOptions::deadline`) passed first. The
+    /// deadline is hard: the job's later emits fail and its eventual result
+    /// is dropped. The work may still be running (cooperative
+    /// cancellation).
+    #[error("job deadline exceeded")]
+    DeadlineExceeded,
+}
+
+/// Why a job was not spawned. No job runs, and any credit or native slot
+/// reserved for it was released.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum PipeError {
+    /// The owner's `MAX_OUTSTANDING` credits are in use.
+    #[error("deferred credits at the bound")]
+    Overloaded,
+    /// The owner's `MAX_NATIVE_JOBS` native jobs are running.
+    #[error("native job budget at the bound")]
+    NativeBudget,
+    /// The native thread could not be spawned.
+    #[error("spawning the job failed: {0}")]
+    SpawnFailed(std::io::Error),
+    /// The owner is exiting.
+    #[error("the owner is stopping")]
+    OwnerStopping,
+}
+
+/// `pipe_reply*` failed; the token comes back in every case.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum PipeReplyError<R: Send + 'static> {
+    /// The job could not be spawned.
+    Failed {
+        token: super::ReplyTo<R>,
+        error: PipeError,
+    },
+    /// The request is no longer open (or past its deadline).
+    Closed(super::ReplyTo<R>),
+    /// `token.owner()` is not this actor.
+    WrongOwner(super::ReplyTo<R>),
+}
+
+impl<R: Send + 'static> PipeReplyError<R> {
+    /// The token handed back.
+    pub fn into_token(self) -> super::ReplyTo<R> {
+        match self {
+            Self::Failed { token, .. } | Self::Closed(token) | Self::WrongOwner(token) => token,
+        }
+    }
+}
+
+pub use super::job_core::JobGone;
+use super::job_core::{Finish, HeldTerminal, Job, JobCore, JobSetCore};
+use crate::lifecycle_trace as trace;
+
+/// One job's shared state: the core protocol plus the async wake-ups.
+pub(crate) struct JobState {
+    owner: ActorId,
+    core: JobCore,
+    /// The job's number in lifecycle traces.
+    #[cfg(feature = "lifecycle-trace")]
+    trace: u64,
+    /// A `pipe_reply*` job: its request's slot in reply traces, and whether
+    /// its notification was taken (DeferredReplies.tla `JobNotify`, `JobEnds`,
+    /// `JobCancel`).
+    #[cfg(feature = "lifecycle-trace")]
+    link: std::sync::OnceLock<u64>,
+    #[cfg(feature = "lifecycle-trace")]
+    notified: std::sync::atomic::AtomicBool,
+    /// Async cancellation for `tasks` jobs (drops the work future).
+    #[cfg(feature = "async")]
+    cancel: spawned_rt::tasks::CancellationToken,
+    /// Wakers of async emitters waiting for a credit.
+    #[cfg(feature = "async")]
+    emit_wakers: Mutex<Vec<std::task::Waker>>,
+    /// Delayed emits (`JobCtx::emit_at`) not yet fired: their strong
+    /// references (the deadline heap holds `Weak`s). Cleared at cancellation.
+    scheduled: Mutex<Vec<Arc<ScheduledEmit>>>,
+    /// What the owner's exit released (a held result, scheduled emits):
+    /// user payload, destroyed by [`JobSet::dispose_cancelled`] once the
+    /// owner's death point answered and woke every caller.
+    exit_released: Mutex<Option<ExitReleased>>,
+}
+
+/// Payloads an owner's exit took from a job, destroyed after its death point.
+type ExitReleased = (Option<HeldTerminal>, Vec<Arc<ScheduledEmit>>);
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+impl JobState {
+    pub(crate) fn new(owner: ActorId, emit_credits: u16) -> Arc<Self> {
+        Arc::new(Self {
+            owner,
+            core: JobCore::new(emit_credits),
+            #[cfg(feature = "lifecycle-trace")]
+            trace: crate::lifecycle_trace::next_job(),
+            #[cfg(feature = "lifecycle-trace")]
+            link: std::sync::OnceLock::new(),
+            #[cfg(feature = "lifecycle-trace")]
+            notified: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "async")]
+            cancel: spawned_rt::tasks::CancellationToken::new(),
+            #[cfg(feature = "async")]
+            emit_wakers: Mutex::new(Vec::new()),
+            scheduled: Mutex::new(Vec::new()),
+            exit_released: Mutex::new(None),
+        })
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.core.is_cancelled()
+    }
+
+    #[cfg(feature = "async")]
+    pub(crate) fn cancellation(&self) -> &spawned_rt::tasks::CancellationToken {
+        &self.cancel
+    }
+
+    /// A `pipe_reply*` job was launched for the request in `slot` (reply
+    /// traces: the model's `PipeReply`).
+    #[cfg(feature = "lifecycle-trace")]
+    pub(crate) fn linked(&self, slot: u64) {
+        trace::atomic(|| {
+            let _ = self.link.set(slot);
+            trace::reply(self.owner.raw(), "PipeReply", slot, "linked");
+        });
+    }
+
+    // DeferredReplies.tla linked-job actions of a `pipe_reply*` job, recorded
+    // on its owner's reply trace inside the trace section.
+
+    /// Its notification was taken: the token travels with it from now on.
+    fn link_notified(&self) {
+        #[cfg(feature = "lifecycle-trace")]
+        self.notified
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// `JobNotify`: its done or deadline message is dispatched to the owner.
+    #[cfg_attr(not(feature = "lifecycle-trace"), allow(unused_variables))]
+    fn link_notify(&self, kind: &'static str) {
+        #[cfg(feature = "lifecycle-trace")]
+        if let Some(slot) = self.link.get() {
+            trace::reply(self.owner.raw(), "JobNotify", *slot, kind);
+        }
+    }
+
+    /// `JobEnds`: execution ended without taking the notification.
+    fn link_end(&self) {
+        #[cfg(feature = "lifecycle-trace")]
+        if let Some(slot) = self.link.get() {
+            trace::reply(self.owner.raw(), "JobEnd", *slot, "");
+        }
+    }
+
+    /// `JobCancel`: cancelled while the token is still with the job (not
+    /// once its notification was taken).
+    fn link_cancel(&self) {
+        #[cfg(feature = "lifecycle-trace")]
+        if let Some(slot) = self.link.get() {
+            if !self.notified.load(std::sync::atomic::Ordering::Relaxed) {
+                trace::reply(self.owner.raw(), "JobCancel", *slot, "");
+            }
+        }
+    }
+
+    /// Record a `DeferredJobs.tla` action of this job (lifecycle traces).
+    #[cfg_attr(not(feature = "lifecycle-trace"), allow(unused_variables))]
+    fn record(&self, event: impl FnOnce(u64) -> trace::JobEvent) {
+        #[cfg(feature = "lifecycle-trace")]
+        trace::job(self.owner.raw(), || event(self.trace));
+    }
+
+    /// Set the cancellation flag: suppresses a pending notification and
+    /// wakes blocked emitters. Never undoes effects. Recorded as the model's
+    /// `Cancel` (the owner's exit and key replacement cancel through the job
+    /// set instead, as part of `Exit` and `Start`).
+    pub(crate) fn cancel(&self) {
+        let held = trace::atomic(|| {
+            let (newly, held) = self.core.cancel_keeping_held();
+            if newly {
+                self.count_cancel();
+                self.record(|job| trace::JobEvent::new("Cancel", job));
+                self.link_cancel();
+            }
+            held
+        });
+        // The suppressed held result (user payload): outside the trace
+        // section, after its Cancel and JobCancel are recorded.
+        drop(held);
+        self.wake_cancelled();
+    }
+
+    /// A permit used after the owner began exiting: the job never runs.
+    pub(crate) fn never_started(&self) {
+        self.core.cancel();
+        self.core.finished();
+    }
+
+    /// A keyed replacement cancels this job (inside the trace section,
+    /// after the new job's `Start`): the flag, its count and a linked
+    /// caller's `JobCancel`; the suppressed held result comes back to be
+    /// dropped outside, with [`wake_cancelled`](Self::wake_cancelled).
+    fn cancel_replaced(&self) -> Option<crate::reply::job_core::HeldTerminal> {
+        let (newly, held) = self.core.cancel_keeping_held();
+        if newly {
+            self.count_cancel();
+            self.link_cancel();
+        }
+        held
+    }
+
+    fn cancel_quietly(&self) {
+        if self.core.cancel() {
+            self.count_cancel();
+        }
+        self.wake_cancelled();
+    }
+
+    /// `spawned_jobs_cancelled_total` counts jobs cancelled while running.
+    fn count_cancel(&self) {
+        if self.core.is_running() {
+            crate::instrumentation::hooks::job_cancelled();
+        }
+    }
+
+    fn wake_cancelled(&self) {
+        // Scheduled emits will never be delivered: drop them now (their
+        // messages and credits), outside every lock.
+        let scheduled = std::mem::take(&mut *lock(&self.scheduled));
+        for emit in scheduled {
+            emit.discard(self);
+        }
+        #[cfg(feature = "async")]
+        {
+            self.cancel.cancel();
+            self.wake_emitters();
+        }
+    }
+
+    #[cfg(feature = "async")]
+    fn wake_emitters(&self) {
+        let wakers = std::mem::take(&mut *lock(&self.emit_wakers));
+        for waker in wakers {
+            waker.wake();
+        }
+    }
+
+    /// Take the terminal notification and run `enqueue` under the job's
+    /// lock (see [`JobCore::notify`]). `end` is `ok`, `panicked` (the end
+    /// of execution, the model's `Finish`) or `deadline` (`JobDeadline`).
+    pub(crate) fn notify<X>(
+        &self,
+        end: &'static str,
+        enqueue: impl FnOnce() -> Option<X>,
+    ) -> (bool, Option<X>) {
+        let deadline = end == "deadline";
+        // A refused closure can own user payloads. The core drops its adapter
+        // under the trace section; keep the actual closure outside it.
+        let mut enqueue = Some(enqueue);
+        let (taken, unsent, held) = trace::atomic(|| {
+            let (taken, unsent, held) = self
+                .core
+                .notify_keeping_held(|| enqueue.take().and_then(|enqueue| enqueue()));
+            if taken {
+                crate::instrumentation::hooks::job_notified(end);
+                self.link_notified();
+            } else if !deadline {
+                self.link_end();
+            }
+            if !deadline {
+                // Only a held result's terminal notifies without the
+                // deadline (the work's own result goes through `finish`):
+                // the model's ReleaseHeld.
+                self.record(|job| trace::JobEvent {
+                    x: if taken { "notified" } else { "quiet" },
+                    ..trace::JobEvent::new("Release", job)
+                });
+            } else if taken {
+                self.record(|job| trace::JobEvent::new("JobDeadline", job));
+            }
+            (taken, unsent, held)
+        });
+        // A held result the deadline displaced (user payload): dropped
+        // outside the trace section, after JobDeadline is recorded.
+        drop(held);
+        #[cfg(feature = "async")]
+        if taken {
+            self.wake_emitters();
+        }
+        (taken, unsent)
+    }
+
+    /// The work's result (see [`JobCore::finish`]): taken now, or held
+    /// until the job's scheduled emits have fired (`later` then runs
+    /// `notify`). Returns the refused envelope, to drop outside locks.
+    pub(crate) fn finish<X>(
+        &self,
+        end: &'static str,
+        enqueue: impl FnOnce() -> Option<X>,
+        later: impl FnOnce() -> HeldTerminal,
+    ) -> Option<X> {
+        let mut enqueue = Some(enqueue);
+        // The unused factory can own a user result. Keep it outside the
+        // trace section just like the unused enqueue closure.
+        let mut later = Some(later);
+        let (finish, unsent) = trace::atomic(|| {
+            let (finish, unsent) = self.core.finish(
+                || enqueue.take().and_then(|enqueue| enqueue()),
+                || later.take().expect("the terminal factory is used once")(),
+            );
+            match finish {
+                Finish::Taken => {
+                    crate::instrumentation::hooks::job_notified(end);
+                    self.link_notified();
+                    self.record(|job| trace::JobEvent {
+                        x: "notified",
+                        ..trace::JobEvent::new("Finish", job)
+                    });
+                }
+                Finish::Refused => {
+                    self.record(|job| trace::JobEvent {
+                        x: "quiet",
+                        ..trace::JobEvent::new("Finish", job)
+                    });
+                    self.link_end();
+                }
+                Finish::Held => self.record(|job| trace::JobEvent {
+                    x: "held",
+                    ..trace::JobEvent::new("Finish", job)
+                }),
+            }
+            (finish, unsent)
+        });
+        #[cfg(feature = "async")]
+        if finish != Finish::Refused {
+            self.wake_emitters();
+        }
+        #[cfg(not(feature = "async"))]
+        let _ = finish;
+        unsent
+    }
+
+    /// Register a delayed emit at `at` (ticks): `send` enqueues its envelope
+    /// when the deadline fires, fenced like any emit, and the job's terminal
+    /// message waits for it. `track` arms the owner's deadline heap. On
+    /// `Err` the caller's credit guard (inside `send`) returns the credit.
+    ///
+    /// `JobGone` also when the emit will never be delivered: the job was
+    /// cancelled while registering, or an emit already due was refused. An
+    /// `at` past the job's deadline is accepted: the deadline takes the
+    /// notification first and the emit is dropped at its instant.
+    pub(crate) fn schedule_emit(
+        self: &Arc<Self>,
+        at: u64,
+        send: SendScheduled,
+        failures: Arc<crate::mailbox::DropFailures>,
+        track: impl FnOnce(u64, std::sync::Weak<dyn Expirable>),
+    ) -> Result<(), JobGone> {
+        trace::atomic(|| {
+            let scheduled = self.core.schedule();
+            if scheduled.is_ok() {
+                self.record(|job| trace::JobEvent::new("Schedule", job));
+            }
+            scheduled
+        })?;
+        #[cfg(test)]
+        tests::after_schedule();
+        let emit = Arc::new(ScheduledEmit {
+            at,
+            job: Arc::downgrade(self),
+            send: Mutex::new(Some(send)),
+            failures,
+        });
+        lock(&self.scheduled).push(emit.clone());
+        if self.is_cancelled() {
+            // Cancelled between the check and the registration: the cancel
+            // may have missed it. Take the list in its own statement: the
+            // discard locks it again (`settle`), so its guard must be gone.
+            let scheduled = std::mem::take(&mut *lock(&self.scheduled));
+            for emit in scheduled {
+                emit.discard(self);
+            }
+            return Err(JobGone);
+        }
+        if at <= super::now_ticks() {
+            if !emit.settle(self, true) {
+                return Err(JobGone);
+            }
+        } else {
+            let weak: std::sync::Weak<dyn Expirable> = Arc::downgrade(&emit) as _;
+            track(at, weak);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn is_running(&self) -> bool {
+        self.core.is_running()
+    }
+
+    /// Free emit credits (tests).
+    #[cfg(test)]
+    pub(crate) fn emit_credits(&self) -> u16 {
+        self.core.emit_credits()
+    }
+
+    /// Execution of a cancelled async job ended without a notification (the
+    /// model's `Finish` when the notification was suppressed).
+    #[cfg(feature = "async")]
+    pub(crate) fn ended_cancelled(&self) {
+        trace::atomic(|| {
+            self.record(|job| trace::JobEvent {
+                x: "quiet",
+                ..trace::JobEvent::new("Finish", job)
+            });
+            self.link_end();
+        });
+    }
+
+    /// The dispatch fence: a message of this job dispatched by instance `at`
+    /// is dropped when the job is cancelled or belongs to another instance.
+    /// `kind` is `emit`, `done` or `deadline` (the model's `Dispatch`).
+    pub(crate) fn fenced(&self, at: ActorId, kind: &'static str) -> bool {
+        trace::atomic(|| {
+            let fenced = self.is_cancelled() || self.owner != at;
+            if fenced {
+                crate::instrumentation::hooks::job_fenced();
+            }
+            self.record(|job| trace::JobEvent {
+                x: kind,
+                fenced,
+                ..trace::JobEvent::new("Dispatch", job)
+            });
+            if !fenced && matches!(kind, "done" | "deadline") {
+                self.link_notify(kind);
+            }
+            fenced
+        })
+    }
+
+    /// Emit step 1 (blocking).
+    pub(crate) fn acquire_blocking(&self) -> Result<(), JobGone> {
+        self.core.acquire_blocking()
+    }
+
+    /// Emit step 1 (async).
+    #[cfg(feature = "async")]
+    pub(crate) fn poll_acquire(
+        &self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), JobGone>> {
+        let acquired = self.core.try_acquire(|| {
+            let mut wakers = lock(&self.emit_wakers);
+            if !wakers.iter().any(|w| w.will_wake(cx.waker())) {
+                wakers.push(cx.waker().clone());
+            }
+        });
+        match acquired {
+            Some(result) => std::task::Poll::Ready(result),
+            None => std::task::Poll::Pending,
+        }
+    }
+
+    /// Emit step 2 (see [`JobCore::enqueue_emit`]).
+    pub(crate) fn enqueue_emit<X>(
+        &self,
+        enqueue: impl FnOnce() -> Result<(), X>,
+    ) -> Result<(), (JobGone, Option<X>)> {
+        // Returning emit credit may re-enter the owner, and user payload
+        // destructors may record events. Neither runs under the trace lock.
+        let mut enqueue = Some(enqueue);
+        trace::atomic(|| {
+            let result = self
+                .core
+                .enqueue_emit(|| enqueue.take().expect("an emit is enqueued once")());
+            if result.is_ok() {
+                crate::instrumentation::hooks::job_emitted();
+                self.record(|job| trace::JobEvent::new("Emit", job));
+            }
+            result
+        })
+    }
+
+    /// Emit step 3: a credit comes back when its message is dispatched,
+    /// fenced or dropped with the mailbox.
+    pub(crate) fn return_emit_credit(&self) {
+        self.core.return_emit_credit();
+        #[cfg(feature = "async")]
+        self.wake_emitters();
+    }
+}
+
+impl Job for JobState {
+    fn cancel(&self) {
+        self.cancel_quietly();
+    }
+    /// Mark the job cancelled (fences its messages, wakes its emitters,
+    /// stops its async work) without destroying anything: the suppressed
+    /// held result and the scheduled emits are kept for
+    /// [`JobSet::dispose_cancelled`].
+    fn cancel_for_exit(&self) {
+        let (newly, held) = self.core.cancel_keeping_held();
+        if newly {
+            self.count_cancel();
+            self.link_cancel();
+        }
+        let scheduled = std::mem::take(&mut *lock(&self.scheduled));
+        *lock(&self.exit_released) = Some((held, scheduled));
+        // The cancellation flag is set (`is_cancelled`, `emit` refuse from
+        // here); the callbacks it owes (the `cancelled()` waiters' wakers
+        // and blocked emitters, arbitrary code) run in `dispose_cancelled`,
+        // after the owner's callers are answered.
+    }
+    fn is_running(&self) -> bool {
+        self.core.is_running()
+    }
+    fn is_live(&self) -> bool {
+        // Scheduled emits keep a finished job reachable for `cancel_all`.
+        self.core.is_running() || self.core.scheduled() > 0
+    }
+    fn finished(&self) {
+        self.core.finished();
+    }
+}
+
+/// A handle to a spawned job. Dropping it leaves the job owned by the
+/// actor's job set (it is not detached).
+#[derive(Clone)]
+pub struct JobHandle {
+    state: Arc<JobState>,
+}
+
+impl std::fmt::Debug for JobHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JobHandle")
+            .field("owner", &self.state.owner)
+            .field("cancelled", &self.state.is_cancelled())
+            .finish_non_exhaustive()
+    }
+}
+
+impl JobHandle {
+    pub(crate) fn new(state: Arc<JobState>) -> Self {
+        Self { state }
+    }
+    /// Cancel the job: its later results and queued messages are fenced, and
+    /// blocked emitters return `JobGone`. Work already done is not undone.
+    pub fn cancel(&self) {
+        self.state.cancel();
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.state.is_cancelled()
+    }
+    /// Whether the job's work is still executing (cancelled work may still
+    /// run until it returns).
+    pub fn is_running(&self) -> bool {
+        self.state.is_running()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Job set
+// ---------------------------------------------------------------------------
+
+/// An owner instance's jobs: key map, running count, native budget.
+pub(crate) struct JobSet {
+    owner: ActorId,
+    core: JobSetCore<JobState, JobKey>,
+    /// Whether the owner's exit was recorded (lifecycle traces).
+    #[cfg(feature = "lifecycle-trace")]
+    exited: std::sync::atomic::AtomicBool,
+    /// Jobs the owner's exit cancelled, whose released payloads wait for
+    /// [`dispose_cancelled`](Self::dispose_cancelled).
+    exit_cancelled: Mutex<Vec<Arc<JobState>>>,
+    /// The first `NativeBudget` refusal was logged (only refusals touch it).
+    native_refusal_logged: std::sync::atomic::AtomicBool,
+    #[cfg(feature = "async")]
+    idle_async: Mutex<Vec<std::task::Waker>>,
+}
+
+impl JobSet {
+    pub(crate) fn new(owner: ActorId, max_native: usize) -> Self {
+        Self {
+            owner,
+            core: JobSetCore::new(max_native),
+            #[cfg(feature = "lifecycle-trace")]
+            exited: std::sync::atomic::AtomicBool::new(false),
+            exit_cancelled: Mutex::new(Vec::new()),
+            native_refusal_logged: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "async")]
+            idle_async: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub(crate) fn owner(&self) -> ActorId {
+        self.owner
+    }
+
+    /// Reserve a native slot (`MAX_NATIVE_JOBS`), rejecting at the bound.
+    /// The first refusal per instance is logged (a `warn`): under load the
+    /// default budget is easy to miss, and `NativeBudget` is otherwise the
+    /// only symptom. The reserving path itself is unchanged.
+    pub(crate) fn reserve_native(&self) -> bool {
+        let reserved = self.core.reserve_native();
+        if !reserved {
+            crate::instrumentation::hooks::job_rejected();
+            if !self
+                .native_refusal_logged
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
+                let max_native_jobs = self.core.max_native();
+                crate::actor_cleanup::log_safely(|| {
+                    tracing::warn!(event = "native_budget_exhausted", actor = %self.owner,
+                        max_native_jobs, "blocking job refused (NativeBudget): all native \
+                        job slots are in use; raise MAX_NATIVE_JOBS \
+                        (#[actor(max_native_jobs = N)] or ChildSpec::max_native_jobs) if \
+                        this is expected load. Logged once per actor instance");
+                });
+            }
+        }
+        reserved
+    }
+
+    pub(crate) fn release_native(&self) {
+        self.core.release_native();
+    }
+
+    /// Admit a job: replace (cancel) the previous one with the same key and
+    /// count it as running (the model's `Start`). Refused (`false`, nothing
+    /// recorded) once the owner's exit closed admission: the caller must not
+    /// run it.
+    #[must_use]
+    pub(crate) fn admit(&self, state: &Arc<JobState>, key: Option<JobKey>, deadline: bool) -> bool {
+        let admitted = trace::atomic(|| {
+            let keyed = key.is_some();
+            let previous = self.core.admit_replacing(state, key)?;
+            crate::instrumentation::hooks::job_started();
+            state.record(|job| trace::JobEvent {
+                keyed,
+                deadline,
+                ..trace::JobEvent::new("Start", job)
+            });
+            // The replaced job is cancelled in the same step as the new
+            // job's Start (the model's CancelCore(ToReplace)); a linked
+            // job's caller sees its JobCancel. Nothing is destroyed here.
+            Some(previous.map(|previous| {
+                let held = previous.cancel_replaced();
+                (previous, held)
+            }))
+        });
+        let Some(replaced) = admitted else {
+            return false;
+        };
+        // Outside the trace section and every lock: the replaced job's
+        // suppressed result and scheduled emits (user payloads).
+        if let Some((previous, held)) = replaced {
+            drop(held);
+            previous.wake_cancelled();
+        }
+        true
+    }
+
+    /// A job's execution ended.
+    pub(crate) fn ended(&self, state: &Arc<JobState>) {
+        crate::instrumentation::hooks::job_ended();
+        if self.core.ended(state) {
+            #[cfg(feature = "async")]
+            {
+                let waiters = std::mem::take(&mut *lock(&self.idle_async));
+                for waker in waiters {
+                    waker.wake();
+                }
+            }
+        }
+    }
+
+    pub(crate) fn running(&self) -> usize {
+        self.core.running()
+    }
+
+    /// Owner exit: close admission and cancel every job (flag set, blocked
+    /// emitters woken). Nothing is destroyed here: what the jobs release
+    /// waits for [`dispose_cancelled`](Self::dispose_cancelled).
+    pub(crate) fn cancel_all(&self) {
+        trace::atomic(|| {
+            let cancelled = self.core.cancel_all();
+            lock(&self.exit_cancelled).extend(cancelled);
+            #[cfg(feature = "lifecycle-trace")]
+            if !self.exited.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                trace::job(self.owner.raw(), || trace::JobEvent::new("Exit", 0));
+            }
+        });
+    }
+
+    /// After the owner's death point answered and woke every caller: run
+    /// the callbacks the exit's cancellation owes (wake `cancelled()`
+    /// waiters and blocked emitters), then destroy what it released (held
+    /// results, scheduled emits; contained through each job's failure
+    /// sink). Idempotent.
+    pub(crate) fn dispose_cancelled(&self) {
+        let cancelled = std::mem::take(&mut *lock(&self.exit_cancelled));
+        #[cfg(feature = "async")]
+        for job in &cancelled {
+            job.cancel.cancel();
+            job.wake_emitters();
+        }
+        for job in &cancelled {
+            let released = lock(&job.exit_released).take();
+            if let Some((held, scheduled)) = released {
+                drop(held);
+                for emit in scheduled {
+                    emit.discard(job);
+                }
+            }
+        }
+        drop(cancelled);
+    }
+
+    /// Join the cancelled jobs, bounded by `deadline`; returns how many are
+    /// still running (unfinished at stop). This is a physical native-thread
+    /// cleanup bound: deliberately wall-clock based, since virtual time cannot
+    /// advance while this blocking join is waiting for a real thread.
+    pub(crate) fn join_blocking(&self, deadline: std::time::Instant) -> usize {
+        self.core.join_with(|idle, running| {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return Err(running);
+            }
+            Ok(idle
+                .wait_timeout(running, deadline - now)
+                .unwrap_or_else(|p| p.into_inner())
+                .0)
+        })
+    }
+
+    /// Async join, bounded by `timeout` on the runtime's clock.
+    #[cfg(feature = "async")]
+    pub(crate) async fn join(&self, timeout: std::time::Duration) -> usize {
+        let idle = std::future::poll_fn(|cx| {
+            if self.running() == 0 {
+                return std::task::Poll::Ready(());
+            }
+            // Cloning/dropping a waker can run executor code: do it outside
+            // the waiters lock, and retain only one copy of this waiter.
+            let fresh = cx.waker().clone();
+            {
+                let mut waiters = lock(&self.idle_async);
+                if !waiters.iter().any(|w| w.will_wake(&fresh)) {
+                    waiters.push(fresh);
+                } else {
+                    drop(waiters);
+                    drop(fresh);
+                }
+            }
+            if self.running() == 0 {
+                return std::task::Poll::Ready(());
+            }
+            std::task::Poll::Pending
+        });
+        let _ = spawned_rt::tasks::timeout(timeout, idle).await;
+        self.running()
+    }
+}
+
+/// Report jobs still running when the owner's cleanup deadline passed.
+pub(crate) fn report_unfinished(owner: ActorId, unfinished: usize) {
+    if unfinished > 0 {
+        crate::instrumentation::hooks::jobs_unfinished(unfinished);
+        tracing::warn!(
+            event = "unfinished_at_stop",
+            actor = %owner,
+            unfinished,
+            "job cleanup incomplete: jobs still running at the cleanup deadline"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Credits and deadlines
+// ---------------------------------------------------------------------------
+
+/// The credit an unlinked job holds while it executes.
+pub(crate) struct JobCredit(Option<Arc<CreditPool>>);
+
+impl JobCredit {
+    pub(crate) fn reserve(registry: &Registry) -> Option<Self> {
+        let pool = registry.pool().clone();
+        // `then`, not `then_some`: the guard must exist only when reserved.
+        let credit = pool.reserve(1).then(|| Self(Some(pool)));
+        if credit.is_none() {
+            crate::instrumentation::hooks::job_rejected();
+        }
+        credit
+    }
+}
+
+impl Drop for JobCredit {
+    fn drop(&mut self) {
+        if let Some(pool) = self.0.take() {
+            pool.release(1);
+        }
+    }
+}
+
+/// The deadline notification of one job, serviced by the owner's heap.
+pub(crate) struct JobDeadline {
+    pub(crate) at: u64,
+    pub(crate) state: Arc<JobState>,
+    pub(crate) notify: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+impl Expirable for JobDeadline {
+    fn pending_deadline(&self) -> Option<u64> {
+        self.state.core.is_pending().then_some(self.at)
+    }
+    fn expire(&self, _now: u64) {
+        let notify = lock(&self.notify).take();
+        if let Some(notify) = notify {
+            notify();
+        }
+    }
+}
+
+/// A value (user payload) whose drop is contained by the owner's failure
+/// sink: it may be dropped on the deadline service thread.
+pub(crate) struct Contained<T: Send + 'static> {
+    value: Option<T>,
+    failures: Arc<crate::mailbox::DropFailures>,
+}
+
+impl<T: Send + 'static> Contained<T> {
+    pub(crate) fn new(value: T, failures: Arc<crate::mailbox::DropFailures>) -> Self {
+        Self {
+            value: Some(value),
+            failures,
+        }
+    }
+    pub(crate) fn into_inner(mut self) -> Option<T> {
+        self.value.take()
+    }
+}
+
+impl<T: Send + 'static> Drop for Contained<T> {
+    fn drop(&mut self) {
+        if let Some(value) = self.value.take() {
+            self.failures.discard(value);
+        }
+    }
+}
+
+/// Enqueues a delayed emit's envelope; a refused envelope comes back erased,
+/// to be dropped outside locks.
+pub(crate) type SendScheduled = Box<dyn FnOnce() -> Result<(), Box<dyn Send>> + Send>;
+
+/// One delayed emit (`JobCtx::emit_at`), serviced by the owner's deadline
+/// heap. Holds its message and emit credit until it fires or is discarded.
+///
+/// Its message is user payload and is usually dropped on the process-wide
+/// deadline service thread: every drop goes through the owner's failure
+/// sink, which contains a panicking destructor (recorded as a cleanup
+/// failure), so the emit still settles and the service keeps running.
+pub(crate) struct ScheduledEmit {
+    at: u64,
+    job: std::sync::Weak<JobState>,
+    send: Mutex<Option<SendScheduled>>,
+    failures: Arc<crate::mailbox::DropFailures>,
+}
+
+impl Drop for ScheduledEmit {
+    fn drop(&mut self) {
+        let send = self
+            .send
+            .get_mut()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        self.failures.discard(send);
+    }
+}
+
+impl ScheduledEmit {
+    /// Fire (`deliver`) or discard: step 2 of the emit protocol under the
+    /// job's lock, then remove it from the job, then run a held terminal.
+    /// Returns whether the message was enqueued.
+    fn settle(&self, job: &JobState, deliver: bool) -> bool {
+        let Some(send) = lock(&self.send).take() else {
+            return false;
+        };
+        // A discarded message (and its credit guard) drops below, outside the
+        // trace section and every lock, through the failure sink.
+        let (deliver, discarded) = if deliver {
+            (Some(send), None)
+        } else {
+            (None, Some(send))
+        };
+        let (result, held, unused) = trace::atomic(|| {
+            let (result, held, unused) = job.core.fire(deliver);
+            if result.is_ok() {
+                crate::instrumentation::hooks::job_emitted();
+            }
+            // The model's FireScheduled: enqueued or dropped, and whether
+            // this last fire took a held result (released below).
+            job.record(|id| trace::JobEvent {
+                x: if result.is_ok() { "emit" } else { "dropped" },
+                release: held.is_some(),
+                ..trace::JobEvent::new("Fire", id)
+            });
+            (result, held, unused)
+        });
+        let delivered = result.is_ok();
+        // Whatever was not enqueued (the refused envelope, the uncalled send
+        // or the discarded one, each with its credit guard) drops here,
+        // unlocked and contained.
+        self.failures.discard((result, unused, discarded));
+        lock(&job.scheduled).retain(|emit| !std::ptr::eq(Arc::as_ptr(emit), self));
+        if let Some(held) = held {
+            held();
+        }
+        #[cfg(feature = "async")]
+        job.wake_emitters();
+        delivered
+    }
+
+    fn discard(&self, job: &JobState) {
+        self.settle(job, false);
+    }
+}
+
+impl Expirable for ScheduledEmit {
+    fn pending_deadline(&self) -> Option<u64> {
+        lock(&self.send).is_some().then_some(self.at)
+    }
+    fn expire(&self, _now: u64) {
+        fail_point!("job.emit_due");
+        if let Some(job) = self.job.upgrade() {
+            self.settle(&job, true);
+        }
+    }
+}
+
+/// Threads-mode cleanup completion (death plus the bounded job join), for
+/// `join()`. Set when the guard drops, so a panicking cleanup also releases
+/// joiners.
+#[derive(Default)]
+pub(crate) struct Cleaned {
+    done: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl Cleaned {
+    pub(crate) fn wait(&self) {
+        let mut done = lock(&self.done);
+        while !*done {
+            done = self.changed.wait(done).unwrap_or_else(|p| p.into_inner());
+        }
+    }
+}
+
+pub(crate) struct CleanedGuard(pub(crate) Arc<Cleaned>);
+
+impl Drop for CleanedGuard {
+    fn drop(&mut self) {
+        *lock(&self.0.done) = true;
+        self.0.changed.notify_all();
+    }
+}
+
+/// Opt-in caller-give-up cancellation for jobs that cannot await
+/// (`pipe_reply_blocking*` with `cancel_on_caller_gone`): a watcher waker on
+/// the linked slot cancels the job when the slot closes.
+///
+/// Watchers are also woken when the token's deadline is shortened (so timers
+/// re-arm): the waker rechecks the slot and re-registers while it is open,
+/// as an awaiting watcher would re-poll. It refers to the slot weakly (the
+/// slot stores it), and a slot that is gone has no caller left.
+pub(crate) fn cancel_when_closed<R: Send + 'static>(
+    slot: &Arc<super::slot::Slot<R>>,
+    state: &Arc<JobState>,
+) {
+    struct CancelJob<R> {
+        slot: std::sync::Weak<super::slot::Slot<R>>,
+        state: Arc<JobState>,
+    }
+    impl<R: Send + 'static> CancelJob<R> {
+        /// Register as the slot's watcher; `true` once the slot is closed.
+        fn closed(self: &Arc<Self>) -> bool {
+            let Some(slot) = self.slot.upgrade() else {
+                return true;
+            };
+            let waker = std::task::Waker::from(self.clone());
+            slot.poll_closed(&waker, &super::now_ticks).is_ready()
+        }
+    }
+    impl<R: Send + 'static> std::task::Wake for CancelJob<R> {
+        fn wake(self: Arc<Self>) {
+            if self.closed() {
+                self.state.cancel();
+            }
+        }
+    }
+    let watcher = Arc::new(CancelJob {
+        slot: Arc::downgrade(slot),
+        state: state.clone(),
+    });
+    if watcher.closed() {
+        state.cancel();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reply::registry::Registry;
+
+    #[cfg(feature = "lifecycle-trace")]
+    #[test]
+    fn refused_job_closures_drop_outside_trace_section() {
+        struct Probe;
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                let (sent, received) = std::sync::mpsc::channel();
+                let worker = std::thread::spawn(move || {
+                    trace::atomic(|| {
+                        let _ = sent.send(());
+                    });
+                });
+                received
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .expect("refused job payload dropped under the trace lock");
+                worker.join().unwrap();
+            }
+        }
+        struct Credit(Arc<JobState>);
+        impl Drop for Credit {
+            fn drop(&mut self) {
+                self.0.return_emit_credit();
+            }
+        }
+        for emit in [false, true] {
+            for cancelled in [false, true] {
+                let state = JobState::new(ActorId::next(), 1);
+                let credit = emit.then(|| {
+                    state.acquire_blocking().unwrap();
+                    Credit(state.clone())
+                });
+                if cancelled {
+                    state.cancel();
+                } else {
+                    let _ = state.finish("ok", || None::<()>, || Box::new(|| {}));
+                }
+                let probe = Probe;
+                if emit {
+                    assert!(state
+                        .enqueue_emit(move || {
+                            drop((probe, credit));
+                            panic!("a refused enqueue must not run");
+                            #[allow(unreachable_code)]
+                            Ok::<(), ()>(())
+                        })
+                        .is_err());
+                    assert_eq!(state.emit_credits(), 1);
+                } else {
+                    let (taken, _) = state.notify("ok", move || {
+                        drop(probe);
+                        panic!("a refused notification must not run");
+                        #[allow(unreachable_code)]
+                        None::<()>
+                    });
+                    assert!(!taken);
+                }
+            }
+        }
+    }
+
+    // Unused completion factories can own user payloads. Their destructors
+    // must be able to wait for another thread that records a lifecycle event.
+    #[cfg(feature = "lifecycle-trace")]
+    #[test]
+    fn unused_completion_factories_drop_outside_trace_section() {
+        struct Probe;
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                let (sent, received) = std::sync::mpsc::channel();
+                let worker = std::thread::spawn(move || {
+                    trace::atomic(|| {
+                        let _ = sent.send(());
+                    });
+                });
+                received
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .expect("completion factory destructor ran under the trace lock");
+                worker.join().unwrap();
+            }
+        }
+        for refused in [false, true] {
+            let state = JobState::new(ActorId::next(), 1);
+            if refused {
+                state.cancel();
+            }
+            let enqueue_probe = refused.then_some(Probe);
+            let later_probe = Probe;
+            let _ = state.finish(
+                "done",
+                move || {
+                    drop(enqueue_probe);
+                    None::<()>
+                },
+                move || {
+                    drop(later_probe);
+                    Box::new(|| {})
+                },
+            );
+        }
+    }
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn join_deduplicates_waiters_and_wakes_without_its_lock() {
+        use std::{
+            future::Future,
+            task::{Context, Wake, Waker},
+        };
+        struct Inspect(std::sync::Weak<JobSet>);
+        impl Wake for Inspect {
+            fn wake(self: Arc<Self>) {
+                let set = self.0.upgrade().unwrap();
+                assert!(
+                    set.idle_async.try_lock().is_ok(),
+                    "join waker ran under the waiters lock"
+                );
+            }
+        }
+        let owner = ActorId::next();
+        let set = Arc::new(JobSet::new(owner, 1));
+        let job = JobState::new(owner, 1);
+        assert!(set.admit(&job, None, false));
+        let waker = Waker::from(Arc::new(Inspect(Arc::downgrade(&set))));
+        let mut cx = Context::from_waker(&waker);
+        let mut join = std::pin::pin!(set.join(std::time::Duration::from_secs(30)));
+        for _ in 0..100 {
+            assert!(join.as_mut().poll(&mut cx).is_pending());
+        }
+        assert_eq!(lock(&set.idle_async).len(), 1);
+        set.ended(&job);
+        assert!(join.as_mut().poll(&mut cx).is_ready());
+        assert!(lock(&set.idle_async).is_empty());
+    }
+
+    std::thread_local! {
+        /// Runs once between `schedule_emit`'s `JobCore::schedule` and its
+        /// registration of the emit (a deterministic interleaving).
+        static AFTER_SCHEDULE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn after_schedule() {
+        if let Some(hook) = AFTER_SCHEDULE.with(|hook| hook.borrow_mut().take()) {
+            hook();
+        }
+    }
+
+    /// Review P1 (Codex 3): a cancel that drains the still-empty scheduled
+    /// list between `JobCore::schedule` and the registration leaves the
+    /// registration to discard its own emit. It used to iterate under the
+    /// list's guard while `settle` locked the list again: a self-deadlock.
+    #[test]
+    fn cancel_between_schedule_and_registration_discards_without_deadlock() {
+        let state = JobState::new(ActorId::next(), 2);
+        let cancelled = state.clone();
+        let (sent_tx, sent_rx) = std::sync::mpsc::channel::<()>();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            AFTER_SCHEDULE
+                .with(|hook| *hook.borrow_mut() = Some(Box::new(move || cancelled.cancel())));
+            let send: SendScheduled = Box::new(move || {
+                let _ = sent_tx.send(());
+                Ok(())
+            });
+            let result = state.schedule_emit(u64::MAX - 1, send, Arc::default(), |_, _| {});
+            let _ = done_tx.send((result, state.core.scheduled()));
+        });
+        let (result, scheduled) = done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("schedule_emit deadlocked discarding its own emit");
+        assert_eq!(result, Err(JobGone));
+        assert_eq!(scheduled, 0, "the discarded emit is no longer scheduled");
+        assert!(
+            sent_rx.try_recv().is_err(),
+            "a cancelled job's emit was sent"
+        );
+    }
+
+    /// Review P1: a rejected reservation must not build a guard whose drop
+    /// releases a credit that was never taken.
+    #[test]
+    fn a_rejected_credit_releases_nothing() {
+        let registry = Registry::new(ActorId::next(), 1);
+        let held = JobCredit::reserve(&registry).expect("first credit");
+        assert!(JobCredit::reserve(&registry).is_none());
+        assert_eq!(
+            registry.outstanding(),
+            1,
+            "a rejected job released a credit"
+        );
+        drop(held);
+        assert_eq!(registry.outstanding(), 0);
+    }
+
+    /// The first `NativeBudget` refusal per instance is flagged (and
+    /// logged); a reservation that succeeds never touches the flag.
+    #[test]
+    fn the_first_native_refusal_is_flagged_once() {
+        use std::sync::atomic::Ordering;
+        let set = JobSet::new(ActorId::next(), 1);
+        assert!(set.reserve_native());
+        assert!(!set.native_refusal_logged.load(Ordering::Relaxed));
+        assert!(!set.reserve_native());
+        assert!(set.native_refusal_logged.load(Ordering::Relaxed));
+        assert!(!set.reserve_native());
+        set.release_native();
+    }
+
+    /// Review P1: a finished keyed job stays replaceable, so its queued
+    /// messages are fenced when a newer job takes the key.
+    #[test]
+    fn replacement_cancels_a_finished_keyed_job() {
+        let set = JobSet::new(ActorId::next(), 1);
+        let old = JobState::new(set.owner(), 1);
+        assert!(set.admit(&old, Some(JobKey::new("k")), false));
+        set.ended(&old);
+        let new = JobState::new(set.owner(), 1);
+        assert!(set.admit(&new, Some(JobKey::new("k")), false));
+        assert!(old.is_cancelled(), "the finished job escaped replacement");
+        assert!(!new.is_cancelled());
+    }
+}

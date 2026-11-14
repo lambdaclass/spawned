@@ -103,6 +103,9 @@ struct State {
     ticks_seen: u32,
     pulses_wanted: u32,
     pulses_seen: u32,
+    /// Trap exits from started(): v0.8 runs stopped() on a parent's
+    /// (supervisor or system) shutdown only for a trapping actor (E3).
+    trap: bool,
 }
 impl State {
     fn new(index: u32, log: Log) -> Self {
@@ -115,7 +118,12 @@ impl State {
             ticks_seen: 0,
             pulses_wanted: 0,
             pulses_seen: 0,
+            trap: false,
         }
+    }
+    fn trapping(mut self) -> Self {
+        self.trap = true;
+        self
     }
     fn echo(&mut self, v: u64) -> Reply {
         self.handled += 1;
@@ -144,6 +152,11 @@ mod tasks_node {
         pub interval: Option<TimerHandle>,
     }
     impl Actor for Node {
+        async fn started(&mut self, ctx: &Context<Self>) {
+            if self.state.trap {
+                ctx.trap_exit(true);
+            }
+        }
         async fn stopped(&mut self, _: &Context<Self>) {
             self.state.log.push(Obs::Stopped(self.state.index));
         }
@@ -156,77 +169,96 @@ mod tasks_node {
         }
     }
     impl Handler<Cmd> for Node {
-        async fn handle(&mut self, cmd: Cmd, ctx: &Context<Self>) -> Reply {
-            match cmd {
-                Cmd::Echo(v) => self.state.echo(v),
-                Cmd::Chain(v) => match self.peers.first() {
-                    None => self.state.leaf(v),
-                    Some(next) => next
-                        .request_with_timeout(Cmd::Chain(chain_arg(v, self.state.index)), LIMIT)
-                        .await
-                        .unwrap_or(Reply::Failed),
-                },
-                Cmd::FanOut(v) => {
-                    let calls =
-                        self.peers.iter().enumerate().map(|(i, peer)| {
+        async fn handle(
+            &mut self,
+            cmd: Cmd,
+            reply: spawned_concurrency::PendingReply<'_, Reply>,
+            ctx: &Context<Self>,
+        ) {
+            let __reply_value: Reply = async {
+                match cmd {
+                    Cmd::Echo(v) => self.state.echo(v),
+                    Cmd::Chain(v) => match self.peers.first() {
+                        None => self.state.leaf(v),
+                        Some(next) => next
+                            .request_with_timeout(Cmd::Chain(chain_arg(v, self.state.index)), LIMIT)
+                            .await
+                            .unwrap_or(Reply::Failed),
+                    },
+                    Cmd::FanOut(v) => {
+                        let calls = self.peers.iter().enumerate().map(|(i, peer)| {
                             peer.request_with_timeout(Cmd::Echo(v + i as u64), LIMIT)
                         });
-                    let mut values = Vec::new();
-                    for reply in futures::future::join_all(calls).await {
-                        match reply {
-                            Ok(Reply::Value(v)) => values.push(v),
-                            _ => return Reply::Failed,
+                        let mut values = Vec::new();
+                        for reply in futures::future::join_all(calls).await {
+                            match reply {
+                                Ok(Reply::Value(v)) => values.push(v),
+                                _ => return Reply::Failed,
+                            }
                         }
+                        Reply::Values(values)
                     }
-                    Reply::Values(values)
-                }
-                Cmd::Work { sender, seq } => {
-                    self.state.work.push((sender, seq));
-                    Reply::Unit
-                }
-                Cmd::Log => Reply::Log(self.state.work.clone()),
-                Cmd::Watch(target) => Reply::Monitor(ctx.monitor(&target)),
-                Cmd::Link(target) => {
-                    ctx.link(&target);
-                    Reply::Unit
-                }
-                Cmd::Trap => {
-                    ctx.trap_exit(true);
-                    Reply::Unit
-                }
-                Cmd::Boom => panic!("cross-backend injected panic"),
-                Cmd::Stop => {
-                    ctx.stop();
-                    Reply::Unit
-                }
-                Cmd::Timers { after, pulses } => {
-                    self.state.ticks_wanted = after;
-                    self.state.pulses_wanted = pulses;
-                    for n in 0..after {
-                        send_after(TICK_STEP * (n + 1), ctx.clone(), Tick(n));
+                    Cmd::Work { sender, seq } => {
+                        self.state.work.push((sender, seq));
+                        Reply::Unit
                     }
-                    if pulses > 0 {
-                        self.interval = Some(send_interval(TICK_STEP, ctx.clone(), Pulse));
+                    Cmd::Log => Reply::Log(self.state.work.clone()),
+                    Cmd::Watch(target) => Reply::Monitor(ctx.monitor(&target)),
+                    Cmd::Link(target) => {
+                        ctx.link(&target);
+                        Reply::Unit
                     }
-                    if self.state.timers_done() {
+                    Cmd::Trap => {
+                        ctx.trap_exit(true);
+                        Reply::Unit
+                    }
+                    Cmd::Boom => panic!("cross-backend injected panic"),
+                    Cmd::Stop => {
                         ctx.stop();
+                        Reply::Unit
                     }
-                    Reply::Unit
+                    Cmd::Timers { after, pulses } => {
+                        self.state.ticks_wanted = after;
+                        self.state.pulses_wanted = pulses;
+                        for n in 0..after {
+                            send_after(TICK_STEP * (n + 1), ctx.clone(), Tick(n));
+                        }
+                        if pulses > 0 {
+                            self.interval = Some(send_interval(TICK_STEP, ctx.clone(), Pulse));
+                        }
+                        if self.state.timers_done() {
+                            ctx.stop();
+                        }
+                        Reply::Unit
+                    }
                 }
             }
+            .await;
+            reply.reply(__reply_value);
         }
     }
     impl Handler<Down> for Node {
-        async fn handle(&mut self, down: Down, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            down: Down,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.state.log.push(Obs::Down {
                 observer: self.state.index,
                 monitor: down.monitor_ref,
                 reason: down.reason,
             });
+            reply.reply(());
         }
     }
     impl Handler<Tick> for Node {
-        async fn handle(&mut self, Tick(n): Tick, ctx: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            Tick(n): Tick,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
             self.state.ticks_seen += 1;
             self.state.log.push(Obs::Tick {
                 node: self.state.index,
@@ -235,25 +267,35 @@ mod tasks_node {
             if self.state.timers_done() {
                 ctx.stop();
             }
+            reply.reply(());
         }
     }
     impl Handler<Pulse> for Node {
-        async fn handle(&mut self, _: Pulse, ctx: &Context<Self>) {
-            if self.state.pulses_seen == self.state.pulses_wanted {
-                return; // A tick already in flight when the interval was cancelled.
-            }
-            self.state.pulses_seen += 1;
-            self.state.log.push(Obs::Pulse {
-                node: self.state.index,
-            });
-            if self.state.pulses_seen == self.state.pulses_wanted {
-                if let Some(timer) = self.interval.take() {
-                    timer.cancellation_token.cancel();
+        async fn handle(
+            &mut self,
+            _: Pulse,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
+            let __reply_value: () = async {
+                if self.state.pulses_seen == self.state.pulses_wanted {
+                    return; // A tick already in flight when the interval was cancelled.
+                }
+                self.state.pulses_seen += 1;
+                self.state.log.push(Obs::Pulse {
+                    node: self.state.index,
+                });
+                if self.state.pulses_seen == self.state.pulses_wanted {
+                    if let Some(timer) = self.interval.take() {
+                        timer.cancellation_token.cancel();
+                    }
+                }
+                if self.state.timers_done() {
+                    ctx.stop();
                 }
             }
-            if self.state.timers_done() {
-                ctx.stop();
-            }
+            .await;
+            reply.reply(__reply_value);
         }
     }
 }
@@ -269,6 +311,11 @@ mod threads_node {
         pub interval: Option<TimerHandle>,
     }
     impl Actor for Node {
+        fn started(&mut self, ctx: &Context<Self>) {
+            if self.state.trap {
+                ctx.trap_exit(true);
+            }
+        }
         fn stopped(&mut self, _: &Context<Self>) {
             self.state.log.push(Obs::Stopped(self.state.index));
         }
@@ -281,79 +328,103 @@ mod threads_node {
         }
     }
     impl Handler<Cmd> for Node {
-        fn handle(&mut self, cmd: Cmd, ctx: &Context<Self>) -> Reply {
-            match cmd {
-                Cmd::Echo(v) => self.state.echo(v),
-                Cmd::Chain(v) => match self.peers.first() {
-                    None => self.state.leaf(v),
-                    Some(next) => next
-                        .request_with_timeout(Cmd::Chain(chain_arg(v, self.state.index)), LIMIT)
-                        .unwrap_or(Reply::Failed),
-                },
-                Cmd::FanOut(v) => {
-                    // Fan out every request before collecting any reply.
-                    let pending: Vec<_> = self
-                        .peers
-                        .iter()
-                        .enumerate()
-                        .map(|(i, peer)| peer.request_raw(Cmd::Echo(v + i as u64)))
-                        .collect();
-                    let mut values = Vec::new();
-                    for rx in pending {
-                        match rx.map(|rx| rx.recv_timeout(LIMIT)) {
-                            Ok(Ok(Reply::Value(v))) => values.push(v),
-                            _ => return Reply::Failed,
+        fn handle(
+            &mut self,
+            cmd: Cmd,
+            reply: spawned_concurrency::PendingReply<'_, Reply>,
+            ctx: &Context<Self>,
+        ) {
+            let __reply_value: Reply = (|| {
+                match cmd {
+                    Cmd::Echo(v) => self.state.echo(v),
+                    Cmd::Chain(v) => match self.peers.first() {
+                        None => self.state.leaf(v),
+                        Some(next) => next
+                            .request_with_timeout(Cmd::Chain(chain_arg(v, self.state.index)), LIMIT)
+                            .unwrap_or(Reply::Failed),
+                    },
+                    Cmd::FanOut(v) => {
+                        // Fan out every request before collecting any reply.
+                        let pending: Vec<_> = self
+                            .peers
+                            .iter()
+                            .enumerate()
+                            .map(|(i, peer)| {
+                                peer.send_request(
+                                    Cmd::Echo(v + i as u64),
+                                    spawned_concurrency::Deadline::after(LIMIT),
+                                )
+                            })
+                            .collect();
+                        let mut values = Vec::new();
+                        for rx in pending {
+                            match rx.map(|rx| rx.recv()) {
+                                Ok(Ok(Reply::Value(v))) => values.push(v),
+                                _ => return Reply::Failed,
+                            }
                         }
+                        Reply::Values(values)
                     }
-                    Reply::Values(values)
-                }
-                Cmd::Work { sender, seq } => {
-                    self.state.work.push((sender, seq));
-                    Reply::Unit
-                }
-                Cmd::Log => Reply::Log(self.state.work.clone()),
-                Cmd::Watch(target) => Reply::Monitor(ctx.monitor(&target)),
-                Cmd::Link(target) => {
-                    ctx.link(&target);
-                    Reply::Unit
-                }
-                Cmd::Trap => {
-                    ctx.trap_exit(true);
-                    Reply::Unit
-                }
-                Cmd::Boom => panic!("cross-backend injected panic"),
-                Cmd::Stop => {
-                    ctx.stop();
-                    Reply::Unit
-                }
-                Cmd::Timers { after, pulses } => {
-                    self.state.ticks_wanted = after;
-                    self.state.pulses_wanted = pulses;
-                    for n in 0..after {
-                        send_after(TICK_STEP * (n + 1), ctx.clone(), Tick(n));
+                    Cmd::Work { sender, seq } => {
+                        self.state.work.push((sender, seq));
+                        Reply::Unit
                     }
-                    if pulses > 0 {
-                        self.interval = Some(send_interval(TICK_STEP, ctx.clone(), Pulse));
+                    Cmd::Log => Reply::Log(self.state.work.clone()),
+                    Cmd::Watch(target) => Reply::Monitor(ctx.monitor(&target)),
+                    Cmd::Link(target) => {
+                        ctx.link(&target);
+                        Reply::Unit
                     }
-                    if self.state.timers_done() {
+                    Cmd::Trap => {
+                        ctx.trap_exit(true);
+                        Reply::Unit
+                    }
+                    Cmd::Boom => panic!("cross-backend injected panic"),
+                    Cmd::Stop => {
                         ctx.stop();
+                        Reply::Unit
                     }
-                    Reply::Unit
+                    Cmd::Timers { after, pulses } => {
+                        self.state.ticks_wanted = after;
+                        self.state.pulses_wanted = pulses;
+                        for n in 0..after {
+                            send_after(TICK_STEP * (n + 1), ctx.clone(), Tick(n));
+                        }
+                        if pulses > 0 {
+                            self.interval = Some(send_interval(TICK_STEP, ctx.clone(), Pulse));
+                        }
+                        if self.state.timers_done() {
+                            ctx.stop();
+                        }
+                        Reply::Unit
+                    }
                 }
-            }
+            })();
+            reply.reply(__reply_value);
         }
     }
     impl Handler<Down> for Node {
-        fn handle(&mut self, down: Down, _: &Context<Self>) {
+        fn handle(
+            &mut self,
+            down: Down,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.state.log.push(Obs::Down {
                 observer: self.state.index,
                 monitor: down.monitor_ref,
                 reason: down.reason,
             });
+            reply.reply(());
         }
     }
     impl Handler<Tick> for Node {
-        fn handle(&mut self, Tick(n): Tick, ctx: &Context<Self>) {
+        fn handle(
+            &mut self,
+            Tick(n): Tick,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
             self.state.ticks_seen += 1;
             self.state.log.push(Obs::Tick {
                 node: self.state.index,
@@ -362,25 +433,34 @@ mod threads_node {
             if self.state.timers_done() {
                 ctx.stop();
             }
+            reply.reply(());
         }
     }
     impl Handler<Pulse> for Node {
-        fn handle(&mut self, _: Pulse, ctx: &Context<Self>) {
-            if self.state.pulses_seen == self.state.pulses_wanted {
-                return;
-            }
-            self.state.pulses_seen += 1;
-            self.state.log.push(Obs::Pulse {
-                node: self.state.index,
-            });
-            if self.state.pulses_seen == self.state.pulses_wanted {
-                if let Some(timer) = self.interval.take() {
-                    timer.cancellation_token.cancel();
+        fn handle(
+            &mut self,
+            _: Pulse,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
+            let __reply_value: () = (|| {
+                if self.state.pulses_seen == self.state.pulses_wanted {
+                    return;
                 }
-            }
-            if self.state.timers_done() {
-                ctx.stop();
-            }
+                self.state.pulses_seen += 1;
+                self.state.log.push(Obs::Pulse {
+                    node: self.state.index,
+                });
+                if self.state.pulses_seen == self.state.pulses_wanted {
+                    if let Some(timer) = self.interval.take() {
+                        timer.cancellation_token.cancel();
+                    }
+                }
+                if self.state.timers_done() {
+                    ctx.stop();
+                }
+            })();
+            reply.reply(__reply_value);
         }
     }
 }
@@ -724,9 +804,9 @@ fn end(env: &Env, actor: &Ref, ending: Ending) -> ExitReason {
         Ending::Stop => assert_eq!(actor.request(Cmd::Stop).unwrap(), Reply::Unit),
         Ending::Panic => assert!(matches!(
             actor.request(Cmd::Boom),
-            Err(ActorError::ActorStopped)
+            Err(ActorError::ActorStopped(ExitReason::Panic(_)))
         )),
-        Ending::Shutdown => child.shutdown(),
+        Ending::Shutdown => child.stop_with_reason(spawned_concurrency::ExitReason::Shutdown),
     }
     env.wait_exit(&child)
 }
@@ -838,7 +918,7 @@ fn monitor_workload(env: &mut Env, endings: &[Ending], double: &[bool]) -> Monit
     for (target, &ending) in targets.iter().zip(endings) {
         end(env, target, ending);
     }
-    // Watching an already-dead target delivers Down immediately.
+    // Watching an already-dead target delivers one Down { NoProc } at once (E4).
     monitors.push(vec![watch(&targets[0])]);
     let expected: usize = monitors.iter().map(Vec::len).sum();
     let count = |events: &[Obs]| {
@@ -921,22 +1001,21 @@ fn affected(strategy: SupervisorStrategy, n: usize, crashed: usize) -> std::ops:
         SupervisorStrategy::OneForOne => crashed..crashed + 1,
         SupervisorStrategy::OneForAll => 0..n,
         SupervisorStrategy::RestForOne => crashed..n,
+        other => unreachable!("strategy {other:?} not under test"),
     }
 }
 fn supervisor_config(strategy: SupervisorStrategy) -> SupervisorConfig {
-    SupervisorConfig {
-        strategy,
-        max_restarts: 10_000,
-        restart_window: Duration::from_secs(60),
-        backoff: Backoff {
-            initial: Duration::ZERO,
-            maximum: Duration::ZERO,
-            jitter: false,
-            seed: Some(1),
-            ..Backoff::default()
-        },
-        ..SupervisorConfig::default()
-    }
+    SupervisorConfig::default()
+        .strategy(strategy)
+        .max_restarts(10_000)
+        .restart_window(Duration::from_secs(60))
+        .backoff(
+            Backoff::default()
+                .initial(Duration::ZERO)
+                .maximum(Duration::ZERO)
+                .jitter(false)
+                .seed(1),
+        )
 }
 fn supervisor_workload(
     env: &mut Env,
@@ -959,7 +1038,7 @@ fn supervisor_workload(
             let log = log.clone();
             tree.add(ChildSpec::new(format!("c{i}"), &group, move |_| {
                 calls[i].fetch_add(1, Ordering::SeqCst);
-                let state = State::new(i as u32, log.clone());
+                let state = State::new(i as u32, log.clone()).trapping();
                 async move {
                     Ok::<_, String>(tasks_node::Node {
                         state,
@@ -1031,8 +1110,13 @@ struct ShutdownOutcome {
 fn shutdown_workload(env: &mut Env, before: u32, sup_children: u32, after: u32) -> ShutdownOutcome {
     let log = Recorder::new();
     let mut ids = Vec::new();
+    // Trapping, so stopped() records the system's shutdown order (E3).
+    let trap = |actor: Ref| {
+        assert_eq!(actor.request(Cmd::Trap).unwrap(), Reply::Unit);
+        actor.child().id()
+    };
     for i in 0..before {
-        ids.push(env.start(i, vec![], &log).child().id());
+        ids.push(trap(env.start(i, vec![], &log)));
     }
     let group = env.group.clone().unwrap();
     let system = env.system.take().unwrap();
@@ -1042,7 +1126,7 @@ fn shutdown_workload(env: &mut Env, before: u32, sup_children: u32, after: u32) 
     for i in 0..sup_children {
         let log = log.clone();
         tree.add(ChildSpec::new(format!("s{i}"), &group, move |_| {
-            let state = State::new(100 + i, log.clone());
+            let state = State::new(100 + i, log.clone()).trapping();
             async move {
                 Ok::<_, String>(tasks_node::Node {
                     state,
@@ -1055,7 +1139,7 @@ fn shutdown_workload(env: &mut Env, before: u32, sup_children: u32, after: u32) 
     }
     let supervisor = (sup_children > 0).then(|| env.bounded(tree.start()).unwrap().unwrap());
     for i in 0..after {
-        ids.push(env.start(200 + i, vec![], &log).child().id());
+        ids.push(trap(env.start(200 + i, vec![], &log)));
     }
     // ActorSystem::shutdown owns ordering; Env::finish must not stop actors first.
     env.started.clear();
@@ -1170,7 +1254,7 @@ proptest! {
         for (i, &ending) in endings.iter().enumerate() {
             prop_assert!(outcome.downs[i].iter().all(|r| *r == expected_reason(ending)));
         }
-        prop_assert_eq!(&outcome.downs[endings.len()], &vec![expected_reason(endings[0])]);
+        prop_assert_eq!(&outcome.downs[endings.len()], &vec![ExitReason::NoProc]);
     }
 
     #[test]
@@ -1281,10 +1365,16 @@ mod early_stop {
         }
     }
     impl spawned_concurrency::tasks::Handler<Block> for Hooks {
-        async fn handle(&mut self, block: Block, _: &spawned_concurrency::tasks::Context<Self>) {
+        async fn handle(
+            &mut self,
+            block: Block,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &spawned_concurrency::tasks::Context<Self>,
+        ) {
             // Deliberately blocks the only async worker of the group.
             let _ = block.1.send(());
             let _ = block.0.lock().unwrap().recv_timeout(LIMIT);
+            reply.reply(());
         }
     }
     impl spawned_concurrency::threads::Actor for Hooks {

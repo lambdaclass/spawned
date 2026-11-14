@@ -37,7 +37,7 @@ jobs:
         run: cargo test --locked --verbose
       - name: Run capability examples
         run: |
-          for example in execution_groups execution_profiles supervision_recovery supervision_tree dedicated_thread runtime_isolation byte_budget_pipeline timeout_outcomes graceful_drain protocol_timeouts streams_and_recipients registrations_and_fakes native_lifecycle coordinated_shutdown test_kit; do
+          for example in execution_groups execution_profiles supervision_recovery supervision_tree dedicated_thread runtime_isolation byte_budget_pipeline timeout_outcomes graceful_drain protocol_timeouts streams_and_recipients registrations_and_fakes native_lifecycle coordinated_shutdown test_kit exit_signals; do
             timeout 60s cargo run --locked -p spawned-capability-examples --bin "$example"
           done
           timeout 60s cargo run --locked -p spawned-capability-examples --features metrics --bin framework_metrics
@@ -95,6 +95,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: sim
+      - name: Deadline service stays in its owner's clock domain
+        run: cargo test --locked -p spawned-concurrency --lib reply::registry::tests::deadline_service_ -- --test-threads=1
       - name: Simulated suites, one test per process
         run: python3 scripts/run-sim-tests.py -p spawned-concurrency -p spawned-rt:lib --jobs 4 --timeout 120
       - name: Simulated example test (deterministic_simulation)

@@ -286,35 +286,44 @@ mod cancellation_tests {
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn first_hook_poll_after_admission_closes_is_normal_cancellation() {
-        let system = ActorSystem::new().unwrap();
-        let group = system.async_group("closed-nested-hook", 1).unwrap();
-        let (entered_tx, entered) = tokio::sync::oneshot::channel();
-        let (release, release_rx) = std::sync::mpsc::channel();
-        let (scope, lease) = group.reserve(None).unwrap();
-        let blocker = scope.handle.spawn(async move {
-            let _ = entered_tx.send(());
-            release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        });
-        entered.await.unwrap();
-        let context_owner = ActorRef::spawn_managed(
-            adapter(system.supervisor(SupervisorConfig::default()).unwrap()),
-            scope.clone(),
-            lease,
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::first_hook_poll_after_admission_closes_is_normal_cancellation"
+            ),
+            async move {
+                let system = ActorSystem::new().unwrap();
+                let group = system.async_group("closed-nested-hook", 1).unwrap();
+                let (entered_tx, entered) = tokio::sync::oneshot::channel();
+                let (release, release_rx) = std::sync::mpsc::channel();
+                let (scope, lease) = group.reserve(None).unwrap();
+                let blocker = scope.handle.spawn(async move {
+                    let _ = entered_tx.send(());
+                    release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                });
+                entered.await.unwrap();
+                let context_owner = ActorRef::spawn_managed(
+                    adapter(system.supervisor(SupervisorConfig::default()).unwrap()),
+                    scope.clone(),
+                    lease,
+                )
+                .unwrap();
+                let mut hook = adapter(system.supervisor(SupervisorConfig::default()).unwrap());
+                let cleanup = hook.builder.as_ref().unwrap().core.clone();
+                scope.close_admission();
+                // Exercise the narrow gap between the actor's can_start check and the
+                // first poll of the nested started hook, with real closed scope state.
+                hook.started(&context_owner.context()).await;
+                assert!(*cleanup.done.borrow());
+                assert!(cleanup.failure.lock().unwrap().is_none());
+                scope.stop(ExitReason::Shutdown);
+                release.send(()).unwrap();
+                blocker.await.unwrap();
+                context_owner.child_handle().wait_exit_async().await;
+                assert!(system.shutdown(Duration::from_secs(5)).await.complete);
+            },
         )
-        .unwrap();
-        let mut hook = adapter(system.supervisor(SupervisorConfig::default()).unwrap());
-        let cleanup = hook.builder.as_ref().unwrap().core.clone();
-        scope.close_admission();
-        // Exercise the narrow gap between the actor's can_start check and the
-        // first poll of the nested started hook, with real closed scope state.
-        hook.started(&context_owner.context()).await;
-        assert!(*cleanup.done.borrow());
-        assert!(cleanup.failure.lock().unwrap().is_none());
-        scope.stop(ExitReason::Shutdown);
-        release.send(()).unwrap();
-        blocker.await.unwrap();
-        context_owner.child_handle().wait_exit_async().await;
-        assert!(system.shutdown(Duration::from_secs(5)).await.complete);
+        .await;
     }
 }
 
@@ -347,45 +356,63 @@ mod resolve_and_drop_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn resolve_requires_the_current_id_and_an_open_tree() {
-        let limit = Duration::from_secs(5);
-        let system = ActorSystem::new().unwrap();
-        let tree = running_tree(&system).await;
-        let (current, other) = (ActorId::next(), ActorId::next());
-        let ready: Ready = Arc::new(Mutex::new(Some((current, tree.clone()))));
-        assert!(resolve(&ready, current).is_ok());
-        // An open tree published for another adapter instance never resolves.
-        assert!(resolve(&ready, other).is_err());
-        tree.stop();
-        tree.join().await;
-        // The current adapter's tree, once closed, no longer resolves either.
-        assert!(resolve(&ready, current).is_err());
-        assert!(system.shutdown(limit).await.complete);
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::resolve_requires_the_current_id_and_an_open_tree"
+            ),
+            async move {
+                let limit = Duration::from_secs(5);
+                let system = ActorSystem::new().unwrap();
+                let tree = running_tree(&system).await;
+                let (current, other) = (ActorId::next(), ActorId::next());
+                let ready: Ready = Arc::new(Mutex::new(Some((current, tree.clone()))));
+                assert!(resolve(&ready, current).is_ok());
+                // An open tree published for another adapter instance never resolves.
+                assert!(resolve(&ready, other).is_err());
+                tree.stop();
+                tree.join().await;
+                // The current adapter's tree, once closed, no longer resolves either.
+                assert!(resolve(&ready, current).is_err());
+                assert!(system.shutdown(limit).await.complete);
+            },
+        )
+        .await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dropped_adapter_stops_its_tree_and_clears_only_its_own_entry() {
-        let limit = Duration::from_secs(5);
-        let system = ActorSystem::new().unwrap();
-        let (mine, newer) = (ActorId::next(), ActorId::next());
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::dropped_adapter_stops_its_tree_and_clears_only_its_own_entry"
+            ),
+            async move {
+                let limit = Duration::from_secs(5);
+                let system = ActorSystem::new().unwrap();
+                let (mine, newer) = (ActorId::next(), ActorId::next());
 
-        // Its own published entry is cleared and its subtree stopped.
-        let tree = running_tree(&system).await;
-        let ready: Ready = Arc::new(Mutex::new(Some((mine, tree.clone()))));
-        drop(adapter(Some(tree.clone()), &ready, Some(mine)));
-        assert!(system::lock(&ready).is_none());
-        assert!(!tree.core.gate.is_open());
+                // Its own published entry is cleared and its subtree stopped.
+                let tree = running_tree(&system).await;
+                let ready: Ready = Arc::new(Mutex::new(Some((mine, tree.clone()))));
+                drop(adapter(Some(tree.clone()), &ready, Some(mine)));
+                assert!(system::lock(&ready).is_none());
+                assert!(!tree.core.gate.is_open());
 
-        // A newer generation's entry survives an older adapter's drop.
-        let replacement = running_tree(&system).await;
-        let ready: Ready = Arc::new(Mutex::new(Some((newer, replacement.clone()))));
-        drop(adapter(None, &ready, Some(mine)));
-        assert_eq!(
-            system::lock(&ready).as_ref().map(|(id, _)| *id),
-            Some(newer)
-        );
-        assert!(replacement.core.gate.is_open());
-        replacement.stop();
-        assert!(system.shutdown(limit).await.complete);
+                // A newer generation's entry survives an older adapter's drop.
+                let replacement = running_tree(&system).await;
+                let ready: Ready = Arc::new(Mutex::new(Some((newer, replacement.clone()))));
+                drop(adapter(None, &ready, Some(mine)));
+                assert_eq!(
+                    system::lock(&ready).as_ref().map(|(id, _)| *id),
+                    Some(newer)
+                );
+                assert!(replacement.core.gate.is_open());
+                replacement.stop();
+                assert!(system.shutdown(limit).await.complete);
+            },
+        )
+        .await;
     }
 }
 
@@ -417,56 +444,62 @@ mod stop_panic_tests {
     /// the adapter's lifecycle helper races it to close the subtree first.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stopped_hook_stops_the_running_subtree() {
-        use futures::FutureExt;
-        let limit = Duration::from_secs(10);
-        let system = ActorSystem::new().unwrap();
-        let group = system.async_group("nested-stop-panic", 1).unwrap();
-        let published: Arc<Mutex<Option<SupervisedChild<Leaf>>>> = Arc::default();
-        let expose = published.clone();
-        let placement = group.clone();
-        let mut root = system.supervisor(SupervisorConfig::default()).unwrap();
-        let subtree = root
-            .add_supervisor(SupervisorSpec::new(
-                "subtree",
-                &group,
-                SupervisorConfig::default(),
-                move |tree| {
-                    let leaf = tree.add(ChildSpec::new("leaf", &placement, |_| async {
-                        Ok::<_, String>(Leaf)
-                    }))?;
-                    *system::lock(&expose) = Some(leaf);
-                    Ok::<_, SupervisorError>(())
-                },
-            ))
-            .unwrap();
-        let root = root.start().await.unwrap();
-        let leaf = system::lock(&published).clone().unwrap();
-        let mut waiter = Box::pin(leaf.wait_for_generation(leaf.snapshot().generation));
-        let waker = std::task::Waker::from(Arc::new(PanicOnWake(AtomicBool::new(false))));
-        let mut cx = std::task::Context::from_waker(&waker);
-        assert!(waiter.as_mut().poll(&mut cx).is_pending());
+        crate::test_wait::within(
+            concat!(module_path!(), "::stopped_hook_stops_the_running_subtree"),
+            async move {
+                use futures::FutureExt;
+                let limit = Duration::from_secs(10);
+                let system = ActorSystem::new().unwrap();
+                let group = system.async_group("nested-stop-panic", 1).unwrap();
+                let published: Arc<Mutex<Option<SupervisedChild<Leaf>>>> = Arc::default();
+                let expose = published.clone();
+                let placement = group.clone();
+                let mut root = system.supervisor(SupervisorConfig::default()).unwrap();
+                let subtree = root
+                    .add_supervisor(SupervisorSpec::new(
+                        "subtree",
+                        &group,
+                        SupervisorConfig::default(),
+                        move |tree| {
+                            let leaf = tree.add(ChildSpec::new("leaf", &placement, |_| async {
+                                Ok::<_, String>(Leaf)
+                            }))?;
+                            *system::lock(&expose) = Some(leaf);
+                            Ok::<_, SupervisorError>(())
+                        },
+                    ))
+                    .unwrap();
+                let root = root.start().await.unwrap();
+                let leaf = system::lock(&published).clone().unwrap();
+                let mut waiter = Box::pin(leaf.wait_for_generation(leaf.snapshot().generation));
+                let waker = std::task::Waker::from(Arc::new(PanicOnWake(AtomicBool::new(false))));
+                let mut cx = std::task::Context::from_waker(&waker);
+                assert!(waiter.as_mut().poll(&mut cx).is_pending());
 
-        let inner = subtree.current().unwrap();
-        let ctx = subtree.child.current().unwrap().context();
-        let mut hook = SupervisorActor {
-            builder: None,
-            running: Some(inner.clone()),
-            ready: Arc::default(),
-            id: None,
-            shutdown_grace: limit,
-            parent_core: std::sync::Weak::new(),
-        };
-        let unwound = AssertUnwindSafe(hook.stopped(&ctx)).catch_unwind().await;
-        let payload = unwound.expect_err("stopped() did not stop the running subtree");
-        assert_eq!(
-            crate::error::panic_message(&*payload),
-            "waiter waker panicked"
-        );
-        // The backstop stop in Drop is idempotent once the waiter has fired.
-        drop(hook);
-        assert!(!inner.core.gate.is_open());
-        drop(waiter);
-        drop(root);
-        assert!(system.shutdown(limit).await.complete);
+                let inner = subtree.current().unwrap();
+                let ctx = subtree.child.current().unwrap().context();
+                let mut hook = SupervisorActor {
+                    builder: None,
+                    running: Some(inner.clone()),
+                    ready: Arc::default(),
+                    id: None,
+                    shutdown_grace: limit,
+                    parent_core: std::sync::Weak::new(),
+                };
+                let unwound = AssertUnwindSafe(hook.stopped(&ctx)).catch_unwind().await;
+                let payload = unwound.expect_err("stopped() did not stop the running subtree");
+                assert_eq!(
+                    crate::error::panic_message(&*payload),
+                    "waiter waker panicked"
+                );
+                // The backstop stop in Drop is idempotent once the waiter has fired.
+                drop(hook);
+                assert!(!inner.core.gate.is_open());
+                drop(waiter);
+                drop(root);
+                assert!(system.shutdown(limit).await.complete);
+            },
+        )
+        .await;
     }
 }

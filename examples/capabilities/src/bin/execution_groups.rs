@@ -12,15 +12,25 @@ impl Message for Double {
 struct Worker;
 impl Actor for Worker {}
 impl Handler<Double> for Worker {
-    async fn handle(&mut self, msg: Double, _: &Context<Self>) -> u64 {
-        msg.0 * 2
+    async fn handle(
+        &mut self,
+        msg: Double,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(msg.0 * 2);
     }
 }
 struct Router(ActorRef<Worker>);
 impl Actor for Router {}
 impl Handler<Double> for Router {
-    async fn handle(&mut self, msg: Double, _: &Context<Self>) -> u64 {
-        self.0.request(msg).await.unwrap()
+    async fn handle(
+        &mut self,
+        msg: Double,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(self.0.request(msg).await.unwrap());
     }
 }
 #[tokio::main(flavor = "current_thread")]

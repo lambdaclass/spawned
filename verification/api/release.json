@@ -1,0 +1,5 @@
+{
+  "baseline": "v0.7.3",
+  "release_type": "major",
+  "reason": "0.8 is a breaking pre-1.0 release (0.7 -> 0.8, the 0.x counterpart of a major release): Handler::handle takes the reply obligation, Receiver gained send_request and is sealed, enums and read-only structs became non_exhaustive, config structs gained builders, and the job, request and deadline APIs were consolidated. Every break is a row of docs/MIGRATION.md's 0.7 to 0.8 call-site table. The tool is told `major`: it then skips its breaking-change lints and only checks that the current and baseline rustdoc APIs build in every profile. Return to release_type patch (baseline v0.8.0) once 0.8.0 is tagged."
+}

@@ -25,16 +25,12 @@ use std::{
 mod tree_record;
 const LIMIT: Duration = Duration::from_secs(5);
 fn policy(retries: usize) -> SupervisorConfig {
-    SupervisorConfig {
-        max_restarts: retries,
-        backoff: Backoff {
-            initial: Duration::from_millis(1),
-            maximum: Duration::from_millis(4),
-            jitter: false,
-            ..Backoff::default()
-        },
-        ..SupervisorConfig::default()
-    }
+    SupervisorConfig::default().max_restarts(retries).backoff(
+        Backoff::default()
+            .initial(Duration::from_millis(1))
+            .maximum(Duration::from_millis(4))
+            .jitter(false),
+    )
 }
 struct Next;
 impl Message for Next {
@@ -47,14 +43,29 @@ impl Message for Crash {
 struct Counter(usize);
 impl Actor for Counter {}
 impl Handler<Next> for Counter {
-    async fn handle(&mut self, _: Next, _: &Context<Self>) -> usize {
-        self.0 += 1;
-        self.0
+    async fn handle(
+        &mut self,
+        _: Next,
+        reply: spawned_concurrency::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: usize = {
+            self.0 += 1;
+            self.0
+        };
+        reply.reply(__reply_value);
     }
 }
 impl Handler<Crash> for Counter {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("nested leaf failed");
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("nested leaf failed");
+        }
     }
 }
 type Published = Arc<Mutex<Option<SupervisedChild<Counter>>>>;
@@ -212,7 +223,9 @@ async fn failed_nested_startup_is_cleaned_before_parent_retries() {
                     "fallible",
                     &placement,
                     move |_| async move {
-                        if attempt == 0 {
+                        // v0.8 (S1): the parent's first start of the nested
+                        // tree is not retried, so its replacement fails.
+                        if attempt == 1 {
                             Err("nested initial construction failed".to_string())
                         } else {
                             Ok(Counter(0))
@@ -227,8 +240,13 @@ async fn failed_nested_startup_is_cleaned_before_parent_retries() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
-    assert_eq!(nested.snapshot().generation, 2);
+    nested.current().unwrap().stop();
+    spawned_rt::tasks::timeout(LIMIT, nested.wait_for_generation(2))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    assert_eq!(nested.snapshot().generation, 3);
     assert!(nested.current().is_ok());
     assert!(supervisor.shutdown(LIMIT).await.complete);
     assert!(system.shutdown(LIMIT).await.complete);
@@ -413,6 +431,11 @@ async fn native_leaf_helper_blocks_subtree_replacement_and_remains_owned_after_a
 
 struct HeldStop(Arc<tokio::sync::Notify>);
 impl Actor for HeldStop {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        // v0.8: stopped() runs on a parent's shutdown only for a trapping
+        // actor (E3, decision 2).
+        ctx.trap_exit(true);
+    }
     async fn stopped(&mut self, _: &Context<Self>) {
         self.0.notified().await;
     }
@@ -578,8 +601,15 @@ impl Actor for MaybeStop {
     }
 }
 impl Handler<Crash> for MaybeStop {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("nested leaf failed");
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("nested leaf failed");
+        }
     }
 }
 

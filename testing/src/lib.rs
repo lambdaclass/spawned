@@ -17,10 +17,10 @@
 //! - **Harness helpers**: [`tasks::settle`], [`tasks::exit_within`],
 //!   [`tasks::wait_for_generation`], [`tasks::shutdown_system`] and
 //!   [`tasks::TestSystem`] turn hangs into test failures with a report.
-//! - **Fault injection**: [`faults::exit`] stops any actor with a chosen
-//!   [`ExitReason`](spawned_concurrency::ExitReason) (`Panic` travels
-//!   through a link, while `Kill` is direct; an injected panic surfaces as
-//!   `Panic("panic in handler: ..")` and the default panic hook prints it);
+//! - **Fault injection**: [`faults::exit`] sends an exact exit signal with a
+//!   chosen [`ExitReason`](spawned_concurrency::ExitReason)
+//!   (`ChildHandle::exit`; `Kill` ends the target `Killed`, `Normal` is
+//!   ignored by a non-trapping target, a trapping target gets an `Exit`);
 //!   [`tasks::restart_child`] crashes a supervised child and returns its
 //!   replacement; mocks delay, discard or crash on chosen messages.
 //!
@@ -53,3 +53,32 @@ pub mod tasks;
 pub mod threads;
 
 pub use inbox::{Outcome, Received};
+
+/// A `PendingReply` and its receiver for calling a manual
+/// `Handler::handle` directly in a test, without an actor:
+///
+/// ```ignore
+/// let (reply, rx) = spawned_test::reply_pair::<u64>();
+/// actor.handle(GetCount, reply, &ctx).await;
+/// assert_eq!(rx.await.unwrap(), 3);
+/// ```
+///
+/// The reply has no deadline. Await (or `recv`) the receiver only after
+/// driving every turn the reply depends on: a deferred reply answered by a
+/// later message is never answered while the test waits for it first.
+pub fn reply_pair<R: Send + 'static>() -> (
+    spawned_concurrency::PendingReply<'static, R>,
+    spawned_concurrency::ReplyReceiver<R>,
+) {
+    spawned_concurrency::__private::reply_pair(spawned_concurrency::Deadline::Never)
+}
+
+/// The `PendingReply` a handler receives for a sent message (no caller),
+/// for calling a manual `Handler::handle` directly as a send:
+///
+/// ```ignore
+/// actor.handle(Tick, spawned_test::detached_reply(), &ctx).await;
+/// ```
+pub fn detached_reply<R: Send + 'static>() -> spawned_concurrency::PendingReply<'static, R> {
+    spawned_concurrency::__private::detached_reply()
+}

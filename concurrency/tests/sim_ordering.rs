@@ -28,7 +28,6 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::time::Duration;
-use tokio::sync::oneshot::error::TryRecvError;
 
 const LIMIT: Duration = Duration::from_secs(5);
 
@@ -70,17 +69,35 @@ impl Message for Echo {
     type Result = (usize, usize);
 }
 impl Handler<Put> for Sink {
-    async fn handle(&mut self, Put(sender, seq): Put, _: &Context<Self>) {
-        push(&self.0, (sender, seq));
+    async fn handle(
+        &mut self,
+        Put(sender, seq): Put,
+        __reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        let __value: () = async {
+            push(&self.0, (sender, seq));
+        }
+        .await;
+        __reply.reply(__value);
     }
 }
 impl Handler<Echo> for Sink {
-    async fn handle(&mut self, Echo(sender, seq): Echo, _: &Context<Self>) -> (usize, usize) {
-        push(&self.0, (sender, seq));
-        // Hold the turn across an await so a reply could be misrouted only
-        // if replies were not bound to their own request.
-        yield_now().await;
-        (sender, seq)
+    async fn handle(
+        &mut self,
+        Echo(sender, seq): Echo,
+        __reply: spawned_concurrency::PendingReply<'_, (usize, usize)>,
+        _: &Context<Self>,
+    ) {
+        let __value: (usize, usize) = async {
+            push(&self.0, (sender, seq));
+            // Hold the turn across an await so a reply could be misrouted only
+            // if replies were not bound to their own request.
+            yield_now().await;
+            (sender, seq)
+        }
+        .await;
+        __reply.reply(__value);
     }
 }
 
@@ -195,11 +212,20 @@ impl Message for Work {
     type Result = usize;
 }
 impl Handler<Work> for Turns {
-    async fn handle(&mut self, Work(id): Work, _: &Context<Self>) -> usize {
-        push(&self.0, Turn::Begin(id));
-        yields(2).await;
-        push(&self.0, Turn::End(id));
-        id
+    async fn handle(
+        &mut self,
+        Work(id): Work,
+        __reply: spawned_concurrency::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
+        let __value: usize = async {
+            push(&self.0, Turn::Begin(id));
+            yields(2).await;
+            push(&self.0, Turn::End(id));
+            id
+        }
+        .await;
+        __reply.reply(__value);
     }
 }
 
@@ -243,13 +269,11 @@ async fn turns_body() {
     // L7: join() returned, so stopped() has completed and new work is refused.
     let events = snapshot(&events);
     assert_eq!(events.last(), Some(&Turn::StoppedEnd), "L7: {events:?}");
-    assert!(matches!(
-        actor.send(Work(99)),
-        Err(ActorError::ActorStopped)
-    ));
+    // 0.8: past the death point a send or request is `NoProc`.
+    assert!(matches!(actor.send(Work(99)), Err(ActorError::NoProc)));
     assert!(matches!(
         actor.request_with_timeout(Work(99), LIMIT).await,
-        Err(ActorError::ActorStopped)
+        Err(ActorError::NoProc)
     ));
 
     // L1/M1: started, then whole non-overlapping turns, then stopped.
@@ -284,11 +308,15 @@ async fn turns_body() {
                 assert!(handled.contains(&id), "R1: Ok without a turn for {id}");
             }
             Ok(None) => {}
-            Err(ActorError::ActorStopped) => {
+            Err(ActorError::ActorStopped(_)) => {
                 assert!(
                     !handled.contains(&id),
                     "R1: ran but caller got ActorStopped"
                 );
+            }
+            // Sent after the death point (0.8): never admitted.
+            Err(ActorError::NoProc) => {
+                assert!(!handled.contains(&id), "R1: ran but caller got NoProc");
             }
             Err(other) => panic!("R1: unexpected outcome {other:?} for {id}"),
         }
@@ -350,21 +378,48 @@ impl Actor for Holder {
     }
 }
 impl Handler<Hold> for Holder {
-    async fn handle(&mut self, hold: Hold, _: &Context<Self>) {
-        push(&self.0, Seen::Hold);
-        let _ = hold.entered.send(());
-        let _ = hold.release.await;
+    async fn handle(
+        &mut self,
+        hold: Hold,
+        __reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        let __value: () = async {
+            push(&self.0, Seen::Hold);
+            let _ = hold.entered.send(());
+            let _ = hold.release.await;
+        }
+        .await;
+        __reply.reply(__value);
     }
 }
 impl Handler<Queued> for Holder {
-    async fn handle(&mut self, _: Queued, _: &Context<Self>) {
-        push(&self.0, Seen::Queued);
+    async fn handle(
+        &mut self,
+        _: Queued,
+        __reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        let __value: () = async {
+            push(&self.0, Seen::Queued);
+        }
+        .await;
+        __reply.reply(__value);
     }
 }
 impl Handler<Asked> for Holder {
-    async fn handle(&mut self, _: Asked, _: &Context<Self>) -> u64 {
-        push(&self.0, Seen::Asked);
-        1
+    async fn handle(
+        &mut self,
+        _: Asked,
+        __reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        let __value: u64 = async {
+            push(&self.0, Seen::Asked);
+            1
+        }
+        .await;
+        __reply.reply(__value);
     }
 }
 
@@ -398,7 +453,14 @@ async fn stop_discards_body() {
                     // D3: accepted even after the stop request.
                     actor.send(Queued(Payload(drops.clone()))).unwrap();
                 } else {
-                    replies.push(actor.request_raw(Asked(Payload(drops.clone()))).unwrap());
+                    replies.push(
+                        actor
+                            .send_request(
+                                Asked(Payload(drops.clone())),
+                                spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+                            )
+                            .unwrap(),
+                    );
                 }
                 yield_now().await;
             }
@@ -430,7 +492,7 @@ async fn stop_discards_body() {
     );
     for mut reply in replies {
         assert!(
-            matches!(reply.try_recv(), Err(TryRecvError::Closed)),
+            matches!(reply.try_recv(), Some(Err(ActorError::ActorStopped(_)))),
             "D4/L7: a queued reply sender outlived the exit"
         );
     }
@@ -443,7 +505,7 @@ async fn stop_discards_body() {
     assert!(
         matches!(
             actor.send(Queued(Payload(drops.clone()))),
-            Err(ActorError::ActorStopped)
+            Err(ActorError::NoProc)
         ),
         "L7: send after exit"
     );
@@ -487,10 +549,19 @@ impl Message for Watch {
     type Result = ();
 }
 impl Handler<Watch> for Observer {
-    async fn handle(&mut self, Watch(target): Watch, ctx: &Context<Self>) {
-        ctx.trap_exit(true);
-        ctx.link(&target);
-        ctx.monitor(&target);
+    async fn handle(
+        &mut self,
+        Watch(target): Watch,
+        __reply: spawned_concurrency::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
+        let __value: () = async {
+            ctx.trap_exit(true);
+            ctx.link(&target);
+            ctx.monitor(&target);
+        }
+        .await;
+        __reply.reply(__value);
     }
 }
 struct Ping(usize);
@@ -498,8 +569,17 @@ impl Message for Ping {
     type Result = ();
 }
 impl Handler<Ping> for Observer {
-    async fn handle(&mut self, Ping(i): Ping, _: &Context<Self>) {
-        push(&self.0, Notice::Ping(i));
+    async fn handle(
+        &mut self,
+        Ping(i): Ping,
+        __reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        let __value: () = async {
+            push(&self.0, Notice::Ping(i));
+        }
+        .await;
+        __reply.reply(__value);
     }
 }
 struct Noise;
@@ -507,14 +587,32 @@ impl Message for Noise {
     type Result = ();
 }
 impl Handler<Noise> for Observer {
-    async fn handle(&mut self, _: Noise, _: &Context<Self>) {
-        push(&self.0, Notice::Noise);
+    async fn handle(
+        &mut self,
+        _: Noise,
+        __reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        let __value: () = async {
+            push(&self.0, Notice::Noise);
+        }
+        .await;
+        __reply.reply(__value);
     }
 }
 impl Handler<Down> for Observer {
-    async fn handle(&mut self, down: Down, _: &Context<Self>) {
-        push(&self.0, Notice::Down(down.reason));
-        let _ = self.1.send(());
+    async fn handle(
+        &mut self,
+        down: Down,
+        __reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        let __value: () = async {
+            push(&self.0, Notice::Down(down.reason));
+            let _ = self.1.send(());
+        }
+        .await;
+        __reply.reply(__value);
     }
 }
 
@@ -539,17 +637,26 @@ impl Message for Burst {
     type Result = ();
 }
 impl Handler<Burst> for Source {
-    async fn handle(&mut self, burst: Burst, ctx: &Context<Self>) {
-        let _ = burst.entered.send(());
-        for i in 0..PINGS {
-            burst.to.send(Ping(i)).unwrap();
-            yield_now().await;
+    async fn handle(
+        &mut self,
+        burst: Burst,
+        __reply: spawned_concurrency::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
+        let __value: () = async {
+            let _ = burst.entered.send(());
+            for i in 0..PINGS {
+                burst.to.send(Ping(i)).unwrap();
+                yield_now().await;
+            }
+            match burst.end {
+                End::SelfStop => ctx.stop_with_reason(ExitReason::Shutdown),
+                End::Panic => panic!("source panicked"),
+                End::External => {}
+            }
         }
-        match burst.end {
-            End::SelfStop => ctx.stop_with_reason(ExitReason::Shutdown),
-            End::Panic => panic!("source panicked"),
-            End::External => {}
-        }
+        .await;
+        __reply.reply(__value);
     }
 }
 

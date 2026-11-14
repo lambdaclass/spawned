@@ -92,51 +92,59 @@ impl Message for Inspect {
     type Result = Observation;
 }
 impl Handler<Inspect> for Probe {
-    async fn handle(&mut self, operation: Inspect, _: &Context<Self>) -> Observation {
-        let root = self.assert_root();
-        let handle = tokio::runtime::Handle::current();
-        let workers = handle.metrics().num_workers();
-        let flavor = handle.runtime_flavor();
-        let worker = match operation {
-            Inspect::SpawnBlocking => tokio::time::timeout(
-                LIMIT,
-                tokio::task::spawn_blocking(|| thread::current().id()),
-            )
-            .await
-            .unwrap()
-            .unwrap(),
-            Inspect::Yield => {
-                tokio::task::yield_now().await;
-                tokio::time::timeout(LIMIT, tokio::spawn(timed_helper()))
-                    .await
-                    .unwrap()
-                    .unwrap()
-            }
-            Inspect::BlockingReceive | Inspect::BlockInPlace => {
-                let (tx, rx) = mpsc::channel();
-                let helper = tokio::spawn(async move {
-                    let worker = timed_helper().await;
-                    tx.send(worker).unwrap();
-                });
-                // The dedicated root synchronously waits for an async helper.
-                // A current-thread runtime cannot make progress here, but the
-                // bounded receive still lets that regression terminate.
-                let worker = if matches!(operation, Inspect::BlockInPlace) {
-                    tokio::task::block_in_place(|| rx.recv_timeout(LIMIT).unwrap())
-                } else {
-                    rx.recv_timeout(LIMIT).unwrap()
-                };
-                tokio::time::timeout(LIMIT, helper).await.unwrap().unwrap();
-                worker
+    async fn handle(
+        &mut self,
+        operation: Inspect,
+        reply: spawned_concurrency::PendingReply<'_, Observation>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: Observation = {
+            let root = self.assert_root();
+            let handle = tokio::runtime::Handle::current();
+            let workers = handle.metrics().num_workers();
+            let flavor = handle.runtime_flavor();
+            let worker = match operation {
+                Inspect::SpawnBlocking => tokio::time::timeout(
+                    LIMIT,
+                    tokio::task::spawn_blocking(|| thread::current().id()),
+                )
+                .await
+                .unwrap()
+                .unwrap(),
+                Inspect::Yield => {
+                    tokio::task::yield_now().await;
+                    tokio::time::timeout(LIMIT, tokio::spawn(timed_helper()))
+                        .await
+                        .unwrap()
+                        .unwrap()
+                }
+                Inspect::BlockingReceive | Inspect::BlockInPlace => {
+                    let (tx, rx) = mpsc::channel();
+                    let helper = tokio::spawn(async move {
+                        let worker = timed_helper().await;
+                        tx.send(worker).unwrap();
+                    });
+                    // The dedicated root synchronously waits for an async helper.
+                    // A current-thread runtime cannot make progress here, but the
+                    // bounded receive still lets that regression terminate.
+                    let worker = if matches!(operation, Inspect::BlockInPlace) {
+                        tokio::task::block_in_place(|| rx.recv_timeout(LIMIT).unwrap())
+                    } else {
+                        rx.recv_timeout(LIMIT).unwrap()
+                    };
+                    tokio::time::timeout(LIMIT, helper).await.unwrap().unwrap();
+                    worker
+                }
+            };
+            self.assert_root();
+            Observation {
+                root,
+                worker,
+                workers,
+                flavor,
             }
         };
-        self.assert_root();
-        Observation {
-            root,
-            worker,
-            workers,
-            flavor,
-        }
+        reply.reply(__reply_value);
     }
 }
 
@@ -147,9 +155,17 @@ impl Message for Ping {
 struct Child;
 impl Actor for Child {}
 impl Handler<Ping> for Child {
-    async fn handle(&mut self, _: Ping, _: &Context<Self>) -> u64 {
-        tokio::time::sleep(Duration::from_millis(1)).await;
-        42
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: u64 = {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            42
+        };
+        reply.reply(__reply_value);
     }
 }
 struct Nested;
@@ -157,16 +173,24 @@ impl Message for Nested {
     type Result = u64;
 }
 impl Handler<Nested> for Probe {
-    async fn handle(&mut self, _: Nested, _: &Context<Self>) -> u64 {
-        self.assert_root();
-        // Default Async startup uses this actor's isolated runtime.
-        let child = Child.start();
-        let _cleanup = StopOnDrop(child.child_handle());
-        let answer = child.request_with_timeout(Ping, LIMIT).await.unwrap();
-        child.child_handle().stop();
-        tokio::time::timeout(LIMIT, child.join()).await.unwrap();
-        self.assert_root();
-        answer
+    async fn handle(
+        &mut self,
+        _: Nested,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: u64 = {
+            self.assert_root();
+            // Default Async startup uses this actor's isolated runtime.
+            let child = Child.start();
+            let _cleanup = StopOnDrop(child.child_handle());
+            let answer = child.request_with_timeout(Ping, LIMIT).await.unwrap();
+            child.child_handle().stop();
+            tokio::time::timeout(LIMIT, child.join()).await.unwrap();
+            self.assert_root();
+            answer
+        };
+        reply.reply(__reply_value);
     }
 }
 
@@ -175,20 +199,28 @@ impl Message for Exchange {
     type Result = u64;
 }
 impl Handler<Exchange> for Probe {
-    async fn handle(&mut self, message: Exchange, _: &Context<Self>) -> u64 {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        self.assert_root();
-        let answer = tokio::time::timeout(LIMIT, async {
-            let mut stream = tokio::net::TcpStream::connect(message.0).await.unwrap();
-            stream.write_all(&42u64.to_le_bytes()).await.unwrap();
-            let mut bytes = [0; 8];
-            stream.read_exact(&mut bytes).await.unwrap();
-            u64::from_le_bytes(bytes)
-        })
-        .await
-        .expect("dedicated runtime I/O stalled");
-        self.assert_root();
-        answer
+    async fn handle(
+        &mut self,
+        message: Exchange,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: u64 = {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            self.assert_root();
+            let answer = tokio::time::timeout(LIMIT, async {
+                let mut stream = tokio::net::TcpStream::connect(message.0).await.unwrap();
+                stream.write_all(&42u64.to_le_bytes()).await.unwrap();
+                let mut bytes = [0; 8];
+                stream.read_exact(&mut bytes).await.unwrap();
+                u64::from_le_bytes(bytes)
+            })
+            .await
+            .expect("dedicated runtime I/O stalled");
+            self.assert_root();
+            answer
+        };
+        reply.reply(__reply_value);
     }
 }
 

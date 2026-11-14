@@ -87,33 +87,69 @@ impl Message for Bump {
 }
 
 impl Handler<Inc> for Worker {
-    async fn handle(&mut self, _: Inc, _: &Context<Self>) -> u64 {
-        self.value += 1;
-        self.value
+    async fn handle(
+        &mut self,
+        _: Inc,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        let value = {
+            self.value += 1;
+            self.value
+        };
+        reply.reply(value);
     }
 }
 impl Handler<Get> for Worker {
-    async fn handle(&mut self, _: Get, _: &Context<Self>) -> u64 {
-        self.value
+    async fn handle(
+        &mut self,
+        _: Get,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        let value = { self.value };
+        reply.reply(value);
     }
 }
 impl Handler<Bump> for Worker {
-    async fn handle(&mut self, _: Bump, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Bump,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.value += 1;
+        reply.reply(());
     }
 }
 impl Handler<Crash> for Worker {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         panic!("soak: injected crash");
     }
 }
 impl Handler<Slow> for Worker {
-    async fn handle(&mut self, msg: Slow, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Slow,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         rt::sleep(msg.0).await;
+        reply.reply(());
     }
 }
 impl Handler<ArmTimers> for Worker {
-    async fn handle(&mut self, msg: ArmTimers, ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: ArmTimers,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
         let ArmTimers(once, every, period) = msg;
         for i in 0..once {
             let delay = period * (i as u32 + 1);
@@ -122,18 +158,31 @@ impl Handler<ArmTimers> for Worker {
         for _ in 0..every {
             self.timers.push(send_interval(period, ctx.clone(), Bump));
         }
+        reply.reply(());
     }
 }
 impl Handler<CancelTimers> for Worker {
-    async fn handle(&mut self, _: CancelTimers, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: CancelTimers,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         for timer in self.timers.drain(..) {
             timer.cancellation_token.cancel();
         }
+        reply.reply(());
     }
 }
 impl Handler<RegisterManaged> for Worker {
-    async fn handle(&mut self, msg: RegisterManaged, ctx: &Context<Self>) -> Result<(), String> {
-        ctx.register_name(&msg.0).map_err(|e| e.to_string())
+    async fn handle(
+        &mut self,
+        msg: RegisterManaged,
+        reply: spawned_concurrency::PendingReply<'_, Result<(), String>>,
+        ctx: &Context<Self>,
+    ) {
+        let value = { ctx.register_name(&msg.0).map_err(|e| e.to_string()) };
+        reply.reply(value);
     }
 }
 
@@ -168,43 +217,91 @@ message!(Trap(bool) => ());
 message!(Counts => (u64, u64));
 message!(SpawnLinked => ActorRef<Worker>);
 impl Handler<Watch> for Watcher {
-    async fn handle(&mut self, msg: Watch, ctx: &Context<Self>) -> MonitorRef {
-        ctx.monitor(&msg.0)
+    async fn handle(
+        &mut self,
+        msg: Watch,
+        reply: spawned_concurrency::PendingReply<'_, MonitorRef>,
+        ctx: &Context<Self>,
+    ) {
+        let value = { ctx.monitor(&msg.0) };
+        reply.reply(value);
     }
 }
 impl Handler<Unwatch> for Watcher {
-    async fn handle(&mut self, msg: Unwatch, ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Unwatch,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
         ctx.demonitor(msg.0);
+        reply.reply(());
     }
 }
 impl Handler<LinkTo> for Watcher {
-    async fn handle(&mut self, msg: LinkTo, ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: LinkTo,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
         ctx.link(&msg.0);
+        reply.reply(());
     }
 }
 impl Handler<Unlink> for Watcher {
-    async fn handle(&mut self, msg: Unlink, ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Unlink,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
         ctx.unlink(&msg.0);
+        reply.reply(());
     }
 }
 impl Handler<Trap> for Watcher {
-    async fn handle(&mut self, msg: Trap, ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Trap,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
         ctx.trap_exit(msg.0);
+        reply.reply(());
     }
 }
 impl Handler<Counts> for Watcher {
-    async fn handle(&mut self, _: Counts, _: &Context<Self>) -> (u64, u64) {
-        (self.downs, self.exits)
+    async fn handle(
+        &mut self,
+        _: Counts,
+        reply: spawned_concurrency::PendingReply<'_, (u64, u64)>,
+        _: &Context<Self>,
+    ) {
+        let value = { (self.downs, self.exits) };
+        reply.reply(value);
     }
 }
 impl Handler<SpawnLinked> for Watcher {
-    async fn handle(&mut self, _: SpawnLinked, ctx: &Context<Self>) -> ActorRef<Worker> {
-        Worker::new().start_linked(ctx)
+    async fn handle(
+        &mut self,
+        _: SpawnLinked,
+        reply: spawned_concurrency::PendingReply<'_, ActorRef<Worker>>,
+        ctx: &Context<Self>,
+    ) {
+        let value = { Worker::new().start_linked(ctx) };
+        reply.reply(value);
     }
 }
 impl Handler<Down> for Watcher {
-    async fn handle(&mut self, _: Down, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Down,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.downs += 1;
+        reply.reply(());
     }
 }
 
@@ -417,17 +514,15 @@ async fn group(rng: &mut Rng, env: &Env) -> R {
 }
 
 fn config(strategy: SupervisorStrategy) -> SupervisorConfig {
-    SupervisorConfig {
-        strategy,
-        max_restarts: 60_000,
-        backoff: Backoff {
-            initial: Duration::from_millis(1),
-            maximum: Duration::from_millis(2),
-            jitter: false,
-            ..Backoff::default()
-        },
-        ..SupervisorConfig::default()
-    }
+    SupervisorConfig::new()
+        .strategy(strategy)
+        .max_restarts(60_000)
+        .backoff(
+            Backoff::new()
+                .initial(Duration::from_millis(1))
+                .maximum(Duration::from_millis(2))
+                .jitter(false),
+        )
 }
 
 fn child(name: String, group: &ExecutionGroup) -> ChildSpec<Worker> {
@@ -689,8 +784,8 @@ async fn requests(rng: &mut Rng) -> R {
     ensure!(got == 1, "inc after timeouts returned {got}");
     finish(&actor, rng).await?;
     ensure!(
-        matches!(actor.request(Inc).await, Err(ActorError::ActorStopped)),
-        "request to a stopped actor"
+        matches!(actor.request(Inc).await, Err(ActorError::NoProc)),
+        "request to a stopped actor (NoProc past its death point)"
     );
     ensure!(actor.send(Bump).is_err(), "send to a stopped actor");
     Ok(())

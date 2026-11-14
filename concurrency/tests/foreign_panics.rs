@@ -182,24 +182,49 @@ mod task_actors {
         }
     }
     impl Handler<Crash> for TaskVictim {
-        async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _: Crash,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.0.on_crash();
+            reply.reply(());
         }
     }
     impl Handler<Ping> for TaskVictim {
-        async fn handle(&mut self, _: Ping, _: &Context<Self>) -> u64 {
-            7
+        async fn handle(
+            &mut self,
+            _: Ping,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
+            _: &Context<Self>,
+        ) {
+            reply.reply(7);
         }
     }
     impl Handler<Gift> for TaskVictim {
-        async fn handle(&mut self, _: Gift, _: &Context<Self>) -> Bomb {
-            self.0.gate.wait();
-            Bomb(Some(REPLY_PANIC))
+        async fn handle(
+            &mut self,
+            _: Gift,
+            reply: spawned_concurrency::PendingReply<'_, Bomb>,
+            _: &Context<Self>,
+        ) {
+            let __reply_value: Bomb = {
+                self.0.gate.wait();
+                Bomb(Some(REPLY_PANIC))
+            };
+            reply.reply(__reply_value);
         }
     }
     impl Handler<Stash> for TaskVictim {
-        async fn handle(&mut self, _: Stash, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _: Stash,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.0.stash.push(Bomb(Some(REPLY_PANIC)));
+            reply.reply(());
         }
     }
 }
@@ -217,24 +242,49 @@ mod thread_actors {
         }
     }
     impl Handler<Crash> for ThreadVictim {
-        fn handle(&mut self, _: Crash, _: &Context<Self>) {
+        fn handle(
+            &mut self,
+            _: Crash,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.0.on_crash();
+            reply.reply(());
         }
     }
     impl Handler<Ping> for ThreadVictim {
-        fn handle(&mut self, _: Ping, _: &Context<Self>) -> u64 {
-            7
+        fn handle(
+            &mut self,
+            _: Ping,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
+            _: &Context<Self>,
+        ) {
+            reply.reply(7);
         }
     }
     impl Handler<Gift> for ThreadVictim {
-        fn handle(&mut self, _: Gift, _: &Context<Self>) -> Bomb {
-            self.0.gate.wait();
-            Bomb(Some(REPLY_PANIC))
+        fn handle(
+            &mut self,
+            _: Gift,
+            reply: spawned_concurrency::PendingReply<'_, Bomb>,
+            _: &Context<Self>,
+        ) {
+            let __reply_value: Bomb = {
+                self.0.gate.wait();
+                Bomb(Some(REPLY_PANIC))
+            };
+            reply.reply(__reply_value);
         }
     }
     impl Handler<Stash> for ThreadVictim {
-        fn handle(&mut self, _: Stash, _: &Context<Self>) {
+        fn handle(
+            &mut self,
+            _: Stash,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.0.stash.push(Bomb(Some(REPLY_PANIC)));
+            reply.reply(());
         }
     }
 }
@@ -326,7 +376,10 @@ mod env {
                     task.abort();
                     let _ = env.bounded(task);
                 }
-                Started::Native(a) => drop(a.request_raw(Gift).unwrap()),
+                Started::Native(a) => drop(
+                    a.send_request(Gift, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                        .unwrap(),
+                ),
             }
             gate.release();
         }
@@ -387,17 +440,13 @@ mod env {
             let Some(group) = self.group.clone() else {
                 return true;
             };
-            let config = SupervisorConfig {
-                max_restarts: 10,
-                backoff: Backoff {
-                    initial: Duration::ZERO,
-                    maximum: Duration::ZERO,
-                    jitter: false,
-                    seed: Some(1),
-                    ..Backoff::default()
-                },
-                ..SupervisorConfig::default()
-            };
+            let config = SupervisorConfig::default().max_restarts(10).backoff(
+                Backoff::default()
+                    .initial(Duration::ZERO)
+                    .maximum(Duration::ZERO)
+                    .jitter(false)
+                    .seed(1),
+            );
             let mut tree = self.system.supervisor(config).unwrap();
             let stopped = stopped.clone();
             let child = tree
@@ -500,7 +549,14 @@ fn subscriber_child() {
             println!(
                 "{place:?} panic_in_stopped={panic_in_stopped} reason={reason:?} stopped_ran={ran}"
             );
-            if reason != handler_panic() || !ran {
+            // v0.8: a panic in stopped() replaces an earlier abnormal reason
+            // (as a crash in OTP's terminate), unless a kill was received.
+            let expected = if panic_in_stopped {
+                ExitReason::Panic("panic in stopped(): injected stopped panic".into())
+            } else {
+                handler_panic()
+            };
+            if reason != expected || !ran {
                 callback_gaps.push(format!(
                     "{place:?} stopped_panic={panic_in_stopped}: {reason:?}, stopped() ran: {ran}"
                 ));
@@ -540,7 +596,9 @@ fn panic_hook_child() {
         let stopped = Arc::new(AtomicBool::new(false));
         let actor = env.start(Victim::new(&stopped, false));
         assert_eq!(actor.ping(&env), 7);
-        actor.child().shutdown();
+        actor
+            .child()
+            .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
         assert_eq!(env.wait_exit(&actor.child()), ExitReason::Shutdown);
         env.finish();
     }
@@ -598,9 +656,8 @@ fn reply_drop_child() {
                 "{place:?}: stopped() skipped"
             );
         }
-        // A held reply whose Drop panics while state is destroyed: a normal
-        // stop escalates to a destructor panic, an unwinding actor keeps its
-        // handler panic as the reason.
+        // A held reply whose Drop panics while state is destroyed (after the
+        // death point): a cleanup failure, never the reason.
         for unwinding in [false, true] {
             let stopped = Arc::new(AtomicBool::new(false));
             let mut victim = Victim::new(&stopped, false);
@@ -616,9 +673,14 @@ fn reply_drop_child() {
             let expected = if unwinding {
                 handler_panic()
             } else {
-                ExitReason::Panic(format!("actor state destructor: {REPLY_PANIC}"))
+                ExitReason::Normal
             };
             assert_eq!(reason, expected, "{place:?} unwinding={unwinding}");
+            assert_eq!(
+                actor.child().cleanup_failure(),
+                Some(format!("actor state destructor: {REPLY_PANIC}")),
+                "{place:?} unwinding={unwinding}"
+            );
         }
         // The process and the remaining actors stay healthy.
         let stopped = Arc::new(AtomicBool::new(false));

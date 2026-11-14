@@ -31,18 +31,34 @@ struct Peers {
     stops: Stops,
 }
 impl Actor for Peers {
+    // The supervisor's shutdown is its exit signal (as in OTP): trapping exits
+    // makes it end through `stopped()`, where this cleanup runs.
+    async fn started(&mut self, ctx: &Context<Self>) {
+        ctx.trap_exit(true);
+    }
     async fn stopped(&mut self, _: &Context<Self>) {
         self.stops.lock().unwrap().push("peers");
     }
 }
 impl Handler<Peer> for Peers {
-    async fn handle(&mut self, msg: Peer, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Peer,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.peers.push(msg.0);
+        reply.reply(());
     }
 }
 impl Handler<Snapshot> for Peers {
-    async fn handle(&mut self, _: Snapshot, _: &Context<Self>) -> Vec<u64> {
-        self.peers.clone()
+    async fn handle(
+        &mut self,
+        _: Snapshot,
+        reply: spawned_concurrency::PendingReply<'_, Vec<u64>>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(self.peers.clone());
     }
 }
 struct Importer {
@@ -50,17 +66,35 @@ struct Importer {
     stops: Stops,
 }
 impl Actor for Importer {
+    // The supervisor's shutdown is its exit signal (as in OTP): trapping exits
+    // makes it end through `stopped()`, where this cleanup runs.
+    async fn started(&mut self, ctx: &Context<Self>) {
+        ctx.trap_exit(true);
+    }
     async fn stopped(&mut self, _: &Context<Self>) {
         self.stops.lock().unwrap().push("importer");
     }
 }
 impl Handler<Import> for Importer {
-    async fn handle(&mut self, msg: Import, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Import,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.peers.send(Peer(msg.0)).unwrap();
+        reply.reply(());
     }
 }
 impl Handler<Fence> for Importer {
-    async fn handle(&mut self, _: Fence, _: &Context<Self>) {}
+    async fn handle(
+        &mut self,
+        _: Fence,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
 }
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -70,10 +104,7 @@ async fn main() {
     let stops: Stops = Arc::default();
     // RestForOne rebuilds dependents retaining an earlier instance's reference.
     let mut tree = system
-        .supervisor(SupervisorConfig {
-            strategy: SupervisorStrategy::RestForOne,
-            ..SupervisorConfig::default()
-        })
+        .supervisor(SupervisorConfig::default().strategy(SupervisorStrategy::RestForOne))
         .unwrap();
     let events = stops.clone();
     let peers = tree

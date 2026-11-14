@@ -39,19 +39,17 @@ fn push(log: &Log, event: String) {
 }
 
 fn config(strategy: SupervisorStrategy) -> SupervisorConfig {
-    SupervisorConfig {
-        strategy,
-        max_restarts: 3,
-        backoff: Backoff {
-            initial: Duration::from_millis(1),
-            maximum: Duration::from_millis(4),
-            jitter: false,
-            // Fixed jitter seed: otherwise it comes from SystemTime.
-            seed: Some(7),
-            ..Backoff::default()
-        },
-        ..SupervisorConfig::default()
-    }
+    SupervisorConfig::default()
+        .strategy(strategy)
+        .max_restarts(3)
+        .backoff(
+            Backoff::default()
+                .initial(Duration::from_millis(1))
+                .maximum(Duration::from_millis(4))
+                .jitter(false)
+                // Fixed jitter seed: otherwise it comes from SystemTime.
+                .seed(7),
+        )
 }
 
 struct Crash;
@@ -59,25 +57,30 @@ impl Message for Crash {
     type Result = ();
 }
 
-/// Records started/stopped. With `crash_after: Some(k)`, `started()` spawns a
-/// task that yields `k` times and then sends the actor a panicking message,
-/// so it dies a few scheduling steps after it publishes readiness.
+/// Records started/stopped. With `fail_start_after: Some(k)`, `started()`
+/// yields `k` times and then panics, so the child's first start fails and
+/// the supervisor's initial start aborts (S1 in
+/// docs/design/otp-exit-signals.md; a crash after readiness would instead be
+/// processed after the initial start completes). With `trap`, the actor traps
+/// exits, so the system's or supervisor's shutdown (the parent's exit signal)
+/// still runs `stopped()` (E3).
 struct Node {
     id: u32,
-    crash_after: Option<u32>,
+    fail_start_after: Option<u32>,
+    trap: bool,
     log: Log,
 }
 impl Actor for Node {
     async fn started(&mut self, ctx: &Context<Self>) {
         push(&self.log, format!("started:{}", self.id));
-        if let Some(yields) = self.crash_after {
-            let actor = ctx.actor_ref();
-            drop(spawned_rt::tasks::spawn(async move {
-                for _ in 0..yields {
-                    sim::yield_now().await;
-                }
-                let _ = actor.send(Crash);
-            }));
+        if self.trap {
+            ctx.trap_exit(true);
+        }
+        if let Some(yields) = self.fail_start_after {
+            for _ in 0..yields {
+                sim::yield_now().await;
+            }
+            panic!("injected first-start failure");
         }
     }
     async fn stopped(&mut self, _: &Context<Self>) {
@@ -85,7 +88,12 @@ impl Actor for Node {
     }
 }
 impl Handler<Crash> for Node {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         panic!("injected crash after readiness");
     }
 }
@@ -127,7 +135,8 @@ async fn shutdown_order(log: Log) -> Vec<u32> {
     let group = system.async_group("sim-order", 2).unwrap();
     let start = |id| Node {
         id,
-        crash_after: None,
+        fail_start_after: None,
+        trap: true,
         log: log.clone(),
     };
     for id in 0..2 {
@@ -142,7 +151,8 @@ async fn shutdown_order(log: Log) -> Vec<u32> {
         async move {
             Ok::<_, String>(Node {
                 id: 100,
-                crash_after: None,
+                fail_start_after: None,
+                trap: true,
                 log,
             })
         }
@@ -219,7 +229,8 @@ async fn initial_failure(log: Log, yields: u32) -> Placement {
                     async move {
                         Ok::<_, String>(Node {
                             id: index,
-                            crash_after: (index == 0).then_some(yields),
+                            fail_start_after: (index == 0).then_some(yields),
+                            trap: false,
                             log,
                         })
                     }
@@ -359,7 +370,8 @@ fn blocking_backend_actor_fails_the_run() {
         let log = Log::default();
         let node = Node {
             id: 1,
-            crash_after: None,
+            fail_start_after: None,
+            trap: false,
             log,
         }
         .start_with_backend(spawned_concurrency::tasks::Backend::Blocking);
@@ -385,7 +397,9 @@ fn thread_groups_are_rejected() {
 /// PR #204 finding 2, pinned: before the v0.7.1 lifecycle fixes (PR #209),
 /// seed 12 left the launched but never-started child `c1` Failed and seed 2
 /// left it Stopped. With PR #209 a failed initial placement finishes every
-/// never-started child as Failed, so both seeds must now agree.
+/// never-started child as Failed, so both seeds must now agree. (Since S1 the
+/// injected failure is `c0`'s first start, so the seeds select different
+/// schedules than in v0.7; the expected states are unchanged.)
 #[test]
 fn pr204_never_started_child_state_pinned_seeds() {
     for (seed, expected) in [(12, "Failed"), (2, "Failed")] {
@@ -424,26 +438,28 @@ async fn restart_window(out: Arc<Mutex<Option<WindowRun>>>) {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("sim-window", 1).unwrap();
     let mut tree = system
-        .supervisor(SupervisorConfig {
-            strategy: SupervisorStrategy::OneForOne,
-            max_restarts: 3,
-            restart_window: Duration::from_secs(60),
-            backoff: Backoff {
-                initial: Duration::from_secs(1),
-                maximum: Duration::from_secs(8),
-                stable_after: Duration::from_secs(3600),
-                jitter: true,
-                // Left to spawned_rt::time::entropy: seeded by the simulation.
-                seed: None,
-            },
-            ..SupervisorConfig::default()
-        })
+        .supervisor(
+            SupervisorConfig::default()
+                .strategy(SupervisorStrategy::OneForOne)
+                .max_restarts(3)
+                .restart_window(Duration::from_secs(60))
+                // No fixed seed: jitter is left to spawned_rt::time::entropy,
+                // seeded by the simulation.
+                .backoff(
+                    Backoff::default()
+                        .initial(Duration::from_secs(1))
+                        .maximum(Duration::from_secs(8))
+                        .stable_after(Duration::from_secs(3600))
+                        .jitter(true),
+                ),
+        )
         .unwrap();
     let child: SupervisedChild<Node> = tree
         .add(ChildSpec::new("flappy", &group, |_| async {
             Ok::<_, String>(Node {
                 id: 0,
-                crash_after: None,
+                fail_start_after: None,
+                trap: false,
                 log: Log::default(),
             })
         }))
@@ -954,4 +970,120 @@ fn shrink_stays_within_its_run_budget() {
         let (_, runs) = sim::shrink(&failing.tape, &failure, &body, budget);
         assert!(runs <= budget, "budget {budget}: spent {runs}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Workload: deferred replies parked in a `PendingReplies` and drained at
+// once (#261). The drain order decides which caller is answered first, so
+// it must not depend on a per-process hash seed.
+// ---------------------------------------------------------------------------
+
+struct Park(u32);
+impl Message for Park {
+    type Result = u32;
+}
+struct Release;
+impl Message for Release {
+    type Result = Vec<u32>;
+}
+struct Parked;
+impl Message for Parked {
+    type Result = usize;
+}
+
+struct Parker {
+    pending: spawned_concurrency::tasks::PendingReplies<u32, u32>,
+}
+impl Actor for Parker {}
+impl Handler<Park> for Parker {
+    async fn handle(
+        &mut self,
+        Park(id): Park,
+        reply: spawned_concurrency::reply::PendingReply<'_, u32>,
+        _: &Context<Self>,
+    ) {
+        if let Ok(token) = reply.defer() {
+            assert!(self.pending.insert(id, token).is_ok());
+        }
+    }
+}
+impl Handler<Parked> for Parker {
+    async fn handle(
+        &mut self,
+        _: Parked,
+        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(self.pending.len());
+    }
+}
+impl Handler<Release> for Parker {
+    async fn handle(
+        &mut self,
+        _: Release,
+        reply: spawned_concurrency::reply::PendingReply<'_, Vec<u32>>,
+        _: &Context<Self>,
+    ) {
+        let mut order = Vec::new();
+        for (id, token) in self.pending.drain() {
+            token.reply(id);
+            order.push(id);
+        }
+        reply.reply(order);
+    }
+}
+
+/// Sixteen callers park in an order the scheduler picks; one `Release`
+/// drains them. Returns the drain order; callers log their answers.
+async fn drain_pending(log: Log) -> Vec<u32> {
+    const CALLERS: u32 = 16;
+    let parker = Parker {
+        pending: spawned_concurrency::tasks::PendingReplies::with_capacity(CALLERS as usize),
+    }
+    .start();
+    let callers: Vec<_> = (0..CALLERS)
+        .map(|id| {
+            let (parker, log) = (parker.clone(), log.clone());
+            spawned_rt::tasks::spawn(async move {
+                let answer = parker.request(Park(id)).await.unwrap();
+                push(&log, format!("answered:{answer}"));
+            })
+        })
+        .collect();
+    while parker.request(Parked).await.unwrap() < CALLERS as usize {
+        sim::yield_now().await;
+    }
+    let order = parker.request(Release).await.unwrap();
+    for caller in callers {
+        caller.await.unwrap();
+    }
+    parker.context().stop();
+    parker.join().await;
+    order
+}
+
+/// #261: the same seed gives the same drain order, caller log, scheduler
+/// trace and tape. With a `HashMap` table each run drew its own
+/// `RandomState`, so the order (and with it the schedule) differed.
+#[test]
+fn pending_replies_drain_is_reproducible() {
+    let record = || {
+        let rt = Runtime::with_seed(7);
+        rt.record_trace();
+        rt.record_tape();
+        let log: Log = Arc::default();
+        let order = rt.block_on(drain_pending(log.clone()));
+        let log = log.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        (order, log, rt.trace(), rt.tape())
+    };
+    let (order, log, trace, tape) = record();
+    let again = record();
+    assert_eq!(order.len(), 16);
+    assert_eq!(again.0, order, "drain order differs between same-seed runs");
+    assert_eq!(again.1, log, "caller answers differ between same-seed runs");
+    assert_eq!(
+        again.2, trace,
+        "scheduler trace differs between same-seed runs"
+    );
+    assert_eq!(again.3, tape, "tape differs between same-seed runs");
 }

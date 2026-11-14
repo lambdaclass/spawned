@@ -489,7 +489,9 @@ fn generate_target_impl(
         let body = match &m.kind {
             MethodKind::Send => quote! { target.send(message) },
             MethodKind::Request(_) => match mode {
-                RuntimeMode::Tasks => quote! { spawned_concurrency::Response::from_with_timeout(target.request_raw(message), timeout) },
+                // The timeout was chosen before the message was built; the
+                // deadline is fixed now, at send, and travels in the slot.
+                RuntimeMode::Tasks => quote! { spawned_concurrency::Response::from(target.send_request(message, spawned_concurrency::Deadline::after(timeout))) },
                 RuntimeMode::Threads => quote! { spawned_concurrency::Response::ready(target.request_with_timeout(message, timeout)) },
             },
         };
@@ -722,7 +724,9 @@ struct ProtocolMethodInfo {
 /// supports conversion with the generated `ToXRef` trait. Configure before
 /// erasing the concrete handle. These are reply-wait limits, not cancellation
 /// or inherited deadlines; accepted work may still execute after timeout.
-/// Native protocol calls block immediately; async response timers start on poll.
+/// The deadline is fixed when the request is sent (send time plus the
+/// timeout), as in OTP's `gen_server:call`. Native protocol calls block
+/// immediately; async responses wait until that deadline when polled.
 #[proc_macro_attribute]
 pub fn protocol(attr: TokenStream, item: TokenStream) -> TokenStream {
     let options = parse_macro_input!(attr with syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated);
@@ -1071,9 +1075,82 @@ pub fn protocol(attr: TokenStream, item: TokenStream) -> TokenStream {
     output.into()
 }
 
+// Only inline a body whose suspension and wrapping behavior is visible here.
+// Unknown macros/attributes can introduce awaits or wrappers after expansion.
+fn await_free_handler(method: &ImplItemFn) -> bool {
+    fn inert_attribute(attr: &Attribute) -> bool {
+        ["cfg", "doc", "allow", "warn", "deny", "forbid", "expect"]
+            .iter()
+            .any(|name| attr.path().is_ident(name))
+    }
+    // An explicit/shared receiver can carry different borrow promises than
+    // Handler's &mut self. Keep its original call adapter unchanged.
+    let ordinary_mut_receiver = matches!(method.sig.inputs.first(),
+        Some(FnArg::Receiver(r)) if r.attrs.is_empty()
+            && r.mutability.is_some()
+            && r.reference.as_ref().is_some_and(|(_, lifetime)| lifetime.is_none())
+            && r.colon_token.is_none());
+    let plain_parameters = method.sig.inputs.iter().all(|p| match p {
+        FnArg::Receiver(r) => r.attrs.is_empty(),
+        FnArg::Typed(p) => p.attrs.is_empty(),
+    });
+    if !ordinary_mut_receiver
+        || !plain_parameters
+        || !method.sig.generics.params.is_empty()
+        || method.sig.generics.where_clause.is_some()
+        || method.sig.asyncness.is_none()
+        || method.sig.unsafety.is_some()
+        || method.sig.abi.is_some()
+        || !method.attrs.iter().all(inert_attribute)
+    {
+        return false;
+    }
+    struct Check {
+        blocked: bool,
+    }
+    impl<'ast> syn::visit::Visit<'ast> for Check {
+        fn visit_expr_await(&mut self, _: &'ast syn::ExprAwait) {
+            self.blocked = true;
+        }
+        fn visit_expr_yield(&mut self, _: &'ast syn::ExprYield) {
+            self.blocked = true;
+        }
+        fn visit_macro(&mut self, _: &'ast syn::Macro) {
+            self.blocked = true;
+        }
+        fn visit_item(&mut self, _: &'ast syn::Item) {
+            // A copied static (including one inside a nested function) has
+            // a different identity from the inherent method's original.
+            self.blocked = true;
+        }
+        fn visit_expr_closure(&mut self, _: &'ast syn::ExprClosure) {
+            // Anonymous types also have observable identity through TypeId.
+            self.blocked = true;
+        }
+        fn visit_expr_async(&mut self, _: &'ast syn::ExprAsync) {
+            self.blocked = true;
+        }
+        fn visit_type_impl_trait(&mut self, _: &'ast syn::TypeImplTrait) {
+            self.blocked = true;
+        }
+        fn visit_attribute(&mut self, attr: &'ast Attribute) {
+            if !inert_attribute(attr) {
+                self.blocked = true;
+            }
+        }
+    }
+    let mut check = Check { blocked: false };
+    syn::visit::Visit::visit_block(&mut check, &method.block);
+    syn::visit::Visit::visit_signature(&mut check, &method.sig);
+    !check.blocked
+}
+
 fn is_handler_attribute(attr: &Attribute) -> bool {
     let path = attr.path();
-    path.is_ident("handler") || path.is_ident("send_handler") || path.is_ident("request_handler")
+    path.is_ident("handler")
+        || path.is_ident("send_handler")
+        || path.is_ident("request_handler")
+        || path.is_ident("deferred_handler")
 }
 
 fn is_actor_method_attribute(attr: &Attribute) -> bool {
@@ -1109,6 +1186,20 @@ fn is_actor_method_attribute(attr: &Attribute) -> bool {
 /// impl ChatUser { /* ... */ }
 /// ```
 ///
+/// # Deferred-reply bounds
+///
+/// `max_outstanding = N` sets `Actor::MAX_OUTSTANDING` (deferred credits per
+/// instance) and `max_native_jobs = N` sets `Actor::MAX_NATIVE_JOBS` (blocking
+/// jobs running at once; the default, `min(4, available_parallelism)`, is
+/// easy to outgrow: under load the only symptom is `NativeBudget` refusals).
+/// Both take any constant expression and combine with `protocol`; a
+/// supervised child can still override them per `ChildSpec`:
+///
+/// ```ignore
+/// #[actor(protocol = P2PProtocol, max_native_jobs = 64, max_outstanding = 4096)]
+/// impl P2PServer { /* ... */ }
+/// ```
+///
 /// # Lints
 ///
 /// `#[actor]` warns (compile time only) when the impl block builds or accepts
@@ -1122,12 +1213,16 @@ fn is_actor_method_attribute(attr: &Attribute) -> bool {
 /// |-----------|---------|
 /// | `#[request_handler]` | Messages that expect a reply (`Response<T>`) |
 /// | `#[send_handler]` | Fire-and-forget messages |
-/// | `#[handler]` | Generic handler (works for either kind) |
+/// | `#[deferred_handler]` | Requests answered through a `PendingReply` (now, or later via `defer()`) |
 ///
 /// Handler signature: `fn name(&mut self, msg: MessageType, ctx: &Context<Self>) -> ReturnType`
 ///
 /// The return type must match the message's `Message::Result`. For request handlers
-/// returning `()`, omit the return type.
+/// returning `()`, omit the return type. The generated `Handler::handle` calls
+/// the method and replies with its result; the method stays callable directly.
+///
+/// A deferred handler takes the reply obligation instead of returning:
+/// `fn name(&mut self, msg: M, reply: PendingReply<'_, R>, ctx: &Context<Self>)`.
 ///
 /// # Lifecycle Hooks
 ///
@@ -1211,7 +1306,10 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
     let (impl_generics, _, where_clause) = impl_block.generics.split_for_impl();
 
     // --- Parse named parameters: #[actor(protocol = X)], #[actor(protocol(X, Y))],
+    // the deferred-reply bounds `max_outstanding = N`, `max_native_jobs = N`,
     // and the lint opt-outs `allow_shared_state` and `allow_panic_abort` ---
+    let mut max_outstanding: Option<syn::Expr> = None;
+    let mut max_native_jobs: Option<syn::Expr> = None;
     let mut allow_shared_state = false;
     let mut allow_panic_abort = false;
     let bridge_traits: Vec<Ident> = if attr.is_empty() {
@@ -1233,15 +1331,26 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
             let mut protocols = Vec::new();
             while !input.is_empty() {
                 let key: Ident = input.parse()?;
-                if key == "allow_shared_state" {
+                if key == "max_outstanding" || key == "max_native_jobs" {
+                    let _: syn::Token![=] = input.parse()?;
+                    let value: syn::Expr = input.parse()?;
+                    let slot = if key == "max_outstanding" {
+                        &mut max_outstanding
+                    } else {
+                        &mut max_native_jobs
+                    };
+                    if slot.replace(value).is_some() {
+                        return Err(syn::Error::new(key.span(), format!("`{key}` given twice")));
+                    }
+                } else if key == "allow_shared_state" {
                     allow_shared_state = true;
                 } else if key == "allow_panic_abort" {
                     allow_panic_abort = true;
                 } else if key != "protocol" {
                     return Err(syn::Error::new(
                         key.span(),
-                        "unknown parameter, expected `protocol`, `allow_shared_state` \
-                         or `allow_panic_abort`",
+                        "unknown parameter, expected `protocol`, `max_outstanding`, \
+                         `max_native_jobs`, `allow_shared_state` or `allow_panic_abort`",
                     ));
                 } else if input.peek(syn::Token![=]) {
                     // protocol = TraitName
@@ -1301,14 +1410,7 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     .to_compile_error()
                     .into();
                 }
-                if is_started
-                    || is_stopped
-                    || method.attrs.iter().any(|a| {
-                        a.path().is_ident("handler")
-                            || a.path().is_ident("send_handler")
-                            || a.path().is_ident("request_handler")
-                    })
-                {
+                if is_started || is_stopped || method.attrs.iter().any(is_handler_attribute) {
                     return syn::Error::new_spanned(&method.sig, "#[exit_received] cannot be combined with other lifecycle or handler attributes").to_compile_error().into();
                 }
                 if method.sig.inputs.len() != 3
@@ -1350,11 +1452,7 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     .to_compile_error()
                     .into();
                 }
-                if method.attrs.iter().any(|a| {
-                    a.path().is_ident("handler")
-                        || a.path().is_ident("send_handler")
-                        || a.path().is_ident("request_handler")
-                }) {
+                if method.attrs.iter().any(is_handler_attribute) {
                     return syn::Error::new_spanned(
                         &method.sig,
                         "#[started] cannot be combined with handler attributes",
@@ -1400,11 +1498,7 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     .to_compile_error()
                     .into();
                 }
-                if method.attrs.iter().any(|a| {
-                    a.path().is_ident("handler")
-                        || a.path().is_ident("send_handler")
-                        || a.path().is_ident("request_handler")
-                }) {
+                if method.attrs.iter().any(is_handler_attribute) {
                     return syn::Error::new_spanned(
                         &method.sig,
                         "#[stopped] cannot be combined with handler attributes",
@@ -1447,21 +1541,39 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // --- Process handler methods ---
     let mut handler_impls = Vec::new();
+    let mut lifetime_name = "__spawned_reply_turn".to_owned();
+    while impl_block
+        .generics
+        .lifetimes()
+        .any(|p| p.lifetime.ident == lifetime_name)
+    {
+        lifetime_name.push('_');
+    }
+    let turn_lifetime = syn::Lifetime::new(
+        &format!("'{lifetime_name}"),
+        proc_macro2::Span::mixed_site(),
+    );
 
     for item in &mut impl_block.items {
         if let ImplItem::Fn(method) = item {
-            let handler_idx = method.attrs.iter().position(|attr| {
-                attr.path().is_ident("handler")
-                    || attr.path().is_ident("send_handler")
-                    || attr.path().is_ident("request_handler")
-            });
+            let handler_idx = method.attrs.iter().position(is_handler_attribute);
 
             if let Some(idx) = handler_idx {
+                let deferred = method.attrs[idx].path().is_ident("deferred_handler");
+                let send = method.attrs[idx].path().is_ident("send_handler");
+                if method.attrs[idx].path().is_ident("handler") {
+                    return syn::Error::new_spanned(
+                        &method.attrs[idx],
+                        "#[handler] was removed in 0.8: use #[send_handler] (returns `()`, no reply) or #[request_handler] (answers with the return value)",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
                 method.attrs.remove(idx);
                 if let Some(extra) = method.attrs.iter().find(|a| is_handler_attribute(a)) {
                     return syn::Error::new_spanned(
                         extra,
-                        "a method can carry only one of #[handler], #[send_handler] and #[request_handler]",
+                        "a method can carry only one of #[send_handler], #[request_handler] and #[deferred_handler]",
                     )
                     .to_compile_error()
                     .into();
@@ -1481,9 +1593,7 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     .attrs
                     .iter()
                     .filter(|a| {
-                        !a.path().is_ident("handler")
-                            && !a.path().is_ident("send_handler")
-                            && !a.path().is_ident("request_handler")
+                        !is_handler_attribute(a)
                             && !a.path().is_ident("started")
                             && !a.path().is_ident("stopped")
                     })
@@ -1495,9 +1605,21 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     has_async = true;
                 }
 
-                // Validate handler has exactly 3 parameters: &mut self, msg, ctx
+                // Validate parameters: (&mut self, msg, ctx), or for a deferred
+                // handler (&mut self, msg, reply, ctx).
                 let param_count = method.sig.inputs.len();
-                if param_count != 3 {
+                let ctx_index = if deferred { 3 } else { 2 };
+                if deferred && param_count != 4 {
+                    return syn::Error::new_spanned(
+                        &method.sig,
+                        format!(
+                            "#[deferred_handler] method must have 4 parameters (&mut self, msg: M, reply: PendingReply<'_, R>, ctx: &Context<Self>), found {param_count}"
+                        ),
+                    )
+                    .to_compile_error()
+                    .into();
+                }
+                if !deferred && param_count != 3 {
                     return syn::Error::new_spanned(
                         &method.sig,
                         format!(
@@ -1506,6 +1628,33 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     )
                     .to_compile_error()
                     .into();
+                }
+                if deferred {
+                    if let ReturnType::Type(_, ty) = &method.sig.output {
+                        if !is_unit_type(ty) {
+                            return syn::Error::new_spanned(
+                                ty,
+                                "#[deferred_handler] answers through its PendingReply; remove the return type",
+                            )
+                            .to_compile_error()
+                            .into();
+                        }
+                    }
+                }
+                // A send handler that returned a value would silently answer a
+                // `request` with it. (`impl Future` returns are checked by the
+                // `Result = ()` bound of the message instead.)
+                if send {
+                    if let ReturnType::Type(_, ty) = &method.sig.output {
+                        if !is_unit_type(ty) && !matches!(**ty, Type::ImplTrait(_)) {
+                            return syn::Error::new_spanned(
+                                ty,
+                                "#[send_handler] methods return `()`; use #[request_handler] to answer a request with a value",
+                            )
+                            .to_compile_error()
+                            .into();
+                        }
+                    }
                 }
 
                 // `&self` is accepted too; a missing or by-value receiver is not.
@@ -1520,9 +1669,9 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                         .to_compile_error()
                         .into();
                     }
-                    None => unreachable!("three parameters were checked above"),
+                    None => unreachable!("the parameters were checked above"),
                 }
-                if let Some(FnArg::Typed(ctx)) = method.sig.inputs.iter().nth(2) {
+                if let Some(FnArg::Typed(ctx)) = method.sig.inputs.iter().nth(ctx_index) {
                     if !matches!(&*ctx.ty, Type::Reference(r) if r.mutability.is_none()) {
                         return syn::Error::new_spanned(
                             &ctx.ty,
@@ -1546,29 +1695,146 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                 };
 
-                // Keep an omitted return type omitted: rustc then suggests
-                // adding `-> R` after the user's signature for a request reply.
-                let output = match &method.sig.output {
-                    ReturnType::Default => quote! {},
-                    ReturnType::Type(_, ty) => quote! { -> #ty },
+                // The generated `handle` is the envelope dispatch: it takes the
+                // request's reply obligation and answers it with the method's
+                // result (a deferred handler receives the obligation itself).
+                let reply_ty = quote! {
+                    spawned_concurrency::PendingReply<'_, <#msg_ty as spawned_concurrency::message::Message>::Result>
                 };
-                // The parameter list carries the user's parentheses span, so
-                // that suggestion lands after the user's `)`.
+                // Mixed-site locals cannot shadow free names in a user body
+                // that is specialized into the generated dispatch adapter.
+                let msg_name = Ident::new("__spawned_msg", proc_macro2::Span::mixed_site());
+                let reply_name = Ident::new("__spawned_reply", proc_macro2::Span::mixed_site());
+                let ctx_name = Ident::new(
+                    "__spawned_ctx",
+                    proc_macro2::Span::mixed_site().located_at(
+                        method
+                            .sig
+                            .inputs
+                            .iter()
+                            .nth(ctx_index)
+                            .expect("validated context arity")
+                            .span(),
+                    ),
+                );
+                // The parameter list carries the user's parentheses span.
                 let mut params = proc_macro2::Group::new(
                     proc_macro2::Delimiter::Parenthesis,
-                    quote! { &mut self, msg: #msg_ty, ctx: &Context<Self> },
+                    quote! { &mut self, #msg_name: #msg_ty, #reply_name: #reply_ty, #ctx_name: &Context<Self> },
                 );
                 params.set_span(method.sig.paren_token.span.join());
                 // Span the generated impl at the method so trait errors
                 // (conflicting impls, signature mismatches) point at it.
                 let span = method.sig.span();
+                // The reply's type must equal the message's `Result`; a
+                // mismatch is reported at the user's return type.
+                let ret_span = match &method.sig.output {
+                    ReturnType::Default => method.sig.paren_token.span.join(),
+                    ReturnType::Type(_, ty) => ty.span(),
+                };
+                // A tasks handler may also be a plain `fn` returning
+                // `impl Future`; its result is awaited like an `async fn`'s.
+                let returns_future = matches!(
+                    &method.sig.output,
+                    ReturnType::Type(_, ty) if matches!(**ty, Type::ImplTrait(_))
+                );
+                let asynchronous = method.sig.asyncness.is_some() || returns_future;
+                let immediate = asynchronous && !deferred && await_free_handler(method);
+                let call = match (deferred, asynchronous) {
+                    (true, true) => {
+                        quote! { self.#method_name(#msg_name, #reply_name, #ctx_name).await }
+                    }
+                    (true, false) => {
+                        quote! { self.#method_name(#msg_name, #reply_name, #ctx_name) }
+                    }
+                    (false, true) if immediate => {
+                        let body = &method.block;
+                        let msg_pat = match method
+                            .sig
+                            .inputs
+                            .iter()
+                            .nth(1)
+                            .expect("validated message arity")
+                        {
+                            FnArg::Typed(arg) => &arg.pat,
+                            _ => unreachable!(),
+                        };
+                        let (ctx_pat, ctx_ty) = match method
+                            .sig
+                            .inputs
+                            .iter()
+                            .nth(ctx_index)
+                            .expect("validated context arity")
+                        {
+                            FnArg::Typed(arg) => (&arg.pat, &arg.ty),
+                            _ => unreachable!(),
+                        };
+                        let output = match &method.sig.output {
+                            ReturnType::Default => quote! { () },
+                            ReturnType::Type(_, ty) => quote! { #ty },
+                        };
+                        // Dispatch has already begun when this adapter is
+                        // constructed. Keep the inherent async method lazy,
+                        // but evaluate this await-free dispatch without a
+                        // heap-stored future. A closure preserves return/?.
+                        let answer = quote::quote_spanned! { ret_span =>
+                            let _ = #reply_name.reply(value);
+                        };
+                        quote! {
+                            // Function/closure parameters retain ignored fields
+                            // until the body returns. A destructuring let here
+                            // would drop them before the handler body runs.
+                            let value = (|#msg_pat: #msg_ty, #ctx_pat: #ctx_ty| -> #output #body)(
+                                #msg_name, #ctx_name
+                            );
+                            #answer
+                        }
+                    }
+                    (false, true) => {
+                        let value = quote::quote_spanned! { ret_span => self.#method_name(#msg_name, #ctx_name).await };
+                        quote! { let _ = #reply_name.reply(#value); }
+                    }
+                    (false, false) => {
+                        let value = quote::quote_spanned! { ret_span => self.#method_name(#msg_name, #ctx_name) };
+                        quote! { let _ = #reply_name.reply(#value); }
+                    }
+                };
 
-                let handler_impl = if method.sig.asyncness.is_some() {
+                let handler_impl = if immediate {
                     quote::quote_spanned! { span =>
                         #(#extra_attrs)*
                         impl #impl_generics Handler<#msg_ty> for #self_ty #where_clause {
-                            async fn handle #params #output {
-                                self.#method_name(msg, ctx).await
+                            async fn handle #params {
+                                let _ = #reply_name.reply(self.#method_name(#msg_name, #ctx_name).await);
+                            }
+
+                            fn __spawned_handle_immediate<#turn_lifetime>(
+                                &mut self,
+                                #msg_name: #msg_ty,
+                                #reply_name: spawned_concurrency::PendingReply<#turn_lifetime, <#msg_ty as spawned_concurrency::message::Message>::Result>,
+                                #ctx_name: &Context<Self>,
+                            ) -> ::core::option::Option<(#msg_ty, spawned_concurrency::PendingReply<#turn_lifetime, <#msg_ty as spawned_concurrency::message::Message>::Result>)> {
+                                // Keep payload destructors inside the original
+                                // future, whose drop is fenced by DeathFirst.
+                                // A refused result is dropped by reply() in
+                                // either adapter, after the method returned;
+                                // unlike a parameter, it adds no unwind capture.
+                                // This constant branch disappears for messages
+                                // without drop glue.
+                                if ::core::mem::needs_drop::<#msg_ty>() {
+                                    return ::core::option::Option::Some((#msg_name, #reply_name));
+                                }
+                                #call
+                                ::core::option::Option::None
+                            }
+                        }
+                    }
+                } else if asynchronous {
+                    quote::quote_spanned! { span =>
+                        #(#extra_attrs)*
+                        impl #impl_generics Handler<#msg_ty> for #self_ty #where_clause {
+                            async fn handle #params {
+                                #call
                             }
                         }
                     }
@@ -1576,8 +1842,8 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     quote::quote_spanned! { span =>
                         #(#extra_attrs)*
                         impl #impl_generics Handler<#msg_ty> for #self_ty #where_clause {
-                            fn handle #params #output {
-                                self.#method_name(msg, ctx)
+                            fn handle #params {
+                                #call
                             }
                         }
                     }
@@ -1613,9 +1879,17 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! { #[doc = #doc_body] }
     };
 
+    let bound_consts = {
+        let outstanding = max_outstanding.map(|n| quote! { const MAX_OUTSTANDING: usize = #n; });
+        let native = max_native_jobs
+            .map(|n| quote! { const MAX_NATIVE_JOBS: ::core::option::Option<usize> = ::core::option::Option::Some(#n); });
+        quote! { #outstanding #native }
+    };
+
     let actor_impl = quote! {
         #protocol_doc
         impl #impl_generics Actor for #self_ty #where_clause {
+            #bound_consts
             #(#lifecycle_methods)*
         }
     };
@@ -1811,6 +2085,133 @@ fn actor_lints(
 }
 
 // --- #[sim_test] ---
+
+/// Send-only form of a manual `Handler` impl: write `handle` without the
+/// reply parameter, and the impl answers `()` once `handle` returns.
+///
+/// ```ignore
+/// #[send_handler]
+/// impl Handler<Tick> for Poller {
+///     async fn handle(&mut self, _msg: Tick, ctx: &Context<Self>) {
+///         self.poll().await;
+///     }
+/// }
+/// ```
+///
+/// expands to the full `handle(&mut self, msg, reply: PendingReply<'_, ()>,
+/// ctx)` whose body runs yours and then calls `reply.reply(())`, also after
+/// an early `return`. The automatic `()` is a real reply, as with
+/// `#[send_handler]` methods in an `#[actor]` block: a `request` gets
+/// `Ok(())`, not `ReplyDropped`, and a panic in the body answers
+/// `ActorStopped` as for any handler. The message's `Result` must be `()`.
+/// Works for `tasks` (`async fn`) and `threads` (`fn`) handlers.
+///
+/// The reply type is named through the `Handler` path when it is qualified
+/// (`impl my_spawned::tasks::Handler<M> for A` uses
+/// `my_spawned::tasks::PendingReply`), so a renamed dependency works.
+/// With a bare `Handler`, it is `spawned_concurrency::PendingReply`;
+/// a crate that renames `spawned-concurrency` names it:
+/// `#[send_handler(crate = my_spawned)]`.
+#[proc_macro_attribute]
+pub fn send_handler(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let krate: Option<syn::Path> = if attr.is_empty() {
+        None
+    } else {
+        let parser = |input: syn::parse::ParseStream| {
+            input.parse::<syn::Token![crate]>()?;
+            input.parse::<syn::Token![=]>()?;
+            let path: syn::Path = input.parse()?;
+            if !input.is_empty() {
+                return Err(input.error("expected only `crate = path`"));
+            }
+            Ok(path)
+        };
+        match syn::parse::Parser::parse(parser, attr) {
+            Ok(path) => Some(path),
+            Err(error) => {
+                return syn::Error::new(
+                    error.span(),
+                    format!("#[send_handler] takes no arguments or `crate = path`: {error}"),
+                )
+                .to_compile_error()
+                .into()
+            }
+        }
+    };
+    let mut impl_block = parse_macro_input!(item as ItemImpl);
+    let is_handler = impl_block
+        .trait_
+        .as_ref()
+        .and_then(|(_, path, _)| path.segments.last())
+        .is_some_and(|segment| segment.ident == "Handler");
+    if !is_handler {
+        return syn::Error::new_spanned(
+            &impl_block.self_ty,
+            "#[send_handler] on an item applies to an `impl Handler<M> for Actor` block; \
+             inside an #[actor] block, put it on the handler method instead",
+        )
+        .to_compile_error()
+        .into();
+    }
+    let Some(method) = impl_block.items.iter_mut().find_map(|item| match item {
+        ImplItem::Fn(method) if method.sig.ident == "handle" => Some(method),
+        _ => None,
+    }) else {
+        return syn::Error::new_spanned(
+            &impl_block.self_ty,
+            "#[send_handler] impl must define `handle`",
+        )
+        .to_compile_error()
+        .into();
+    };
+    if method.sig.inputs.len() != 3 {
+        return syn::Error::new_spanned(
+            &method.sig,
+            "#[send_handler] `handle` takes (&mut self, msg: M, ctx: &Context<Self>), without the reply parameter",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if let ReturnType::Type(_, ty) = &method.sig.output {
+        if !is_unit_type(ty) {
+            return syn::Error::new_spanned(ty, "#[send_handler] `handle` returns nothing")
+                .to_compile_error()
+                .into();
+        }
+    }
+    let reply = format_ident!("__spawned_reply");
+    // The `Handler` path's module (`tasks`/`threads`) re-exports
+    // `PendingReply`; a bare `Handler` falls back to the crate path.
+    let handler_module = impl_block.trait_.as_ref().and_then(|(_, path, _)| {
+        (path.segments.len() > 1).then(|| {
+            let mut module = path.clone();
+            module.segments.pop();
+            module.segments.pop_punct();
+            module
+        })
+    });
+    let reply_ty = match (krate, handler_module) {
+        (Some(krate), _) => quote! { #krate::PendingReply<'_, ()> },
+        (None, Some(module)) => quote! { #module::PendingReply<'_, ()> },
+        (None, None) => quote! { spawned_concurrency::PendingReply<'_, ()> },
+    };
+    let reply_param: FnArg = syn::parse_quote! {
+        #reply: #reply_ty
+    };
+    method.sig.inputs.insert(2, reply_param);
+    method.sig.output = ReturnType::Default;
+    let body = &method.block;
+    let run = if method.sig.asyncness.is_some() {
+        quote! { async move #body.await }
+    } else {
+        quote! { (move || #body)() }
+    };
+    method.block = syn::parse_quote! {{
+        let () = #run;
+        let _ = #reply.reply(());
+    }};
+    quote! { #impl_block }.into()
+}
 
 /// Seeded async test: on Tokio in normal builds, over a seed range on the
 /// deterministic simulator under `--cfg spawned_sim` (see

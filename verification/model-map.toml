@@ -113,9 +113,7 @@ code = [
     "concurrency/src/mailbox_admission.rs",
     "concurrency/src/lifecycle_trace.rs",
 ]
-[models.Lifecycle.tlc_only]
-reason = "models the proposed v0.8 exit-signal contract; the code on main is v0.7, so there are no lifecycle trace events yet"
-tracking = "PR #240 adds LifeEvent and TraceLifecycle.tla; remove this entry once it merges"
+coverage_floor = 17   # of 17 trace-spec arms (trace_coverage.py STATIC)
 
 [models.DeferredReplies]
 # Rank 11: reply slots, deadlines, deferral credits, owner exit and death.
@@ -128,9 +126,15 @@ code = [
     "concurrency/src/reply/**",
     "concurrency/src/lifecycle_trace.rs",
 ]
-[models.DeferredReplies.tlc_only]
-reason = "rank 11 design model; the implementation is not on main yet"
-tracking = "PR #240 adds reply events and TraceReplies.tla; remove this entry once it merges"
+coverage_floor = 14   # of 14 action keys (TraceReplies arms)
+
+[models.ReplyTimer]
+# Receiver-side refinement: the shared runtime deadline and shortening mark.
+files = ["verification/tla/ReplyTimer.tla", "verification/tla/MCReplyTimer*"]
+code = ["concurrency/src/reply/mod.rs", "concurrency/src/reply/slot.rs", "concurrency/src/tasks/actor.rs", "rt/src/tasks/tokio/mod.rs", "rt/src/tasks/sim.rs", "rt/src/time.rs"]
+[models.ReplyTimer.tlc_only]
+reason = "receiver-local timer bookkeeping has no actor lifecycle trace events; production slot races are shared with Loom"
+tracking = "receiver timer projection of rank 11; see tests/reply_slot_loom.rs and tests/request_timer.rs"
 
 [models.DeferredJobs]
 # Rank 11: pipe jobs, keyed replacement, ActorId and cancellation fencing,
@@ -146,9 +150,7 @@ code = [
     "concurrency/src/threads/jobs.rs",
     "concurrency/src/lifecycle_trace.rs",
 ]
-[models.DeferredJobs.tlc_only]
-reason = "rank 11 design model; the implementation is not on main yet"
-tracking = "PR #240 adds JobEvent and TraceJobs.tla; remove this entry once it merges"
+coverage_floor = 10   # of 10 trace-spec arms (trace_coverage.py STATIC)
 
 [models.DynamicSupervisor]
 # Rank 12a design model (PR #245); no code yet.
@@ -245,9 +247,11 @@ emitters = [
 specs = ["verification/tla/TraceLifecycle.tla"]
 [trace.rejected]
 Held = "a signal held while started() runs (phase 0) is outside Lifecycle.tla; the trace is rejected"
+[trace.unlogged]
+EarlyFire = "fault device only (Fault = EarlyNotify: links and monitors fire when exit begins); no code path takes it"
 [trace.translated]
 Spawn = { into = [], why = "trace_check.py numbers actors from Spawn events" }
-Send = { into = ["Request", "Enqueue"], why = "trace_check.py splits Send into Request and Enqueue" }
+Send = { into = ["Request", "Enqueue", "Send"], why = "trace_check.py splits a Send from outside code into Request and Enqueue, and keeps one from a recorded actor as the model's Send" }
 
 [[trace]]
 struct = "JobEvent"
@@ -255,6 +259,8 @@ emitters = [
     { call = '\bJobEvent::new\(', arg = 0 },
 ]
 specs = ["verification/tla/TraceJobs.tla"]
+[trace.unlogged]
+Restart = "a new owner instance reading the old one's slot-addressed mailbox: the code has no such mailbox (a job's messages go to its owner instance's own mailbox, discarded at that instance's death), so the model's cross-instance delivery is a conservative over-approximation (NoLateResult holds a fortiori); a trace is one instance"
 
 [[trace]]
 struct = "ReplyEvent"

@@ -19,9 +19,15 @@ impl Actor for Observer {
     }
 }
 impl Handler<Down> for Observer {
-    fn handle(&mut self, event: Down, _: &Context<Self>) {
+    fn handle(
+        &mut self,
+        event: Down,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.counts.1 += 1;
         self.downs.send(event).unwrap();
+        reply.reply(());
     }
 }
 struct Counts;
@@ -29,8 +35,13 @@ impl Message for Counts {
     type Result = (usize, usize);
 }
 impl Handler<Counts> for Observer {
-    fn handle(&mut self, _: Counts, _: &Context<Self>) -> (usize, usize) {
-        self.counts
+    fn handle(
+        &mut self,
+        _: Counts,
+        reply: spawned_concurrency::PendingReply<'_, (usize, usize)>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(self.counts);
     }
 }
 struct Failing;

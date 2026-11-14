@@ -274,26 +274,25 @@ fn restart_mode(v: u8) -> RestartMode {
 
 fn config(p: &Policy, seed: u64) -> SupervisorConfig {
     let initial = Duration::from_millis(p.backoff as u64);
-    SupervisorConfig {
-        strategy: match p.strategy % 3 {
+    SupervisorConfig::default()
+        .strategy(match p.strategy % 3 {
             0 => SupervisorStrategy::OneForOne,
             1 => SupervisorStrategy::OneForAll,
             _ => SupervisorStrategy::RestForOne,
-        },
-        max_restarts: (p.max_restarts % 7) as usize,
+        })
+        .max_restarts((p.max_restarts % 7) as usize)
         // At least 50 ms, so a fast restart loop exhausts the budget
         // instead of restarting forever as virtual time creeps.
-        restart_window: Duration::from_millis(50 + 2 * p.window as u64),
-        backoff: Backoff {
-            initial,
-            maximum: initial * 4,
-            stable_after: Duration::from_millis(10 * p.stable as u64 + 1),
-            jitter: p.jitter,
-            // Never the default (wall-clock) jitter seed.
-            seed: Some(seed),
-        },
-        ..SupervisorConfig::default()
-    }
+        .restart_window(Duration::from_millis(50 + 2 * p.window as u64))
+        .backoff(
+            Backoff::default()
+                .initial(initial)
+                .maximum(initial * 4)
+                .stable_after(Duration::from_millis(10 * p.stable as u64 + 1))
+                .jitter(p.jitter)
+                // Never the default (wall-clock) jitter seed.
+                .seed(seed),
+        )
 }
 
 fn cfg_strategy(p: &Policy) -> SupervisorStrategy {
@@ -306,6 +305,7 @@ fn new_sup_inst(world: &World, root: usize, cfg: &SupervisorConfig) -> usize {
         root,
         max_restarts: cfg.max_restarts,
         window: cfg.restart_window,
+        cohort: !matches!(cfg.strategy, SupervisorStrategy::OneForOne),
         strategy: cfg.strategy,
         backoff: cfg.backoff.clone(),
         flat: false,
@@ -559,7 +559,8 @@ impl Driver {
                     );
                 }
             }
-            Err(ActorError::ActorStopped) => {}
+            // Answered at the death point, or sent after it (0.8: NoProc).
+            Err(ActorError::ActorStopped(_) | ActorError::NoProc) => {}
             #[allow(unreachable_patterns)]
             Err(other) => self.violate("R1: unexpected request error", format!("{other}")),
         }
@@ -646,10 +647,14 @@ impl Driver {
                 };
                 self.may_stop(pa.id());
                 self.may_stop(pb.id());
-                // A context whose actor already exited cannot link: the call
-                // is a no-op (`register_link` sees its own table closed), so
-                // nothing is predicted for the pair.
-                let linker_exited = pa.child_handle().exit_reason().is_some();
+                // A context whose actor already exited, or whose exit began,
+                // cannot link (0.8, as in OTP: an exiting process cannot call
+                // link): the call is inert, so nothing is predicted for the
+                // pair. (`exit_pending` also counts a queued parent exit, which
+                // does not make the link inert: the check is then skipped,
+                // conservatively.)
+                let linker_exited =
+                    pa.child_handle().exit_reason().is_some() || pa.context().exit_pending();
                 pa.context().link(&pb.child_handle());
                 let trap = |d: &Self, id| d.traps.get(&id).is_some_and(|t| t.0);
                 self.links.push(LinkRec {
@@ -737,7 +742,7 @@ impl Driver {
                 }
                 match r {
                     Reason::Normal => handle.stop(),
-                    Reason::Shutdown => handle.shutdown(),
+                    Reason::Shutdown => handle.stop_with_reason(ExitReason::Shutdown),
                     r => handle.stop_with_reason(reason(r)),
                 }
             }
@@ -830,7 +835,7 @@ impl Driver {
                     timer: 0,
                     act,
                 };
-                drop(aref.request_raw(msg));
+                drop(aref.send_request(msg, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT));
             }
             Op::WaitGeneration { sup, child, ms } => self.wait_generation(sup, child, ms).await,
             Op::Fence => {
@@ -1556,7 +1561,7 @@ impl Driver {
                 }
                 true
             }
-            Err(ActorError::ActorStopped) => {
+            Err(ActorError::ActorStopped(_) | ActorError::NoProc) => {
                 if rt::timeout(LONG, aref.wait_exit()).await.is_err() {
                     self.violate(
                         "L7: a stopping actor never published its exit",
@@ -1659,7 +1664,9 @@ impl Driver {
                     .collect()
             };
             for r in received(self) {
-                if r != published {
+                // 0.8 (X1): a monitor installed after the target's death
+                // point gets `NoProc`; one installed before, its reason.
+                if r != published && r != ExitReason::NoProc {
                     self.violate(
                         "X1: Down carried a different reason than the target published",
                         format!("{r:?} vs {published:?}"),
@@ -1743,7 +1750,9 @@ impl Driver {
                     .unwrap_or_default()
             };
             for r in exits(self) {
-                if r != published {
+                // 0.8 (X3): a link made after the peer's death point is a
+                // late link, whose notice is `NoProc`.
+                if r != published && r != ExitReason::NoProc {
                     self.violate(
                         "X3: Exit carried a different reason than the peer published",
                         format!("{r:?} vs {published:?}"),
@@ -1804,7 +1813,14 @@ impl Driver {
                     format!("w{instance} {exit:?}"),
                 );
             }
-            if panicked && !exit.is_abnormal() {
+            // A panic sets the reason, but until the death point an
+            // untrapped exit signal or link notice still replaces it
+            // (semantics.md L4, `Lifecycle!LateSignalWins`; OTP: a signal
+            // during `terminate` kills with its own reason). The only
+            // non-abnormal reason a signal can carry is `Shutdown`.
+            let trapping = self.traps.get(&id).is_some_and(|t| t.0);
+            let late_shutdown = exit == ExitReason::Shutdown && !trapping;
+            if panicked && !exit.is_abnormal() && !late_shutdown {
                 self.violate(
                     "L4: an actor that panicked exited with a non-abnormal reason",
                     format!("w{instance} {exit:?}"),
@@ -1855,6 +1871,12 @@ impl Driver {
         }
         let detail = format!("w{} published {exit:?}, peer {peer:?}", a.instance);
         drop(s);
+        // 0.8 (E4): a link made after the peer's death point is a late
+        // link; a non-trapping caller gets the `NoProc` exit signal and ends
+        // `NoProc`, whatever the peer's reason was.
+        if exit == ExitReason::NoProc {
+            return;
+        }
         if *peer == ExitReason::Normal {
             self.violate(
                 "X3: a non-trapping actor was stopped by a linked peer's Normal exit",
@@ -1892,7 +1914,9 @@ impl Driver {
                     continue;
                 }
                 let s = self.world.lock();
-                let Some(i) = s.instance_of(mid) else { continue };
+                let Some(i) = s.instance_of(mid) else {
+                    continue;
+                };
                 if s.insts[i].exits.iter().any(|(from, _)| *from == oid) {
                     let detail = format!("w{i} from {}", s.name(oid));
                     drop(s);
@@ -2009,7 +2033,7 @@ fn budget_checks(world: &World) {
     let calls = s.calls.clone();
     let mut found = Vec::new();
     let mut seen: HashMap<(usize, String), usize> = HashMap::new();
-    let mut retries: Vec<Vec<Duration>> = vec![Vec::new(); s.sups.len()];
+    let mut retries: Vec<Vec<(Duration, &str)>> = vec![Vec::new(); s.sups.len()];
     for c in &calls {
         let n = seen.entry((c.inst, c.slot.clone())).or_default();
         *n += 1;
@@ -2020,21 +2044,69 @@ fn budget_checks(world: &World) {
                     c.slot.clone(),
                 ));
             }
-            retries[c.inst].push(c.at);
+            retries[c.inst].push((c.at, &c.slot));
         }
     }
-    for (inst, times) in retries.iter().enumerate() {
+    for (inst, log) in retries.iter().enumerate() {
         let SupInst {
             max_restarts,
             window,
+            cohort,
             ..
         } = s.sups[inst].clone();
-        for (i, t) in times.iter().enumerate() {
-            let in_window = times[..=i].iter().filter(|u| *t - **u < window).count();
-            if in_window > max_restarts {
+        if !cohort {
+            // A OneForOne retry is one action, stamped at its admission:
+            // the factory call's time is the grant's.
+            for (i, (t, _)) in log.iter().enumerate() {
+                let in_window = log[..=i].iter().filter(|(u, _)| *t - *u < window).count();
+                if in_window > max_restarts {
+                    found.push((
+                        "V5: more restarts than the budget within one window",
+                        format!("instance {inst}: {in_window} > {max_restarts} in {window:?}"),
+                    ));
+                    break;
+                }
+            }
+            continue;
+        }
+        // A cohort round is one action however many children it rebuilds,
+        // charged when it is selected, before the cohort stops and the
+        // backoff: its rebuilds come later by an unbounded delay, so their
+        // times are not the grants'. What the factory log does fix: a round
+        // calls each slot at most once and only while it is current, so the
+        // next round's grant follows its calls. Split the log where a slot
+        // repeats: each segment's first call starts a distinct round whose
+        // grant lies after the previous segment's first call and no later
+        // than its own first call (a merged segment only undercounts).
+        // `max_restarts + 1` rounds forced into less than one window break
+        // V5. (Retries before the tree is ready are per-child grants at
+        // their call, inside the same bounds.)
+        let mut firsts: Vec<Duration> = Vec::new();
+        let mut open: Vec<&str> = Vec::new();
+        for (t, slot) in log {
+            if firsts.is_empty() || open.contains(slot) {
+                firsts.push(*t);
+                open.clear();
+            }
+            open.push(slot);
+        }
+        for i in 0..firsts.len() {
+            let Some(last) = firsts.get(i + max_restarts) else {
+                break;
+            };
+            let earliest = if i == 0 {
+                Duration::ZERO
+            } else {
+                firsts[i - 1]
+            };
+            if *last - earliest < window {
                 found.push((
                     "V5: more restarts than the budget within one window",
-                    format!("instance {inst}: {in_window} > {max_restarts} in {window:?}"),
+                    format!(
+                        "instance {inst}: {} rounds within {:?} < {window:?}",
+                        max_restarts + 1,
+                        *last - earliest
+                    ),
                 ));
                 break;
             }
