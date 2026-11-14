@@ -214,6 +214,14 @@ impl<A: Actor + Handler<Down>> Envelope<A> for DownEnvelope {
     }
 }
 
+#[cfg(all(spawned_sim, feature = "async"))]
+fn assert_native_clock_context() {
+    assert!(
+        spawned_rt::tasks::Handle::try_current_or_ambient().is_err(),
+        "spawned_sim: native actors cannot run in or receive messages from a simulated world;          use tasks actors for simulation, or run native actors outside the simulation"
+    );
+}
+
 /// Admit a message. Past the death point (the registry is sealed, or the
 /// mailbox is gone) it reports `NoProc`; before it, including while the
 /// actor exits, it is queued, and a request is answered at the death point
@@ -229,6 +237,8 @@ where
     A: Actor + Handler<M>,
     M: Message,
 {
+    #[cfg(all(spawned_sim, feature = "async"))]
+    assert_native_clock_context();
     let from = crate::lifecycle_trace::life_sender::<M>(replies.owner().raw(), slot.is_detached());
     let envelope: Box<dyn Envelope<A> + Send> = Box::new(MessageEnvelope {
         msg,
@@ -864,6 +874,8 @@ impl<A: Actor> Context<A> {
 
     /// Link as [`link`](Self::link), but report a target past its death
     /// point as `Err(NoProc)` and keep no record.
+    /// A caller whose exit already began does nothing and returns `Ok(())`;
+    /// an exit racing this call can linearize after the link attempt.
     pub fn try_link(&self, target: &ChildHandle) -> Result<(), NoProc> {
         match link::register_link(
             &self.signal,
@@ -1279,6 +1291,8 @@ where
 
 impl<A: Actor> ActorRef<A> {
     fn spawn(actor: A, parent: Option<ChildHandle>) -> Self {
+        #[cfg(all(spawned_sim, feature = "async"))]
+        assert_native_clock_context();
         let (tx, rx) = mpsc::channel::<MailboxItem<A>>();
         let cancellation_token = CancellationToken::new();
         register_stop_wakeup(&cancellation_token, tx.clone());
@@ -1310,7 +1324,7 @@ impl<A: Actor> ActorRef<A> {
             linked_reason: linked_reason.clone(),
             signal: signal.clone(),
             mailbox: crate::instrumentation::Mailbox::default(),
-            replies: Registry::new(id, A::MAX_OUTSTANDING),
+            replies: Registry::new_native(id, A::MAX_OUTSTANDING),
             jobs: Arc::new(crate::reply::jobs::JobSet::new(
                 id,
                 A::MAX_NATIVE_JOBS.unwrap_or_else(crate::reply::jobs::default_max_native_jobs),
@@ -2673,7 +2687,7 @@ mod idle_stop_regression {
                         token.clone(),
                     ),
                     mailbox: crate::instrumentation::Mailbox::default(),
-                    replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
+                    replies: Registry::new_native(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
                     jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
                     cleaned: Arc::default(),
                 };
@@ -2830,7 +2844,7 @@ mod stop_wakeup_regression {
                         token.clone(),
                     ),
                     mailbox: crate::instrumentation::Mailbox::default(),
-                    replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
+                    replies: Registry::new_native(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
                     jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
                     cleaned: Arc::default(),
                 };

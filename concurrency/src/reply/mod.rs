@@ -36,6 +36,25 @@ use std::time::Duration;
 mod sync {
     pub(crate) use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
     pub(crate) use std::sync::{Arc, Arc as JobArc, Condvar, Mutex, MutexGuard, Weak as JobWeak};
+    // A non-poisoning slot lock; payloads/wakers are never dropped under it.
+    // Keep the standard LockResult surface so the shared Loom code uses the
+    // same calls, while the ordinary path inlines to parking_lot's fast lock.
+    pub(crate) struct SlotMutex<T>(parking_lot::Mutex<T>);
+    pub(crate) type SlotMutexGuard<'a, T> = parking_lot::MutexGuard<'a, T>;
+    impl<T> SlotMutex<T> {
+        pub(crate) fn new(value: T) -> Self {
+            Self(parking_lot::Mutex::new(value))
+        }
+        #[inline]
+        pub(crate) fn lock(&self) -> std::sync::LockResult<SlotMutexGuard<'_, T>> {
+            // Production never poisons; recovery is exercised by Loom's lock.
+            Ok(self.0.lock())
+        }
+        #[inline]
+        pub(crate) fn into_inner(self) -> std::sync::LockResult<T> {
+            Ok(self.0.into_inner())
+        }
+    }
     /// Lifecycle-trace builds keep the owner in each slot (its events name
     /// it); other builds keep nothing, so a slot stays small.
     #[cfg(feature = "lifecycle-trace")]
@@ -150,6 +169,29 @@ pub(crate) mod clock {
             .and_then(|nanos| now().checked_add(nanos))
             .filter(|ticks| *ticks < spawned_rt::time::MAX_TICKS)
             .unwrap_or(NEVER)
+    }
+}
+
+/// A type-level default lets ordinary requests keep their fixed budget out
+/// of the future's captured state, while custom requests carry a Duration.
+#[cfg(feature = "async")]
+pub(crate) trait RequestBudget: Send {
+    fn into_duration(self) -> Duration;
+}
+#[cfg(feature = "async")]
+pub(crate) struct DefaultRequestBudget;
+#[cfg(feature = "async")]
+impl RequestBudget for DefaultRequestBudget {
+    #[inline]
+    fn into_duration(self) -> Duration {
+        crate::response::DEFAULT_REQUEST_TIMEOUT
+    }
+}
+#[cfg(feature = "async")]
+impl RequestBudget for Duration {
+    #[inline]
+    fn into_duration(self) -> Duration {
+        self
     }
 }
 
@@ -384,6 +426,10 @@ pub struct PendingReply<'t, R: Send + 'static> {
     /// Lent by the dispatching envelope for the turn (tasks mode), or owned.
     slot: Option<Cow<'t, Arc<Slot<R>>>>,
     registry: Option<&'t Arc<Registry>>,
+    /// Test reply pairs need a fresh owner in each simulated world; a
+    /// process-static owner would retain the first seed's clock forever.
+    #[cfg(spawned_sim)]
+    owned_registry: Option<Arc<Registry>>,
     _turn: PhantomData<&'t mut ()>,
 }
 
@@ -421,6 +467,8 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
         Self {
             slot,
             registry: Some(registry),
+            #[cfg(spawned_sim)]
+            owned_registry: None,
             _turn: PhantomData,
         }
     }
@@ -431,6 +479,8 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
         Self {
             slot: None,
             registry: None,
+            #[cfg(spawned_sim)]
+            owned_registry: None,
             _turn: PhantomData,
         }
     }
@@ -441,6 +491,8 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
         // Consumed here: the obligation's `Drop` (an unanswered reply) has
         // nothing to do once the slot is taken, so it is skipped.
         let mut this = std::mem::ManuallyDrop::new(self);
+        #[cfg(spawned_sim)]
+        let _owner = this.owned_registry.take();
         match this.slot.take() {
             None => {
                 drop(value);
@@ -468,18 +520,20 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
     /// [`DeferError::Overloaded`].
     pub fn defer(mut self) -> Result<ReplyTo<R>, DeferError> {
         let slot = self.slot.take().ok_or(DeferError::NoCaller)?.into_owned();
-        let registry = self.registry.take().ok_or(DeferError::NoCaller)?;
+        let registry = self.registry.take();
+        #[cfg(spawned_sim)]
+        let registry = registry.or(self.owned_registry.as_ref());
+        let registry = registry.ok_or(DeferError::NoCaller)?;
         match slot.defer(registry.pool(), &now_ticks) {
             Ok(()) => {
                 #[cfg(feature = "lifecycle-trace")]
                 crate::lifecycle_trace::downstream_deferred(Arc::as_ptr(&slot) as u64);
-                registry.register(&slot);
-                registry.track_deadline(&slot);
-                Ok(ReplyTo {
-                    slot: Some(slot),
-                    registry: registry.clone(),
-                    stamp: crate::instrumentation::hooks::deferred(),
-                })
+                let token = ReplyTo::new(slot, registry.clone());
+                // Construct the token first: a registration panic must also
+                // run its Drop and retire the external-ownership hold.
+                registry.register(token.slot());
+                registry.track_deadline(token.slot());
+                Ok(token)
             }
             Err(slot::Refused::Closed) => Err(DeferError::Closed),
             Err(slot::Refused::Overloaded) => Err(DeferError::Overloaded),
@@ -517,7 +571,10 @@ impl<R: Send + 'static> Drop for PendingReply<'_, R> {
             if slot.is_terminal() {
                 return;
             }
-            match self.registry {
+            let registry = self.registry;
+            #[cfg(spawned_sim)]
+            let registry = registry.or(self.owned_registry.as_ref());
+            match registry {
                 Some(registry) => registry.dropped(slot.into_owned()),
                 None => {
                     slot.terminate(Terminal::Dropped);
@@ -555,6 +612,20 @@ impl<R: Send + 'static> std::fmt::Debug for ReplyTo<R> {
 }
 
 impl<R: Send + 'static> ReplyTo<R> {
+    /// Constructed only by the owner's handler (standalone test reply pairs
+    /// run without an owner turn). Other tasks can only move existing tokens.
+    /// Every token owns one external hold through its entire Drop. Forgetting
+    /// a token leaks that hold too, conservatively keeping the slow turn path.
+    fn new(slot: Arc<Slot<R>>, registry: Arc<Registry>) -> Self {
+        let token = Self {
+            slot: Some(slot),
+            registry,
+            stamp: crate::instrumentation::hooks::deferred(),
+        };
+        token.registry.token_added();
+        token
+    }
+
     /// Answer the caller. Returns how the reply was delivered.
     pub fn reply(mut self, value: R) -> Delivery {
         let slot = self
@@ -657,6 +728,7 @@ impl<R: Send + 'static> ReplyTo<R> {
 
 impl<R: Send + 'static> Drop for ReplyTo<R> {
     fn drop(&mut self) {
+        let _ownership = self.registry.token_drop_guard();
         if let Some(slot) = self.slot.take() {
             self.registry.dropped(slot);
         }
@@ -883,6 +955,14 @@ pub(crate) fn reply_pair<R: Send + 'static>(
     deadline: Deadline,
 ) -> (PendingReply<'static, R>, ReplyReceiver<R>) {
     let (mut handle, receiver) = reply_slot(deadline.ticks(), None, false);
+    #[cfg(not(spawned_sim))]
     let reply = PendingReply::new(handle.take(), Registry::detached());
+    #[cfg(spawned_sim)]
+    let reply = PendingReply {
+        slot: handle.take().map(Cow::Owned),
+        registry: None,
+        owned_registry: Some(Registry::for_test()),
+        _turn: PhantomData,
+    };
     (reply, receiver)
 }

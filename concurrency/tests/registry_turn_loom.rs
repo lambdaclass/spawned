@@ -6,7 +6,7 @@
 #![cfg(spawned_scheduler_loom)]
 
 mod sync {
-    pub(crate) use loom::sync::atomic::{AtomicU8, Ordering};
+    pub(crate) use loom::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
     pub(crate) use loom::sync::Mutex;
 }
 
@@ -68,7 +68,11 @@ fn drop_vs_turn_end() {
             turn.begin_turn();
             let dropper = {
                 let (turn, outcomes) = (turn.clone(), outcomes.clone());
-                loom::thread::spawn(move || drop_on(&turn, &outcomes, 1))
+                turn.external_added();
+                loom::thread::spawn(move || {
+                    drop_on(&turn, &outcomes, 1);
+                    turn.external_finished();
+                })
             };
             let (drops, outcome) = turn.end_turn(panicked);
             let committed = !drops.is_empty();
@@ -104,7 +108,11 @@ fn drops_vs_exit_vs_death() {
         let droppers: Vec<_> = (1..=2)
             .map(|item| {
                 let (turn, outcomes) = (turn.clone(), outcomes.clone());
-                loom::thread::spawn(move || drop_on(&turn, &outcomes, item))
+                turn.external_added();
+                loom::thread::spawn(move || {
+                    drop_on(&turn, &outcomes, item);
+                    turn.external_finished();
+                })
             })
             .collect();
         outcomes.apply(turn.exiting(), Outcome::Stopped);
@@ -133,4 +141,105 @@ fn exiting_after_death_is_a_no_op() {
         assert!(late.join().unwrap().is_empty());
         assert_eq!(turn.load(), turn::DEAD);
     });
+}
+
+/// A borrowed obligation is gone before its handler finishes, so the zero-
+/// external fast path must still commit its drop with the handler's outcome.
+#[test]
+fn borrowed_drop_commits_without_external_tokens() {
+    for panicked in [false, true] {
+        model(move || {
+            let turn = TurnPhase::<u32>::default();
+            let outcomes = Outcomes::default();
+            turn.begin_turn();
+            drop_on(&turn, &outcomes, 1);
+            let (drops, outcome) = turn.end_turn(panicked);
+            outcomes.apply(drops, outcome);
+            assert_eq!(
+                outcomes.of(1),
+                Some(if panicked {
+                    Outcome::Stopped
+                } else {
+                    Outcome::Dropped
+                })
+            );
+            assert_eq!(turn.load(), turn::RUNNING);
+        });
+    }
+}
+
+/// The last external token retires after recording its drop, not before.
+/// Acquiring its zero count must publish the pending item to the fast path.
+#[test]
+fn last_external_drop_is_visible_to_the_next_turn() {
+    model(|| {
+        let turn = Arc::new(TurnPhase::<u32>::default());
+        let outcomes = Arc::new(Outcomes::default());
+        turn.begin_turn();
+        turn.external_added();
+        let dropper = {
+            let (turn, outcomes) = (turn.clone(), outcomes.clone());
+            loom::thread::spawn(move || {
+                drop_on(&turn, &outcomes, 1);
+                turn.external_finished();
+            })
+        };
+        let (drops, outcome) = turn.end_turn(false);
+        outcomes.apply(drops, outcome);
+        // A later handler may finish while the earlier token is retiring.
+        turn.begin_turn();
+        let (drops, outcome) = turn.end_turn(true);
+        outcomes.apply(drops, outcome);
+        dropper.join().unwrap();
+        assert!(
+            outcomes.of(1).is_some(),
+            "external drop was lost between turns"
+        );
+        let (remaining, _) = turn.end_turn(false);
+        assert!(
+            remaining.is_empty(),
+            "a completed token left queued work behind"
+        );
+    });
+}
+
+/// Zero can follow two different release operations. The acquire must see
+/// both completed drops, or the exchange must race the still-owned token.
+#[test]
+fn two_external_drops_race_turn_end_without_losing_either() {
+    for panicked in [false, true] {
+        model(move || {
+            let turn = Arc::new(TurnPhase::<u32>::default());
+            let outcomes = Arc::new(Outcomes::default());
+            turn.begin_turn();
+            let droppers: Vec<_> = (1..=2)
+                .map(|item| {
+                    turn.external_added();
+                    let (turn, outcomes) = (turn.clone(), outcomes.clone());
+                    loom::thread::spawn(move || {
+                        drop_on(&turn, &outcomes, item);
+                        turn.external_finished();
+                    })
+                })
+                .collect();
+            let (drops, outcome) = turn.end_turn(panicked);
+            let committed = drops.clone();
+            outcomes.apply(drops, outcome);
+            for dropper in droppers {
+                dropper.join().unwrap();
+            }
+            for item in 1..=2 {
+                let expected = if panicked && committed.contains(&item) {
+                    Outcome::Stopped
+                } else {
+                    Outcome::Dropped
+                };
+                assert_eq!(
+                    outcomes.of(item),
+                    Some(expected),
+                    "lost/misclassified drop {item}"
+                );
+            }
+        });
+    }
 }

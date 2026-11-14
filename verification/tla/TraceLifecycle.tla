@@ -78,6 +78,10 @@ traceVars == <<vars, i>>
 
 TraceInit == Init /\ i = 0
 
+\* Await-free generated handlers may complete inside guarded dispatch, before
+\* creating a turn future. They still run after this Dispatch action, with the
+\* same current-actor context used for Send. lifecycle_direct_dispatch.json
+\* exercises the implementation path (including the causal sender).
 DispatchAs(a, k, p) ==
     /\ mbox[a] # <<>> /\ Head(mbox[a]).k = k
     /\ Dispatch(a)

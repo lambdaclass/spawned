@@ -16,7 +16,7 @@
 //! user code: it returns the items and their outcome, and the caller applies
 //! them after every lock is released.
 
-use super::sync::{AtomicU8, Mutex, Ordering};
+use super::sync::{AtomicU8, AtomicUsize, Mutex, Ordering};
 
 pub(crate) const RUNNING: u8 = 0;
 pub(crate) const IN_TURN: u8 = 1;
@@ -37,6 +37,9 @@ struct Phase(AtomicU8);
 
 pub(crate) struct TurnPhase<T> {
     phase: Phase,
+    // A deferred token stays counted until its entire drop has completed.
+    // Only the actor can create tokens, before they leave its current turn.
+    external: AtomicUsize,
     drops: Mutex<Vec<T>>,
 }
 
@@ -44,6 +47,7 @@ impl<T> Default for TurnPhase<T> {
     fn default() -> Self {
         Self {
             phase: Phase(AtomicU8::new(RUNNING)),
+            external: AtomicUsize::new(0),
             drops: Mutex::new(Vec::new()),
         }
     }
@@ -93,6 +97,24 @@ impl<T> TurnPhase<T> {
         }
     }
 
+    /// Called by the owner before publishing a new deferred token. A borrowed
+    /// PendingReply cannot outlive the handler, so it needs no external hold.
+    pub(crate) fn external_added(&self) {
+        self.external.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Retire a deferred token only after its drop/commit work. The owner
+    /// acquiring zero then sees every earlier drop's phase and queue writes.
+    pub(crate) fn external_finished(&self) {
+        let previous = self.external.fetch_sub(1, Ordering::Release);
+        debug_assert!(previous > 0, "deferred token ownership underflow");
+    }
+
+    #[cfg(all(test, feature = "async"))]
+    pub(crate) fn external_count(&self) -> usize {
+        self.external.load(Ordering::Acquire)
+    }
+
     /// The run loop is about to dispatch a handler. Only the run loop moves
     /// the phase out of `RUNNING`, so a plain store suffices.
     #[inline]
@@ -109,7 +131,24 @@ impl<T> TurnPhase<T> {
         } else {
             Outcome::Dropped
         };
-        if self.phase.0.swap(RUNNING, Ordering::AcqRel) == IN_TURN_PENDING {
+        // The completed handler owns every borrowed obligation; none can
+        // still be dropped concurrently. If no deferred token exists either,
+        // no foreign writer can change this phase: an acquire of the last
+        // token's release also sees the phase/queue writes of its whole drop.
+        // Creating another token requires this owner to enter its next handler.
+        // Exiting/dead transitions belong to the same run-loop/cleanup owner;
+        // runtime destruction cannot drop a future while it is being polled.
+        // Jobs can retain slots after a token is consumed, but only borrowed
+        // PendingReply drops and counted ReplyTo drops call record_drop.
+        // Otherwise retain the atomic exchange against a racing token drop.
+        let previous = if self.external.load(Ordering::Acquire) == 0 {
+            let previous = self.load();
+            self.phase.0.store(RUNNING, Ordering::Release);
+            previous
+        } else {
+            self.phase.0.swap(RUNNING, Ordering::AcqRel)
+        };
+        if previous == IN_TURN_PENDING {
             (take(&self.drops), outcome)
         } else {
             (Vec::new(), outcome)

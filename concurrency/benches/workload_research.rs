@@ -274,7 +274,7 @@ impl Handler<Route> for Node {
                 .map(|c| {
                     // A `ReplyReceiver` is `IntoFuture`; `join_all` takes futures.
                     std::future::IntoFuture::into_future(
-                        c.send_request(msg.clone(), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                        c.send_request(msg.clone(), spawned_concurrency::Deadline::Never)
                             .unwrap(),
                     )
                 })
@@ -611,7 +611,7 @@ fn main() {
                             children,
                             expected_shard: assignment[id],
                         },
-                        spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+                        spawned_concurrency::Deadline::Never,
                     )
                     .unwrap()
                     .into_future(),
@@ -627,7 +627,7 @@ fn main() {
                     iterations: c.iterations,
                     measured: false,
                 },
-                spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+                spawned_concurrency::Deadline::Never,
             )
             .unwrap();
         runtime.block_on(reply.into_future()).unwrap();
@@ -677,45 +677,46 @@ fn main() {
                                 epoch.changed().await.unwrap();
                                 let start = epoch.borrow().unwrap();
                                 wait_until(start);
-                                let producers =
-                                    (driver..c.producers).step_by(c.caller_threads).map(
-                                        |producer| async move {
-                                            let mut samples = Vec::with_capacity(
-                                                c.messages.div_ceil(c.producers),
-                                            );
-                                            for id in (producer..c.messages).step_by(c.producers) {
-                                                let intended = Instant::now();
-                                                let enqueued = Instant::now();
-                                                let (target, hot) = c.target(id);
-                                                let reply = nodes[target]
-                                                .send_request(Route {
-                                                    id: id as u64,
-                                                    enqueued,
-                                                    iterations: c.iterations,
-                                                    measured: false,
-                                                }, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
-                                                .unwrap();
-                                                let ack = reply.await.unwrap();
-                                                samples.push(sample(
-                                                    Meta {
-                                                        id,
-                                                        target,
-                                                        hot,
-                                                        intended,
+                                let producers = (driver..c.producers)
+                                    .step_by(c.caller_threads)
+                                    .map(|producer| async move {
+                                        let mut samples =
+                                            Vec::with_capacity(c.messages.div_ceil(c.producers));
+                                        for id in (producer..c.messages).step_by(c.producers) {
+                                            let intended = Instant::now();
+                                            let enqueued = Instant::now();
+                                            let (target, hot) = c.target(id);
+                                            let reply = nodes[target]
+                                                .send_request(
+                                                    Route {
+                                                        id: id as u64,
                                                         enqueued,
+                                                        iterations: c.iterations,
+                                                        measured: false,
                                                     },
-                                                    Some(ack),
-                                                    Instant::now(),
-                                                    c,
-                                                    assignment,
-                                                ));
-                                                if c.observation_counter {
-                                                    observed.fetch_add(1, Ordering::Relaxed);
-                                                }
+                                                    spawned_concurrency::Deadline::Never,
+                                                )
+                                                .unwrap();
+                                            let ack = reply.await.unwrap();
+                                            samples.push(sample(
+                                                Meta {
+                                                    id,
+                                                    target,
+                                                    hot,
+                                                    intended,
+                                                    enqueued,
+                                                },
+                                                Some(ack),
+                                                Instant::now(),
+                                                c,
+                                                assignment,
+                                            ));
+                                            if c.observation_counter {
+                                                observed.fetch_add(1, Ordering::Relaxed);
                                             }
-                                            samples
-                                        },
-                                    );
+                                        }
+                                        samples
+                                    });
                                 futures::future::join_all(producers)
                                     .await
                                     .into_iter()
@@ -811,7 +812,7 @@ fn main() {
                                             iterations,
                                             measured: c.mode != "graph",
                                         },
-                                        spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+                                        spawned_concurrency::Deadline::Never,
                                     )
                                     .unwrap();
                                 let meta = Meta {
@@ -883,7 +884,7 @@ fn main() {
                                 children: Vec::new(),
                                 expected_shard: assignment[id],
                             },
-                            spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+                            spawned_concurrency::Deadline::Never,
                         )
                         .unwrap()
                         .into_future(),

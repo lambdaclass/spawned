@@ -146,7 +146,9 @@ impl<C: Fn()> ActorCleanup<C> {
         // Fence outgoing replies and exit signals before the final reason is
         // visible (outside any trace section: an in-flight signal may need
         // one). Later ones are refused; those in flight finish first, so a
-        // signal sent before death precedes the death notices.
+        // signal sent before death precedes the death notices. A gate holder
+        // is synchronous and never awaits this actor or runs a user callback;
+        // otherwise runtime-drop cleanup could deadlock here.
         if let Some(replies) = &self.replies {
             replies.fence();
         }

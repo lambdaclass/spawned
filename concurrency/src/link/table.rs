@@ -13,6 +13,9 @@
 //! callbacks must never acquire a link-table lock or execute user handlers.
 //! The outgoing SendGate fence is acquired before the table lock at death;
 //! Registry::seal under the table lock only publishes the OnceLock reason.
+//! Across these protocols the order is monitor table -> link tables (pointer
+//! order) -> exit request -> mailbox admission. Internal wakes must not call
+//! user handlers or reacquire a monitor/link table.
 
 use super::sync::{Arc, Mutex, MutexGuard, Weak};
 use super::{ActorId, ExitReason, SignalTarget};

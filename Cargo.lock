@@ -1838,6 +1838,7 @@ dependencies = [
  "loom",
  "monoio",
  "nix 0.30.1",
+ "parking_lot",
  "pin-project-lite",
  "pprof",
  "proptest",

@@ -1,4 +1,7 @@
 ---------------------------- MODULE DeferredJobs ----------------------------
+\* JobState::finish keeps unused enqueue/terminal factories outside trace::atomic.
+\* Their payload destructors are implementation callbacks, not model actions;
+\* the trace-lock regression checks this boundary without changing Finish.
 (***************************************************************************)
 (* Rank 11 design model, part 2: pipe-to-self jobs. Design contract:      *)
 (* docs/design/deferred-replies.md. Part 1 is DeferredReplies.tla.        *)

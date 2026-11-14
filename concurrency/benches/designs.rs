@@ -316,12 +316,12 @@ impl Target {
         match self {
             Self::Tasks(actor) => Reply::FrameworkTasks(
                 actor
-                    .send_request(work, Duration::from_secs(10))
+                    .send_request(work, spawned_concurrency::Deadline::Never)
                     .expect("actor stopped"),
             ),
             Self::Threads(actor) => Reply::FrameworkThreads(
                 actor
-                    .send_request(work, Duration::from_secs(10))
+                    .send_request(work, spawned_concurrency::Deadline::Never)
                     .expect("actor stopped"),
             ),
             Self::Tokio(tx) => {

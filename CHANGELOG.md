@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+- Failed deadline-worker initialization releases its service allocation on
+  error or unwind, and leaves initialization retryable. Startup still fails
+  rather than silently accepting an unserviceable deadline.
+
+- Simulation rejects native actor creation and message/request admission from
+  a virtual world instead of comparing real-time and virtual deadline ticks.
+  Native-only tests outside a world continue to use real time.
+
+- Simulator deadline owners include setup before `block_on`; native actor
+  owners explicitly use real time. Standalone test reply pairs have fresh
+  simulated owners, released after each seed. Runtime-drop regressions check
+  that pending actor tasks cannot retain a world/registry cycle.
+- Async `request_with_timeout` returns an explicitly `Send` future. The
+  `Handler::__spawned_handle_immediate` hook is hidden framework machinery
+  used by generated handlers, with the ordinary future adapter as fallback.
+
+- Simulated deadline services retain their owner's runtime when first armed
+  from another context. Foreign-thread scheduling is reported as a determinism
+  escape instead of silently creating an unpolled world; native owners outside
+  a simulation use real time.
+
+- Refused job results and immediate emits contain destructor panics in both
+  execution modes. Cancellation, deadlines, keyed replacement and owner
+  discharge retain containment for results held behind scheduled emits.
+
+- Refused job notifications and emits destroy their captures outside the
+  lifecycle trace lock. Linked-exit delivery disposes caught panic payloads,
+  logs failures and releases removed records after both the receiver table
+  and the outermost trace section, including late links to dead actors.
+
+- Ordinary reply slots keep the value inline and move deferred metadata to a
+  cold allocation; scalar slots are bounded by a 56-byte layout regression.
+  Slot locking uses parking_lot behind the production/Loom synchronization
+  seam. A refused second publisher preserves the winning reply instead of
+  overwriting it; the regression fails without the terminal pre-check.
+- Job completion drops unused result factories outside the lifecycle trace
+  lock. A reproducing destructor regression runs in trace CI; keyed-job
+  generation retention and link attempts racing exit are documented.
+- Generated await-free async handlers can dispatch without a boxed turn future
+  when their message has no destructor. Shared/explicit-lifetime receivers,
+  opaque macros/attributes, nested items/anonymous types, suspending handlers
+  and payloads with destructors retain the future adapter. Public direct calls remain lazy; panic fencing,
+  drop order and causal actor tracing are preserved.
+- Request and turn bookkeeping avoids redundant atomic exchanges and dynamic
+  default-budget storage. Deferred-token ownership is tracked through the end
+  of destruction; production-core Loom races cover last-token retirement.
 - Performance: request envelopes reuse message presence as their dispatch
   marker and inline construction, removing duplicate state without moving
   dispatch or discharge. The instruction gate also covers manifest, lockfile

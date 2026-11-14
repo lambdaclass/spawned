@@ -36,7 +36,10 @@ fn trace_dir() -> PathBuf {
 /// Stop recording and write the trace; returns the events as
 /// `action[:x]` of the actor numbered by spawn order (`a1`, `a2`, ...).
 fn write(name: &str) -> Vec<String> {
-    let events = lifecycle_trace::take_lifecycle();
+    write_captured(name, lifecycle_trace::take_lifecycle())
+}
+
+fn write_captured(name: &str, events: Vec<lifecycle_trace::LifeEvent>) -> Vec<String> {
     let json = format!(
         "{{\"name\":\"lifecycle_{name}\",\"schema\":\"lifecycle-v1\",\"events\":[\n{}\n]}}\n",
         events
@@ -808,4 +811,48 @@ fn threads_actor_message() {
         json.contains(&format!(r#""a":"Send","t":{id1},"s":{id2},"x":"queued""#)),
         "the message was not recorded as a2's: {json}"
     );
+}
+
+struct ForwardNow;
+impl Message for ForwardNow {
+    type Result = ();
+}
+struct DirectForwarder(ActorRef<Node>);
+#[spawned_concurrency::actor]
+impl DirectForwarder {
+    #[request_handler]
+    async fn forward(&mut self, _msg: ForwardNow, ctx: &Context<Self>) {
+        self.0.send(Note()).unwrap();
+        ctx.stop_with_reason(ExitReason::Shutdown);
+    }
+}
+
+/// A handler completed during dispatch must have exactly the same recorded
+/// actor context as one polled through the future adapter.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn direct_dispatch_preserves_causal_sender_and_lifecycle_trace() {
+    let _serial = SERIAL.lock().await;
+    lifecycle_trace::record_lifecycle();
+    let log = Log::default();
+    let peer = Node::new(&log).start();
+    let sender = DirectForwarder(peer.clone()).start();
+    sender.request(ForwardNow).await.unwrap();
+    peer.request(Sync()).await.unwrap();
+    assert_eq!(exit_of(&sender).await, ExitReason::Shutdown);
+    peer.context().stop();
+    assert_eq!(exit_of(&peer).await, ExitReason::Normal);
+    let events = lifecycle_trace::take_lifecycle();
+    let ids: Vec<_> = events
+        .iter()
+        .filter(|e| e.action == "Spawn")
+        .map(|e| e.t)
+        .collect();
+    assert_eq!(ids.len(), 2);
+    assert!(
+        events
+            .iter()
+            .any(|e| e.action == "Send" && e.t == ids[0] && e.s == ids[1] && e.x == "queued"),
+        "direct dispatch lost its actor sender: {events:?}"
+    );
+    write_captured("direct_dispatch", events);
 }

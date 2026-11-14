@@ -394,6 +394,18 @@ No rule uses `thread::panicking()`. A drop that lands on the turn list from
 another task while a turn runs is committed at that turn's end. The delay is
 at most one turn, and the outcome only depends on whether that turn panicked.
 
+The implementation counts **externally owned tokens**, independently of live
+credits. A token remains counted until its complete drop/commit path finishes,
+including unwinding from a callback. Only a handler can create a token; borrowed
+`PendingReply` values are destroyed before that handler finishes. At turn end,
+an acquire read of zero external tokens therefore permits a load/store of the
+phase instead of an atomic exchange. Acquiring the last token's release also
+publishes that token's queued drop. If any external token remains, the exchange
+is retained against concurrent drops. Counting credits instead would be wrong:
+a token may already be terminal while its drop is still in progress. The
+production `TurnPhase` and its Loom cases check both paths; the observable
+`EndTurn`/`Panic` actions below are unchanged.
+
 **Refined by rank 5e** ([otp-exit-signals.md](otp-exit-signals.md#required-changes-to-rank-11-221-design-239-implementation),
 implemented in #240): a `Stopped` outcome is no longer answered at once. The
 slot becomes *exit pending*: it stays open in the registry and the death

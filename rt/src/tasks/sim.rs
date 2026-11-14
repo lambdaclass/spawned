@@ -1264,6 +1264,23 @@ impl Handle {
             .map(|shared| Self { shared })
             .ok_or(TryCurrentError)
     }
+    /// Look up the same existing world as `Instant::now`, without creating
+    /// one and changing a native caller's clock domain.
+    #[doc(hidden)]
+    pub fn try_current_or_ambient() -> Result<Self, TryCurrentError> {
+        running_world()
+            .map(|shared| Self { shared })
+            .ok_or(TryCurrentError)
+    }
+    /// The entered world, or the thread's ambient world used by `spawn`
+    /// during setup before `block_on`. Internal clock owners must use the
+    /// same selection as the tasks they will serve.
+    #[doc(hidden)]
+    pub fn current_or_ambient() -> Self {
+        Self {
+            shared: current_or_ambient(),
+        }
+    }
     pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
     where
         F: Future + Send + 'static,

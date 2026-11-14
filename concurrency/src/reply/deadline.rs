@@ -144,7 +144,10 @@ impl DeadlineHeap {
 
 /// The owner died: the service forgets it (its heap is gone).
 pub(crate) fn forget(_registry: &Registry) {
-    #[cfg(not(all(spawned_sim, feature = "async")))]
+    #[cfg(all(spawned_sim, feature = "async"))]
+    if _registry.sim_service().runtime.is_some() {
+        return;
+    }
     thread_service::forget(_registry.key());
 }
 
@@ -156,7 +159,6 @@ pub(crate) fn schedule(registry: &Arc<Registry>, at: u64) {
     thread_service::schedule(registry, at);
 }
 
-#[cfg(not(all(spawned_sim, feature = "async")))]
 mod thread_service {
     use super::*;
     use std::collections::HashMap;
@@ -175,24 +177,81 @@ mod thread_service {
         wake: Condvar,
     }
 
-    static SERVICE: OnceLock<&'static Service> = OnceLock::new();
+    static SERVICE: OnceLock<Arc<Service>> = OnceLock::new();
 
     fn lock(service: &Service) -> std::sync::MutexGuard<'_, State> {
         service.state.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    /// Failed creation owns nothing permanently: both the worker closure
+    /// and this initializer release their Arcs on error or unwind. OnceLock
+    /// remains empty, so a later attempt can retry without leaking a Service.
+    fn initialize(
+        spawn: impl FnOnce(Arc<Service>) -> std::io::Result<()>,
+    ) -> std::io::Result<Arc<Service>> {
+        let service = Arc::new(Service {
+            state: Mutex::new(State::default()),
+            wake: Condvar::new(),
+        });
+        spawn(service.clone())?;
+        Ok(service)
+    }
+
     fn service() -> &'static Service {
-        SERVICE.get_or_init(|| {
-            let service: &'static Service = Box::leak(Box::new(Service {
-                state: Mutex::new(State::default()),
-                wake: Condvar::new(),
+        SERVICE
+            .get_or_init(|| {
+                initialize(|service| {
+                    std::thread::Builder::new()
+                        .name("spawned-deadlines".into())
+                        .spawn(move || run(&service))
+                        .map(|_| ())
+                })
+                // A deadline cannot be accepted without a service. Preserve
+                // fail-fast startup rather than silently leaving it unarmed.
+                .expect("spawn the deadline service thread")
+            })
+            .as_ref()
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn failed_service_start_reclaims_storage_and_allows_retry() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        let cell = OnceLock::<Arc<Service>>::new();
+        let observed = Mutex::new(Weak::<Service>::new());
+        for panic_in_factory in [false, true] {
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                cell.get_or_init(|| {
+                    initialize(|service| {
+                        *observed.lock().unwrap() = Arc::downgrade(&service);
+                        if panic_in_factory {
+                            panic!("injected worker-spawn panic");
+                        }
+                        Err(std::io::Error::other("injected worker-spawn failure"))
+                    })
+                    .expect("injected worker startup failed")
+                });
             }));
-            std::thread::Builder::new()
-                .name("spawned-deadlines".into())
-                .spawn(move || run(service))
-                .expect("spawn the deadline service thread");
-            service
-        })
+            crate::mailbox::dispose_panic(result.unwrap_err());
+            assert!(
+                cell.get().is_none(),
+                "a failed initializer must be retryable"
+            );
+            assert!(
+                observed.lock().unwrap().upgrade().is_none(),
+                "failed startup leaked its Service"
+            );
+        }
+        cell.get_or_init(|| {
+            initialize(|service| {
+                *observed.lock().unwrap() = Arc::downgrade(&service);
+                Ok(())
+            })
+            .unwrap()
+        });
+        assert!(observed.lock().unwrap().upgrade().is_some());
+        drop(cell);
+        assert!(observed.lock().unwrap().upgrade().is_none());
     }
 
     pub(super) fn forget(key: u64) {
@@ -225,7 +284,7 @@ mod thread_service {
         service.wake.notify_one();
     }
 
-    fn run(service: &'static Service) {
+    fn run(service: &Service) {
         let mut state = lock(service);
         loop {
             let now = super::super::now_ticks();
@@ -279,6 +338,10 @@ mod sim {
 
     /// Per-heap service task state, kept by the registry.
     pub(crate) struct SimService {
+        // Capture the owner's world, rather than whichever thread first
+        // arms a deadline. Native owners constructed outside a simulation
+        // retain the real-time service and its separate clock domain.
+        pub(super) runtime: Option<spawned_rt::tasks::Handle>,
         started: AtomicBool,
         earliest: AtomicU64,
         waker: AtomicWaker,
@@ -287,6 +350,7 @@ mod sim {
     impl Default for SimService {
         fn default() -> Self {
             Self {
+                runtime: Some(spawned_rt::tasks::Handle::current_or_ambient()),
                 started: AtomicBool::new(false),
                 // Nothing scheduled yet: a first schedule only lowers it, so a
                 // concurrent earlier deadline is never overwritten.
@@ -296,12 +360,27 @@ mod sim {
         }
     }
 
+    impl SimService {
+        pub(crate) fn native() -> Self {
+            Self {
+                runtime: None,
+                started: AtomicBool::new(false),
+                earliest: AtomicU64::new(u64::MAX),
+                waker: AtomicWaker::new(),
+            }
+        }
+    }
+
     pub(super) fn schedule(registry: &Arc<Registry>, at: u64) {
         let service = registry.sim_service();
+        let Some(runtime) = &service.runtime else {
+            super::thread_service::schedule(registry, at);
+            return;
+        };
         service.earliest.fetch_min(at, Ordering::AcqRel);
         if !service.started.swap(true, Ordering::AcqRel) {
             let weak = Arc::downgrade(registry);
-            spawned_rt::tasks::spawn(run(weak));
+            runtime.spawn(run(weak));
         }
         service.waker.wake();
     }
@@ -321,6 +400,9 @@ mod sim {
                 let Some(registry) = weak.upgrade() else {
                     return;
                 };
+                // `track` inserts into the heap before publishing `earliest`.
+                // A concurrent insertion whose signal this reset replaces is
+                // therefore seen by service_deadlines and re-published below.
                 registry
                     .sim_service()
                     .earliest

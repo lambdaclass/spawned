@@ -62,6 +62,17 @@ impl MyActor {
 }
 ```
 
+Generated async handlers with no await or opaque macro, and messages without
+destructors, can finish directly
+inside guarded mailbox dispatch, avoiding a per-message future allocation.
+Messages with destructors, methods that suspend, deferred handlers, nested items
+(including statics), closures, async blocks, and opaque macro/attribute bodies keep
+the async adapter. This is automatic: inherent async methods and direct
+`Handler::handle` futures remain lazy, and dispatch retains panic containment,
+reply accounting and actor tracing context. Every macro is treated as opaque,
+including `assert!`, `format!`, `vec!` and tracing macros; handlers using them
+keep the async adapter.
+
 ### Panic Recovery
 
 All three phases are wrapped in `catch_unwind`:
@@ -739,7 +750,10 @@ ctx.pipe_reply(JobOptions::new(), token, |_| async move { downstream?.await }, |
   slot) and return a permit whose `pipe` / `pipe_blocking` cannot fail.
   `pipe_reply*` errors hand the token back.
 - `JobOptions::key` cancels the previous job with that key and
-  fences its queued messages; `JobHandle::cancel` fences one job.
+  fences its queued messages; `JobHandle::cancel` fences one job. Reuse a
+  bounded set of keys: the last generation of each distinct key stays until
+  owner shutdown to fence old queued results. `MAX_OUTSTANDING` bounds active
+  obligations, not key history; leave per-request identifiers unkeyed.
 - `JobCtx::emit_blocking` (and `emit` for async jobs) sends fenced messages,
   bounded by `JobOptions::emit_credits`; the terminal message is always last.
   `JobCtx::emit_at(at, msg)` (`emit_at_blocking` in blocking jobs) delivers

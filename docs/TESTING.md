@@ -674,10 +674,22 @@ these limits:
 - One thread: Thread, Blocking, native and pinned placements and dedicated
   runtimes do not run (a Blocking-backend actor fails the run), and
   `spawned_rt::tasks::spawn_blocking` runs inline as one atomic step, never
-  concurrently. A poll with no await point that
-  never returns trips a wall-clock watchdog (`SPAWNED_SIM_POLL_TIMEOUT`,
+  concurrently. Native actor creation and message/request admission from a
+  simulated world fail explicitly instead of mixing real and virtual deadline
+  ticks. Native tests wholly outside a world still use real time. A poll with
+  no await point that never returns trips a wall-clock watchdog (`SPAWNED_SIM_POLL_TIMEOUT`,
   default 60 s) that aborts the process; one that returns after more than
   `SPAWNED_SIM_TURN_BUDGET` (250 ms) inside an actor turn fails the run.
+- Create the simulated `Runtime` before starting actors, preferably with
+  `Runtime::with_seed`. Setup before `block_on` then uses that runtime's
+  ambient world. Starting actors before *any* runtime creates an ambient
+  world, as `spawn` does: attach it with `Runtime::new`, drive it and drop the
+  runtime to drain its pending tasks. `Runtime::with_seed` starts a different
+  world and does not drain a previous unowned ambient one. Without that
+  explicit runtime lifecycle, pending actor tasks stay allocated; dropping
+  actor references or exiting their setup thread does not drain the world.
+  A registry held outside a dropped runtime can retain empty world metadata,
+  but the runtime drop still destroys pending task payloads and timers.
 - `std::thread`, Tokio I/O, and wall-clock and entropy reads the
   interposers cannot see (targets other than Linux/glibc and macOS,
   `getrandom` found with `dlsym` as the `getrandom` crate 0.3+ does on Linux,
@@ -1047,8 +1059,17 @@ RUSTFLAGS="--cfg spawned_scheduler_loom" cargo test --release -p spawned-concurr
 ```
 
 `reply_slot_loom` covers the packed slot word (reply, expiry, shortening,
-abandon, close, defer at the bound, linked jobs, parked receivers);
-`registry_turn_loom` the in-turn drop commit against turn end, exit and death;
+abandon, close, defer at the bound, linked jobs, parked receivers), retaining
+a published value when cold metadata is installed and when another publisher
+is refused. Removing the terminal pre-check reproduces a lost winning value.
+The production slot uses `parking_lot::Mutex` behind a small non-poisoning shim;
+Loom substitutes its own mutex in the shared algorithm. This checks the
+protocol under the mutex's acquire/release contract, not parking_lot's internal
+implementation. A scalar-slot size regression bounds the common allocation;
+`registry_turn_loom` the in-turn drop commit against turn end, exit and death,
+including zero external tokens, the last token's retirement and two concurrent
+drops. Its fast path is checked against an early-retirement mutation that loses
+a drop. Ownership holds are distinct from live credits;
 `job_core_loom` job admission and rollback at the credit and native bounds,
 keyed replacement of a completed job, emits against the terminal notification
 and cancel, a delayed emit (`emit_at`) firing against the work's finish (the
@@ -1152,6 +1173,10 @@ synchronization.
 | `cancellation_safety` | Every public async operation (`request`, `request_with_timeout`, `tasks::request`, protocol calls, monitor/link setup requests, `join`/`wait_exit`/`wait_exit_async`, `ready`, `SupervisorBuilder::start` with instant and in-flight factories, `Supervisor::shutdown`/`join`, `SupervisedChild::wait_ready`/`wait_for_generation`, `ActorSystem::shutdown`, `ShutdownReport::wait`, `ScopedTask::join`) is dropped after N polls for N = 0 until it completes or parks. Afterwards the actor stays usable or stops cleanly, effects occur at most once, monitors/links fire exactly once, registrations are released, actor state is freed and shutdown completes | Drop points are poll boundaries reached by the operation's own wakeups; an operation waiting on an external event is dropped once while parked |
 | `panic_safety` | A panic in `started`, a send handler, a request handler, `stopped`, trapped `exit_received`, the `Down` handler, a message `Drop`, an abandoned reply's `Drop`, a queued message's `Drop` and `ChildSpec` factories (sync and async). Both modes, every tasks backend and both group kinds, plus OneForOne supervision. Checks the exact exit reason, exactly one `Down` and one `Exit`, registry release, a working bystander and complete shutdown | A queued-drop panic is a single destructor; multi-destructor and per-placement counts live in `mailbox_drop_panic` |
 | `foreign_panics` | Panicking global tracing subscribers, process panic hooks and abandoned reply destructors. Bounded subprocesses isolate global state and abort-sensitive cases. Strict enabled tests preserve lifecycle panic reasons and stopped hooks and require supervised replacement to succeed | A panicking process panic hook aborts in plain Rust too; the test documents that limit |
+| Job and link trace-lock regressions | Refused notification/emit captures (cancelled and completed jobs), and linked-delivery panic payloads/subscribers (death and late `NoProc` notices), must allow another thread to enter the trace section. Link diagnostics also probe the receiver table. These tests failed before the fixes and run explicitly in `tla-traces` CI | Checks destructor/diagnostic placement around the existing protocol; model transitions and fences are unchanged |
+| Deadline worker startup | `reply::deadline::thread_service::failed_service_start_reclaims_storage_and_allows_retry` injects creation errors and panics, checks the failed Service allocation is reclaimed, then retries through the same OnceLock | If the OS cannot create the worker, startup panics rather than accepting an unserviceable deadline; normal actor panic handling applies. No failed allocation is leaked |
+| Job payload containment | `refused_job_payload_panics_are_contained` reproduces escaped drops in both modes; `held_job_result_panics_do_not_interrupt_cancellation` covers cancel, deadline, replacement and owner discharge, including deferred disposal until callers are answered | A held terminal already wraps its result in `Contained`; refused immediate results/emits need the same protection |
+| Deadline clock ownership | Simulator-build unit regressions retain the owner's world when another is entered, report foreign-thread scheduling as a determinism leak, and expire a native owner's deadline without any runtime. Setup before `block_on`, runtime-drop cycle breaking and fresh reply-pair owners across seeds are covered too. All run explicitly in sim CI | Native threads themselves are not deterministic; a deadline is serviced in its owner's clock domain |
 
 ```sh
 cargo test --locked -p spawned-concurrency --test cross_backend --test cancellation_safety --test panic_safety --test foreign_panics
@@ -1961,6 +1986,14 @@ Check `burst` and `rpc` in `benchmarks/run.py` (the baseline driver) the same
 way when a change touches the reply path. An earlier 0.8 candidate measured
 async burst 37% and the default `request()` 24% slower than main this way;
 rerun against the final release commit after performance fixes.
+
+Await-free generated dispatch has behavioral regressions in
+`concurrency/tests/immediate_dispatch.rs`: parameter patterns, early returns,
+`?`, name/lifetime hygiene, shared receivers and declared context types, lazy
+direct calls, opaque macros that await, ignored-field destructor order, and
+panics with queued callers. The lifecycle trace suite records and replays a
+direct handler's actor-to-actor send so bypassing its actor context is caught.
+Both the direct path and the future adapter use the same reply/death protocol.
 
 ## Release checklist
 

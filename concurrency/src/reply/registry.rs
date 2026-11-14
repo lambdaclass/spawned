@@ -129,6 +129,24 @@ fn lock(lists: &Mutex<Lists>) -> std::sync::MutexGuard<'_, Lists> {
 
 impl Registry {
     pub(crate) fn new(owner: ActorId, max_outstanding: usize) -> Arc<Self> {
+        Self::create(owner, max_outstanding, false)
+    }
+
+    /// Native actors keep real-time deadlines even in a simulation build.
+    pub(crate) fn new_native(owner: ActorId, max_outstanding: usize) -> Arc<Self> {
+        Self::create(owner, max_outstanding, true)
+    }
+
+    #[cfg(spawned_sim)]
+    pub(crate) fn for_test() -> Arc<Self> {
+        #[cfg(feature = "async")]
+        let native = spawned_rt::tasks::Handle::try_current_or_ambient().is_err();
+        #[cfg(not(feature = "async"))]
+        let native = true;
+        Self::create(ActorId::next(), usize::MAX, native)
+    }
+
+    fn create(owner: ActorId, max_outstanding: usize, _native: bool) -> Arc<Self> {
         let max = max_outstanding.min(super::slot::MAX_JOBS as usize);
         static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
         let registry = Arc::new(Self {
@@ -146,7 +164,11 @@ impl Registry {
             signals: crate::mailbox::SendGate::default(),
             discharge: Mutex::new(None),
             #[cfg(all(spawned_sim, feature = "async"))]
-            sim: deadline::SimService::default(),
+            sim: if _native {
+                deadline::SimService::native()
+            } else {
+                deadline::SimService::default()
+            },
         });
         keys()
             .lock()
@@ -168,6 +190,7 @@ impl Registry {
 
     /// The registry of replies not tied to an actor (`reply_pair`): always
     /// between turns, with the largest bound.
+    #[cfg(not(spawned_sim))]
     pub(crate) fn detached() -> &'static Arc<Self> {
         static DETACHED: OnceLock<Arc<Registry>> = OnceLock::new();
         DETACHED.get_or_init(|| Self::new(ActorId::next(), usize::MAX))
@@ -378,6 +401,31 @@ impl Registry {
         self.final_reason.get().is_some()
     }
 
+    /// Created only by the owner's handler turn (or a standalone test
+    /// reply pair). A job may move an existing token, never create one
+    /// concurrently with an owner turn: end_turn's zero-token fast path
+    /// relies on that admission rule.
+    pub(crate) fn token_added(&self) {
+        self.turn.external_added();
+    }
+
+    #[cfg(all(test, feature = "async"))]
+    pub(crate) fn external_count(&self) -> usize {
+        self.turn.external_count()
+    }
+
+    /// Keep the ownership hold through every callback run by token drop,
+    /// including unwinding from a foreign waker.
+    pub(crate) fn token_drop_guard(&self) -> impl Drop + '_ {
+        struct Guard<'a>(&'a TurnPhase<Arc<dyn Closeable>>);
+        impl Drop for Guard<'_> {
+            fn drop(&mut self) {
+                self.0.external_finished();
+            }
+        }
+        Guard(&self.turn)
+    }
+
     /// The run loop is about to dispatch a handler.
     #[inline]
     pub(crate) fn begin_turn(&self) {
@@ -568,6 +616,252 @@ mod tests {
 
     fn terminal_of<R>(slot: &Slot<R>) -> Option<Terminal> {
         Terminal::of(crate::reply::slot::state(slot.word()))
+    }
+
+    #[cfg(all(spawned_sim, feature = "async"))]
+    #[test]
+    fn deadline_service_reports_foreign_thread_escape_in_owner_world() {
+        let runtime = spawned_rt::tasks::sim::Runtime::with_seed(17);
+        let (registry, slot) = runtime.block_on(async {
+            let registry = Registry::new(ActorId::next(), 1);
+            let slot = Arc::new(Slot::<u32>::new(1_000_000));
+            slot.defer(registry.pool(), &|| 0).unwrap();
+            registry.register(&slot);
+            (registry, slot)
+        });
+        let owner = registry.clone();
+        let pending = slot.clone();
+        // Arm the first deadline with neither an entered runtime nor an
+        // ambient world on this thread. The service belongs to the owner.
+        std::thread::spawn(move || owner.track_deadline(&pending))
+            .join()
+            .unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runtime.block_on(async {
+                spawned_rt::tasks::sleep(std::time::Duration::from_millis(2)).await;
+            });
+        }));
+        let panic = result.expect_err("foreign scheduling must fail the owning simulation");
+        assert!(crate::error::panic_message(&*panic).contains("foreign thread"));
+        crate::mailbox::dispose_panic(panic);
+        registry.close();
+    }
+
+    #[cfg(all(spawned_sim, feature = "async"))]
+    #[test]
+    fn deadline_service_stays_on_its_owners_simulation() {
+        let runtime = spawned_rt::tasks::sim::Runtime::with_seed(17);
+        let (registry, slot) = runtime.block_on(async {
+            let registry = Registry::new(ActorId::next(), 1);
+            let slot = Arc::new(Slot::<u32>::new(1_000_000));
+            slot.defer(registry.pool(), &|| 0).unwrap();
+            registry.register(&slot);
+            (registry, slot)
+        });
+        // Entering another world's handle on the same executor thread must
+        // not transfer the owner's service to that world.
+        let other = spawned_rt::tasks::sim::Runtime::with_seed(19);
+        other.block_on(async {
+            registry.track_deadline(&slot);
+        });
+        runtime.block_on(async {
+            spawned_rt::tasks::sleep(std::time::Duration::from_millis(2)).await;
+        });
+        assert_eq!(terminal_of(&slot), Some(Terminal::TimedOut));
+        assert_eq!(registry.outstanding(), 0);
+        registry.close();
+    }
+
+    #[cfg(all(spawned_sim, feature = "async"))]
+    #[test]
+    fn deadline_service_setup_uses_ambient_world_and_runtime_drop_breaks_cycles() {
+        let runtime = spawned_rt::tasks::sim::Runtime::with_seed(23);
+        assert!(spawned_rt::tasks::Handle::try_current().is_err());
+        let registry = Registry::new(ActorId::next(), 1);
+        let slot = Arc::new(Slot::<u32>::new(1_000_000));
+        slot.defer(registry.pool(), &|| 0).unwrap();
+        registry.register(&slot);
+        registry.track_deadline(&slot);
+        runtime.block_on(async {
+            spawned_rt::tasks::sleep(std::time::Duration::from_millis(2)).await;
+        });
+        assert_eq!(terminal_of(&slot), Some(Terminal::TimedOut));
+        let weak = Arc::downgrade(&registry);
+        let external = registry.clone();
+        let payload = Arc::new(());
+        let payload_weak = Arc::downgrade(&payload);
+        runtime.spawn(async move {
+            std::future::pending::<()>().await;
+            drop((registry, payload));
+        });
+        drop(runtime);
+        assert!(
+            payload_weak.upgrade().is_none(),
+            "an external registry must not retain pending task payloads"
+        );
+        assert!(
+            weak.upgrade().is_some(),
+            "the explicit external holder still owns its registry"
+        );
+        drop(external);
+        assert!(
+            weak.upgrade().is_none(),
+            "runtime teardown must drain pending task cycles"
+        );
+    }
+
+    #[cfg(all(spawned_sim, feature = "async"))]
+    #[test]
+    fn deadline_service_reply_pairs_have_fresh_owners_between_worlds() {
+        for seed in 0..3 {
+            let runtime = spawned_rt::tasks::sim::Runtime::with_seed(seed);
+            let weak = runtime.block_on(async {
+                let (direct, direct_receiver) =
+                    crate::reply::reply_pair::<u32>(crate::Deadline::Never);
+                let direct_owner = Arc::downgrade(direct.owned_registry.as_ref().unwrap());
+                assert_eq!(direct.reply(7), crate::Delivery::Delivered);
+                assert_eq!(direct_receiver.await.unwrap(), 7);
+                assert!(
+                    direct_owner.upgrade().is_none(),
+                    "direct reply must release its standalone owner"
+                );
+                let (pending, receiver) = crate::reply::reply_pair::<u32>(crate::Deadline::after(
+                    std::time::Duration::from_millis(1),
+                ));
+                let token = pending.defer().unwrap();
+                let weak = Arc::downgrade(&token.registry);
+                spawned_rt::tasks::sleep(std::time::Duration::from_millis(2)).await;
+                assert!(matches!(
+                    receiver.await,
+                    Err(crate::ActorError::RequestTimeout)
+                ));
+                drop(token);
+                weak
+            });
+            drop(runtime);
+            assert!(
+                weak.upgrade().is_none(),
+                "test helper retained seed {seed}'s owner"
+            );
+        }
+    }
+
+    #[cfg(all(spawned_sim, feature = "async"))]
+    #[test]
+    fn deadline_service_native_reply_pair_does_not_create_a_world() {
+        std::thread::spawn(|| {
+            assert!(spawned_rt::tasks::Handle::try_current_or_ambient().is_err());
+            let (pending, receiver) = crate::reply::reply_pair::<u32>(crate::Deadline::Never);
+            assert!(
+                spawned_rt::tasks::Handle::try_current_or_ambient().is_err(),
+                "a native test helper must not change its caller's clock"
+            );
+            drop(pending.defer().unwrap());
+            drop(receiver);
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[cfg(all(spawned_sim, feature = "async"))]
+    #[test]
+    fn deadline_service_rejects_mixed_native_and_virtual_clock_requests() {
+        use crate::threads::{Actor, ActorStart, Context, Handler};
+        struct Native;
+        impl Actor for Native {}
+        struct Probe;
+        impl crate::message::Message for Probe {
+            type Result = ();
+        }
+        impl Handler<Probe> for Native {
+            fn handle(&mut self, _: Probe, reply: crate::PendingReply<'_, ()>, _: &Context<Self>) {
+                reply.reply(());
+            }
+        }
+        let actor = std::thread::spawn(|| Native.start()).join().unwrap();
+        let runtime = spawned_rt::tasks::sim::Runtime::with_seed(29);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runtime
+                .block_on(async { actor.send_request(Probe, std::time::Duration::from_millis(1)) })
+        }));
+        drop(runtime);
+        actor.context().stop();
+        actor.join();
+        let panic = match result {
+            Err(panic) => panic,
+            Ok(_) => panic!("mixed clock request was admitted"),
+        };
+        assert!(crate::error::panic_message(&*panic).contains("native actors cannot run"));
+        crate::mailbox::dispose_panic(panic);
+
+        let runtime = spawned_rt::tasks::sim::Runtime::with_seed(31);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runtime.block_on(async { Native.start() })
+        }));
+        drop(runtime);
+        let panic = match result {
+            Err(panic) => panic,
+            Ok(actor) => {
+                actor.context().stop();
+                actor.join();
+                panic!("native actor started in simulated world")
+            }
+        };
+        assert!(crate::error::panic_message(&*panic).contains("native actors cannot run"));
+        crate::mailbox::dispose_panic(panic);
+    }
+
+    #[cfg(all(spawned_sim, feature = "async"))]
+    #[test]
+    fn deadline_service_for_native_owner_uses_real_time_in_sim_builds() {
+        std::thread::spawn(|| {
+            struct Probe(u64, std::sync::mpsc::Sender<()>);
+            impl Expirable for Probe {
+                fn pending_deadline(&self) -> Option<u64> {
+                    Some(self.0)
+                }
+                fn expire(&self, _: u64) {
+                    let _ = self.1.send(());
+                }
+            }
+            assert!(spawned_rt::tasks::Handle::try_current().is_err());
+            let registry = Registry::new_native(ActorId::next(), 1);
+            let (sent, received) = std::sync::mpsc::channel();
+            let at = super::super::now_ticks() + 20_000_000;
+            let probe: Arc<dyn Expirable> = Arc::new(Probe(at, sent));
+            registry.track(at, Arc::downgrade(&probe));
+            received
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("a native owner's deadline must fire without a simulation");
+            registry.close();
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn token_unwind_before_registration_retires_credit_and_waits_for_death() {
+        let registry = Registry::new(ActorId::next(), 1);
+        registry.begin_turn();
+        let slot = Arc::new(Slot::<u32>::new(NEVER));
+        slot.defer(registry.pool(), &|| 0).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _token = crate::reply::ReplyTo::new(slot.clone(), registry.clone());
+            panic!("registration failed before listing the token");
+        }));
+        crate::mailbox::dispose_panic(result.unwrap_err());
+        assert!(
+            !slot.is_terminal(),
+            "an unwinding turn defers its error until D"
+        );
+        #[cfg(feature = "async")]
+        assert_eq!(registry.external_count(), 0);
+        registry.end_turn(true);
+        registry.exiting();
+        registry.seal(&ExitReason::Shutdown);
+        registry.close();
+        assert_eq!(terminal_of(&slot), Some(Terminal::Stopped));
+        assert_eq!(registry.outstanding(), 0);
     }
 
     #[test]

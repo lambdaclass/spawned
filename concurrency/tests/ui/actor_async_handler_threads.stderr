@@ -1,3 +1,9 @@
+error[E0407]: method `__spawned_handle_immediate` is not a member of trait `Handler`
+  --> tests/ui/actor_async_handler_threads.rs:14:5
+   |
+14 |     async fn read(&mut self, _msg: Read, _ctx: &Context<Self>) -> u64 { self.0 }
+   |     ^^^^^ not a member of trait `Handler`
+
 error[E0053]: method `handle` has an incompatible type for trait
   --> tests/ui/actor_async_handler_threads.rs:14:5
    |

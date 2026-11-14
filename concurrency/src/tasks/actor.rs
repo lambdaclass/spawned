@@ -130,6 +130,19 @@ pub trait Actor: Send + Sized + 'static {
 /// Uses RPITIT (return-position `impl Trait` in traits), which means this trait
 /// is **not** object-safe. For type-erased references, use [`Receiver<M>`] / [`Recipient<M>`].
 pub trait Handler<M: Message>: Actor {
+    /// Framework adapter for handlers that finish during dispatch. Returning
+    /// Some preserves the untouched message and obligation for `handle`.
+    #[doc(hidden)]
+    #[inline]
+    fn __spawned_handle_immediate<'turn>(
+        &mut self,
+        msg: M,
+        reply: PendingReply<'turn, M::Result>,
+        _ctx: &Context<Self>,
+    ) -> Option<(M, PendingReply<'turn, M::Result>)> {
+        Some((msg, reply))
+    }
+
     fn handle(
         &mut self,
         msg: M,
@@ -172,10 +185,10 @@ trait Envelope<A: Actor>: Send {
     fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a>;
 }
 
-/// A dispatched turn: its future and the caller it answers, lent by the
-/// envelope for the turn.
+/// A dispatched turn: None means the guarded dispatch already completed;
+/// otherwise its future and caller stay lent by the envelope for the turn.
 type Dispatch<'a> = (
-    Pin<Box<dyn Future<Output = ()> + Send + 'a>>,
+    Option<Pin<Box<dyn Future<Output = ()> + Send + 'a>>>,
     Option<&'a dyn Caller>,
 );
 
@@ -190,7 +203,7 @@ fn dispatch<'a, A: Actor>(
     let mut parts = Some((envelope, actor));
     std::panic::catch_unwind(AssertUnwindSafe(move || {
         let (envelope, actor) = parts.take().expect("dispatched once");
-        envelope.handle(actor, ctx)
+        crate::lifecycle_trace::with_actor(ctx.shared.id.raw(), || envelope.handle(actor, ctx))
     }))
 }
 
@@ -296,10 +309,11 @@ where
         let msg = dispatched(msg);
         let slot: &'a Option<Arc<Slot<M::Result>>> = slot;
         let reply = PendingReply::lent(slot.as_ref(), &ctx.shared.replies);
-        (
-            Box::pin(actor.handle(msg, reply, ctx)),
-            slot.as_ref().map(|slot| slot as &dyn Caller),
-        )
+        let caller = slot.as_ref().map(|slot| slot as &dyn Caller);
+        match <A as Handler<M>>::__spawned_handle_immediate(actor, msg, reply, ctx) {
+            None => (None, caller),
+            Some((msg, reply)) => (Some(Box::pin(actor.handle(msg, reply, ctx))), caller),
+        }
     }
 }
 
@@ -343,10 +357,15 @@ where
     #[inline]
     fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
         let msg = dispatched(&mut self.msg);
-        (
-            Box::pin(actor.handle(msg, PendingReply::detached(), ctx)),
-            None,
-        )
+        match <A as Handler<M>>::__spawned_handle_immediate(
+            actor,
+            msg,
+            PendingReply::detached(),
+            ctx,
+        ) {
+            None => (None, None),
+            Some((msg, reply)) => (Some(Box::pin(actor.handle(msg, reply, ctx))), None),
+        }
     }
 }
 
@@ -378,7 +397,7 @@ impl<A: Actor + Handler<Down>> Envelope<A> for DownEnvelope {
                 actor.handle(down, reply, ctx).await;
             }
         });
-        (turn, None)
+        (Some(turn), None)
     }
 }
 
@@ -522,7 +541,7 @@ impl<A: Actor, R: Send + 'static> Envelope<A> for InTurnEnvelope<A, R> {
             let value = f(actor, ctx);
             let _ = reply.reply(value);
         });
-        (turn, lent.as_ref().map(|slot| slot as &dyn Caller))
+        (Some(turn), lent.as_ref().map(|slot| slot as &dyn Caller))
     }
 }
 
@@ -538,9 +557,9 @@ impl<A: Actor> Envelope<A> for FailureEnvelope {
     fn handle<'a>(&'a mut self, _: &'a mut A, _: &'a Context<A>) -> Dispatch<'a> {
         let failure = dispatched(&mut self.0);
         (
-            Box::pin(async move {
+            Some(Box::pin(async move {
                 panic!("nested supervisor failed: {failure}");
-            }),
+            })),
             None,
         )
     }
@@ -568,9 +587,9 @@ impl<A: Actor> Envelope<A> for ExitEnvelope {
     fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
         let exit = dispatched(&mut self.exit);
         (
-            Box::pin(async move {
+            Some(Box::pin(async move {
                 actor.exit_received(exit, ctx).await;
-            }),
+            })),
             None,
         )
     }
@@ -595,7 +614,10 @@ impl<A: Actor> Envelope<A> for ParentExitEnvelope {
 
     fn handle<'a>(&'a mut self, _actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
         let exit = dispatched(&mut self.exit);
-        (Box::pin(async move { ctx.parent_exit(exit.reason) }), None)
+        (
+            Some(Box::pin(async move { ctx.parent_exit(exit.reason) })),
+            None,
+        )
     }
 }
 
@@ -631,7 +653,7 @@ impl<A: Actor> Envelope<A> for HeldEnvelope {
                 actor.exit_received(exit, ctx).await;
             }
         });
-        (turn, None)
+        (Some(turn), None)
     }
 }
 
@@ -865,8 +887,8 @@ impl<A: Actor> Context<A> {
 
     /// Send a request and wait for the reply (default 5s timeout).
     ///
-    /// The future is `request_with_timeout`'s own (no extra state machine
-    /// around it).
+    /// Uses the same request state machine as `request_with_timeout`, with
+    /// a zero-sized fixed budget instead of capturing a Duration.
     pub fn request<M>(
         &self,
         msg: M,
@@ -875,19 +897,29 @@ impl<A: Actor> Context<A> {
         A: Handler<M>,
         M: Message,
     {
-        self.request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT)
+        self.request_with_budget(msg, crate::reply::DefaultRequestBudget)
     }
 
     /// Send a request and wait for the reply with a custom timeout.
-    pub async fn request_with_timeout<M>(
+    pub fn request_with_timeout<M>(
         &self,
         msg: M,
         duration: Duration,
-    ) -> Result<M::Result, ActorError>
+    ) -> impl Future<Output = Result<M::Result, ActorError>> + Send + '_
     where
         A: Handler<M>,
         M: Message,
     {
+        self.request_with_budget(msg, duration)
+    }
+
+    async fn request_with_budget<M, B>(&self, msg: M, budget: B) -> Result<M::Result, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+        B: crate::reply::RequestBudget,
+    {
+        let duration = budget.into_duration();
         let observation = crate::instrumentation::RequestObservation::new();
         // Bind the receiver before awaiting it: awaiting inside a `match` on
         // the `Result` keeps the scrutinee's storage alive beside the awaited
@@ -1094,6 +1126,8 @@ impl<A: Actor> Context<A> {
     /// Link as [`link`](Self::link), but report a target past its death
     /// point as `Err(NoProc)` and keep no record, whether or not this actor
     /// traps exits.
+    /// A caller whose exit already began does nothing and returns `Ok(())`;
+    /// an exit racing this call can linearize after the link attempt.
     pub fn try_link(&self, target: &ChildHandle) -> Result<(), NoProc> {
         match link::register_link(
             &self.shared.signal,
@@ -1449,8 +1483,8 @@ impl<A: Actor> ActorRef<A> {
 
     /// Send a request and wait for the reply (default 5s timeout).
     ///
-    /// The future is `request_with_timeout`'s own (no extra state machine
-    /// around it).
+    /// Uses the same request state machine as `request_with_timeout`, with
+    /// a zero-sized fixed budget instead of capturing a Duration.
     pub fn request<M>(
         &self,
         msg: M,
@@ -1459,7 +1493,7 @@ impl<A: Actor> ActorRef<A> {
         A: Handler<M>,
         M: Message,
     {
-        self.request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT)
+        self.request_with_budget(msg, crate::reply::DefaultRequestBudget)
     }
 
     /// Run `f` in one of the actor's turns, with its state and `Context`,
@@ -1488,15 +1522,25 @@ impl<A: Actor> ActorRef<A> {
     }
 
     /// Send a request and wait for the reply with a custom timeout.
-    pub async fn request_with_timeout<M>(
+    pub fn request_with_timeout<M>(
         &self,
         msg: M,
         duration: Duration,
-    ) -> Result<M::Result, ActorError>
+    ) -> impl Future<Output = Result<M::Result, ActorError>> + Send + '_
     where
         A: Handler<M>,
         M: Message,
     {
+        self.request_with_budget(msg, duration)
+    }
+
+    async fn request_with_budget<M, B>(&self, msg: M, budget: B) -> Result<M::Result, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+        B: crate::reply::RequestBudget,
+    {
+        let duration = budget.into_duration();
         let observation = crate::instrumentation::RequestObservation::new();
         // Bind the receiver before awaiting it: awaiting inside a `match` on
         // the `Result` keeps the scrutinee's storage alive beside the awaited
@@ -2278,7 +2322,11 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
                 // request's slot.
                 let mut envelope = envelope;
                 let result = match dispatch(&mut *envelope, &mut *actor, &ctx) {
-                    Ok((turn, caller)) => {
+                    // Dispatch completed the turn synchronously. The caller
+                    // hold is only needed if an unfinished future is dropped;
+                    // turn accounting and observation bracket either branch.
+                    Ok((None, _)) => Ok(()),
+                    Ok((Some(turn), caller)) => {
                         let mut turn =
                             Some(crate::lifecycle_trace::in_actor(ctx.shared.id.raw(), turn));
                         // Most turns finish in their first poll, which runs
