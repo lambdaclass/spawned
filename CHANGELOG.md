@@ -92,6 +92,9 @@ the road to 1.0. Upgrade notes, with an old-call → new-call table, are in
 
 ### Breaking changes
 
+- Async `request_with_timeout` returns an explicitly `Send` future. Generated
+  handlers use the hidden `Handler::__spawned_handle_immediate` hook where
+  eligible; the ordinary future adapter remains the fallback.
 - `Handler::handle` receives a reply token; send-only handlers use
   `#[send_handler]`.
 - `request_raw`/`request_raw_until` → `send_request` with one `Deadline` type
@@ -152,6 +155,10 @@ the road to 1.0. Upgrade notes, with an old-call → new-call table, are in
 
 ### Fixed
 
+- Simulator owners include setup before `block_on`; test reply pairs have
+  fresh per-world owners, and pending tasks release owner/runtime cycles
+  during runtime drop. Native helpers retain real time without creating a
+  virtual world.
 - Refused job notifications and emits drop captures outside the trace lock;
   linked-exit diagnostics and panic-payload disposal run after the receiver
   table and outermost trace section, including late `NoProc` delivery.
