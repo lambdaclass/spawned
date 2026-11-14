@@ -65,6 +65,14 @@ use std::sync::Arc;
 use table::{LinkOutcome, LinkTable};
 
 fn model(name: &'static str, f: impl Fn() + Sync + Send + 'static) {
+    // std Arc addresses determine the production table's total lock order.
+    // Parallel libtest models add allocator activity outside Loom's control
+    // and can change that branch between replay iterations (an internal
+    // "expected to be able to acquire lock" failure on macOS). Libtest
+    // concurrency is not an actor-protocol interleaving: isolate model runs,
+    // while still exploring every application-thread schedule without bounds.
+    static MODEL_RUN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _run = MODEL_RUN.lock().unwrap_or_else(|p| p.into_inner());
     let runs = Arc::new(AtomicUsize::new(0));
     let counted = runs.clone();
     // Unbounded: the protocols are lock-based and small enough to explore
