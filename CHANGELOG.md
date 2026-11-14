@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Refused job notifications and emits destroy their captures outside the
+  lifecycle trace lock. Linked-exit delivery disposes caught panic payloads,
+  logs failures and releases removed records after both the receiver table
+  and the outermost trace section, including late links to dead actors.
+
 - Ordinary reply slots keep the value inline and move deferred metadata to a
   cold allocation; scalar slots are bounded by a 56-byte layout regression.
   Slot locking uses parking_lot behind the production/Loom synchronization

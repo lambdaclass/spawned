@@ -59,8 +59,10 @@ jobs:
       - uses: DeterminateSystems/magic-nix-cache-action@v8
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: Swatinem/rust-cache@v2
-      - name: Completion payloads drop outside the trace lock
-        run: cargo test --locked -p spawned-concurrency --lib --features lifecycle-trace reply::jobs::tests::unused_completion_factories_drop_outside_trace_section -- --exact
+      - name: Payloads and panic diagnostics release protocol locks
+        run: |
+          cargo test --locked -p spawned-concurrency --lib --features lifecycle-trace reply::jobs::tests:: -- --test-threads=1
+          cargo test --locked -p spawned-concurrency --lib --features lifecycle-trace link::tests::delivery_diagnostics_run_outside_protocol_locks -- --exact
       - name: Record supervisor lifecycle traces
         env:
           LIFECYCLE_TRACE_DIR: ${{ github.workspace }}/lifecycle-traces

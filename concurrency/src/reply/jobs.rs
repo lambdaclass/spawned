@@ -429,8 +429,13 @@ impl JobState {
         enqueue: impl FnOnce() -> Option<X>,
     ) -> (bool, Option<X>) {
         let deadline = end == "deadline";
+        // A refused closure can own user payloads. The core drops its adapter
+        // under the trace section; keep the actual closure outside it.
+        let mut enqueue = Some(enqueue);
         let (taken, unsent, held) = trace::atomic(|| {
-            let (taken, unsent, held) = self.core.notify_keeping_held(enqueue);
+            let (taken, unsent, held) = self
+                .core
+                .notify_keeping_held(|| enqueue.take().and_then(|enqueue| enqueue()));
             if taken {
                 crate::instrumentation::hooks::job_notified(end);
                 self.link_notified();
@@ -635,8 +640,13 @@ impl JobState {
         &self,
         enqueue: impl FnOnce() -> Result<(), X>,
     ) -> Result<(), (JobGone, Option<X>)> {
+        // Returning emit credit may re-enter the owner, and user payload
+        // destructors may record events. Neither runs under the trace lock.
+        let mut enqueue = Some(enqueue);
         trace::atomic(|| {
-            let result = self.core.enqueue_emit(enqueue);
+            let result = self
+                .core
+                .enqueue_emit(|| enqueue.take().expect("an emit is enqueued once")());
             if result.is_ok() {
                 crate::instrumentation::hooks::job_emitted();
                 self.record(|job| trace::JobEvent::new("Emit", job));
@@ -1174,6 +1184,66 @@ pub(crate) fn cancel_when_closed<R: Send + 'static>(
 mod tests {
     use super::*;
     use crate::reply::registry::Registry;
+
+    #[cfg(feature = "lifecycle-trace")]
+    #[test]
+    fn refused_job_closures_drop_outside_trace_section() {
+        struct Probe;
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                let (sent, received) = std::sync::mpsc::channel();
+                let worker = std::thread::spawn(move || {
+                    trace::atomic(|| {
+                        let _ = sent.send(());
+                    });
+                });
+                received
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .expect("refused job payload dropped under the trace lock");
+                worker.join().unwrap();
+            }
+        }
+        struct Credit(Arc<JobState>);
+        impl Drop for Credit {
+            fn drop(&mut self) {
+                self.0.return_emit_credit();
+            }
+        }
+        for emit in [false, true] {
+            for cancelled in [false, true] {
+                let state = JobState::new(ActorId::next(), 1);
+                let credit = emit.then(|| {
+                    state.acquire_blocking().unwrap();
+                    Credit(state.clone())
+                });
+                if cancelled {
+                    state.cancel();
+                } else {
+                    let _ = state.finish("ok", || None::<()>, || Box::new(|| {}));
+                }
+                let probe = Probe;
+                if emit {
+                    assert!(state
+                        .enqueue_emit(move || {
+                            drop((probe, credit));
+                            panic!("a refused enqueue must not run");
+                            #[allow(unreachable_code)]
+                            Ok::<(), ()>(())
+                        })
+                        .is_err());
+                    assert_eq!(state.emit_credits(), 1);
+                } else {
+                    let (taken, _) = state.notify("ok", move || {
+                        drop(probe);
+                        panic!("a refused notification must not run");
+                        #[allow(unreachable_code)]
+                        None::<()>
+                    });
+                    assert!(!taken);
+                }
+            }
+        }
+    }
 
     // Unused completion factories can own user payloads. Their destructors
     // must be able to wait for another thread that records a lifecycle event.

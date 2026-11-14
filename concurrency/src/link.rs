@@ -344,9 +344,13 @@ pub(crate) fn register_link(
     if own.id == peer.id || Arc::ptr_eq(own_links, peer_links) {
         return LinkOutcome::Unchanged;
     }
-    trace::life_section(own.id.raw(), || {
+    let (outcome, delivery) = trace::life_section(own.id.raw(), || {
         link_in_section(own, own_links, peer, peer_links, try_only)
-    })
+    });
+    // Late-link delivery shares Link's trace step. Dispose its record and
+    // any caught panic only after that outermost step has released its lock.
+    delivery.dispose();
+    outcome
 }
 
 fn link_in_section(
@@ -355,14 +359,14 @@ fn link_in_section(
     peer: &Arc<SignalTarget>,
     peer_links: &LinkTable,
     try_only: bool,
-) -> LinkOutcome {
+) -> (LinkOutcome, DeliveryCleanup) {
     // Sender lifetime (design Terms, semantics X2): `link` works only while
     // the caller runs. A caller already exiting at this check is inert:
     // no record, no notice, no NoProc. A concurrent exit can linearize after
     // this check; the table transaction below still rechecks D, so it cannot
     // install an edge past the caller's death. A dead OTP process cannot link.
     if lock_request(&own.request).reason().is_some() {
-        return LinkOutcome::Unchanged;
+        return (LinkOutcome::Unchanged, DeliveryCleanup::default());
     }
     fail_point!("link.before_install");
     let gen = NEXT_EDGE.fetch_add(1, Ordering::Relaxed);
@@ -378,10 +382,12 @@ fn link_in_section(
                 })
         });
     }
-    if outcome == LinkOutcome::NoProc && !try_only {
-        deliver_notice(own_links, own, peer.id, gen, ExitReason::NoProc);
-    }
-    outcome
+    let delivery = if outcome == LinkOutcome::NoProc && !try_only {
+        deliver_notice_in_section(own_links, own, peer.id, gen, ExitReason::NoProc)
+    } else {
+        DeliveryCleanup::default()
+    };
+    (outcome, delivery)
 }
 
 /// Unlink removes both records, live or pending: once it returns, no notice
@@ -417,9 +423,29 @@ fn deliver_notice(
     gen: u64,
     reason: ExitReason,
 ) {
-    trace::life_section(receiver.id.raw(), || {
+    let cleanup = trace::life_section(receiver.id.raw(), || {
         deliver_notice_in_section(receiver_links, receiver, from, gen, reason)
-    })
+    });
+    cleanup.dispose();
+}
+
+/// Effects of a fenced delivery that may run foreign code when destroyed.
+/// They leave both the receiver table and the outermost trace section first.
+#[derive(Default)]
+struct DeliveryCleanup {
+    record: Option<table::LinkEntry>,
+    panic: Option<Box<dyn std::any::Any + Send>>,
+}
+impl DeliveryCleanup {
+    fn dispose(self) {
+        if let Some(payload) = self.panic {
+            crate::mailbox::dispose_panic(payload);
+            crate::actor_cleanup::log_safely(|| {
+                tracing::error!("Panic while delivering a linked exit");
+            });
+        }
+        drop(self.record);
+    }
 }
 
 fn deliver_notice_in_section(
@@ -428,7 +454,8 @@ fn deliver_notice_in_section(
     from: ActorId,
     gen: u64,
     reason: ExitReason,
-) {
+) -> DeliveryCleanup {
+    let mut panic = None;
     let record = table::take_record(receiver_links, from, gen, |record| {
         trace::life_emit(receiver.id.raw(), || {
             trace::LifeEvent::new("Deliver", receiver.id.raw())
@@ -439,16 +466,12 @@ fn deliver_notice_in_section(
         });
         // One failing internal callback must not prevent other peers from
         // being notified, or panic again during actor-future destruction.
-        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
+        panic = catch_unwind(AssertUnwindSafe(|| {
             deliver_signal(receiver, from, reason, Origin::Link, false)
-        })) {
-            crate::mailbox::dispose_panic(payload);
-            crate::actor_cleanup::log_safely(|| {
-                tracing::error!("Panic while delivering a linked exit");
-            });
-        }
+        }))
+        .err();
     });
-    drop(record);
+    DeliveryCleanup { record, panic }
 }
 
 impl LinkNotices {
@@ -598,6 +621,101 @@ mod tests {
             "secondary payloads must be forgotten to bound destructor recursion"
         );
         println!("validated linked delivery panic containment");
+    }
+
+    #[test]
+    fn delivery_diagnostics_run_outside_protocol_locks() {
+        crate::drop_subprocess::run(
+            "link::tests::delivery_lock_child",
+            "validated linked delivery lock release",
+        );
+    }
+
+    #[test]
+    #[ignore = "subprocess helper exercised by the enabled parent"]
+    fn delivery_lock_child() {
+        if std::env::var_os("SPAWNED_MAILBOX_DROP_CHILD").is_none() {
+            return;
+        }
+        #[derive(Clone)]
+        struct Probe {
+            table: LinkTable,
+            results: Arc<Mutex<Vec<bool>>>,
+        }
+        impl Probe {
+            fn check(&self) {
+                let table_free = self.table.try_lock().is_ok();
+                let (sent, received) = std::sync::mpsc::channel();
+                let worker = std::thread::spawn(move || {
+                    trace::atomic(|| {
+                        let _ = sent.send(());
+                    });
+                });
+                let trace_free = received
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .is_ok();
+                if trace_free {
+                    worker.join().unwrap();
+                }
+                self.results.lock().unwrap().push(table_free && trace_free);
+            }
+        }
+        struct Payload(Probe);
+        impl Drop for Payload {
+            fn drop(&mut self) {
+                self.0.check();
+            }
+        }
+        struct Subscriber(Probe);
+        impl tracing::Subscriber for Subscriber {
+            fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+            fn event(&self, _: &tracing::Event<'_>) {
+                self.0.check();
+            }
+            fn enter(&self, _: &tracing::span::Id) {}
+            fn exit(&self, _: &tracing::span::Id) {}
+        }
+        #[cfg(feature = "lifecycle-trace")]
+        trace::record_lifecycle();
+        for late in [false, true] {
+            let (a, b) = (new_link_table(), new_link_table());
+            let results = Arc::new(Mutex::new(Vec::new()));
+            let probe = Probe {
+                table: a.clone(),
+                results: results.clone(),
+            };
+            let mut receiver = target(&Arc::new(AtomicUsize::new(0)));
+            let callback_probe = probe.clone();
+            receiver.wake =
+                Arc::new(move || std::panic::panic_any(Payload(callback_probe.clone())));
+            let receiver = Arc::new(receiver);
+            let sender = Arc::new(target(&Arc::new(AtomicUsize::new(0))));
+            #[cfg(feature = "lifecycle-trace")]
+            {
+                trace::life_spawn(receiver.id.raw(), 0);
+                trace::life_spawn(sender.id.raw(), 0);
+            }
+            if late {
+                propagate_exit(sender.id, &b, &ExitReason::Normal);
+            }
+            tracing::subscriber::with_default(Subscriber(probe), || {
+                register_link(&receiver, &a, &sender, &b, false);
+                if !late {
+                    propagate_exit(sender.id, &b, &ExitReason::Kill);
+                }
+            });
+            assert_eq!(*results.lock().unwrap(), vec![true, true], "late={late}");
+        }
+        #[cfg(feature = "lifecycle-trace")]
+        let _ = trace::take_lifecycle();
+        println!("validated linked delivery lock release");
     }
 
     #[test]
