@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A stop racing mailbox receive cannot dispatch a request sent after stop
+  returned. Rejected receives remain held until death-point caller discharge,
+  including runtime drop, before their payloads are destroyed. An untraced
+  regression reproduces the old gap; the shared stop core has queue-order Loom
+  checks, without changing deadlines or adding a second normal-path stop read.
+
 - Link-table transactions order their two locks by immutable actor IDs.
   Deadlock prevention no longer depends on allocator addresses, making Loom
   replay stable; the three-actor race covers every ID ordering.

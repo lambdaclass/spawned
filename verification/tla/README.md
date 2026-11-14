@@ -56,6 +56,11 @@ parked loop. The Rust stop core is also included by `stop_token_loom`, which
 checks publication ordering and the registration race. This changes the
 implementation's hot-path check, not the model's actions or bounded inputs.
 Tokio's own waiter internals are an explicit trusted dependency.
+The logical mailbox projects the raw receiver queue plus items held for
+shutdown after a stop races receive. Only admitted items emit `Dispatch`;
+held items remain queued in the abstraction until death-point cleanup. The
+untraced `stop_receive_probe` regression and shared stop-core Loom checks cover
+this gap, which the global trace section would otherwise serialize.
 Link-table transactions retain their two-lock total-order rule, using immutable
 actor IDs instead of allocator addresses. Loom covers all six three-actor ID
 orderings; the existing atomic link-install/remove model actions are unchanged.

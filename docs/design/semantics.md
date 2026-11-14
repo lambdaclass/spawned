@@ -90,12 +90,17 @@ Checked by: [`semantics_gaps`][semantics_gaps]`::{native,tasks}_contract::stop_w
 guarantee execution across termination"), `death_boundary` (a request
 accepted before the death point is answered at it).
 
-**D4. Stop discards the queue.** The run loop checks for stop before every
-receive. Once a stop is observed no further message is dispatched, including
+**D4. Stop discards the queue.** The run loop checks for stop after receiving
+and before dispatch. A receive racing stop retains its item for death-point
+cleanup rather than dropping it or running its handler. Once a stop is observed
+no further message is dispatched, including
 messages already queued. Queued messages are dropped one by one and every
 queued request is answered (callers get `ActorStopped` with the final reason)
 before the exit is published.
-Checked by: `src/tasks/actor.rs::stop_while_idle_does_not_dispatch_a_queued_request_on_resume`,
+Checked by: `src/tasks/actor.rs::stop_receive_probe` (untraced stop/receive gap,
+caller-before-payload ordering and runtime drop), `stop_token_loom` (queue
+publication versus post-receive admission),
+`src/tasks/actor.rs::stop_while_idle_does_not_dispatch_a_queued_request_on_resume`,
 `src/threads/actor.rs::repeated_stop_during_a_handler_discards_queued_requests`,
 `src/threads/actor.rs::stop_while_receiving_does_not_dispatch_a_later_request`,
 [`shutdown_publication`][shutdown_publication], [`mailbox_drop_panic`][mailbox_drop_panic],

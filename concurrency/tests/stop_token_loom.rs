@@ -6,7 +6,7 @@ mod sync {
 }
 #[path = "../src/stop_token/core.rs"]
 mod core;
-use core::StopFlag;
+use self::core::StopFlag;
 use loom::sync::atomic::{AtomicUsize, Ordering};
 use loom::sync::{Arc, Condvar, Mutex};
 
@@ -53,5 +53,59 @@ fn the_fast_stop_check_observes_prior_reason_publication() {
             assert_eq!(reason.load(Ordering::Relaxed), 42);
         }
         canceller.join().unwrap();
+    });
+}
+
+/// The queue acquire carries stop publication to the post-receive check.
+/// Ignoring that check reproduces the untraced actor-loop regression.
+#[test]
+fn a_post_stop_message_is_retained_instead_of_dispatched() {
+    loom::model(|| {
+        let flag = Arc::new(StopFlag::default());
+        let (send, receive) = loom::sync::mpsc::channel();
+        let producer = {
+            let flag = flag.clone();
+            loom::thread::spawn(move || {
+                flag.cancel(|| {});
+                send.send(42).unwrap();
+            })
+        };
+        let received = std::task::Poll::Ready(Some(receive.recv().unwrap()));
+        let mut held = Vec::new();
+        assert_eq!(
+            flag.after_receive(received, |item| held.push(item)),
+            std::task::Poll::Ready(None)
+        );
+        assert_eq!(held, vec![42]);
+        producer.join().unwrap();
+    });
+}
+
+#[test]
+fn receive_racing_stop_never_dispatches_the_later_message() {
+    loom::model(|| {
+        let flag = Arc::new(StopFlag::default());
+        let (send, receive) = loom::sync::mpsc::channel();
+        let producer = {
+            let flag = flag.clone();
+            loom::thread::spawn(move || {
+                send.send(1).unwrap();
+                flag.cancel(|| {});
+                send.send(2).unwrap();
+            })
+        };
+        let mut held = Vec::new();
+        let mut handled = Vec::new();
+        for _ in 0..2 {
+            let received = std::task::Poll::Ready(Some(receive.recv().unwrap()));
+            if let std::task::Poll::Ready(Some(item)) =
+                flag.after_receive(received, |item| held.push(item))
+            {
+                handled.push(item);
+            }
+        }
+        assert!(!handled.contains(&2));
+        assert_eq!(handled.len() + held.len(), 2);
+        producer.join().unwrap();
     });
 }

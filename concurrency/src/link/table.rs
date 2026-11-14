@@ -70,6 +70,7 @@ fn with_pair<R>(
     peer: &LinkTable,
     f: impl FnOnce(&mut LinkState, &mut LinkState) -> R,
 ) -> R {
+    debug_assert_ne!(own_id, peer_id, "link pair requires distinct actor IDs");
     if own_id.raw() < peer_id.raw() {
         let mut a = lock(own);
         let mut b = lock(peer);

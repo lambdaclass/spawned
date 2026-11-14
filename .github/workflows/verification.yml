@@ -59,6 +59,8 @@ jobs:
       - uses: DeterminateSystems/magic-nix-cache-action@v8
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: Swatinem/rust-cache@v2
+      - name: Stop and receive race without the trace serialization lock
+        run: cargo test --locked -p spawned-concurrency --lib stop_receive_probe
       - name: Payloads and panic diagnostics release protocol locks
         run: |
           cargo test --locked -p spawned-concurrency --lib --features lifecycle-trace reply::jobs::tests:: -- --test-threads=1

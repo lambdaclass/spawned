@@ -129,6 +129,9 @@ pub(crate) mod tasks {
     pub(crate) struct Receiver<T> {
         inner: raw::Receiver<T>,
         failures: Arc<DropFailures>,
+        // A receive racing stop must retain its item until the death point
+        // answers every caller. Empty and allocation-free on the normal path.
+        held_for_shutdown: Vec<T>,
     }
     impl<T> std::ops::Deref for Receiver<T> {
         type Target = raw::Receiver<T>;
@@ -142,12 +145,15 @@ pub(crate) mod tasks {
         }
     }
     impl<T> Receiver<T> {
+        pub(crate) fn hold_for_shutdown(&mut self, item: T) {
+            self.held_for_shutdown.push(item);
+        }
         /// Close admission and take everything accepted, without dropping
         /// it: the death point answers queued requests before any payload
         /// destructor runs ([`discard_all`](Self::discard_all) then).
         pub(crate) fn drain(&mut self) -> Vec<T> {
             self.inner.close();
-            let mut items = Vec::new();
+            let mut items = std::mem::take(&mut self.held_for_shutdown);
             // Sends remain synchronous and unbounded. EOF waits only for raw
             // reservations to publish, never for this runtime thread to run work.
             // Suppress Tokio's coop deferral while the owning task is destroyed.
@@ -182,6 +188,7 @@ pub(crate) mod tasks {
             Receiver {
                 inner: receiver,
                 failures,
+                held_for_shutdown: Vec::new(),
             },
         )
     }

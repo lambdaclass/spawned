@@ -2252,23 +2252,25 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
     // One cancellation future for the whole loop: polled only when the
     // mailbox has nothing, so a busy actor registers no waiter per message.
     let mut cancelled = pin!(cancellation_token.cancelled());
-    // The receive checks the token before taking each message (and returns
-    // `None` once it is cancelled), so the loop needs no check of its own:
-    // The private stop token checks one atomic flag, without locking Tokio's
-    // waiter node on every message.
+    // Check stop after receiving and before dispatch: a message published
+    // after stop must not slip through an earlier snapshot. A rejected receive
+    // stays in the mailbox wrapper until the death point answers its caller.
+    // The fast check is one atomic load; only parked loops register a waiter.
     loop {
         let msg = {
             let recv = pin!(future::poll_fn(|cx| {
                 // Stop and closed-mailbox both take the normal lifecycle exit,
-                // just like the cancellation arm below. Check before consuming
-                // work, including when receive resumes from a pending poll.
-                // The check, the receive and its trace event are one step
+                // just like the cancellation arm below. Check after the
+                // mailbox acquire and retain a rejected item for shutdown.
+                // The receive, check and trace event are one step
                 // of the lifecycle trace: a recorded stop is seen here.
                 let result = crate::lifecycle_trace::life_section(trace_id, || {
-                    if cancellation_token.is_cancelled() {
-                        return std::task::Poll::Ready(None);
-                    }
-                    let result = rx.poll_recv(cx);
+                    #[cfg(all(test, not(feature = "lifecycle-trace"), not(spawned_sim)))]
+                    stop_receive_probe::before_receive();
+                    let received = rx.poll_recv(cx);
+                    let result = cancellation_token.after_receive(received, |item| {
+                        rx.hold_for_shutdown(item);
+                    });
                     #[cfg(feature = "lifecycle-trace")]
                     if let std::task::Poll::Ready(Some(envelope)) = &result {
                         crate::lifecycle_trace::life_emit(trace_id, || {
@@ -5142,6 +5144,201 @@ mod shared_state_release {
                         assert!(freed(weak).await, "linked or monitored actor leaked");
                     }
                 });
+            },
+        );
+    }
+}
+
+#[cfg(all(test, not(feature = "lifecycle-trace"), not(spawned_sim)))]
+mod stop_receive_probe {
+    use super::*;
+    use std::{cell::RefCell, rc::Rc, sync::atomic::AtomicUsize};
+    thread_local! {
+        static INTERLEAVE: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+    }
+    pub(super) fn before_receive() {
+        let action = INTERLEAVE.with(|hook| hook.borrow_mut().take());
+        if let Some(action) = action {
+            action();
+        }
+    }
+    struct Count(Arc<AtomicUsize>);
+    impl Actor for Count {}
+    struct Ping;
+    impl Message for Ping {
+        type Result = ();
+    }
+    impl Handler<Ping> for Count {
+        async fn handle(&mut self, _: Ping, reply: PendingReply<'_, ()>, _: &Context<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            reply.reply(());
+        }
+    }
+    #[test]
+    fn stop_between_check_and_receive_discards_post_stop_request() {
+        crate::test_wait::bounded(
+            "stop_between_check_and_receive_discards_post_stop_request",
+            || {
+                rt::Runtime::new().unwrap().block_on(async {
+                    let (tx, rx) = mpsc::channel();
+                    let token = StopToken::new();
+                    let (ctx, mut cleanup) = test_context::<Count>(&tx, &token);
+                    let hits = Arc::new(AtomicUsize::new(0));
+                    let response = Rc::new(RefCell::new(None));
+                    let stop_ctx = ctx.clone();
+                    let saved = response.clone();
+                    INTERLEAVE.with(|hook| {
+                        *hook.borrow_mut() = Some(Box::new(move || {
+                            stop_ctx.stop();
+                            *saved.borrow_mut() =
+                                Some(stop_ctx.send_request(Ping, Deadline::Never).unwrap());
+                        }))
+                    });
+                    run_actor(
+                        Count(hits.clone()),
+                        ctx,
+                        rx,
+                        token,
+                        &mut cleanup,
+                        #[cfg(feature = "backend-experiments")]
+                        None,
+                    )
+                    .await;
+                    assert_eq!(cleanup.die(), ExitReason::Normal);
+                    let response = response
+                        .borrow_mut()
+                        .take()
+                        .expect("receive probe was reached");
+                    let reply = response.await;
+                    assert!(
+                        matches!(reply, Err(ActorError::ActorStopped(ExitReason::Normal))),
+                        "post-stop request was handled: {reply:?}"
+                    );
+                    assert_eq!(hits.load(Ordering::SeqCst), 0);
+                });
+            },
+        );
+    }
+
+    struct CheckDrop {
+        owner: Arc<Registry>,
+        response: Arc<std::sync::Mutex<Option<ReplyReceiver<()>>>>,
+        checked: Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl Message for CheckDrop {
+        type Result = ();
+    }
+    impl Drop for CheckDrop {
+        fn drop(&mut self) {
+            let reply = self
+                .response
+                .lock()
+                .unwrap()
+                .as_mut()
+                .and_then(ReplyReceiver::try_recv);
+            let after_death = match reply {
+                Some(Err(ActorError::ActorStopped(ref reason))) => {
+                    self.owner.final_reason() == Some(reason)
+                }
+                _ => false,
+            };
+            self.checked.store(after_death, Ordering::SeqCst);
+        }
+    }
+    struct CleanupPause {
+        hits: Arc<AtomicUsize>,
+        park: bool,
+    }
+    impl Actor for CleanupPause {
+        async fn stopped(&mut self, _: &Context<Self>) {
+            if self.park {
+                std::future::pending::<()>().await;
+            }
+        }
+    }
+    impl Handler<CheckDrop> for CleanupPause {
+        async fn handle(
+            &mut self,
+            _msg: CheckDrop,
+            reply: PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            self.hits.fetch_add(1, Ordering::SeqCst);
+            reply.reply(());
+        }
+    }
+    #[test]
+    fn receive_rejected_by_stop_keeps_its_caller_until_the_death_point() {
+        crate::test_wait::bounded(
+            "receive_rejected_by_stop_keeps_its_caller_until_the_death_point",
+            || {
+                for (park, requested) in [
+                    (false, ExitReason::Normal),
+                    (true, ExitReason::Normal),
+                    (false, ExitReason::Shutdown),
+                    (true, ExitReason::Shutdown),
+                    (false, ExitReason::Panic("requested".into())),
+                    (true, ExitReason::Panic("requested".into())),
+                    (false, ExitReason::Kill),
+                    (true, ExitReason::Kill),
+                ] {
+                    rt::Runtime::new().unwrap().block_on(async {
+                        let (tx, rx) = mpsc::channel();
+                        let token = StopToken::new();
+                        let (ctx, mut cleanup) = test_context::<CleanupPause>(&tx, &token);
+                        let hits = Arc::new(AtomicUsize::new(0));
+                        let checked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        let response = Arc::new(std::sync::Mutex::new(None));
+                        let stop_ctx = ctx.clone();
+                        let probe = CheckDrop {
+                            owner: ctx.shared.replies.clone(),
+                            response: response.clone(),
+                            checked: checked.clone(),
+                        };
+                        let stop_reason = requested.clone();
+                        INTERLEAVE.with(|hook| {
+                            *hook.borrow_mut() = Some(Box::new(move || {
+                                stop_ctx.stop_with_reason(stop_reason);
+                                let reply = stop_ctx.send_request(probe, Deadline::Never).unwrap();
+                                *response.lock().unwrap() = Some(reply);
+                            }))
+                        });
+                        let mut actor = Box::pin(run_actor(
+                            CleanupPause {
+                                hits: hits.clone(),
+                                park,
+                            },
+                            ctx,
+                            rx,
+                            token,
+                            &mut cleanup,
+                            #[cfg(feature = "backend-experiments")]
+                            None,
+                        ));
+                        let expected = if park {
+                            assert!(futures::poll!(actor.as_mut()).is_pending());
+                            assert!(
+                                !checked.load(Ordering::SeqCst),
+                                "payload was dropped before stopped() finished"
+                            );
+                            drop(actor);
+                            if requested == ExitReason::Normal {
+                                ExitReason::Killed
+                            } else {
+                                requested
+                            }
+                        } else {
+                            actor.await;
+                            requested
+                        };
+                        assert_eq!(cleanup.die(), expected);
+                        assert_eq!(hits.load(Ordering::SeqCst), 0);
+                        assert!(
+                            checked.load(Ordering::SeqCst),
+                            "held caller was not answered before payload destruction"
+                        );
+                    });
+                }
             },
         );
     }

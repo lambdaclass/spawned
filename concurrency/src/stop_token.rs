@@ -6,7 +6,7 @@ mod sync {
     pub(crate) use std::sync::atomic::{AtomicBool, Ordering};
 }
 mod core;
-use core::StopFlag;
+use self::core::StopFlag;
 
 #[derive(Clone, Default)]
 pub(crate) struct StopToken(Arc<State>);
@@ -22,6 +22,14 @@ impl StopToken {
     #[inline]
     pub(crate) fn is_cancelled(&self) -> bool {
         self.0.flag.is_cancelled()
+    }
+    #[inline]
+    pub(crate) fn after_receive<T>(
+        &self,
+        received: std::task::Poll<Option<T>>,
+        hold: impl FnOnce(T),
+    ) -> std::task::Poll<Option<T>> {
+        self.0.flag.after_receive(received, hold)
     }
     pub(crate) fn cancel(&self) {
         self.0.flag.cancel(|| self.0.waiter.cancel());
@@ -41,7 +49,7 @@ mod tests {
     use std::time::Duration;
 
     #[tokio::test]
-    async fn cancellation_is_latched_before_the_waiter_is_polled() {
+    async fn cancel_before_first_poll_is_visible_to_later_waiters() {
         let token = StopToken::new();
         let clone = token.clone();
         let waiter = token.cancelled();
