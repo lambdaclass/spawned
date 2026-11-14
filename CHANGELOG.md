@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Refused job results and immediate emits contain destructor panics in both
+  execution modes. Cancellation, deadlines, keyed replacement and owner
+  discharge retain containment for results held behind scheduled emits.
+
 - Refused job notifications and emits destroy their captures outside the
   lifecycle trace lock. Linked-exit delivery disposes caught panic payloads,
   logs failures and releases removed records after both the receiver table

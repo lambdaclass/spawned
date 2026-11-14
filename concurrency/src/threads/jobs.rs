@@ -10,8 +10,8 @@ use super::{Actor, Context, Envelope, Handler, MailboxItem};
 use crate::message::Message;
 use crate::reply::deadline::Expirable;
 use crate::reply::jobs::{
-    JobCredit, JobDeadline, JobError, JobGone, JobHandle, JobOptions, JobOutcome, JobState,
-    PipeError, PipeReplyError, SendScheduled,
+    Contained, JobCredit, JobDeadline, JobError, JobGone, JobHandle, JobOptions, JobOutcome,
+    JobState, PipeError, PipeReplyError, SendScheduled,
 };
 use crate::reply::slot::{Refused, Slot};
 use crate::reply::{now_ticks, PendingReply, ReplyTo};
@@ -125,16 +125,17 @@ where
 {
     /// Take the terminal notification and enqueue `(done, outcome)`.
     fn notify(&self, outcome: JobOutcome<T>) {
-        let (_, unsent) = self
-            .state
-            .notify(end_of(&outcome), || self.enqueue_terminal(outcome));
+        let end = end_of(&outcome);
+        let outcome = Contained::new(outcome, self.ctx.sender.failures());
+        let (_, unsent) = self.state.notify(end, || self.enqueue_terminal(outcome));
         // A refused terminal message (`done` and the outcome) may drop on
         // the deadline service thread: contained.
         self.ctx.sender.failures().discard(unsent);
     }
 
-    fn enqueue_terminal(&self, outcome: JobOutcome<T>) -> Option<MailboxItem<A>> {
+    fn enqueue_terminal(&self, outcome: Contained<JobOutcome<T>>) -> Option<MailboxItem<A>> {
         let done = self.done.lock().unwrap_or_else(|p| p.into_inner()).take()?;
+        let outcome = outcome.into_inner()?;
         // Execution ended (or is still running past its deadline, and then
         // keeps its hold): return the credit before the terminal message
         // can be dispatched, so `done`'s turn can start the next job at the
@@ -160,7 +161,8 @@ where
     fn finish(self: &Arc<Self>, outcome: JobOutcome<T>, hold: Box<dyn Send>) {
         *self.hold.lock().unwrap_or_else(|p| p.into_inner()) = Some(hold);
         let end = end_of(&outcome);
-        let outcome = std::cell::Cell::new(Some(outcome));
+        let outcome =
+            std::cell::Cell::new(Some(Contained::new(outcome, self.ctx.sender.failures())));
         let unsent = self.state.finish(
             end,
             || self.enqueue_terminal(outcome.take()?),
@@ -168,9 +170,7 @@ where
                 let run = self.clone();
                 // Dropped unrun (a deadline or a cancel overtook it) possibly
                 // on the deadline service thread: contained.
-                let outcome = outcome.take().map(|outcome| {
-                    crate::reply::jobs::Contained::new(outcome, self.ctx.sender.failures())
-                });
+                let outcome = outcome.take();
                 Box::new(move || {
                     if let Some(outcome) = outcome.and_then(|o| o.into_inner()) {
                         run.notify(outcome);
@@ -308,13 +308,15 @@ impl<A: Actor> JobCtx<A> {
         M: Message,
     {
         let credit = EmitCredit(self.state.clone());
+        let msg = Contained::new(msg, self.ctx.sender.failures());
         self.state
             .enqueue_emit(|| {
+                let msg = msg.into_inner().expect("the emit owns its message");
                 let envelope: Box<dyn Envelope<A> + Send> = Box::new(EmitEnvelope { msg, credit });
                 self.ctx.sender.send(MailboxItem::Message(envelope))
             })
             .map_err(|(gone, unsent)| {
-                drop(unsent);
+                self.ctx.sender.failures().discard(unsent);
                 gone
             })
     }
@@ -700,6 +702,129 @@ mod tests {
                 owner.join();
             },
         );
+    }
+
+    struct Bomb;
+    impl Drop for Bomb {
+        fn drop(&mut self) {
+            panic!("refused job payload destructor");
+        }
+    }
+    impl Message for Bomb {
+        type Result = ();
+    }
+    impl Handler<Bomb> for Owner {
+        fn handle(&mut self, _: Bomb, _: PendingReply<'_, ()>, _: &Context<Self>) {}
+    }
+
+    #[test]
+    fn refused_job_payload_panics_are_contained() {
+        let owner = Owner.start();
+        let ctx = owner.context();
+        let failures = ctx.sender.failures();
+        for finish in [false, true] {
+            let state = JobState::new(owner.id(), 1);
+            state.cancel();
+            let run = Arc::new(Run::<Owner, Bomb, Note> {
+                state,
+                ctx: ctx.clone(),
+                done: Mutex::new(Some(Box::new(|_| Note))),
+                deadline: std::sync::OnceLock::new(),
+                hold: Mutex::new(None),
+            });
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                if finish {
+                    run.finish(Ok(Bomb), Box::new(()));
+                } else {
+                    run.notify(Ok(Bomb));
+                }
+            }));
+            assert!(result.is_ok(), "refused outcome escaped, finish={finish}");
+        }
+        let state = JobState::new(owner.id(), 1);
+        state.acquire_blocking().unwrap();
+        state.cancel();
+        let job = JobCtx {
+            state: state.clone(),
+            ctx: ctx.clone(),
+        };
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| job.enqueue(Bomb)));
+        assert!(matches!(result, Ok(Err(JobGone))), "refused emit escaped");
+        assert_eq!(state.emit_credits(), 1);
+        assert_eq!(
+            failures.first().as_deref(),
+            Some("refused job payload destructor")
+        );
+        ctx.stop();
+        owner.join();
+    }
+
+    #[test]
+    fn held_job_result_panics_do_not_interrupt_cancellation() {
+        for action in ["cancel", "deadline", "replace", "owner_exit"] {
+            let owner = Owner.start();
+            let ctx = owner.context();
+            let failures = ctx.sender.failures();
+            let set = crate::reply::jobs::JobSet::new(owner.id(), 1);
+            let state = JobState::new(owner.id(), 1);
+            assert!(set.admit(&state, Some("held".into()), false));
+            state.acquire_blocking().unwrap();
+            let credit = EmitCredit(state.clone());
+            state
+                .schedule_emit(
+                    u64::MAX - 1,
+                    Box::new(move || {
+                        drop(credit);
+                        Ok(())
+                    }),
+                    failures.clone(),
+                    |_, _| {},
+                )
+                .unwrap();
+            let run = Arc::new(Run::<Owner, Bomb, Note> {
+                state: state.clone(),
+                ctx: ctx.clone(),
+                done: Mutex::new(Some(Box::new(|_| Note))),
+                deadline: std::sync::OnceLock::new(),
+                hold: Mutex::new(None),
+            });
+            run.finish(Ok(Bomb), Box::new(()));
+            set.ended(&state);
+            assert!(
+                failures.first().is_none(),
+                "a scheduled emit holds the result"
+            );
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| match action {
+                "cancel" => state.cancel(),
+                "deadline" => {
+                    let _ = state.notify("deadline", || None::<()>);
+                }
+                "replace" => {
+                    let replacement = JobState::new(owner.id(), 1);
+                    assert!(set.admit(&replacement, Some("held".into()), false));
+                    set.ended(&replacement);
+                }
+                "owner_exit" => {
+                    failures.hold();
+                    set.cancel_all();
+                    set.dispose_cancelled();
+                    assert!(failures.first().is_none(), "discharge holds user payloads");
+                    failures.release();
+                }
+                _ => unreachable!(),
+            }));
+            assert!(result.is_ok(), "held result escaped during {action}");
+            assert_eq!(
+                failures.first().as_deref(),
+                Some("refused job payload destructor")
+            );
+            // Dispose the scheduled emit and its credit even after the
+            // deadline displaced the held terminal.
+            state.cancel();
+            assert_eq!(state.emit_credits(), 1);
+            ctx.stop();
+            owner.join();
+        }
     }
 
     /// Review P1 (Codex 13), threads mode: see the tasks-mode test.

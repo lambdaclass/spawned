@@ -29,8 +29,9 @@ pub enum ExitReason {
 
 impl ExitReason {
     /// Returns `true` for exit reasons that should trigger a restart
-    /// of `Transient` or `Permanent` children, and that end a non-trapping
-    /// linked actor (OTP: every reason except `normal` and `shutdown`).
+    /// of `Transient` children (`Permanent` children restart for every reason).
+    /// This classification is separate from link-signal handling: only
+    /// `Normal` is ignored by a non-trapping linked actor; `Shutdown` ends it.
     ///
     /// | Reason | `is_abnormal()` |
     /// |---|---|
