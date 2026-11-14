@@ -155,6 +155,9 @@ the road to 1.0. Upgrade notes, with an old-call → new-call table, are in
 
 ### Fixed
 
+- Simulation rejects native actor creation and message/request admission from
+  a virtual world, preventing comparisons between real and virtual deadline
+  ticks. Native tests outside a world retain real time.
 - Simulator owners include setup before `block_on`; test reply pairs have
   fresh per-world owners, and pending tasks release owner/runtime cycles
   during runtime drop. Native helpers retain real time without creating a
