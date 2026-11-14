@@ -218,7 +218,7 @@ impl<A: Actor + Handler<Down>> Envelope<A> for DownEnvelope {
 fn assert_native_clock_context() {
     assert!(
         spawned_rt::tasks::Handle::try_current_or_ambient().is_err(),
-        "spawned_sim: native actors cannot run in or receive messages from a simulated world;          use tasks actors for simulation, or run native actors outside the simulation"
+        "spawned_sim: native actors cannot run in or receive messages from a simulated world; use tasks actors for simulation, or run native actors outside the simulation"
     );
 }
 

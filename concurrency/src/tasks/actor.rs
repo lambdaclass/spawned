@@ -11,7 +11,7 @@ use crate::message::Message;
 use crate::monitor::{Down, MonitorCleanup, MonitorRef, MonitorTable};
 use crate::reply::{registry::Registry, reply_slot, Caller, Slot, SlotHandle};
 use crate::reply::{Deadline, PendingReply, ReplyReceiver, DEFAULT_MAX_OUTSTANDING};
-use crate::stop_token::StopToken as CancellationToken;
+use crate::stop_token::StopToken;
 use core::pin::pin;
 use futures::future::{self, FutureExt as _};
 use spawned_rt::{
@@ -233,7 +233,7 @@ type StartupPayload<A> = (
     A,
     Context<A>,
     mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
-    CancellationToken,
+    StopToken,
 );
 fn discharge_startup<A: Actor>(payload: &mut StartupPayload<A>) -> Vec<Box<dyn Send>> {
     let replies = payload.1.shared.replies.clone();
@@ -665,7 +665,7 @@ fn signal_target<A: Actor>(
     sender: &mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     trap: TrapExitFlag,
     request: LinkedExitReason,
-    token: CancellationToken,
+    token: StopToken,
 ) -> Arc<SignalTarget> {
     let exit_tx = sender.clone();
     let parent_tx = sender.clone();
@@ -720,7 +720,7 @@ pub struct Context<A: Actor> {
 struct ActorShared<A: Actor> {
     id: ActorId,
     sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
-    cancellation_token: CancellationToken,
+    cancellation_token: StopToken,
     completion_rx: watch::Receiver<Option<ExitReason>>,
     monitors: MonitorTable,
     trap_exit: TrapExitFlag,
@@ -1280,7 +1280,7 @@ impl<A: Actor> Context<A> {
         }
     }
 
-    pub(crate) fn cancellation_token(&self) -> CancellationToken {
+    pub(crate) fn cancellation_token(&self) -> StopToken {
         self.shared.cancellation_token.clone()
     }
 }
@@ -2152,7 +2152,7 @@ async fn run_actor<A: Actor, C: Fn()>(
     actor: A,
     ctx: Context<A>,
     rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
-    cancellation_token: CancellationToken,
+    cancellation_token: StopToken,
     cleanup: &mut crate::actor_cleanup::ActorCleanup<C>,
     #[cfg(feature = "backend-experiments")] turn: Option<MessageTurn>,
 ) {
@@ -2195,7 +2195,7 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
     ctx: Context<A>,
     rx: &mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cleanup: &mut crate::actor_cleanup::ActorCleanup<C>,
-    cancellation_token: CancellationToken,
+    cancellation_token: StopToken,
     #[cfg(feature = "backend-experiments")] mut turn: Option<MessageTurn>,
 ) {
     let _monitor_cleanup = MonitorCleanup(ctx.shared.monitors.clone());
@@ -2463,7 +2463,7 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
 #[cfg(test)]
 fn test_context<A: Actor>(
     tx: &mpsc::Sender<Box<dyn Envelope<A> + Send>>,
-    token: &CancellationToken,
+    token: &StopToken,
 ) -> (Context<A>, crate::actor_cleanup::ActorCleanup<fn()>) {
     let id = ActorId::next();
     let (completion_tx, completion_rx) = watch::channel(None);
@@ -4687,7 +4687,7 @@ mod turn_regressions {
                 }
                 rt::Runtime::new().unwrap().block_on(async {
                     let (tx, rx) = mpsc::channel();
-                    let token = CancellationToken::new();
+                    let token = StopToken::new();
                     let (ctx, mut cleanup) = test_context(&tx, &token);
                     let count = Arc::new(AtomicUsize::new(0));
                     for _ in 0..2 {
@@ -4760,7 +4760,7 @@ mod idle_stop_regression {
             move || {
                 rt::Runtime::new().unwrap().block_on(async {
                     let (tx, rx) = mpsc::channel();
-                    let token = CancellationToken::new();
+                    let token = StopToken::new();
                     let (ctx, mut cleanup) = test_context(&tx, &token);
                     let count = Arc::new(AtomicUsize::new(0));
                     let mut actor = Box::pin(run_actor(
