@@ -60,7 +60,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: Swatinem/rust-cache@v2
       - name: Stop and receive race without the trace serialization lock
-        run: cargo test --locked -p spawned-concurrency --lib stop_receive_probe
+        run: |
+          python3 - <<'PYTHON'
+          import subprocess
+          command = ["cargo", "test", "--locked", "-p", "spawned-concurrency",
+                     "--no-default-features", "--features", "async", "--lib",
+                     "stop_receive_probe"]
+          listing = subprocess.check_output(command + ["--", "--list"], text=True)
+          expected = {
+              "tasks::actor::stop_receive_probe::stop_between_check_and_receive_discards_post_stop_request: test",
+              "tasks::actor::stop_receive_probe::receive_rejected_by_stop_keeps_its_caller_until_the_death_point: test",
+          }
+          actual = {line for line in listing.splitlines() if line.endswith(": test")}
+          if actual != expected:
+              raise SystemExit(f"Untraced stop/receive regressions missing: {listing}")
+          subprocess.run(command, check=True)
+          PYTHON
       - name: Payloads and panic diagnostics release protocol locks
         run: |
           cargo test --locked -p spawned-concurrency --lib --features lifecycle-trace reply::jobs::tests:: -- --test-threads=1

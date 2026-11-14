@@ -1064,18 +1064,22 @@ message loop checks that flag with one acquire load after receiving and before
 dispatch. A rejected receive is retained by the mailbox wrapper until its
 callers are answered at the death point. The raw token never escapes
 this flat owner and has no child-token API. The flag wrapper adds one allocation
-per actor/scope, not per message; the paired churn/heap soak checks its lifetime. The model checks the check/register/
-cancel race and visibility of an earlier reason publication, using a latched
-notifier stand-in. Tokio's waiter internals remain a trusted dependency. Rust
-regressions cover cancellation before first poll and foreign-thread cancellation
-of a registered waiter. The untraced `stop_receive_probe` regression forces a
-stop between the historical pre-check and dequeue; the old loop handled the
-post-stop request. The probe also checks retained payload destruction after
-caller discharge, including runtime drop with Normal/Shutdown/Panic/Kill
-requests. CI runs it without `lifecycle-trace`, whose global trace section would
-otherwise serialize this gap. The logical mailbox projects both raw queued
-items and items retained for shutdown. Stop/dispatch ordering and the death point remain the
-existing `Lifecycle` actions; no timeout or clock contract changes.
+per actor/scope, not per message; the paired churn/heap soak checks its lifetime.
+The model checks the check/register/cancel race and visibility of an earlier
+reason publication, using a latched notifier stand-in. Tokio's waiter internals
+and the raw channel's publish/acquire ordering remain trusted dependencies.
+Rust regressions cover cancellation before first poll and foreign-thread
+cancellation of a registered waiter. An empty receive polls the latched
+cancellation future before parking, including when stop was already requested.
+The untraced `stop_receive_probe` regression forces a stop between the historical
+pre-check and dequeue; the old loop handled the post-stop request. The probe
+also checks retained payload destruction after caller discharge, including
+runtime drop with Normal/Shutdown/Panic/Kill requests. CI explicitly enables
+only `async`, verifies that both tests are listed, and runs them without
+`lifecycle-trace`, whose global trace section would otherwise serialize this
+gap. The logical mailbox projects both raw queued items and items retained for
+shutdown. Stop/dispatch ordering and the death point remain the existing
+`Lifecycle` actions; no timeout or clock contract changes.
 
 `reply_slot_loom` covers the packed slot word (reply, expiry, shortening,
 abandon, close, defer at the bound, linked jobs, parked receivers), retaining
