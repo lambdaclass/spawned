@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Actor message loops check a private atomic stop flag instead of locking
+  Tokio's cancellation state before every message. Tokio's latched waiter
+  still wakes parked actors/helpers; public cancellation and deadline semantics
+  are unchanged. The shared stop core has Loom ordering/race checks.
+
 - Failed deadline-worker initialization releases its service allocation on
   error or unwind, and leaves initialization retryable. Startup still fails
   rather than silently accepting an unserviceable deadline.

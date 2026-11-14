@@ -1055,8 +1055,18 @@ models that inject Loom's synchronization types (`super::sync`):
 ```sh
 RUSTFLAGS="--cfg spawned_scheduler_loom" cargo test --release -p spawned-concurrency \
   --no-default-features --test reply_slot_loom --test registry_turn_loom --test job_core_loom \
-  --test link_fence_loom
+  --test link_fence_loom --test stop_token_loom
 ```
+
+`stop_token_loom` shares the private actor stop flag (`src/stop_token/core.rs`).
+A stop publishes its flag before notifying Tokio's cancellation waiter; the
+message loop checks that flag with one acquire load. The raw token never escapes
+this flat owner and has no child-token API. The model checks the check/register/
+cancel race and visibility of an earlier reason publication, using a latched
+notifier stand-in. Tokio's waiter internals remain a trusted dependency. Rust
+regressions cover cancellation before first poll and foreign-thread cancellation
+of a registered waiter. Stop/dispatch ordering and the death point remain the
+existing `Lifecycle` actions; no timeout or clock contract changes.
 
 `reply_slot_loom` covers the packed slot word (reply, expiry, shortening,
 abandon, close, defer at the bound, linked jobs, parked receivers), retaining

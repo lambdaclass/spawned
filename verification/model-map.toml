@@ -103,6 +103,8 @@ files = [
     "verification/tla/TraceLifecycle.tla",
 ]
 code = [
+    "concurrency/src/stop_token.rs",
+    "concurrency/src/stop_token/core.rs",
     "concurrency/src/actor_cleanup.rs",
     "concurrency/src/tasks/actor.rs",
     "concurrency/src/threads/actor.rs",

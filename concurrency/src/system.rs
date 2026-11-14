@@ -2,6 +2,7 @@
 //!
 //! Ordinary `.start()` remains ambient and unmanaged. Explicit group admission
 //! owns actors/helpers and keeps their runtime alive until managed cleanup ends.
+use crate::stop_token::StopToken;
 use crate::{
     child_handle::ChildHandle,
     error::ExitReason,
@@ -864,7 +865,7 @@ impl ExecutionGroup {
             target,
             selection: self.selection,
             parent: parent.clone(),
-            token: CancellationToken::new(),
+            token: StopToken::new(),
             cause: crate::link::new_linked_exit_reason(),
             state: Mutex::new(ScopeState {
                 open: true,
@@ -916,7 +917,7 @@ pub(crate) struct Scope {
     group: Weak<GroupInner>,
     pub(crate) handle: Handle,
     parent: Option<Arc<Admission>>,
-    pub(crate) token: CancellationToken,
+    pub(crate) token: StopToken,
     pub(crate) cause: crate::link::LinkedExitReason,
     state: Mutex<ScopeState>,
     #[cfg(feature = "diagnostics")]
@@ -1292,7 +1293,7 @@ impl<F, T> BlockingWork<F>
 where
     F: FnOnce() -> T,
 {
-    fn run(self, token: CancellationToken) -> Result<T, HelperError> {
+    fn run(self, token: StopToken) -> Result<T, HelperError> {
         let Self {
             work,
             lease: _lease,

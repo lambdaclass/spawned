@@ -11,10 +11,11 @@ use crate::message::Message;
 use crate::monitor::{Down, MonitorCleanup, MonitorRef, MonitorTable};
 use crate::reply::{registry::Registry, reply_slot, Caller, Slot, SlotHandle};
 use crate::reply::{Deadline, PendingReply, ReplyReceiver, DEFAULT_MAX_OUTSTANDING};
+use crate::stop_token::StopToken as CancellationToken;
 use core::pin::pin;
 use futures::future::{self, FutureExt as _};
 use spawned_rt::{
-    tasks::{self as rt, watch, CancellationToken, JoinHandle},
+    tasks::{self as rt, watch, JoinHandle},
     threads,
 };
 use std::sync::atomic::Ordering;
@@ -2253,7 +2254,8 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
     let mut cancelled = pin!(cancellation_token.cancelled());
     // The receive checks the token before taking each message (and returns
     // `None` once it is cancelled), so the loop needs no check of its own:
-    // `is_cancelled` locks the token's node.
+    // The private stop token checks one atomic flag, without locking Tokio's
+    // waiter node on every message.
     loop {
         let msg = {
             let recv = pin!(future::poll_fn(|cx| {

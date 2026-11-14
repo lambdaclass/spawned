@@ -106,6 +106,8 @@ pub mod registry;
 pub mod reply;
 pub mod response;
 #[cfg(feature = "async")]
+mod stop_token;
+#[cfg(feature = "async")]
 pub mod supervision;
 #[cfg(feature = "async")]
 pub mod system;
