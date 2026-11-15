@@ -23,7 +23,7 @@ path = "./src/lib.rs"
 # Clock and entropy interposers (determinism D1): simulation builds only, so
 # this crate keeps `forbid(unsafe_code)` and no unsafe code is linked otherwise.
 [target.'cfg(spawned_sim)'.dependencies]
-spawned-sim-libc = { path = "../sim-libc", version = "0.7.3" }
+spawned-sim-libc = { path = "../sim-libc", version = "0.8.0" }
 
 [target.'cfg(spawned_sim)'.dev-dependencies]
 rand = "0.8"

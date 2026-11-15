@@ -658,11 +658,19 @@ Rules (the [design](design/deferred-replies.md) has the full contract):
   actor's death every open token answers `ActorStopped(reason)`.
 - The deadline is the caller's, fixed at send. `token.is_closed()` tells you
   the caller can no longer be answered; the actor's deadline heap expires
-  stored tokens on time and returns their credits.
+  stored tokens when expiry is serviced and returns their credits.
 - `PendingReplies<K, R>` is a bounded table of tokens by key (purges terminal
   entries on insert; `InsertError::{Duplicate, Full}` hands the token back; `into_parts()`
   gives the `InsertErrorKind` and the token together, so even a reason
   added later can be answered).
+
+**Deadline-service progress.** Managed and unmanaged actors share a service
+thread for token/job deadlines and scheduled job emits. Expiry can run user
+wakers and payload destructors there; a blocking callback delays other
+actors' heap-driven expiry too. Keep these callbacks short and nonblocking.
+Ordinary `request()`/`request_with_timeout()`/`Response` timers and the
+`send_after`/`send_interval` drivers are separate. This is a scheduling
+limitation, not a hard real-time deadline guarantee.
 
 **Answering with a reason.** The framework's errors (`ReplyDropped`,
 `ActorStopped`, `Overloaded`, `RequestTimeout`) say what happened to the
@@ -1502,7 +1510,7 @@ production builds.
 Enable the optional `metrics` feature on `spawned-concurrency` (available in v0.6.0):
 
 ```toml
-spawned-concurrency = { version = "0.7.1", features = ["metrics"] }
+spawned-concurrency = { version = "0.8", features = ["metrics"] }
 ```
 
 The default build compiles out collection, timing metadata and response observers.
@@ -1645,7 +1653,7 @@ feature; with `default-features = false` it builds Tokio-free with the
 
 ```toml
 [dev-dependencies]
-spawned-test = "0.7.1"
+spawned-test = "0.8"
 ```
 
 ### Mock a dependency

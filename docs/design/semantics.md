@@ -155,8 +155,9 @@ the expiry (the caller's timer, the owner's deadline heap, or a
 `RequestTimeout`; a reply that lands after the deadline instant but before
 the expiry runs is delivered (`Delivery::Delivered`, and the caller gets
 the value), as an OTP reply already in the caller's mailbox when its
-`after` clause would fire is received. Timer resolution (the runtime timer's 1 ms
-wheel, the deadline service's wake-up) bounds that window.
+`after` clause would fire is received. Timer resolution and when the runtime
+or deadline service can process expiry determine that window; this is not a
+hard real-time bound.
 Which clock expires a waiting caller is part of the contract: `request`,
 `request_with_timeout` and `Response::from(rx)` arm the runtime's timer, so
 they follow paused Tokio time; a `ReplyReceiver` awaited directly
@@ -746,6 +747,16 @@ stopped after `Shutdown`),
 - **Preemption.** A running handler, a blocking call or a non-returning hook is
   never interrupted; stop, shutdown deadlines and cleanup timeouts only signal
   and report. Rust cannot kill a thread.
+- **Deadline-service callback isolation.** Outside simulation, managed and
+  unmanaged actors share one deadline-service thread. Expiry can invoke user
+  wakers and destroy job payloads or completion captures there. A callback
+  that blocks delays heap-driven expiry, credit return and scheduled job
+  emits for other actors too. These callbacks must return promptly. Ordinary
+  `request`/`request_with_timeout`/`Response` waits use their runtime timer;
+  `send_after` and `send_interval` use separate tasks or threads. No callback
+  is preempted. Separating disposal from deadline bookkeeping is follow-up
+  work; expiry authority, terminal outcomes and R6 caller-before-payload
+  ordering are unchanged.
 - **Bounded memory.** Mailboxes are unbounded (D5); there are no per-actor
   memory limits (rank 18a).
 - **Deadlock detection.** A request cycle, or a handler requesting its own

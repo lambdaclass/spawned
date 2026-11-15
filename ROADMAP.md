@@ -33,11 +33,17 @@ handlers and the existing default behavior. New policies are explicit and opt-in
 - **v0.7.3:** OTP-aligned restart retry with OneForAll cohort rebuild, and the
   deterministic simulator (virtual time, decision tapes, PCT, bounded DFS).
   Ethrex and Ethlambda run 0.7.3 in their draft PRs and on canary nodes.
-- **v0.8 (in progress):** deferred replies and pipe-to-self (rank 11, PR #239)
-  and OTP exit signals, startup and runtime-drop semantics (ranks 5e, 5f, 5g,
-  PR #240). The final pre-release review found 2 P0 and about 13 P1 issues,
-  mostly at the actor's death point; they are being fixed on #240 before the
-  release. Client ports are ready on the clients' `spawned-v0.8` branches.
+- **v0.8:** deferred replies and pipe-to-self (rank 11), OTP exit signals,
+  startup and runtime-drop semantics (5e, 5f, 5g). Implementation and review
+  fixes merged in #240; release metadata/publication is in #271. The final
+  performance and paired four-hour soak gates pass. Client ports are ready
+  on the clients' `spawned-v0.8` branches.
+- **Deadline-service follow-up:** separate user payload disposal from shared
+  deadline bookkeeping, with no default-path cost. Acceptance: block a job
+  result destructor in actor A while actor B's unpolled token/raw deadline
+  expires and returns its credit. Keep foreign-waker progress assumptions
+  explicit; never make exit wait for a pre-exit destructor that can wait for
+  the owner's callers. The current scheduling limit is documented in the guide.
 - **Next feature:** dynamic supervisor (rank 12a), design and TLA+ model in
   review (PR #245).
 - **v0.9 design in review:** unified start API (rank 5h, PR #259,
@@ -49,7 +55,7 @@ handlers and the existing default behavior. New policies are explicit and opt-in
   supervisor reports, the stall watchdog (rank 8) and an attachable remote
   console on a local Unix socket (`spawned-ctl`, gap G23; starts with
   `ActorSystem::new`, read-only by default). Revision 3 answers two review rounds. Flight recorder (rank 9) deferred to 0.10.
-- **Process:** every PR merges through GitHub's merge queue with 19 required
+- **Process:** every PR merges through GitHub's merge queue with 21 required
   checks, including the simulated suites (`sim`). Robustness features must add
   no cost on the default path (see [Non-goals](#non-goals)).
 
