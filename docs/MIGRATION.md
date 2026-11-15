@@ -211,7 +211,7 @@ table is the full list). What to edit:
 
 ### Deferred replies
 
-This is a breaking release. The notes below grow with the implementation:
+The following notes cover the breaking changes to deferred replies:
 
 - Request timeouts follow OTP's `gen_server:call`: only the caller's expiry
   (its timer, the owner's deadline heap for a raw `send_request` deadline,

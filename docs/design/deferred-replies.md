@@ -283,13 +283,17 @@ handles a call even after the caller timed out, and the late reply is dropped.
   awaiting (each also holds a queued envelope or an open slot).
 - **Ownership.** Entries hold `Weak` references, so the heap owns no slot and
   no job. The heap is dropped at the owner's death, after the registry close.
-- **Service.** A per-system service holds one entry per actor: its earliest
-  deadline. Shortening or a new earliest entry re-registers and wakes the
-  service. The service is a task on the `ActorSystem`'s control runtime and
-  stops after all of the system's actors have died.
-- **Unmanaged actors.** These use one process-wide service thread with its
-  own timer, not a task on whichever Tokio runtime touched it first, so
-  per-test runtimes do not break it.
+- **Service.** Outside simulation, managed and unmanaged actors share one
+  process-wide service thread, holding one earliest deadline per actor.
+  Shortening or a new earliest entry re-registers and wakes it. A dead owner
+  is forgotten at registry close. It is independent of individual Tokio
+  runtime lifetimes.
+- **Callback progress.** Expiry may run user wakers and destroy job payloads
+  or completion captures on that thread. A blocking callback delays other
+  actors' heap-driven deadlines and credit return. Callbacks must return
+  promptly; the service provides no isolation from non-returning callbacks.
+  Ordinary request/Response runtime timers and send_after/send_interval
+  drivers are separate (see semantics.md, section 10).
 - **Simulation.** Under `spawned_sim` the service is a task of the simulated
   runtime, one per simulation instance, so clock domains never mix.
 
@@ -461,9 +465,14 @@ current turn's slot) and a job set. The order is:
    waiters, blocked emitters). Cancellation in step 1 only sets the jobs'
    flag: the payloads it releases (held results, scheduled emits) are
    destroyed in step 5. From the start of the exit (the jobs' cancellation)
-   to the end of discharge, every payload the framework drops for the owner
-   on any thread (a scheduled emit coming due, a job's refused outcome) is
-   held by the owner's drop sink and destroyed then too. Steps 3 and 4 follow the seal instead of being one atomic step
+   to the end of discharge, every disposal admitted to the owner's drop sink
+   on any thread (a scheduled job emit coming due, a job's refused outcome)
+   is held and destroyed then too. Admission is decided under the sink's
+   lock: a disposal admitted earlier is pre-exit work and may continue
+   concurrently. Exit never waits for such foreign destructors, which could
+   themselves wait for this actor's callers. Unqueued framework-timer payloads
+   are owned by their timer task/thread; R6's caller-before-payload guarantee
+   covers queued envelopes and actor state. Steps 3 and 4 follow the seal instead of being one atomic step
    with it, but nothing between them depends on the requests they answer,
    so the models' atomic death is a sound abstraction of them (they commute
    left to the seal).
@@ -811,13 +820,13 @@ Everything else follows OTP.
 | Turn-scoped token and `defer()` | `From` is always storable | `PendingReply<'_, R>` cannot outlive the turn; `defer()` takes a credit | T (storing a token without a credit does not compile) and B |
 | A dropped token answers at once | an unanswered `From` waits for the caller's timeout | `ReplyDropped` (or `ActorStopped` while exiting) | T (`Drop` on an affine token) |
 | Deferral, native and emit bounds | none | `MAX_OUTSTANDING`, `MAX_NATIVE_JOBS`, emit credits; reject at once | B |
-| Server-side token and job deadline servicing | the server never learns of the caller's timeout | the owner's heap expires deferred tokens (returning credits) and delivers job deadlines | B (credits return on time; the caller still sees OTP's single `timeout`) |
+| Server-side token and job deadline servicing | the server never learns of the caller's timeout | the owner's heap expires deferred tokens (returning credits) and delivers job deadlines | B (credits return when expiry is serviced; the caller still sees OTP's single `timeout`) |
 | Abandonment frees the credit | OTP 24+ aliases drop the late reply | `ABANDONED` drops it and returns the token credit | B (the credit); dropping the late reply is OTP |
 | Job panic is a message | `async_nolink` crashes the task; the owner gets `:DOWN` | caught at the job boundary; `done(Err(Panicked))` is the one terminal message | R (no process isolation: `catch_unwind` keeps the owner alive); otherwise `async_nolink` |
 | Owner exit cancels its jobs | `async_nolink` tasks outlive the owner; linked tasks die only on an abnormal exit | owner exit always cancels and joins its job set, bounded by the cleanup deadline | B (jobs hold instance credits and native slots; bounded shutdown requires an owner); a chosen lifecycle policy, not `Task.async` behaviour |
 | Cleanup deadline does not kill | the supervisor kills the process at the shutdown timeout, so death and the callers' failure coincide | the cleanup deadline only reports "cleanup incomplete"; death, registry close and `ActorStopped` wait for `stopped()` and destructors to really end; callers are bounded by their own deadlines; no replacement meanwhile | R (Rust cannot kill a thread or destroy state borrowed by `stopped(&mut self)`) |
 | One handler for send and request | `handle_cast` and `handle_call` are separate callbacks | `send(M)` and `request(M)` reach the same `Handler<M>::handle`; sends get a detached `PendingReply` (`defer()` returns `NoCaller`) | T (Rust dispatches on the message type, not the call verb) |
-| Deadlines notify but do not kill | `Task.shutdown` / `brutal_kill` stop the task | `DeadlineExceeded` arrives on time; the work runs on, holding its credit | R (no preemption of Rust code) |
+| Deadlines notify but do not kill | `Task.shutdown` / `brutal_kill` stop the task | `DeadlineExceeded` is enqueued when expiry is serviced; the work runs on, holding its credit | R (no preemption of Rust code) |
 | Fencing at dispatch | `demonitor(Ref, [flush])`; a new pid makes old messages undeliverable | messages of cancelled or replaced jobs, or other `ActorId`s, are dropped before dispatch | R (a FIFO channel without selective receive cannot remove queued messages); OTP's flush semantics |
 | Fenced emits | task messages are ordinary; users tag them with a ref | `JobCtx::emit` messages carry their job; terminal last | T (bound to the job by type; automates the ref check) |
 

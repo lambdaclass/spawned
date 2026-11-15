@@ -38,11 +38,8 @@ the road to 1.0. Upgrade notes, with an old-call → new-call table, are in
 This is a summary; the [migration guide](docs/MIGRATION.md#07-to-08-api-call-site-table)
 contains the complete API call-site table and behavior changes.
 
-- Async `request_with_timeout` returns an explicitly `Send` future. Generated
-  handlers use the hidden `Handler::__spawned_handle_immediate` hook where
-  eligible; the ordinary future adapter remains the fallback.
-- `Handler::handle` receives a reply token; send-only handlers use
-  `#[send_handler]`.
+- `Handler::handle` receives a reply token. Replace `#[handler]` with
+  `#[request_handler]` or `#[send_handler]`; send-only handlers return `()`.
 - `request_raw`/`request_raw_until` → `send_request` with one `Deadline` type
   (`Duration`, `Instant` or `Deadline`); pass `Deadline::Never` to preserve
   the unbounded 0.7 raw-request behavior. Ordinary `request()` keeps its 5 s
@@ -54,7 +51,12 @@ contains the complete API call-site table and behavior changes.
   enums are `#[non_exhaustive]`; `ActorError` gains `target_gone`,
   `is_transient`, `is_timeout`, `exit_reason`. `InsertError::kind()` and
   `into_parts()` let a caller always answer a refused token.
-- `Receiver` is sealed; `Response` no longer fails silently.
+- `ExitReason` gains `Killed`/`NoProc` and is non-exhaustive; exhaustive
+  matches need a wildcard. Read-only structs such as `Down`/`Exit` require
+  `..` in patterns; `Down` gains the monitored actor id.
+- `ActorError::ActorStopped` carries the final exit reason.
+- `Receiver` is sealed. `Response::is_ok`/`is_err` now panic on an un-awaited
+  response; await it first (or use `into_result()` off a runtime).
 - Behaviour: the restart budget counts rounds; a supervised child that does
   not trap exits skips `stopped()` on shutdown; `demonitor` flushes.
 
@@ -98,7 +100,17 @@ contains the complete API call-site table and behavior changes.
   more layers. Scenario-fuzzer oracles for restarts, budgets, backoff and
   links. Soak harness for leaks. Bounded waits: hung tests fail by name.
 
-### Fixed
+### Scheduling limitation
+
+The shared deadline-service thread may run user wakers and payload destructors.
+A blocking callback delays other actors' heap-driven expiry and scheduled job
+emits. The [guide](docs/GUIDE.md#deferred-replies-and-pipe-to-self) describes which timers are
+separate; callback isolation is follow-up work. No runtime behavior changed
+when documenting this limitation.
+
+### Fixes and implementation hardening
+
+This includes fixes to new 0.8 features found during pre-release validation.
 
 - A stop racing mailbox receive cannot dispatch a request sent after stop
   returned. Rejected receives stay held until death-point caller discharge,
