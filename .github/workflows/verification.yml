@@ -198,6 +198,10 @@ jobs:
         env:
           RUSTFLAGS: --cfg spawned_scheduler_loom
         run: cargo test --locked --release -p spawned-concurrency --no-default-features --test reply_slot_loom --test registry_turn_loom --test job_core_loom --test link_fence_loom --test stop_token_loom
+      - name: Check deferred-token ownership assertions under Loom
+        env:
+          RUSTFLAGS: --cfg spawned_scheduler_loom -C debug-assertions=yes
+        run: cargo test --locked --release -p spawned-concurrency --no-default-features --test registry_turn_loom
 
   # Data races in the runtime and its dependencies. The crates forbid
   # unsafe code, so ThreadSanitizer is the sanitizer that matters here.
