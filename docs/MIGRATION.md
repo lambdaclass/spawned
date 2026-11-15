@@ -1,9 +1,12 @@
 # Migration guide
 
-Upgrade notes per release, newest first. The [CHANGELOG](../CHANGELOG.md) lists
-every change; this guide covers what you need to edit when upgrading.
+Upgrade notes per release, newest first. The [CHANGELOG](../CHANGELOG.md)
+summarizes each release; this guide lists the API and behavior changes to
+account for when upgrading.
 
 ## Unreleased
+
+## 0.8.0
 
 ### 0.7 to 0.8: API call-site table
 
@@ -60,7 +63,7 @@ every change; this guide covers what you need to edit when upgrading.
 | tasks: `actor.query().unwrap()` without `.await` (panicked) | off a runtime it now waits for the reply; inside one it still panics: `actor.query().await.unwrap()` |
 | tasks: `response.is_ok()` / `is_err()` on an un-awaited response (answered `false`) | panics: `.await` it, or `response.into_result().is_ok()` off a runtime |
 
-### Exit signals, startup and runtime drops as in OTP (ranks 5e, 5f, 5g, targets 0.8, in progress)
+### Exit signals, startup and runtime drops as in OTP
 
 Design: [otp-exit-signals.md](design/otp-exit-signals.md) (its migration
 table is the full list). What to edit:
@@ -206,7 +209,7 @@ table is the full list). What to edit:
   `Probe` closed with `close()` now returns `NoProc`, and a probe without a
   reply answers `ActorStopped(NoProc)`.
 
-### Deferred replies (rank 11, targets 0.8, in progress)
+### Deferred replies
 
 This is a breaking release. The notes below grow with the implementation:
 

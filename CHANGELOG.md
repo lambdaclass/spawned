@@ -22,8 +22,8 @@ the road to 1.0. Upgrade notes, with an old-call → new-call table, are in
 - **Exit signals as in OTP.** `kill`/`Killed`, `ctx.exit` with `exit/2`
   semantics, `NoProc` for links and requests to dead actors, `try_link`,
   fenced `unlink`/`demonitor` (`demonitor` flushes a queued `Down`, as
-  `demonitor(Ref, [flush])`), `stopped()` skipped on kill or an untrapped
-  signal, supervised non-trapping children skip `stopped()` on shutdown.
+  `demonitor(Ref, [flush])`), `stopped()` skipped on kill, an untrapped
+  signal or runtime drop, supervised non-trapping children skip `stopped()` on shutdown.
 - **One death point.** However an actor dies (normal stop, panic, kill,
   runtime drop, never polled), outstanding callers are answered and signals
   fenced before post-death destructor, waker or tracing callbacks run;
@@ -34,6 +34,9 @@ the road to 1.0. Upgrade notes, with an old-call → new-call table, are in
   drops an actor.
 
 ### Breaking changes
+
+This is a summary; the [migration guide](docs/MIGRATION.md#07-to-08-api-call-site-table)
+contains the complete API call-site table and behavior changes.
 
 - Async `request_with_timeout` returns an explicitly `Send` future. Generated
   handlers use the hidden `Handler::__spawned_handle_immediate` hook where
@@ -62,7 +65,6 @@ the road to 1.0. Upgrade notes, with an old-call → new-call table, are in
   runtime timer/interval/JoinSet adapters and strict escape diagnostics.
   Simulated runs use fresh threads; test bodies must be `Sync`. The platform
   and randomness-interception limits are documented in TESTING and MIGRATION.
-
 - `#[actor]` compile-time lints: shared mutable state (`Arc<Mutex<_>>` and
   similar) in an actor, and `panic = "abort"`; opt-outs
   `allow_shared_state`, `allow_panic_abort`.
@@ -138,7 +140,6 @@ the road to 1.0. Upgrade notes, with an old-call → new-call table, are in
 - The scenario-fuzzer oracle includes cleanup failures when deciding whether
   a Transient child must restart, even when its published reason is Normal.
   The original failing tape replays strictly and has additional seed coverage.
-
 - Job completion closes emit admission atomically. Retaining a `JobCtx`
   cannot schedule new messages during held-result release; blocked emitters
   wake at completion. Join waiters are deduplicated and woken outside locks.
@@ -147,12 +148,6 @@ the road to 1.0. Upgrade notes, with an old-call → new-call table, are in
   and toolchain changes; its 3% instruction limit remains unchanged.
 - Request deadlines remain correct when Tokio time is paused while real
   time advances. Runtime clock instants are not stored as service deadlines.
-
-- Every finding from three rounds of independent pre-release review of the
-  death boundary, deferred replies and jobs (queued requests answered before
-  destructors, the deadline service surviving a panicking payload, job
-  admission atomic with exit, held results keeping their deadline and credit,
-  and others; see MIGRATION).
 
 ## 0.7.3 — 2026-11-10
 
