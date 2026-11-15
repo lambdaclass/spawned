@@ -91,10 +91,13 @@ guarantee execution across termination"), `death_boundary` (a request
 accepted before the death point is answered at it).
 
 **D4. Stop discards the queue.** The run loop checks for stop after receiving
-and before dispatch. A receive racing stop retains its item for death-point
-cleanup rather than dropping it or running its handler. Once a stop is observed
-no further message is dispatched, including
-messages already queued. Queued messages are dropped one by one and every
+and before dispatch admission. If that check observes stop, the received item
+is retained for death-point cleanup rather than dropped or handled, and no
+further message is dispatched, including messages already queued. A message
+admitted before a concurrent stop may still run to completion, even if its
+handler begins after `stop()` returns: `stop()` requests termination and does
+not wait for the current turn (X4). A handler stopping its own actor prevents
+the next dispatch. Queued messages are dropped one by one and every
 queued request is answered (callers get `ActorStopped` with the final reason)
 before the exit is published.
 Checked by: `src/tasks/actor.rs::stop_receive_probe` (untraced stop/receive gap,

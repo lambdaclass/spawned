@@ -103,6 +103,16 @@ impl<T> TurnPhase<T> {
         self.external.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// An external token must remain counted before any drop classification
+    /// or callback. Borrowed PendingReply drops do not take this path.
+    #[inline]
+    pub(crate) fn assert_external_owned(&self) {
+        debug_assert!(
+            self.external.load(Ordering::Relaxed) > 0,
+            "deferred token drop requires an outstanding ownership hold"
+        );
+    }
+
     /// Retire a deferred token only after its drop/commit work. The owner
     /// acquiring zero then sees every earlier drop's phase and queue writes.
     pub(crate) fn external_finished(&self) {

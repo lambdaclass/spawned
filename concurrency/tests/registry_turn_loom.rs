@@ -57,6 +57,18 @@ fn drop_on(turn: &TurnPhase<u32>, outcomes: &Outcomes, item: u32) {
     }
 }
 
+fn drop_external_on(turn: &TurnPhase<u32>, outcomes: &Outcomes, item: u32) {
+    turn.assert_external_owned();
+    drop_on(turn, outcomes, item);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "deferred token drop requires an outstanding ownership hold")]
+fn external_drop_without_ownership_is_rejected() {
+    model(|| TurnPhase::<u32>::default().assert_external_owned());
+}
+
 /// A drop from another thread racing the end of a turn that returned or
 /// panicked: it commits with that turn, or (if after it) answers `Dropped`.
 #[test]
@@ -70,7 +82,7 @@ fn drop_vs_turn_end() {
                 let (turn, outcomes) = (turn.clone(), outcomes.clone());
                 turn.external_added();
                 loom::thread::spawn(move || {
-                    drop_on(&turn, &outcomes, 1);
+                    drop_external_on(&turn, &outcomes, 1);
                     turn.external_finished();
                 })
             };
@@ -110,7 +122,7 @@ fn drops_vs_exit_vs_death() {
                 let (turn, outcomes) = (turn.clone(), outcomes.clone());
                 turn.external_added();
                 loom::thread::spawn(move || {
-                    drop_on(&turn, &outcomes, item);
+                    drop_external_on(&turn, &outcomes, item);
                     turn.external_finished();
                 })
             })
@@ -180,7 +192,7 @@ fn last_external_drop_is_visible_to_the_next_turn() {
         let dropper = {
             let (turn, outcomes) = (turn.clone(), outcomes.clone());
             loom::thread::spawn(move || {
-                drop_on(&turn, &outcomes, 1);
+                drop_external_on(&turn, &outcomes, 1);
                 turn.external_finished();
             })
         };
@@ -217,7 +229,7 @@ fn two_external_drops_race_turn_end_without_losing_either() {
                     turn.external_added();
                     let (turn, outcomes) = (turn.clone(), outcomes.clone());
                     loom::thread::spawn(move || {
-                        drop_on(&turn, &outcomes, item);
+                        drop_external_on(&turn, &outcomes, item);
                         turn.external_finished();
                     })
                 })

@@ -417,6 +417,7 @@ impl Registry {
     /// Keep the ownership hold through every callback run by token drop,
     /// including unwinding from a foreign waker.
     pub(crate) fn token_drop_guard(&self) -> impl Drop + '_ {
+        self.turn.assert_external_owned();
         struct Guard<'a>(&'a TurnPhase<Arc<dyn Closeable>>);
         impl Drop for Guard<'_> {
             fn drop(&mut self) {
@@ -605,6 +606,25 @@ impl Drop for Registry {
 mod tests {
     use super::*;
     use crate::reply::slot::Slot;
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "deferred token drop requires an outstanding ownership hold")]
+    fn unregistered_external_drop_guard_is_rejected() {
+        let registry = Registry::new(ActorId::next(), 1);
+        let _guard = registry.token_drop_guard();
+    }
+
+    #[cfg(feature = "async")]
+    #[test]
+    fn external_drop_guard_keeps_ownership_until_scope_end() {
+        let registry = Registry::new(ActorId::next(), 1);
+        registry.token_added();
+        let guard = registry.token_drop_guard();
+        assert_eq!(registry.external_count(), 1);
+        drop(guard);
+        assert_eq!(registry.external_count(), 0);
+    }
 
     fn deferred(registry: &Arc<Registry>, deadline: u64) -> Arc<Slot<u32>> {
         let slot = Arc::new(Slot::new(deadline));
