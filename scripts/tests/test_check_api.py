@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import os
+import json
 import unittest
 from unittest.mock import patch
 
@@ -50,6 +51,85 @@ class FeatureSplitAudit(unittest.TestCase):
                 api.semver(root, "v0.5.0")
             build.assert_not_called()
             tool.assert_not_called()
+
+    def modern_policy(self, root):
+        policy = root / "verification/api"
+        policy.mkdir(parents=True)
+        source = Path(__file__).resolve().parents[2] / "verification/api"
+        (policy / "v0.6.0-no-default.json").write_text(
+            (source / "v0.6.0-no-default.json").read_text()
+        )
+        (policy / "release.json").write_text(json.dumps({
+            "baseline": "v0.8.0", "release_type": "patch", "reason": "patch policy",
+        }))
+
+    @staticmethod
+    def features(command, *, current):
+        enabled = set()
+        for flag in ["--features", "--current-features" if current else "--baseline-features"]:
+            if flag in command:
+                enabled.update(command[command.index(flag) + 1].split(","))
+        return enabled
+
+    def test_modern_baseline_and_current_use_identical_feature_sets(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.modern_policy(root)
+            with patch.object(api, "run") as build:
+                api.semver(root, None)
+            for call in build.call_args_list:
+                self.assertEqual(self.features(call.args, current=True),
+                                 self.features(call.args, current=False), call.args)
+            explicit_async = [call.args for call in build.call_args_list
+                              if "--only-explicit-features" in call.args
+                              and "async" in self.features(call.args, current=True)]
+            self.assertEqual(len(explicit_async), 2)
+
+    def test_legacy_migration_enables_async_only_on_current(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.modern_policy(root)
+            policy = root / "verification/api/release.json"
+            settings = json.loads(policy.read_text())
+            settings["baseline"] = "v0.6.0"
+            policy.write_text(json.dumps(settings))
+            with patch.object(api, "run") as build, patch.object(api, "declared_break"):
+                api.semver(root, None)
+            migrations = [call.args for call in build.call_args_list
+                          if "--current-features" in call.args]
+            self.assertEqual(len(migrations), 2)
+            for command in migrations:
+                self.assertNotIn("async", self.features(command, current=False))
+                self.assertIn("async", self.features(command, current=True))
+
+    def test_modern_patch_checks_native_profiles_without_legacy_exemptions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.modern_policy(root)
+            with patch.object(api, "run") as build, patch.object(api, "declared_break") as legacy:
+                api.semver(root, None)
+            legacy.assert_not_called()
+            raw = [call.args for call in build.call_args_list
+                   if "--only-explicit-features" in call.args and "async" not in self.features(call.args, current=True)]
+            self.assertEqual(len(raw), 3)
+            self.assertEqual({call[call.index("-p") + 1] for call in raw},
+                             {"spawned-concurrency", "spawned-rt"})
+            self.assertEqual(sum("metrics" in call for call in raw), 1)
+            self.assertTrue(all("v0.8.0" in call and "patch" in call for call in raw))
+
+    def test_modern_native_api_failure_is_not_an_acknowledged_legacy_break(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.modern_policy(root)
+
+            def build(*command, cwd):
+                if "--only-explicit-features" in command and "async" not in self.features(command, current=True):
+                    raise subprocess.CalledProcessError(100, command)
+
+            with patch.object(api, "run", side_effect=build), patch.object(api, "declared_break") as legacy:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    api.semver(root, None)
+            legacy.assert_not_called()
 
     def test_feature_checks_reuse_paths_and_refresh_only_the_copy(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -60,17 +60,25 @@ def semver(root, baseline):
     if release_type != "patch":
         print(f"Breaking release against {baseline} ({release_type}): {release['reason']}", flush=True)
     declarations = json.loads((root / "verification/api/v0.6.0-no-default.json").read_text())
-    if release_type == "patch" and baseline != declarations["baseline"]:
-        raise ValueError("the declared feature-split audit requires baseline " + declarations["baseline"])
+    legacy_audit = baseline == declarations["baseline"]
+    if baseline != release["baseline"] and not legacy_audit:
+        raise ValueError(
+            "API audit requires baseline " + release["baseline"]
+            + " or the historical feature-split baseline " + declarations["baseline"]
+        )
     base = ["cargo", "semver-checks", "--color", "never", "--release-type", release_type, "--baseline-rev", baseline]
     libraries = ["-p", "spawned-concurrency", "-p", "spawned-rt"]
-    # Old no-default consumers restore the previous API by explicitly enabling
-    # async. Check this migration as well as defaults, with/without metrics.
+    # v0.6 always included Tokio and had no async feature: that historical
+    # migration enables async only on current. Modern baselines have the
+    # feature, so compare identical feature sets on both sides.
+    async_features = ["--current-features", "async"] if legacy_audit else ["--features", "async"]
+    metrics_async_features = (["--features", "metrics", "--current-features", "async"]
+                              if legacy_audit else ["--features", "async,metrics"])
     for profile, features, packages in [
         ("default", ["--default-features"], libraries),
         ("metrics", ["--default-features", "--features", "metrics"], ["-p", "spawned-concurrency"]),
-        ("no-default + explicit async migration", ["--only-explicit-features", "--current-features", "async"], libraries),
-        ("no-default + metrics + async migration", ["--only-explicit-features", "--features", "metrics", "--current-features", "async"], ["-p", "spawned-concurrency"]),
+        ("no-default + explicit async", ["--only-explicit-features", *async_features], libraries),
+        ("no-default + metrics + async", ["--only-explicit-features", *metrics_async_features], ["-p", "spawned-concurrency"]),
     ]:
         print("Checking API profile: " + profile, flush=True)
         run(*base, *features, *packages, cwd=root)
@@ -78,13 +86,20 @@ def semver(root, baseline):
         # Breaks are allowed and listed in MIGRATION; the item-level audit
         # applies to the v0.6.0 -> v0.7 patch line only.
         return
-    for package, expected in declarations["packages"].items():
+    for package in ["spawned-concurrency", "spawned-rt"]:
+        expected = declarations["packages"][package] if legacy_audit else None
         print("Auditing raw no-default API: " + package, flush=True)
         command = base + ["--only-explicit-features", "-p", package]
-        declared_break(command, expected, root)
+        if legacy_audit:
+            declared_break(command, expected, root)
+        else:
+            run(*command, cwd=root)
         if package == "spawned-concurrency":
             print("Auditing raw no-default + metrics API", flush=True)
-            declared_break(command + ["--features", "metrics"], expected, root)
+            if legacy_audit:
+                declared_break(command + ["--features", "metrics"], expected, root)
+            else:
+                run(*command, "--features", "metrics", cwd=root)
 
 
 def features(root, cache, offline):
