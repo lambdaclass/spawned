@@ -115,13 +115,14 @@ impl spawned_concurrency::tasks::Handler<StoreOp> for AsyncStore {
     async fn handle(
         &mut self,
         op: StoreOp,
+        reply: spawned_concurrency::PendingReply<'_, Option<u64>>,
         _: &spawned_concurrency::tasks::Context<Self>,
-    ) -> Option<u64> {
+    ) {
         // Yield inside the turn so concurrent requests really queue up.
         if op.key().1.is_multiple_of(2) {
             tokio::task::yield_now().await;
         }
-        self.0.apply(op)
+        reply.reply(self.0.apply(op));
     }
 }
 
@@ -133,9 +134,10 @@ impl spawned_concurrency::threads::Handler<StoreOp> for NativeStore {
     fn handle(
         &mut self,
         op: StoreOp,
+        reply: spawned_concurrency::PendingReply<'_, Option<u64>>,
         _: &spawned_concurrency::threads::Context<Self>,
-    ) -> Option<u64> {
-        self.0.apply(op)
+    ) {
+        reply.reply(self.0.apply(op));
     }
 }
 

@@ -56,7 +56,7 @@ impl Store {
     fn on_callback(&mut self, msg: http_store::Callback, _: &Context<Self>) -> usize {
         (msg.f)("abc")
     }
-    #[handler]
+    #[request_handler]
     fn on_total(&mut self, _: http_store::Total, _: &Context<Self>) -> u64 {
         u64::from(self.total)
     }

@@ -10,7 +10,7 @@ use spawned_concurrency::threads::{
     Actor, ActorRef, ActorStart, Context, Handler, Receiver, Recipient,
 };
 use spawned_concurrency::{ChildHandle, ExitReason};
-use spawned_rt::threads::oneshot;
+use spawned_concurrency::{Deadline, PendingReply, ReplyReceiver};
 use std::ops::Deref;
 use std::panic::Location;
 use std::sync::Arc;
@@ -52,7 +52,7 @@ impl Mock {
 impl Actor for Mock {}
 
 impl<M: Message> Handler<M> for Mock {
-    fn handle(&mut self, msg: M, _: &Context<Self>) -> M::Result {
+    fn handle(&mut self, msg: M, reply: PendingReply<'_, M::Result>, _: &Context<Self>) {
         match self.rules.plan(&self.inbox, msg) {
             Plan::Reply {
                 delay,
@@ -65,7 +65,18 @@ impl<M: Message> Handler<M> for Mock {
                 if let Some(record) = record {
                     record.finish();
                 }
-                value
+                reply.reply(value);
+            }
+            Plan::Discard { delay } => {
+                if let Some(delay) = delay {
+                    std::thread::sleep(delay);
+                }
+                drop(reply);
+            }
+            Plan::Defer => {
+                if let Ok(token) = reply.defer() {
+                    self.inbox.store_deferred::<M>(token);
+                }
             }
             Plan::Crash(reason) => panic!("{reason}"),
         }
@@ -158,20 +169,43 @@ where
     }
 }
 
-/// Block until `handle` exits, or panic after `deadline` instead of hanging.
+/// Run `f` inside one of `actor`'s turns, with its state and `Context`, and
+/// return its result: a test reaches `ctx` (to start a job, defer a reply,
+/// arm a timer) or inspects state without an ad hoc message or a
+/// `cfg(test)` bypass. Messages sent to `actor` earlier are handled first.
+/// Panics if the actor is gone or `f` panicked (which crashes the actor, as
+/// any handler panic does).
+#[track_caller]
+pub fn in_actor<A, R, F>(actor: &ActorRef<A>, f: F) -> R
+where
+    A: Actor,
+    R: Send + 'static,
+    F: FnOnce(&mut A, &Context<A>) -> R + Send + 'static,
+{
+    let reply = spawned_concurrency::__private::in_turn_threads(actor, f).and_then(|rx| rx.recv());
+    reply.unwrap_or_else(|error| {
+        panic!(
+            "in_actor on {:?} failed: {error}; exit reason {:?}",
+            actor.id(),
+            actor.exit_reason()
+        )
+    })
+}
+
+/// Block until `handle` exits, or panic after `limit` instead of hanging.
 ///
 /// Polls every millisecond: `ChildHandle` has no blocking wait with a
 /// timeout, and a waiter thread per call would leak on timeout.
 #[track_caller]
-pub fn exit_within(handle: &ChildHandle, deadline: Duration) -> ExitReason {
-    let end = Instant::now() + deadline;
+pub fn exit_within(handle: &ChildHandle, limit: Duration) -> ExitReason {
+    let end = Instant::now() + limit;
     loop {
         if let Some(reason) = handle.exit_reason() {
             return reason;
         }
         if Instant::now() >= end {
             panic!(
-                "actor {:?} did not exit within {deadline:?}; a handler may be blocked or the \
+                "actor {:?} did not exit within {limit:?}; a handler may be blocked or the \
                  actor was never asked to stop",
                 handle.id()
             );
@@ -182,8 +216,8 @@ pub fn exit_within(handle: &ChildHandle, deadline: Duration) -> ExitReason {
 
 /// [`exit_within`] for a native `ActorRef`.
 #[track_caller]
-pub fn join_within<A: Actor>(actor: &ActorRef<A>, deadline: Duration) -> ExitReason {
-    exit_within(&actor.child_handle(), deadline)
+pub fn join_within<A: Actor>(actor: &ActorRef<A>, limit: Duration) -> ExitReason {
+    exit_within(&actor.child_handle(), limit)
 }
 
 /// Poll `condition` every millisecond until it holds; panic naming `what` after `timeout`.

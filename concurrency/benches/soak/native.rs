@@ -50,33 +50,69 @@ impl Message for Bump {
     type Result = ();
 }
 impl Handler<Inc> for NWorker {
-    fn handle(&mut self, _: Inc, _: &Context<Self>) -> u64 {
-        self.value += 1;
-        self.value
+    fn handle(
+        &mut self,
+        _: Inc,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        let value = {
+            self.value += 1;
+            self.value
+        };
+        reply.reply(value);
     }
 }
 impl Handler<Get> for NWorker {
-    fn handle(&mut self, _: Get, _: &Context<Self>) -> u64 {
-        self.value
+    fn handle(
+        &mut self,
+        _: Get,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        let value = { self.value };
+        reply.reply(value);
     }
 }
 impl Handler<Bump> for NWorker {
-    fn handle(&mut self, _: Bump, _: &Context<Self>) {
+    fn handle(
+        &mut self,
+        _: Bump,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.value += 1;
+        reply.reply(());
     }
 }
 impl Handler<Crash> for NWorker {
-    fn handle(&mut self, _: Crash, _: &Context<Self>) {
+    fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         panic!("soak: injected crash");
     }
 }
 impl Handler<Slow> for NWorker {
-    fn handle(&mut self, msg: Slow, _: &Context<Self>) {
+    fn handle(
+        &mut self,
+        msg: Slow,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         std::thread::sleep(msg.0);
+        reply.reply(());
     }
 }
 impl Handler<ArmTimers> for NWorker {
-    fn handle(&mut self, msg: ArmTimers, ctx: &Context<Self>) {
+    fn handle(
+        &mut self,
+        msg: ArmTimers,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
         let ArmTimers(once, every, period) = msg;
         for i in 0..once {
             let delay = period * (i as u32 + 1);
@@ -85,13 +121,20 @@ impl Handler<ArmTimers> for NWorker {
         for _ in 0..every {
             self.timers.push(send_interval(period, ctx.clone(), Bump));
         }
+        reply.reply(());
     }
 }
 impl Handler<CancelTimers> for NWorker {
-    fn handle(&mut self, _: CancelTimers, _: &Context<Self>) {
+    fn handle(
+        &mut self,
+        _: CancelTimers,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         for timer in self.timers.drain(..) {
             timer.cancellation_token.cancel();
         }
+        reply.reply(());
     }
 }
 
@@ -114,33 +157,69 @@ message!(LinkTo(ChildHandle) => ());
 message!(Trap(bool) => ());
 message!(Counts => (u64, u64));
 impl Handler<Watch> for NWatcher {
-    fn handle(&mut self, msg: Watch, ctx: &Context<Self>) -> MonitorRef {
-        ctx.monitor(&msg.0)
+    fn handle(
+        &mut self,
+        msg: Watch,
+        reply: spawned_concurrency::PendingReply<'_, MonitorRef>,
+        ctx: &Context<Self>,
+    ) {
+        let value = { ctx.monitor(&msg.0) };
+        reply.reply(value);
     }
 }
 impl Handler<Unwatch> for NWatcher {
-    fn handle(&mut self, msg: Unwatch, ctx: &Context<Self>) {
+    fn handle(
+        &mut self,
+        msg: Unwatch,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
         ctx.demonitor(msg.0);
+        reply.reply(());
     }
 }
 impl Handler<LinkTo> for NWatcher {
-    fn handle(&mut self, msg: LinkTo, ctx: &Context<Self>) {
+    fn handle(
+        &mut self,
+        msg: LinkTo,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
         ctx.link(&msg.0);
+        reply.reply(());
     }
 }
 impl Handler<Trap> for NWatcher {
-    fn handle(&mut self, msg: Trap, ctx: &Context<Self>) {
+    fn handle(
+        &mut self,
+        msg: Trap,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
         ctx.trap_exit(msg.0);
+        reply.reply(());
     }
 }
 impl Handler<Counts> for NWatcher {
-    fn handle(&mut self, _: Counts, _: &Context<Self>) -> (u64, u64) {
-        (self.downs, self.exits)
+    fn handle(
+        &mut self,
+        _: Counts,
+        reply: spawned_concurrency::PendingReply<'_, (u64, u64)>,
+        _: &Context<Self>,
+    ) {
+        let value = { (self.downs, self.exits) };
+        reply.reply(value);
     }
 }
 impl Handler<Down> for NWatcher {
-    fn handle(&mut self, _: Down, _: &Context<Self>) {
+    fn handle(
+        &mut self,
+        _: Down,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.downs += 1;
+        reply.reply(());
     }
 }
 
@@ -336,8 +415,8 @@ fn registry_requests(rng: &mut Rng, stats: &Stats) -> R {
     ensure!(actor.request(Inc).map_err(e("inc"))? == 1, "inc");
     finish(&actor, rng)?;
     ensure!(
-        matches!(actor.request(Inc), Err(ActorError::ActorStopped)),
-        "request to a stopped actor"
+        matches!(actor.request(Inc), Err(ActorError::NoProc)),
+        "request to a stopped actor (NoProc past its death point)"
     );
     Ok(())
 }

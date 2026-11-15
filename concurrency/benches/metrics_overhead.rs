@@ -18,14 +18,24 @@ fn compute(work: Work) -> u64 {
 }
 impl tasks::Actor for Sink {}
 impl tasks::Handler<Work> for Sink {
-    async fn handle(&mut self, work: Work, _: &tasks::Context<Self>) -> u64 {
-        compute(work)
+    async fn handle(
+        &mut self,
+        work: Work,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &tasks::Context<Self>,
+    ) {
+        reply.reply(compute(work));
     }
 }
 impl threads::Actor for Sink {}
 impl threads::Handler<Work> for Sink {
-    fn handle(&mut self, work: Work, _: &threads::Context<Self>) -> u64 {
-        compute(work)
+    fn handle(
+        &mut self,
+        work: Work,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &threads::Context<Self>,
+    ) {
+        reply.reply(compute(work));
     }
 }
 fn main() {
@@ -44,9 +54,9 @@ fn main() {
     assert!(actors > 0 && actors <= 1024 && producers > 0 && producers <= 1024);
     assert!(duration.as_secs() > 0 && duration.as_secs() <= 60 && work <= 1_000_000);
     #[cfg(feature = "metrics")]
-    spawned_concurrency::metrics::configure(spawned_concurrency::metrics::Config {
-        timing_sample_every: _sample_every,
-    })
+    spawned_concurrency::metrics::configure(
+        spawned_concurrency::metrics::Config::default().timing_sample_every(_sample_every),
+    )
     .unwrap();
     let (requests, elapsed) = if mode == "async" {
         use tasks::ActorStart;

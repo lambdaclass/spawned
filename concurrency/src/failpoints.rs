@@ -72,6 +72,44 @@ pub const SITES: &[Site] = &[
                       failing `stopped()`.",
     },
     Site {
+        name: "job.emit_due",
+        has_error: false,
+        description: "A scheduled `emit_at` comes due on the deadline service. A \
+                      handshake: one coming due during the owner's exit (`stopped()`) is \
+                      refused, and its payload is destroyed only after every caller is \
+                      answered (tasks and threads).",
+    },
+    Site {
+        name: "job.native_worker_unused",
+        has_error: false,
+        description: "Threads mode: the parked thread of a dropped, unused blocking-job \
+                      permit, before it exits. Delay shows the native slot is returned \
+                      by the drop itself, not when this thread ends.",
+    },
+    Site {
+        name: "reply.close_upgraded",
+        has_error: false,
+        description: "The death point's close holds an upgraded deferred slot, before \
+                      closing it. Delay lets the caller drop its receiver meanwhile: an \
+                      unread reply must still be destroyed only after every caller is \
+                      answered (tasks and threads).",
+    },
+    Site {
+        name: "reply.recv_parked",
+        has_error: false,
+        description: "A blocking `ReplyReceiver::recv` is about to wait (under its slot's \
+                      lock). A handshake: once hit, the receiver is parked and only a \
+                      notification wakes it.",
+    },
+    Site {
+        name: "monitor.down_before_dispatch",
+        has_error: false,
+        description: "A monitor's `Down` dequeued by its observer (tasks and threads), \
+                      before the flush check. Delay lets a `demonitor` on another thread \
+                      return while the `Down` is in dispatch: it must not reach \
+                      `Handler<Down>` (OTP `demonitor(Ref, [flush])`).",
+    },
+    Site {
         name: "child.factory",
         has_error: true,
         description: "Supervised child construction, before the user factory runs, inside \
@@ -140,6 +178,23 @@ pub const SITES: &[Site] = &[
         has_error: false,
         description: "An owned registration is being removed during scope cleanup. Delay \
                       checks that a replacement only starts after the old name is gone.",
+    },
+    Site {
+        name: "actor.at_death",
+        has_error: false,
+        description: "Right after the death point D (the final reason is fixed, admission \
+                      refuses with `NoProc`), before the open deferred replies are closed \
+                      (tasks and threads). Delay widens the window in which an external \
+                      `ReplyTo::reply` races the death: it must not succeed once `NoProc` \
+                      was observed.",
+    },
+    Site {
+        name: "actor.exit_before_deliver",
+        has_error: false,
+        description: "`ctx.exit(target, reason)` after its sender-lifetime check, before the \
+                      signal is delivered (tasks and threads). Delay lets the sender reach \
+                      its death point meanwhile: its death notice must not overtake the \
+                      signal.",
     },
     Site {
         name: "link.before_install",

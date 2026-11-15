@@ -1,0 +1,13 @@
+error: #[handler] was removed in 0.8: use #[send_handler] (returns `()`, no reply) or #[request_handler] (answers with the return value)
+  --> tests/ui/actor_handler_removed.rs:12:5
+   |
+12 |     #[handler]
+   |     ^^^^^^^^^^
+
+warning: unused imports: `Actor`, `Context`, and `Handler`
+ --> tests/ui/actor_handler_removed.rs:4:34
+  |
+4 | use spawned_concurrency::tasks::{Actor, Context, Handler};
+  |                                  ^^^^^  ^^^^^^^  ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

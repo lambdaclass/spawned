@@ -1,6 +1,6 @@
 # Build and test the two production clients against this spawned checkout.
 #
-# ethrex and ethlambda keep a `spawned-v0.7` branch that tracks spawned. This
+# ethrex and ethlambda keep a `spawned-v0.8` port branch for this release. This
 # workflow checks that branch out, points it at the spawned commit under test
 # with a generated `[patch]` section (the client's manifests are not edited;
 # see .github/scripts/client-compat-patch.sh) and runs the client's
@@ -22,11 +22,11 @@ on:
       ethrex_ref:
         description: "ethrex branch, tag or SHA"
         required: false
-        default: "spawned-v0.7"
+        default: "spawned-v0.8"
       ethlambda_ref:
         description: "ethlambda branch, tag or SHA"
         required: false
-        default: "spawned-v0.7"
+        default: "spawned-v0.8"
       baseline:
         description: "Skip the patch: run the gates against the spawned the client pins, to tell a client failure from a spawned regression"
         type: boolean
@@ -66,10 +66,10 @@ jobs:
         include:
           - client: ethrex
             repo: lambdaclass/ethrex
-            ref: ${{ inputs.ethrex_ref || 'spawned-v0.7' }}
+            ref: ${{ inputs.ethrex_ref || 'spawned-v0.8' }}
           - client: ethlambda
             repo: lambdaclass/ethlambda
-            ref: ${{ inputs.ethlambda_ref || 'spawned-v0.7' }}
+            ref: ${{ inputs.ethlambda_ref || 'spawned-v0.8' }}
     steps:
       # A cold ethrex run grows the disk by about 16 GB. ubuntu-24.04 runners
       # currently report ~86 GB free, so the slow cleanup only runs when a

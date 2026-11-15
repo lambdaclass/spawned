@@ -517,6 +517,7 @@ name = "spawned-concurrency"
 version = "0.7.3"
 dependencies = [
  "futures",
+ "parking_lot",
  "pin-project-lite",
  "spawned-macros",
  "spawned-rt",

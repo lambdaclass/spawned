@@ -28,13 +28,25 @@ impl Message for Crash {
 struct Probe(u64);
 impl Actor for Probe {}
 impl Handler<Generation> for Probe {
-    async fn handle(&mut self, _: Generation, _: &Context<Self>) -> u64 {
-        self.0
+    async fn handle(
+        &mut self,
+        _: Generation,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(self.0);
     }
 }
 impl Handler<Crash> for Probe {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("generated supervisor failure");
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("generated supervisor failure");
+        }
     }
 }
 #[derive(Clone, Debug)]
@@ -91,6 +103,7 @@ fn apply(
             SupervisorStrategy::OneForOne => index == origin,
             SupervisorStrategy::OneForAll => true,
             SupervisorStrategy::RestForOne => index >= origin,
+            other => unreachable!("strategy {other:?} not modelled"),
         };
         if affected && child.live {
             if modes[index] == RestartMode::Temporary {
@@ -101,7 +114,27 @@ fn apply(
         }
     }
 }
-fn unsettled(actual: &[ChildSnapshot], expected: &[Expected]) -> Vec<usize> {
+/// The snapshot fields the checker reads (`ChildSnapshot` is
+/// `#[non_exhaustive]`, so the negative test below builds these instead).
+#[derive(Debug)]
+struct Seen {
+    name: String,
+    state: ChildState,
+    generation: u64,
+}
+impl From<ChildSnapshot> for Seen {
+    fn from(s: ChildSnapshot) -> Self {
+        Seen {
+            name: s.name,
+            state: s.state,
+            generation: s.generation,
+        }
+    }
+}
+fn seen(children: &[SupervisedChild<Probe>]) -> Vec<Seen> {
+    children.iter().map(|c| c.snapshot().into()).collect()
+}
+fn unsettled(actual: &[Seen], expected: &[Expected]) -> Vec<usize> {
     assert_eq!(actual.len(), expected.len());
     let mut pending = Vec::new();
     // Do not short-circuit: a later child may have been over-reconstructed even
@@ -131,7 +164,7 @@ fn unsettled(actual: &[ChildSnapshot], expected: &[Expected]) -> Vec<usize> {
 async fn observe(children: &[SupervisedChild<Probe>], expected: &[Expected]) {
     let outcome = spawned_rt::tasks::timeout(LIMIT, async {
         loop {
-            let actual: Vec<_> = children.iter().map(SupervisedChild::snapshot).collect();
+            let actual = seen(children);
             let pending = unsettled(&actual, expected);
             if pending.is_empty() {
                 break;
@@ -168,7 +201,7 @@ async fn observe(children: &[SupervisedChild<Probe>], expected: &[Expected]) {
     })
     .await;
     if outcome.is_err() {
-        let actual: Vec<_> = children.iter().map(SupervisedChild::snapshot).collect();
+        let actual = seen(children);
         // Preserve the concrete over-reconstruction diagnosis at the watchdog
         // boundary too, rather than hiding it behind a generic timeout.
         let pending = unsettled(&actual, expected);
@@ -201,19 +234,19 @@ async fn scenario(
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("policy-oracle", 1).unwrap();
     let mut tree = system
-        .supervisor(SupervisorConfig {
-            strategy,
-            max_restarts: 128,
-            restart_window: Duration::from_secs(3600),
-            backoff: Backoff {
-                initial: Duration::ZERO,
-                maximum: Duration::ZERO,
-                jitter: false,
-                seed: Some(42),
-                ..Backoff::default()
-            },
-            ..SupervisorConfig::default()
-        })
+        .supervisor(
+            SupervisorConfig::default()
+                .strategy(strategy)
+                .max_restarts(128)
+                .restart_window(Duration::from_secs(3600))
+                .backoff(
+                    Backoff::default()
+                        .initial(Duration::ZERO)
+                        .maximum(Duration::ZERO)
+                        .jitter(false)
+                        .seed(42),
+                ),
+        )
         .unwrap();
     let mut children = Vec::new();
     for (index, restart) in modes.iter().enumerate() {
@@ -258,7 +291,7 @@ async fn scenario(
             Action::Panic => {
                 assert!(matches!(
                     actor.request_with_timeout(Crash, LIMIT).await,
-                    Err(ActorError::ActorStopped)
+                    Err(ActorError::ActorStopped(ExitReason::Panic(_)))
                 ));
                 let reason = within!(actor.wait_exit()).await;
                 assert!(matches!(reason, ExitReason::Panic(_)));
@@ -270,7 +303,9 @@ async fn scenario(
                 false
             }
             Action::Shutdown => {
-                actor.child_handle().shutdown();
+                actor
+                    .child_handle()
+                    .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
                 assert_eq!(within!(actor.wait_exit()).await, ExitReason::Shutdown);
                 false
             }
@@ -337,13 +372,10 @@ fn retired_temporary_and_transient_slots_stay_retired_across_later_recoveries() 
 #[test]
 #[should_panic(expected = "unexpected extra reconstruction: child-1")]
 fn a_waiting_earlier_child_cannot_hide_a_later_extra_reconstruction() {
-    let snapshot = |name: &str, state, generation| ChildSnapshot {
+    let snapshot = |name: &str, state, generation| Seen {
         name: name.into(),
         state,
         generation,
-        actor_id: None,
-        last_exit: None,
-        last_error: None,
     };
     let actual = [
         snapshot("child-0", ChildState::Backoff, 1),

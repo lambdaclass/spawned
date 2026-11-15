@@ -37,8 +37,13 @@ mod tasks {
     pub struct TestActor(pub Worker);
     impl Actor for TestActor {}
     impl Handler<Command> for TestActor {
-        async fn handle(&mut self, command: Command, ctx: &Context<Self>) -> Reply {
-            match command {
+        async fn handle(
+            &mut self,
+            command: Command,
+            reply: spawned_concurrency::PendingReply<'_, Reply>,
+            ctx: &Context<Self>,
+        ) {
+            reply.reply(match command {
                 Command::Work(id) => {
                     self.0
                         .processed
@@ -53,12 +58,18 @@ mod tasks {
                     Reply::Unwatched
                 }
                 Command::Boom => panic!("scenario injected panic"),
-            }
+            });
         }
     }
     impl Handler<Down> for TestActor {
-        async fn handle(&mut self, event: Down, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            event: Down,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             let _ = self.0.events.send(event);
+            reply.reply(());
         }
     }
 }
@@ -69,8 +80,13 @@ mod threads {
     pub struct TestActor(pub Worker);
     impl Actor for TestActor {}
     impl Handler<Command> for TestActor {
-        fn handle(&mut self, command: Command, ctx: &Context<Self>) -> Reply {
-            match command {
+        fn handle(
+            &mut self,
+            command: Command,
+            reply: spawned_concurrency::PendingReply<'_, Reply>,
+            ctx: &Context<Self>,
+        ) {
+            reply.reply(match command {
                 Command::Work(id) => {
                     self.0
                         .processed
@@ -85,12 +101,18 @@ mod threads {
                     Reply::Unwatched
                 }
                 Command::Boom => panic!("scenario injected panic"),
-            }
+            });
         }
     }
     impl Handler<Down> for TestActor {
-        fn handle(&mut self, event: Down, _: &Context<Self>) {
+        fn handle(
+            &mut self,
+            event: Down,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             let _ = self.0.events.send(event);
+            reply.reply(());
         }
     }
 }
@@ -142,8 +164,14 @@ impl Handle {
     fn abandon(&self, cmd: Command) {
         match self {
             #[cfg(feature = "async")]
-            Self::Tasks(a) => drop(a.request_raw(cmd).expect("live actor")),
-            Self::Threads(a) => drop(a.request_raw(cmd).expect("live actor")),
+            Self::Tasks(a) => drop(
+                a.send_request(cmd, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                    .expect("live actor"),
+            ),
+            Self::Threads(a) => drop(
+                a.send_request(cmd, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                    .expect("live actor"),
+            ),
         }
     }
 }
@@ -242,7 +270,8 @@ fn scenario(backend: u8, count: usize, operations: &[(u8, u8)], endings: &[u8]) 
         let child = actor.child();
         let ending = endings[i % endings.len()] % 3;
         // Compete monitor registration and a request with termination. A
-        // monitor must observe termination even if registration loses the race.
+        // monitor must observe termination even if registration loses the
+        // race: then its single Down carries NoProc (E4).
         let gate = Arc::new(Barrier::new(2));
         let racer = actor.clone();
         let gate2 = gate.clone();
@@ -280,7 +309,9 @@ fn scenario(backend: u8, count: usize, operations: &[(u8, u8)], endings: &[u8]) 
                 assert_eq!(reply, Reply::Work(race_id));
                 assert!(logs[i].lock().unwrap().contains(&race_id));
             }
-            Err(ActorError::ActorStopped) => {}
+            Err(ActorError::ActorStopped(_)) => {}
+            // Sent after the death point (v0.8, decision 4).
+            Err(ActorError::NoProc) => {}
             Err(other) => panic!("request failed to resolve during shutdown: {other:?}"),
         }
         let actual = logs[i].lock().unwrap();
@@ -290,7 +321,7 @@ fn scenario(backend: u8, count: usize, operations: &[(u8, u8)], endings: &[u8]) 
         );
         assert!(matches!(
             actor.request(&rt, Command::Work(u64::MAX)),
-            Err(ActorError::ActorStopped)
+            Err(ActorError::NoProc)
         ));
         expected_down.push((monitor, reason));
     }
@@ -301,7 +332,11 @@ fn scenario(backend: u8, count: usize, operations: &[(u8, u8)], endings: &[u8]) 
             .position(|(id, _)| *id == event.monitor_ref)
             .expect("duplicate or unknown monitor");
         let (_, reason) = expected_down.remove(index);
-        assert_eq!(event.reason, reason);
+        assert!(
+            event.reason == reason || event.reason == ExitReason::NoProc,
+            "Down {:?}, final reason {reason:?}",
+            event.reason
+        );
     }
     assert!(expected_down.is_empty());
     observer.child().stop();

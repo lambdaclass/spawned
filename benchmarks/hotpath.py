@@ -76,7 +76,7 @@ def instructions(binary, name, ops):
     out = subprocess.run(
         ["valgrind", "--tool=callgrind", "--fair-sched=yes",
          "--callgrind-out-file=/dev/null", str(binary), name, str(ops)],
-        text=True, capture_output=True)
+        text=True, capture_output=True, timeout=180)
     if out.returncode != 0:
         sys.exit(f"{binary.name} {name} {ops} failed:\n{out.stderr[-3000:]}")
     return int(IR.search(out.stderr).group(1))
@@ -135,7 +135,7 @@ def wallclock(binary, name, ops, cores):
     cmd = [str(binary), name, str(ops)]
     if cores:
         cmd = ["taskset", "-c", cores, *cmd]
-    out = sh(cmd, capture_output=True).stdout.strip().splitlines()[-1]
+    out = sh(cmd, capture_output=True, timeout=120).stdout.strip().splitlines()[-1]
     return ops / float(out.split(",")[2])
 
 

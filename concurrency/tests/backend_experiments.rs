@@ -20,22 +20,38 @@ impl Message for Nested {
 struct Worker;
 impl Actor for Worker {}
 impl Handler<Probe> for Worker {
-    async fn handle(&mut self, _: Probe, _: &Context<Self>) -> u64 {
-        let child = tokio::spawn(async {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-            42
-        });
-        child.await.unwrap()
+    async fn handle(
+        &mut self,
+        _: Probe,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: u64 = {
+            let child = tokio::spawn(async {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                42
+            });
+            child.await.unwrap()
+        };
+        reply.reply(__reply_value);
     }
 }
 impl Handler<Nested> for Worker {
-    async fn handle(&mut self, _: Nested, _: &Context<Self>) -> bool {
-        let (tx, rx) = mpsc::channel();
-        tokio::spawn(async move {
-            let _ = tx.send(());
-        });
-        // Characterizes progress of a detached helper while its actor blocks.
-        rx.recv_timeout(Duration::from_millis(100)).is_ok()
+    async fn handle(
+        &mut self,
+        _: Nested,
+        reply: spawned_concurrency::PendingReply<'_, bool>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: bool = {
+            let (tx, rx) = mpsc::channel();
+            tokio::spawn(async move {
+                let _ = tx.send(());
+            });
+            // Characterizes progress of a detached helper while its actor blocks.
+            rx.recv_timeout(Duration::from_millis(100)).is_ok()
+        };
+        reply.reply(__reply_value);
     }
 }
 #[test]
@@ -66,26 +82,34 @@ impl Message for Network {
     type Result = u64;
 }
 impl Handler<Network> for Worker {
-    async fn handle(&mut self, _: Network, _: &Context<Self>) -> u64 {
-        use std::io::{Read, Write};
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().unwrap();
-            socket
-                .set_read_timeout(Some(Duration::from_secs(3)))
-                .unwrap();
+    async fn handle(
+        &mut self,
+        _: Network,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: u64 = {
+            use std::io::{Read, Write};
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut data = [0; 8];
+                socket.read_exact(&mut data).unwrap();
+                socket.write_all(&data).unwrap();
+            });
+            let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
+            socket.write_all(&42u64.to_le_bytes()).await.unwrap();
             let mut data = [0; 8];
-            socket.read_exact(&mut data).unwrap();
-            socket.write_all(&data).unwrap();
-        });
-        let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
-        socket.write_all(&42u64.to_le_bytes()).await.unwrap();
-        let mut data = [0; 8];
-        socket.read_exact(&mut data).await.unwrap();
-        server.join().unwrap();
-        u64::from_le_bytes(data)
+            socket.read_exact(&mut data).await.unwrap();
+            server.join().unwrap();
+            u64::from_le_bytes(data)
+        };
+        reply.reply(__reply_value);
     }
 }
 #[test]

@@ -33,8 +33,15 @@ impl Drop for Queued {
     }
 }
 impl spawned_concurrency::tasks::Handler<Queued> for Probe {
-    async fn handle(&mut self, _: Queued, _: &Context<Self>) {
-        panic!("unstarted handler ran");
+    async fn handle(
+        &mut self,
+        _: Queued,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("unstarted handler ran");
+        }
     }
 }
 impl Actor for Probe {
@@ -82,9 +89,18 @@ async fn managed_actor_stopped_before_first_poll_runs_no_hooks_but_drops_state()
     let actor = Probe(counts.clone()).start_on(&group).unwrap();
     let dropped = Arc::new(AtomicUsize::new(0));
     let replies: Vec<_> = (0..2)
-        .map(|_| actor.request_raw(Queued(dropped.clone())).unwrap())
+        .map(|_| {
+            actor
+                .send_request(
+                    Queued(dropped.clone()),
+                    spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+                )
+                .unwrap()
+        })
         .collect();
-    actor.child_handle().shutdown();
+    actor
+        .child_handle()
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
     release.send(()).unwrap();
     spawned_rt::tasks::timeout(LIMIT, blocker.join())
         .await
@@ -105,7 +121,7 @@ async fn managed_actor_stopped_before_first_poll_runs_no_hooks_but_drops_state()
     assert_eq!(counts.dropped.load(Ordering::SeqCst), 1);
     assert_eq!(dropped.load(Ordering::SeqCst), 2);
     assert_eq!(
-        actor.child_handle().mailbox_cleanup_failure().as_deref(),
+        actor.child_handle().cleanup_failure().as_deref(),
         Some("unstarted queued destructor")
     );
     for reply in replies {
@@ -121,7 +137,9 @@ async fn managed_actor_stopped_before_first_poll_runs_no_hooks_but_drops_state()
 async fn legacy_actor_stopped_before_first_poll_keeps_both_hooks() {
     let counts = Arc::new(Counts::default());
     let actor = Probe(counts.clone()).start(); // this runtime has not yielded
-    actor.child_handle().shutdown();
+    actor
+        .child_handle()
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
     assert_eq!(
         spawned_rt::tasks::timeout(LIMIT, actor.wait_exit())
             .await

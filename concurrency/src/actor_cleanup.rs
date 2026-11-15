@@ -1,8 +1,9 @@
 //! Shared terminal publication for actor futures and native threads.
+use crate::lifecycle_trace as trace;
 use crate::{
     child_handle::ActorId,
     error::ExitReason,
-    link::{LinkCleanup, LinkTable, LinkedExitReason},
+    link::{LinkNotices, LinkTable, LinkedExitReason},
     monitor::{MonitorCleanup, MonitorTable},
 };
 use spawned_rt::sync::watch;
@@ -14,19 +15,55 @@ pub(crate) fn log_safely(log: impl FnOnce()) {
     }
 }
 
+/// `stopped()` did not run for this exit (decision 2: a kill, an untrapped
+/// exit signal or link notice, or the runtime dropping the actor). Logged at
+/// `debug` for every skip, whether or not the actor overrides `stopped()`
+/// (there is no cheap way to know): an application whose cleanup must run
+/// traps exits (`ctx.trap_exit(true)`) so a parent's shutdown runs it.
+pub(crate) fn log_stopped_skipped(
+    actor: ActorId,
+    actor_type: &'static str,
+    cause: &'static str,
+    reason: Option<&ExitReason>,
+) {
+    let reason = reason.cloned().unwrap_or(ExitReason::Killed);
+    log_safely(|| {
+        tracing::debug!(event = "stopped_skipped", actor = %actor, actor_type, cause,
+            reason = %reason, "stopped() skipped: the exit was not begun by the actor, \
+            an administrative stop or its parent");
+    });
+}
+
 /// Constructed before dispatch, so even a never-polled actor has cleanup.
-/// Completion owns its sender until links and outgoing monitors are closed.
+/// [`die`](Self::die) is the death point D; dropping it is publication.
+///
+/// D is one boundary, whatever drives it (the run loop, or the runtime
+/// dropping the actor): exit pending for dropped replies, job admission
+/// closed and every job cancelled, outgoing replies and exit signals fenced,
+/// the final reason fixed with the link table closed and admission sealed,
+/// and every open deferred reply answered. The caller then answers its
+/// queued requests (the mode's mailbox discharge) and only then destroys
+/// payloads and state; publication comes last, when this is dropped.
 pub(crate) struct ActorCleanup<C: Fn()> {
     id: ActorId,
     metrics: crate::instrumentation::ActorObservation,
-    links: LinkCleanup,
+    links: LinkTable,
     cause: LinkedExitReason,
     monitors: Option<MonitorCleanup>,
     completion: watch::Sender<Option<ExitReason>>,
-    fallback: ExitReason,
     reason: Option<ExitReason>,
+    notices: Option<LinkNotices>,
     cancel: C,
-    mailbox_failures: Option<std::sync::Arc<crate::mailbox::DropFailures>>,
+    failures: Option<std::sync::Arc<crate::mailbox::DropFailures>>,
+    /// The reply registry, sealed with the final reason at D.
+    replies: Option<std::sync::Arc<crate::reply::registry::Registry>>,
+    /// The owner's jobs: admission closes and they are cancelled at D.
+    jobs: Option<std::sync::Arc<crate::reply::jobs::JobSet>>,
+    /// A runtime drop skipped `stopped()`: logged once every obligation is
+    /// answered (a subscriber is user code).
+    skip_log: Option<ExitReason>,
+    /// [`discharged`](Self::discharged) ran.
+    discharged: bool,
 }
 impl<C: Fn()> ActorCleanup<C> {
     pub(crate) fn new(
@@ -35,140 +72,253 @@ impl<C: Fn()> ActorCleanup<C> {
         cause: LinkedExitReason,
         monitors: MonitorTable,
         completion: watch::Sender<Option<ExitReason>>,
-        fallback: ExitReason,
         cancel: C,
     ) -> Self {
         Self {
             id,
             metrics: crate::instrumentation::ActorObservation::new(),
-            links: LinkCleanup::new(id, links),
+            links,
             cause,
             monitors: Some(MonitorCleanup(monitors)),
             completion,
-            fallback,
             reason: None,
+            notices: None,
             cancel,
-            mailbox_failures: None,
+            failures: None,
+            replies: None,
+            jobs: None,
+            skip_log: None,
+            discharged: false,
         }
+    }
+    /// Seal `replies` with the final reason at D, inside the exit-table
+    /// critical section: callers then get `ActorStopped(final reason)` and
+    /// later sends `NoProc`.
+    pub(crate) fn with_replies(
+        mut self,
+        replies: std::sync::Arc<crate::reply::registry::Registry>,
+    ) -> Self {
+        self.replies = Some(replies);
+        self
+    }
+    pub(crate) fn with_jobs(mut self, jobs: std::sync::Arc<crate::reply::jobs::JobSet>) -> Self {
+        self.jobs = Some(jobs);
+        self
     }
     pub(crate) fn with_mailbox_failures(
         mut self,
         failures: std::sync::Arc<crate::mailbox::DropFailures>,
     ) -> Self {
-        self.mailbox_failures = Some(failures);
+        self.failures = Some(failures);
         self
     }
-    pub(crate) fn complete(&mut self, reason: ExitReason) {
-        self.complete_inner(reason, false);
+    /// The death point D: the requested reason becomes final and the link
+    /// table closes, taking one notice per link (delivered at publication).
+    /// Idempotent; returns the final reason.
+    pub(crate) fn die(&mut self) -> ExitReason {
+        self.reach_death(false)
     }
-    pub(crate) fn complete_secondary(&mut self, reason: ExitReason) {
-        self.complete_inner(reason, true);
+
+    /// D reached because the runtime dropped the actor before it got there
+    /// (G1): `Killed` unless a non-`Normal` reason was already requested.
+    pub(crate) fn die_dropped(&mut self) -> ExitReason {
+        self.reach_death(true)
     }
-    fn complete_inner(&mut self, mut reason: ExitReason, secondary: bool) {
-        let mut cause = self.cause.lock().unwrap_or_else(|p| p.into_inner());
-        if secondary {
-            if let Some(committed) = cause.as_ref().filter(|c| **c != ExitReason::Normal) {
-                reason = committed.clone();
-            }
+
+    fn reach_death(&mut self, dropped: bool) -> ExitReason {
+        if let Some(reason) = &self.reason {
+            return reason.clone();
         }
-        if matches!(reason, ExitReason::Normal) {
-            if let Some(linked) = cause.as_ref() {
-                reason = linked.clone();
-            }
-            if reason == ExitReason::Normal {
-                if let Some(message) = self.mailbox_failures.as_ref().and_then(|f| f.first()) {
-                    reason = ExitReason::Panic(format!("queued message destructor: {message}"));
+        // Exit pending: dropped replies wait for D; jobs stop being admitted
+        // and are cancelled (the job join comes after publication).
+        if let Some(replies) = &self.replies {
+            replies.exiting();
+        }
+        // From here until every caller is answered, the payloads framework
+        // code drops for this owner (a scheduled emit expiring, a job's
+        // refused outcome) are held, on whatever thread drops them.
+        if let Some(failures) = &self.failures {
+            failures.hold();
+        }
+        if let Some(jobs) = &self.jobs {
+            jobs.cancel_all();
+        }
+        // Fence outgoing replies and exit signals before the final reason is
+        // visible (outside any trace section: an in-flight signal may need
+        // one). Later ones are refused; those in flight finish first, so a
+        // signal sent before death precedes the death notices. A gate holder
+        // is synchronous and never awaits this actor or runs a user callback;
+        // otherwise runtime-drop cleanup could deadlock here.
+        if let Some(replies) = &self.replies {
+            replies.fence();
+        }
+        let id = self.id.raw();
+        let mut skipped = false;
+        let reason = trace::life_section(id, || {
+            let mut request = crate::link::lock_request(&self.cause);
+            let reason = if dropped {
+                skipped = !request.hook_begun();
+                request.runtime_drop()
+            } else {
+                request.die()
+            };
+            drop(request);
+            trace::life_emit(id, || {
+                trace::LifeEvent::new(if dropped { "Drop" } else { "Die" }, id)
+                    .x(trace::life_reason(&reason))
+            });
+            self.close(reason)
+        });
+        if skipped {
+            self.skip_log = Some(reason.clone());
+        }
+        fail_point!("actor.at_death");
+        // Every open deferred reply (and every exit-pending one) is answered
+        // with the final reason, before any destructor runs. Their wake-ups
+        // wait until the mailbox's queued requests are answered too
+        // ([`discharged`](Self::discharged)): no waker runs between two
+        // answers.
+        if let Some(replies) = &self.replies {
+            replies.begin_discharge();
+            replies.close();
+        }
+        reason
+    }
+
+    /// The owner's registry (none for an actor without replies).
+    #[cfg_attr(not(feature = "async"), allow(dead_code))]
+    pub(crate) fn replies(&self) -> Option<&crate::reply::registry::Registry> {
+        self.replies.as_deref()
+    }
+
+    /// Answer a destroyed turn's own caller at the death point (its slot is
+    /// held by the turn's `PendingReply`, not listed in the registry).
+    #[cfg_attr(not(feature = "async"), allow(dead_code))]
+    pub(crate) fn answer_turn(
+        &self,
+        caller: std::sync::Arc<dyn crate::reply::registry::Closeable>,
+    ) {
+        if let Some(replies) = &self.replies {
+            replies.answer_turn(caller);
+        }
+    }
+
+    /// Every obligation of the death point is answered (the mode answered
+    /// its queued requests after [`die`](Self::die)): now run the deferred
+    /// wake-ups, then log a skipped `stopped()`, then destroy what the jobs'
+    /// cancellation released. Call it before destroying the mailbox's
+    /// payloads and the state. Idempotent.
+    pub(crate) fn discharged(&mut self) {
+        if std::mem::replace(&mut self.discharged, true) {
+            return;
+        }
+        if let Some(replies) = &self.replies {
+            replies.end_discharge();
+        }
+        if let Some(reason) = self.skip_log.take() {
+            log_stopped_skipped(self.id, "", "runtime_drop", Some(&reason));
+        }
+        // Payloads the exit's job cancellation released: destroyed only now.
+        if let Some(jobs) = &self.jobs {
+            jobs.dispose_cancelled();
+        }
+        if let Some(failures) = &self.failures {
+            failures.release();
+        }
+    }
+    fn close(&mut self, reason: ExitReason) -> ExitReason {
+        let replies = self.replies.as_deref();
+        self.notices = Some(crate::link::close_links_at_death(
+            self.id,
+            &self.links,
+            &reason,
+            |reason| {
+                if let Some(replies) = replies {
+                    replies.seal(reason);
                 }
-            }
+            },
+        ));
+        self.reason = Some(reason.clone());
+        reason
+    }
+    /// Record a cleanup failure after D (state or queued-envelope
+    /// destructor): it never changes the final reason.
+    pub(crate) fn cleanup_failed(&self, message: String) {
+        if let Some(failures) = &self.failures {
+            failures.record(message);
         }
-        // Freeze the completed outcome before any further cancellation callbacks.
-        *cause = Some(reason.clone());
-        self.reason = Some(reason);
     }
 }
 impl<C: Fn()> Drop for ActorCleanup<C> {
     fn drop(&mut self) {
-        let completed = self.reason.is_some();
-        let failure = self.mailbox_failures.as_ref().and_then(|f| f.first());
-        let mut reason = self.reason.take().unwrap_or_else(|| self.fallback.clone());
-        {
-            let mut cause = self.cause.lock().unwrap_or_else(|p| p.into_inner());
-            if !completed {
-                if let Some(committed) = cause.as_ref().filter(|c| **c != ExitReason::Normal) {
-                    reason = committed.clone();
-                }
-            }
-            // Queued destructors are secondary to committed Shutdown/Kill or
-            // a linked/handler panic. Only a completed Normal lifecycle gains
-            // a new panic outcome; aborted tasks keep their abort outcome.
-            if completed && reason == ExitReason::Normal {
-                if let Some(message) = &failure {
-                    reason = ExitReason::Panic(format!("queued message destructor: {message}"));
-                }
-            }
-            *cause = Some(reason.clone());
-        }
-        if let Some(message) = failure {
+        // Normally D was reached already; otherwise the runtime dropped the
+        // actor (G1) and nothing of it is left to destroy.
+        let reason = self.die_dropped();
+        self.discharged();
+        if let Some(message) = self.failures.as_ref().and_then(|f| f.first()) {
             // Subscriber code must not unwind through a receiver/actor teardown.
-            if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                tracing::warn!(event = "mailbox_cleanup_failed", actor = %self.id, %message, %reason,
-                    "queued message destructor failed");
-            })) {
-                crate::mailbox::dispose_panic(payload);
-            }
+            log_safely(|| {
+                tracing::warn!(event = "actor_cleanup_failed", actor = %self.id, %message, %reason,
+                    "destructor failed after the death point");
+            });
         }
         (self.cancel)();
         drop(self.monitors.take());
-        self.links.complete(&reason);
         self.metrics.finish(&reason);
+        // Publication: the link notices taken at D are delivered, then
+        // wait_exit, join and monitors observe the final reason. Delivering
+        // first keeps v0.7's guarantee that once `wait_exit` returns, every
+        // linked peer's `Exit` is already queued (or its exit requested).
+        // The trace's `Publish` is this point: destruction is over and the
+        // notices are delivered after it.
+        let id = self.id.raw();
+        trace::life_section(id, || {
+            trace::life_emit(id, || trace::LifeEvent::new("Publish", id));
+        });
+        if let Some(notices) = self.notices.take() {
+            notices.deliver();
+        }
         self.completion.send_replace(Some(reason));
     }
 }
 
-/// Destroy state after capturing the lifecycle outcome. A state destructor is
-/// secondary to an already observed handler/start/stop panic, even before that
-/// outcome has been committed to the shared exit slot.
-pub(crate) fn finish_actor_state<A>(
-    actor: A,
-    primary: Result<ExitReason, ExitReason>,
-) -> Result<ExitReason, ExitReason> {
+/// Destroy state after D. A destructor panic never changes the final reason;
+/// it is returned as a cleanup failure.
+pub(crate) fn finish_actor_state<A>(actor: A) -> Option<String> {
     let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(actor)))
     else {
-        return primary;
+        return None;
     };
     let message = crate::error::panic_message(&*payload);
     crate::mailbox::dispose_panic(payload);
-    let keep_primary = match &primary {
-        Ok(reason) => *reason != ExitReason::Normal,
-        Err(_) => true,
-    };
-    if keep_primary {
-        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            tracing::warn!(event = "actor_state_cleanup_failed", actor_type = std::any::type_name::<A>(),
-                ?primary, secondary = %message, "actor state destructor panicked after a terminal outcome");
-        })) {
-            crate::mailbox::dispose_panic(payload);
-        }
-        primary
-    } else {
-        Err(ExitReason::Panic(format!(
-            "actor state destructor: {message}"
-        )))
-    }
+    log_safely(|| {
+        tracing::warn!(event = "actor_state_cleanup_failed", actor_type = std::any::type_name::<A>(),
+            secondary = %message, "actor state destructor panicked after the death point");
+    });
+    Some(format!("actor state destructor: {message}"))
 }
 
-/// Captured as one value by the dispatch closure. Declaration order makes
-/// never-polled payload destruction precede completion publication, without
-/// relying on the compiler's order for disjoint closure captures.
+/// Captured as one value by the dispatch closure, so a never-polled actor
+/// dropped with its runtime still reaches D, then answers its queued
+/// requests (`discharge`), then destroys its payload, then publishes,
+/// without relying on the compiler's order for disjoint closure captures.
 pub(crate) struct ActorStartup<P, C: Fn()> {
     payload: Option<P>,
     cleanup: Option<ActorCleanup<C>>,
+    /// Answers the queued requests and returns what it drained, each item
+    /// destroyed on its own (contained) once the wake-ups ran.
+    discharge: fn(&mut P) -> Vec<Box<dyn Send>>,
 }
 impl<P, C: Fn()> ActorStartup<P, C> {
-    pub(crate) fn new(payload: P, cleanup: ActorCleanup<C>) -> Self {
+    pub(crate) fn new(
+        payload: P,
+        cleanup: ActorCleanup<C>,
+        discharge: fn(&mut P) -> Vec<Box<dyn Send>>,
+    ) -> Self {
         Self {
             payload: Some(payload),
             cleanup: Some(cleanup),
+            discharge,
         }
     }
     pub(crate) fn into_parts(mut self) -> (P, ActorCleanup<C>) {
@@ -177,16 +327,36 @@ impl<P, C: Fn()> ActorStartup<P, C> {
 }
 impl<P, C: Fn()> Drop for ActorStartup<P, C> {
     fn drop(&mut self) {
-        if let Some(payload) = self.payload.take() {
+        if let Some(cleanup) = &mut self.cleanup {
+            cleanup.die_dropped();
+        }
+        if let Some(mut payload) = self.payload.take() {
+            // Answers the queued requests; their payloads are destroyed with
+            // the rest of the startup payload, after the wake-ups.
+            let queued = (self.discharge)(&mut payload);
+            if let Some(cleanup) = &mut self.cleanup {
+                cleanup.discharged();
+            }
+            // One at a time: a panicking destructor must not unwind into the
+            // next one (that would abort).
+            for item in queued {
+                if let Err(panic) =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(item)))
+                {
+                    let message = crate::error::panic_message(&*panic);
+                    crate::mailbox::dispose_panic(panic);
+                    if let Some(cleanup) = &mut self.cleanup {
+                        cleanup.cleanup_failed(message);
+                    }
+                }
+            }
             if let Err(panic) =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(payload)))
             {
                 let message = crate::error::panic_message(&*panic);
                 crate::mailbox::dispose_panic(panic);
                 if let Some(cleanup) = &mut self.cleanup {
-                    cleanup.complete_secondary(ExitReason::Panic(format!(
-                        "actor startup payload destructor: {message}"
-                    )));
+                    cleanup.cleanup_failed(format!("actor startup payload destructor: {message}"));
                 }
             }
         }
@@ -203,22 +373,11 @@ mod state_drop_tests {
         }
     }
     #[test]
-    fn destructor_failure_only_escalates_normal_even_without_a_committed_cause() {
-        for primary in [
-            Ok(ExitReason::Normal),
-            Ok(ExitReason::Shutdown),
-            Ok(ExitReason::Kill),
-            Ok(ExitReason::Panic("handler failure".into())),
-            Err(ExitReason::Panic("lifecycle unwind".into())),
-        ] {
-            let expected = if primary == Ok(ExitReason::Normal) {
-                Err(ExitReason::Panic(
-                    "actor state destructor: secondary state failure".into(),
-                ))
-            } else {
-                primary.clone()
-            };
-            assert_eq!(finish_actor_state(Explodes, primary), expected);
-        }
+    fn destructor_failure_is_a_cleanup_failure_not_a_reason() {
+        assert_eq!(
+            finish_actor_state(Explodes),
+            Some("actor state destructor: secondary state failure".into())
+        );
+        assert_eq!(finish_actor_state(()), None);
     }
 }

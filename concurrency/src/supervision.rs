@@ -38,16 +38,35 @@ pub enum RestartMode {
     Temporary,
 }
 impl RestartMode {
-    fn restarts(self, reason: Option<&ExitReason>) -> bool {
+    /// The restart table. A Transient child restarts if its final reason is
+    /// abnormal or a cleanup failure (a destructor panic after its death
+    /// point) was recorded: `is_abnormal()` alone no longer predicts it.
+    fn restarts(self, reason: Option<&ExitReason>, cleanup_failed: bool) -> bool {
         match self {
             Self::Permanent => true,
-            Self::Transient => reason.map(ExitReason::is_abnormal).unwrap_or(true),
+            Self::Transient => {
+                cleanup_failed || reason.map(ExitReason::is_abnormal).unwrap_or(true)
+            }
             Self::Temporary => false,
         }
     }
 }
 
+/// Trace projection of a child's exit: the raw reason class, or the abnormal
+/// class when a cleanup failure was recorded, so `Supervision.tla`'s restart
+/// decision (`RestartFollowsPolicy`) stays valid.
+fn exit_class(reason: &ExitReason, cleanup_failed: bool) -> &'static str {
+    if cleanup_failed && !reason.is_abnormal() {
+        "Panic"
+    } else {
+        trace::reason(Some(reason))
+    }
+}
+
+/// Restart delay policy. Non-exhaustive: start from `Backoff::default()` (or
+/// `new()`) and chain the setters, or assign the public fields of a value.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Backoff {
     /// First retry's delay cap, not its minimum. With jitter enabled the delay
     /// can be anywhere from zero through this value (1s permits a 150ms retry).
@@ -77,6 +96,37 @@ impl Default for Backoff {
     }
 }
 impl Backoff {
+    /// The default policy: 10 ms initial cap, 5 s maximum, stable after
+    /// 30 s, jitter on, no fixed seed.
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Set [`initial`](Self::initial).
+    pub fn initial(mut self, initial: Duration) -> Self {
+        self.initial = initial;
+        self
+    }
+    /// Set [`maximum`](Self::maximum).
+    pub fn maximum(mut self, maximum: Duration) -> Self {
+        self.maximum = maximum;
+        self
+    }
+    /// Set [`stable_after`](Self::stable_after).
+    pub fn stable_after(mut self, stable_after: Duration) -> Self {
+        self.stable_after = stable_after;
+        self
+    }
+    /// Set [`jitter`](Self::jitter).
+    pub fn jitter(mut self, jitter: bool) -> Self {
+        self.jitter = jitter;
+        self
+    }
+    /// Seed the jitter for reproducible tests.
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+
     /// Capped exponential delay before jitter.
     pub(crate) fn bound(&self, failures: u32) -> Duration {
         self.initial
@@ -121,6 +171,7 @@ pub(crate) fn jitter_seed(seed: u64, name: &[u8]) -> u64 {
 
 /// The affected children are fully joined before ordered reconstruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum SupervisorStrategy {
     #[default]
     OneForOne,
@@ -128,12 +179,20 @@ pub enum SupervisorStrategy {
     RestForOne,
 }
 
+/// Supervisor flags (OTP's `strategy`, `intensity` and `period`, plus a
+/// child cap and a restart backoff). Non-exhaustive: start from
+/// `SupervisorConfig::default()` (or `new()`) and chain the setters,
+/// `SupervisorConfig::new().strategy(SupervisorStrategy::OneForAll).max_restarts(3)`,
+/// or assign the public fields of a value.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SupervisorConfig {
     pub strategy: SupervisorStrategy,
-    /// Supervisor-wide child retry grants per window, including collateral
-    /// OneForAll/RestForOne replacements. A six-child OneForAll round requires
-    /// six available grants. This retains v0.7's per-child accounting.
+    /// Supervisor-wide restarts per `restart_window` (OTP's intensity and
+    /// period). One restart is one restart action: a OneForOne child retry,
+    /// or one OneForAll/RestForOne recovery round, however many children
+    /// the round rebuilds. A failed replacement inside a round requests a
+    /// new round, which is charged again (OTP's `try_again_restart`).
     pub max_restarts: usize,
     pub restart_window: Duration,
     pub max_children: usize,
@@ -150,8 +209,40 @@ impl Default for SupervisorConfig {
         }
     }
 }
+impl SupervisorConfig {
+    /// OneForOne, 5 restarts per 30 s, 1024 children, the default backoff.
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Set [`strategy`](Self::strategy).
+    pub fn strategy(mut self, strategy: SupervisorStrategy) -> Self {
+        self.strategy = strategy;
+        self
+    }
+    /// Set [`max_restarts`](Self::max_restarts) (OTP's intensity).
+    pub fn max_restarts(mut self, max_restarts: usize) -> Self {
+        self.max_restarts = max_restarts;
+        self
+    }
+    /// Set [`restart_window`](Self::restart_window) (OTP's period).
+    pub fn restart_window(mut self, restart_window: Duration) -> Self {
+        self.restart_window = restart_window;
+        self
+    }
+    /// Set [`max_children`](Self::max_children).
+    pub fn max_children(mut self, max_children: usize) -> Self {
+        self.max_children = max_children;
+        self
+    }
+    /// Set [`backoff`](Self::backoff).
+    pub fn backoff(mut self, backoff: Backoff) -> Self {
+        self.backoff = backoff;
+        self
+    }
+}
 
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum SupervisorError {
     #[error(transparent)]
     System(#[from] SystemError),
@@ -161,13 +252,33 @@ pub enum SupervisorError {
     DuplicateChild(String),
     #[error("child capacity exceeded")]
     Capacity,
+    /// The start was cancelled or the system closed before it completed.
     #[error("supervisor stopped before startup completed")]
     Stopped,
     #[error("supervisor failed: {0}")]
     Failed(String),
+    /// A child's first start failed (S1, OTP `failed_to_start_child`): its
+    /// factory errored or panicked, it stopped or panicked before readiness,
+    /// it missed `startup_timeout`, or its placement or group failed.
+    /// Returned after the rollback finished; `rollback_failures` lists
+    /// cleanup failures of that rollback.
+    #[error("failed to start child {child}: {cause}")]
+    FailedToStartChild {
+        child: String,
+        cause: String,
+        rollback_failures: Vec<String>,
+    },
+    /// A child's cleanup got stuck during the initial start (S2).
+    #[error("child cleanup stuck during initial start: {child}: {cause}")]
+    StartupCleanupStuck {
+        child: String,
+        cause: String,
+        rollback_failures: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ChildState {
     Waiting,
     Starting,
@@ -179,6 +290,7 @@ pub enum ChildState {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ChildSnapshot {
     pub name: String,
     pub state: ChildState,
@@ -234,6 +346,7 @@ pub struct ChildSpec<A: Actor> {
     restart: RestartMode,
     startup_timeout: Duration,
     shutdown_timeout: Duration,
+    bounds: crate::reply::jobs::Bounds,
 }
 impl<A: Actor> ChildSpec<A> {
     /// Create a permanent child with five-second startup and shutdown limits.
@@ -255,7 +368,21 @@ impl<A: Actor> ChildSpec<A> {
             restart: RestartMode::Permanent,
             startup_timeout: Duration::from_secs(5),
             shutdown_timeout: Duration::from_secs(5),
+            bounds: Default::default(),
         }
+    }
+    /// Override `Actor::MAX_OUTSTANDING` (deferred credits per instance,
+    /// capped at 65535) for every generation of this child.
+    pub fn max_outstanding(mut self, max: usize) -> Self {
+        self.bounds.max_outstanding = Some(max);
+        self
+    }
+    /// Override `Actor::MAX_NATIVE_JOBS` (blocking jobs running at once) for
+    /// every generation of this child. The default (at most 4) is easy to
+    /// outgrow; its only symptom under load is `NativeBudget` refusals.
+    pub fn max_native_jobs(mut self, max: usize) -> Self {
+        self.bounds.max_native_jobs = Some(max);
+        self
     }
     pub fn restart(mut self, restart: RestartMode) -> Self {
         self.restart = restart;
@@ -405,6 +532,29 @@ impl<A: Actor> View<A> {
         self.done.send_replace(true);
         true
     }
+    /// Cleanup stuck past its deadlines: the snapshot settles as Failed,
+    /// which releases a waiting `start()` (S2), while the controller keeps
+    /// awaiting the real join.
+    fn mark_stuck(&self) {
+        self.change(|data| {
+            data.current = None;
+            data.snapshot.state = ChildState::Failed;
+        });
+    }
+    /// Terminal, or settled as Failed by a stuck cleanup.
+    async fn settled(&self) {
+        let mut changes = self.changed.subscribe();
+        loop {
+            changes.borrow_and_update();
+            let state = system::lock(&self.data).snapshot.state;
+            if matches!(state, ChildState::Stopped | ChildState::Failed) || *self.done.borrow() {
+                return;
+            }
+            if changes.changed().await.is_err() {
+                return;
+            }
+        }
+    }
     fn finish(&self, failed: bool) {
         self.change(|data| {
             data.current = None;
@@ -486,6 +636,7 @@ trait ChildControl: Send + Sync {
     fn initial(&self) -> watch::Receiver<bool>;
     fn shutdown_timeout(&self) -> Duration;
     fn finish_unstarted(&self, failed: bool);
+    fn settled(&self) -> BoxFuture<'_, ()>;
 }
 impl<A: Actor> ChildControl for View<A> {
     fn assign_recovery(&self, slot: Arc<RecoverySlot>) -> bool {
@@ -509,11 +660,13 @@ impl<A: Actor> ChildControl for View<A> {
         self.changed.send_modify(|n| *n = n.wrapping_add(1));
         true
     }
+    /// Collateral stop (OneForAll/RestForOne): the supervisor's parent exit
+    /// signal (E3); the controller escalates to a kill at `shutdown_timeout`.
     fn stop_generation(&self, slot: &RecoverySlot) {
         slot.stop.cancel();
         let scope = system::lock(&self.data).scope.clone();
         if let Some(scope) = scope {
-            scope.stop(ExitReason::Shutdown);
+            scope.signal_parent(ExitReason::Shutdown);
         }
     }
     fn snapshot(&self) -> ChildSnapshot {
@@ -532,10 +685,15 @@ impl<A: Actor> ChildControl for View<A> {
         }
         self.changed.send_modify(|n| *n = n.wrapping_add(1));
     }
+    /// Supervisor shutdown of this child (V9, reverse order): the parent
+    /// exit signal `exit(Child, shutdown)` (E3). A non-trapping child ends
+    /// `Shutdown` without `stopped()`; a trapping child finishes its earlier
+    /// messages and runs `stopped()`. The controller kills it at
+    /// `shutdown_timeout`.
     fn stop(&self) {
         self.stop_turn.cancel();
         if let Some(scope) = system::lock(&self.data).scope.clone() {
-            scope.stop(ExitReason::Shutdown);
+            scope.signal_parent(ExitReason::Shutdown);
         }
     }
     fn done(&self) -> watch::Receiver<bool> {
@@ -551,6 +709,9 @@ impl<A: Actor> ChildControl for View<A> {
         if self.snapshot().generation == 0 {
             self.finish(failed);
         }
+    }
+    fn settled(&self) -> BoxFuture<'_, ()> {
+        Box::pin(View::settled(self))
     }
 }
 
@@ -603,6 +764,8 @@ pub(crate) fn admit_in_window<T: Copy>(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FailureKind {
     Other,
+    /// A child's first start failed (S1).
+    FirstStart,
     Cleanup,
     Coordinator,
     RestartBudget,
@@ -649,6 +812,9 @@ struct Core {
     failure: Mutex<Option<Failure>>,
     failed: Arc<std::sync::atomic::AtomicBool>,
     cleanup_failure: Mutex<Option<String>>,
+    /// Every recorded cleanup failure, for the rollback list of a failed
+    /// start (S2).
+    cleanup_failures: Mutex<Vec<String>>,
     children: Mutex<Vec<Arc<dyn ChildControl>>>,
     budget: Mutex<RetryBudget>,
     config: SupervisorConfig,
@@ -750,6 +916,7 @@ impl Core {
         let _ = make;
     }
     fn record_cleanup_failure(&self, error: &str) {
+        system::lock(&self.cleanup_failures).push(error.to_string());
         let mut failure = system::lock(&self.cleanup_failure);
         if failure.is_none() {
             *failure = Some(error.to_string());
@@ -896,6 +1063,15 @@ impl Core {
                 })
                 .flatten()
         })
+    }
+    /// One OneForAll/RestForOne recovery round is one restart action (OTP's
+    /// `add_restart` runs once per restart, before the cohort is rebuilt):
+    /// take its grant now. The round's controllers then rebuild without a
+    /// grant of their own. Pending per-child reservations (retries during
+    /// the initial start) keep their capacity. Returns whether it was taken.
+    fn charge_round(&self) -> bool {
+        let mut budget = system::lock(&self.budget);
+        budget.take(Instant::now())
     }
     /// Caller holds the admission gate and slot lock; charge atomically with
     /// generation admission, so placement failure or supersession refunds it.
@@ -1047,6 +1223,7 @@ impl SupervisorBuilder {
             failure: Mutex::new(None),
             failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cleanup_failure: Mutex::new(None),
+            cleanup_failures: Mutex::new(Vec::new()),
             children: Mutex::new(Vec::new()),
             budget: Mutex::new(RetryBudget {
                 attempts: VecDeque::new(),
@@ -1199,16 +1376,52 @@ impl SupervisorBuilder {
         // Readiness is historical, just like ActorRef::ready(). A later system
         // admission close must not turn successful startup into rollback.
         let initialized = *core.ready.borrow();
-        let result = if initialized {
+        if initialized {
             guard.armed = false;
-            Ok(Supervisor { core: core.clone() })
-        } else {
-            Err(system::lock(&core.failure)
-                .clone()
-                .map(|failure| SupervisorError::Failed(failure.message))
-                .unwrap_or(SupervisorError::Stopped))
+            return Ok(Supervisor { core: core.clone() });
+        }
+        // S2: the error is returned only after the rollback finished: every
+        // child is terminal, or settled as Failed by its stuck cleanup.
+        let children = system::lock(&core.children).clone();
+        for child in &children {
+            child.settled().await;
+        }
+        Err(core.start_error())
+    }
+}
+impl Core {
+    /// The cause of a failed initial start (S2), with the rollback's cleanup
+    /// failures listed separately.
+    fn start_error(&self) -> SupervisorError {
+        let Some(failure) = system::lock(&self.failure).clone() else {
+            return SupervisorError::Stopped;
         };
-        result
+        let rollback_failures: Vec<String> = system::lock(&self.cleanup_failures)
+            .iter()
+            .filter(|f| **f != failure.message)
+            .cloned()
+            .collect();
+        match (failure.kind, failure.origin) {
+            (FailureKind::FirstStart, Some(origin)) => {
+                let prefix = format!("failed to start child {}: ", origin.child);
+                let cause = failure
+                    .message
+                    .strip_prefix(&prefix)
+                    .unwrap_or(&failure.message)
+                    .to_string();
+                SupervisorError::FailedToStartChild {
+                    child: origin.child,
+                    cause,
+                    rollback_failures,
+                }
+            }
+            (FailureKind::Cleanup, Some(origin)) => SupervisorError::StartupCleanupStuck {
+                child: origin.child,
+                cause: failure.message,
+                rollback_failures,
+            },
+            _ => SupervisorError::Failed(failure.message),
+        }
     }
 }
 impl Drop for SupervisorBuilder {
@@ -1243,6 +1456,7 @@ pub struct Supervisor {
     core: Arc<Core>,
 }
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SupervisorReport {
     pub complete: bool,
     pub failure: Option<String>,
@@ -1272,9 +1486,9 @@ impl Supervisor {
     pub async fn join(&self) {
         let _ = system::wait_true(self.core.done.subscribe()).await;
     }
-    pub async fn shutdown(&self, deadline: Duration) -> SupervisorReport {
+    pub async fn shutdown(&self, grace: Duration) -> SupervisorReport {
         self.stop();
-        let complete = rt::timeout(deadline, system::wait_true(self.core.done.subscribe()))
+        let complete = rt::timeout(grace, system::wait_true(self.core.done.subscribe()))
             .await
             .unwrap_or(false);
         if !complete {
@@ -1503,6 +1717,12 @@ async fn run_recoveries(core: Arc<Core>) {
         }
         let round = trace::atomic(|| {
             let mut queue = system::lock(&core.recovery);
+            // The round is the restart action: charge it once, before any
+            // child of the cohort is stopped or rebuilt.
+            let origin = queue.pending.iter().position(|pending| *pending)?;
+            if !core.charge_round() {
+                return Some(Err(origin));
+            }
             queue
                 .select(core.config.strategy == SupervisorStrategy::OneForAll)
                 .map(|(origin, start, id)| {
@@ -1516,10 +1736,21 @@ async fn run_recoveries(core: Arc<Core>) {
                             .round(id)
                             .count(start + 1)
                     });
-                    (start, meta)
+                    Ok((start, meta))
                 })
         });
-        let Some((start, meta)) = round else {
+        if let Some(Err(origin)) = round {
+            // Exhausted: a concurrent stop wins; only an open supervisor fails.
+            let snapshot = children[origin].snapshot();
+            let message = format!("restart budget exhausted by {}", snapshot.name);
+            core.fail_record_if_open_as(
+                snapshot_failure(snapshot, FailureKind::RestartBudget, message),
+                || None,
+            );
+            core.log_failure_once();
+            return;
+        }
+        let Some(Ok((start, meta))) = round else {
             if matches!(
                 select(
                     Box::pin(core.admission_closed.cancelled()),
@@ -1641,6 +1872,8 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
     let mut first = true;
     let mut last_recovery = 0;
     let mut collateral = false;
+    // This iteration rebuilds for a recovery round (already charged).
+    let mut in_round = false;
     let mut failures = 0u32;
     // Wall-clock entropy; the simulation seed's entropy stream under spawned_sim.
     let seed = core
@@ -1718,12 +1951,21 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                 continue;
             }
             collateral = round.meta.origin != view.index;
+            in_round = true;
         }
         let mut backoff = Duration::ZERO;
         let mut retry_reservation = None;
+        // A recovery round was charged once when the coordinator selected
+        // it: its rebuilds (origin and collateral) take no grant of their own.
+        let round_rebuild = std::mem::take(&mut in_round);
         if !first {
             fail_point!("supervisor.before_restart", async);
-            let Some(reservation) = core.reserve_retry(c) else {
+            let reservation = if round_rebuild {
+                Some(None)
+            } else {
+                core.reserve_retry(c).map(Some)
+            };
+            let Some(reservation) = reservation else {
                 // A concurrent stop wins: only fail a supervisor that is still open.
                 trace::atomic(|| {
                     if core.gate.is_open() {
@@ -1784,7 +2026,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
             if count_attempt {
                 failures = failures.saturating_add(1);
             }
-            retry_reservation = Some(reservation);
+            retry_reservation = reservation;
         }
         first = false;
         let (scope, lease) = match spec.group.reserve(Some(core.gate.clone())) {
@@ -1798,7 +2040,11 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                             child_failure(
                                 &spec,
                                 &view,
-                                FailureKind::Other,
+                                if *view.initial.borrow() {
+                                    FailureKind::Other
+                                } else {
+                                    FailureKind::FirstStart
+                                },
                                 format!("placement failed for {}: {e}", spec.name),
                             ),
                             || Some(Event::new("Unmodelled", c, "PlacementFailed")),
@@ -1817,7 +2063,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
             }
         };
         #[cfg(test)]
-        if retry_reservation.is_some() {
+        if retry_reservation.is_some() || round_rebuild {
             let pause = system::lock(&core.retry_admission_pause).take();
             if let Some((resume, entered)) = pause {
                 entered.send_replace(true);
@@ -1907,6 +2153,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
             generation,
         };
         let factory = spec.factory.clone();
+        scope.set_bounds(spec.bounds);
         let attempt_scope = scope.clone();
         let construction = async move {
             if !attempt_scope.can_start() {
@@ -2037,7 +2284,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                     if stop_turn {
                         view.stop_turn.cancelled().await;
                         trace::emit(core.trace, || Event::new("StopObserved", c, ""));
-                        scope.stop(ExitReason::Shutdown);
+                        // ChildView::stop already sent the parent's Shutdown.
                     }
                     view.change(|v| {
                         v.current = None;
@@ -2045,15 +2292,51 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                     });
                     let cleanup_started = Instant::now();
                     cleanup_until = Some(cleanup_started);
+                    // The child's jobs are joined within the same deadline.
+                    scope.set_cleanup_timeout(spec.shutdown_timeout);
                     exit = Some(
                         match rt::timeout(spec.shutdown_timeout, child.wait_exit_async()).await {
                             Ok(reason) => {
                                 if !stop_turn {
+                                    let failed = child.cleanup_failure().is_some();
                                     trace::emit(core.trace, || {
-                                        Event::new("SelfExit", c, trace::reason(Some(&reason)))
+                                        Event::new("SelfExit", c, exit_class(&reason, failed))
                                     });
                                 }
                                 reason
+                            }
+                            // E3: the supervisor stopped this child and it
+                            // did not reach its death point within
+                            // shutdown_timeout: the parent's kill, then a
+                            // second interval before cleanup is stuck.
+                            Err(_) if stop_turn => {
+                                scope.kill();
+                                // The second interval runs from the kill.
+                                cleanup_until = Some(Instant::now());
+                                match rt::timeout(spec.shutdown_timeout, child.wait_exit_async())
+                                    .await
+                                {
+                                    Ok(reason) => reason,
+                                    Err(_) => {
+                                        stuck = true;
+                                        // Reply traces: the cleanup deadline
+                                        // passed before the child's death
+                                        // point (DeferredReplies `CleanupDeadline`).
+                                        crate::lifecycle_trace::reply(
+                                            child.id().raw(),
+                                            "Stuck",
+                                            0,
+                                            "",
+                                        );
+                                        core.fail_cleanup_for(
+                                            view.snapshot(),
+                                            format!("actor cleanup stuck for {}", spec.name),
+                                            || Some(Event::new("CleanupStuck", c, "")),
+                                        );
+                                        view.mark_stuck();
+                                        child.wait_exit_async().await
+                                    }
+                                }
                             }
                             Err(_) => {
                                 if !stop_turn {
@@ -2062,11 +2345,13 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                                     });
                                 }
                                 stuck = true;
+                                crate::lifecycle_trace::reply(child.id().raw(), "Stuck", 0, "");
                                 core.fail_cleanup_for(
                                     view.snapshot(),
                                     format!("actor cleanup stuck for {}", spec.name),
                                     || Some(Event::new("CleanupStuck", c, "")),
                                 );
+                                view.mark_stuck();
                                 child.wait_exit_async().await
                             }
                         },
@@ -2086,7 +2371,10 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
         view.change(|v| {
             v.current = None;
             v.snapshot.last_exit = exit.clone();
-            v.snapshot.state = ChildState::Stopping;
+            // A stuck cleanup already settled the snapshot as Failed (S2).
+            if v.snapshot.state != ChildState::Failed {
+                v.snapshot.state = ChildState::Stopping;
+            }
         });
         fail_point!("child.before_cleanup_join", async);
         let remaining = cleanup_until
@@ -2111,6 +2399,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                     Some(Event::new("CleanupStuck", c, ""))
                 },
             );
+            view.mark_stuck();
             scope.joined().await;
             trace::atomic(|| {
                 trace::tree(core.trace, |id| {
@@ -2139,8 +2428,12 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                 trace::emit(core.trace, || Event::new("CleanupDone", c, ""));
             });
         }
+        let cleanup_failure = scope.child().and_then(|child| child.cleanup_failure());
         view.change(|v| {
             v.snapshot.last_exit = exit.clone();
+            if cleanup_failure.is_some() {
+                v.snapshot.last_error = cleanup_failure.clone();
+            }
             if v.snapshot.actor_id.is_none() {
                 v.snapshot.actor_id = scope.child().map(|child| child.id());
             }
@@ -2154,18 +2447,44 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
         if core.gate.is_open() && view.recovery(last_recovery).is_some() {
             continue;
         }
+        // S1: a child's first start that fails (any cause) aborts the
+        // supervisor's start whatever the restart type, as OTP's
+        // `start_children` returns `failed_to_start_child`.
+        let first_start = ready_at.is_none() && !*view.initial.borrow();
         // A generation that never became ready after the child's initial
         // readiness is a failed restart attempt: retried within the budget
         // whatever its exit reason, as OTP retries a failed restart
-        // (`try_again_restart`), unless Temporary. Before initial readiness
-        // the restart table applies (semantics V7), so a Transient child
-        // stopping Normal or Shutdown in its first startup fails the start.
-        let failed_restart = ready_at.is_none() && *view.initial.borrow();
-        let restart = if startup_timed_out || failed_restart {
+        // (`try_again_restart`), unless Temporary.
+        let failed_restart = ready_at.is_none() && !first_start;
+        let restart = if first_start {
+            false
+        } else if startup_timed_out || failed_restart {
             spec.restart != RestartMode::Temporary
         } else {
-            spec.restart.restarts(exit.as_ref())
+            spec.restart
+                .restarts(exit.as_ref(), cleanup_failure.is_some())
         };
+        // S1: a ready child's exit during the initial start is recorded and
+        // processed once the tree commits ready, as OTP handles the queued
+        // 'EXIT' after `init` returns. If the start aborts instead, the
+        // exit is part of the rollback. Only the decision waits: cleanup
+        // already ran within its deadline.
+        let deferred = ready_at.is_some()
+            && trace::atomic(|| {
+                let defer = core.gate.is_open() && !*core.ready.borrow();
+                if defer {
+                    trace::emit(core.trace, || Event::new("DeferExit", c, ""));
+                }
+                defer
+            });
+        if deferred {
+            let _ = select(
+                Box::pin(core.admission_closed.cancelled()),
+                Box::pin(system::wait_true(core.ready.subscribe())),
+            )
+            .await;
+            trace::emit(core.trace, || Event::new("Undefer", c, ""));
+        }
         // Gate check, decision and any resulting failure happen in one step,
         // so a concurrent stop is never followed by a failure of this child.
         let again = trace::atomic(|| {
@@ -2180,7 +2499,11 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                     child_failure(
                         &spec,
                         &view,
-                        FailureKind::Other,
+                        if first_start {
+                            FailureKind::FirstStart
+                        } else {
+                            FailureKind::Other
+                        },
                         format!("execution group closed for {}", spec.name),
                     ),
                     || Some(Event::new("Unmodelled", c, "GroupClosed")),
@@ -2188,42 +2511,32 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                 return false;
             }
             if restart {
-                if core.config.strategy != SupervisorStrategy::OneForOne
-                    && !*core.ready.borrow()
-                    && ready_at.is_some()
-                {
-                    // A dependency already published ready but died before the
-                    // initial tree committed. Roll back the whole startup rather
-                    // than leave later factories bound to its obsolete instance.
-                    core.fail_record_if_open_as(
-                        child_failure(
-                            &spec,
-                            &view,
-                            FailureKind::Other,
-                            format!(
-                                "ready child exited during initial tree startup: {}",
-                                spec.name
-                            ),
-                        ),
-                        || Some(Event::new("Unmodelled", c, "InitialCohortFailed")),
-                    );
-                    return false;
-                }
                 trace::emit(core.trace, || Event::new("Decide", c, "restart"));
                 return true;
             }
             if ready_at.is_some() {
                 trace::emit(core.trace, || Event::new("Decide", c, "stop"));
             } else {
-                core.fail_record_if_open_as(
-                    child_failure(
-                        &spec,
-                        &view,
+                let (kind, message) = if first_start {
+                    let snapshot = view.snapshot();
+                    let cause = snapshot
+                        .last_error
+                        .clone()
+                        .or_else(|| exit.as_ref().map(|reason| format!("exited {reason}")))
+                        .unwrap_or_else(|| "unknown".into());
+                    (
+                        FailureKind::FirstStart,
+                        format!("failed to start child {}: {cause}", spec.name),
+                    )
+                } else {
+                    (
                         FailureKind::Other,
                         format!("non-restartable child failed startup: {}", spec.name),
-                    ),
-                    || Some(Event::new("Decide", c, "fail")),
-                );
+                    )
+                };
+                core.fail_record_if_open_as(child_failure(&spec, &view, kind, message), || {
+                    Some(Event::new("Decide", c, "fail"))
+                });
             }
             false
         });
@@ -2326,74 +2639,92 @@ mod policy_tests {
     }
     #[tokio::test]
     async fn failure_classification_is_typed_and_terminal_failure_is_sticky() {
-        let system = ActorSystem::new().unwrap();
-        let group = system.async_group("terminal-order", 1).unwrap();
-        let mut tree = system.supervisor(SupervisorConfig::default()).unwrap();
-        let first = tree
-            .add(ChildSpec::new("first", &group, |_| async {
-                Ok::<_, String>(CoordinatorWorker)
-            }))
-            .unwrap();
-        let second = tree
-            .add(ChildSpec::new("second", &group, |_| async {
-                Ok::<_, String>(CoordinatorWorker)
-            }))
-            .unwrap();
-        first.view.finish(true);
-        first.view.finish_unstarted(false); // stale non-failed sweep races last
-        second.view.finish_unstarted(false);
-        second.view.finish(true); // failed controller races last
-        assert_eq!(first.snapshot().state, ChildState::Failed);
-        assert_eq!(second.snapshot().state, ChildState::Failed);
-        tree.core
-            .fail("restart budget exhausted by a user-provided message".into());
-        assert_eq!(
-            system::lock(&tree.core.failure).as_ref().unwrap().kind,
-            FailureKind::Other
-        );
-        drop(tree);
-        assert!(system.shutdown(Duration::from_secs(10)).await.complete);
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::failure_classification_is_typed_and_terminal_failure_is_sticky"
+            ),
+            async move {
+                let system = ActorSystem::new().unwrap();
+                let group = system.async_group("terminal-order", 1).unwrap();
+                let mut tree = system.supervisor(SupervisorConfig::default()).unwrap();
+                let first = tree
+                    .add(ChildSpec::new("first", &group, |_| async {
+                        Ok::<_, String>(CoordinatorWorker)
+                    }))
+                    .unwrap();
+                let second = tree
+                    .add(ChildSpec::new("second", &group, |_| async {
+                        Ok::<_, String>(CoordinatorWorker)
+                    }))
+                    .unwrap();
+                first.view.finish(true);
+                first.view.finish_unstarted(false); // stale non-failed sweep races last
+                second.view.finish_unstarted(false);
+                second.view.finish(true); // failed controller races last
+                assert_eq!(first.snapshot().state, ChildState::Failed);
+                assert_eq!(second.snapshot().state, ChildState::Failed);
+                tree.core
+                    .fail("restart budget exhausted by a user-provided message".into());
+                assert_eq!(
+                    system::lock(&tree.core.failure).as_ref().unwrap().kind,
+                    FailureKind::Other
+                );
+                drop(tree);
+                assert!(system.shutdown(Duration::from_secs(10)).await.complete);
+            },
+        )
+        .await;
     }
     #[tokio::test]
     async fn initial_placement_failure_has_deterministic_failed_slots() {
-        use crate::tasks::ActorStart;
-        for _ in 0..8 {
-            let system = ActorSystem::new().unwrap();
-            let group = system.thread_group("placement-failure", 1).unwrap();
-            let occupied = CoordinatorWorker.start_on(&group).unwrap();
-            rt::timeout(Duration::from_secs(10), occupied.ready())
-                .await
-                .unwrap()
-                .unwrap();
-            let mut tree = system.supervisor(SupervisorConfig::default()).unwrap();
-            let first = tree
-                .add(ChildSpec::new("first", &group, |_| async {
-                    Ok::<_, String>(CoordinatorWorker)
-                }))
-                .unwrap();
-            let second = tree
-                .add(ChildSpec::new("second", &group, |_| async {
-                    Ok::<_, String>(CoordinatorWorker)
-                }))
-                .unwrap();
-            let core = tree.core.clone();
-            assert!(tree.start().await.is_err());
-            assert!(rt::timeout(
-                Duration::from_secs(10),
-                system::wait_true(core.done.subscribe())
-            )
-            .await
-            .unwrap());
-            for child in [first, second] {
-                assert_eq!(child.snapshot().generation, 0);
-                assert_eq!(child.snapshot().state, ChildState::Failed);
-                assert!(matches!(
-                    child.current(),
-                    Err(ChildUnavailable(ChildState::Failed))
-                ));
-            }
-            assert!(system.shutdown(Duration::from_secs(10)).await.complete);
-        }
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::initial_placement_failure_has_deterministic_failed_slots"
+            ),
+            async move {
+                use crate::tasks::ActorStart;
+                for _ in 0..8 {
+                    let system = ActorSystem::new().unwrap();
+                    let group = system.thread_group("placement-failure", 1).unwrap();
+                    let occupied = CoordinatorWorker.start_on(&group).unwrap();
+                    rt::timeout(Duration::from_secs(10), occupied.ready())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    let mut tree = system.supervisor(SupervisorConfig::default()).unwrap();
+                    let first = tree
+                        .add(ChildSpec::new("first", &group, |_| async {
+                            Ok::<_, String>(CoordinatorWorker)
+                        }))
+                        .unwrap();
+                    let second = tree
+                        .add(ChildSpec::new("second", &group, |_| async {
+                            Ok::<_, String>(CoordinatorWorker)
+                        }))
+                        .unwrap();
+                    let core = tree.core.clone();
+                    assert!(tree.start().await.is_err());
+                    assert!(rt::timeout(
+                        Duration::from_secs(10),
+                        system::wait_true(core.done.subscribe())
+                    )
+                    .await
+                    .unwrap());
+                    for child in [first, second] {
+                        assert_eq!(child.snapshot().generation, 0);
+                        assert_eq!(child.snapshot().state, ChildState::Failed);
+                        assert!(matches!(
+                            child.current(),
+                            Err(ChildUnavailable(ChildState::Failed))
+                        ));
+                    }
+                    assert!(system.shutdown(Duration::from_secs(10)).await.complete);
+                }
+            },
+        )
+        .await;
     }
     struct PanicRunner;
     impl Runner for PanicRunner {
@@ -2405,6 +2736,7 @@ mod policy_tests {
     impl Actor for CoordinatorWorker {}
     #[tokio::test]
     async fn coordinator_fault_joins_launched_controllers_and_helpers() {
+        crate::test_wait::within(concat!(module_path!(), "::coordinator_fault_joins_launched_controllers_and_helpers"), async move {
         let system = ActorSystem::new().unwrap();
         let group = system
             .async_group("supervisor-coordinator-fault", 1)
@@ -2432,9 +2764,9 @@ mod policy_tests {
         .unwrap();
         tree.runners[1] = Box::new(PanicRunner);
         let core = tree.core.clone();
-        assert!(
-            matches!(tree.start().await, Err(SupervisorError::Failed(e)) if e.contains("injected supervisor coordinator fault"))
-        );
+        // v0.8 (S2): start() returns its error only after the rollback, which
+        // waits for the live child's owned helper.
+        let start = rt::spawn(tree.start());
         assert!(rt::timeout(
             Duration::from_millis(30),
             system::wait_true(core.done.subscribe())
@@ -2442,6 +2774,9 @@ mod policy_tests {
         .await
         .is_err());
         release.send(()).unwrap();
+        assert!(
+            matches!(start.await.unwrap(), Err(SupervisorError::Failed(e)) if e.contains("injected supervisor coordinator fault"))
+        );
         assert!(rt::timeout(
             Duration::from_secs(10),
             system::wait_true(core.done.subscribe())
@@ -2457,176 +2792,136 @@ mod policy_tests {
             .supervisor_failures
             .iter()
             .any(|e| e.contains("injected supervisor coordinator fault")));
+    }).await;
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stop_wins_over_late_child_failure_without_trace_serialization() {
-        let system = ActorSystem::new().unwrap();
-        let tree = system.supervisor(SupervisorConfig::default()).unwrap();
-        tree.core.close();
-        assert!(!tree
-            .core
-            .fail_if_open_as("late child failure".into(), || None));
-        assert!(system::lock(&tree.core.failure).is_none());
-        assert!(tree
-            .core
-            .gate
-            .if_open(|| tree.core.ready.send_replace(true))
-            .is_none());
-        assert!(!*tree.core.ready.borrow());
-        // Cleanup failures remain observable after ordinary admission closure.
-        tree.core.fail_cleanup("late cleanup failure".into());
-        assert_eq!(
-            system::lock(&tree.core.failure).as_deref(),
-            Some("late cleanup failure")
-        );
-        drop(tree);
-        assert!(system.shutdown(Duration::from_secs(5)).await.complete);
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::stop_wins_over_late_child_failure_without_trace_serialization"
+            ),
+            async move {
+                let system = ActorSystem::new().unwrap();
+                let tree = system.supervisor(SupervisorConfig::default()).unwrap();
+                tree.core.close();
+                assert!(!tree
+                    .core
+                    .fail_if_open_as("late child failure".into(), || None));
+                assert!(system::lock(&tree.core.failure).is_none());
+                assert!(tree
+                    .core
+                    .gate
+                    .if_open(|| tree.core.ready.send_replace(true))
+                    .is_none());
+                assert!(!*tree.core.ready.borrow());
+                // Cleanup failures remain observable after ordinary admission closure.
+                tree.core.fail_cleanup("late cleanup failure".into());
+                assert_eq!(
+                    system::lock(&tree.core.failure).as_deref(),
+                    Some("late cleanup failure")
+                );
+                drop(tree);
+                assert!(system.shutdown(Duration::from_secs(5)).await.complete);
+            },
+        )
+        .await;
     }
     #[test]
     fn delayed_failure_notifications_are_absorbed_by_the_already_assigned_round() {
-        let mut queue = RecoveryQueue {
-            pending: vec![false; 3],
-            covered: vec![0; 3],
-            next_id: 1,
-        };
-        assert!(queue.request(1, 0));
-        queue.pending.fill(false);
-        // The coordinator publishes coverage before per-child assignment.
-        queue.covered[1..].fill(1);
-        assert!(!queue.request(2, 0));
-        assert!(!queue.pending.iter().any(|value| *value));
-        // A new failure in a reconstructed generation must still be admitted.
-        assert!(queue.request(2, 1));
-        assert!(queue.request(0, 0)); // unaffected upstream in RestForOne
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::delayed_failure_notifications_are_absorbed_by_the_already_assigned_round"
+            ),
+            move || {
+                let mut queue = RecoveryQueue {
+                    pending: vec![false; 3],
+                    covered: vec![0; 3],
+                    next_id: 1,
+                };
+                assert!(queue.request(1, 0));
+                queue.pending.fill(false);
+                // The coordinator publishes coverage before per-child assignment.
+                queue.covered[1..].fill(1);
+                assert!(!queue.request(2, 0));
+                assert!(!queue.pending.iter().any(|value| *value));
+                // A new failure in a reconstructed generation must still be admitted.
+                assert!(queue.request(2, 1));
+                assert!(queue.request(0, 0)); // unaffected upstream in RestForOne
+            },
+        );
     }
 
     #[tokio::test]
     async fn admission_closure_after_readiness_preserves_fixed_system_order() {
-        use crate::tasks::ActorStart;
-        struct Ordered {
-            id: u32,
-            log: Arc<Mutex<Vec<u32>>>,
-            entered: Option<rt::oneshot::Sender<()>>,
-            release: Option<rt::oneshot::Receiver<()>>,
-        }
-        impl Actor for Ordered {
-            async fn stopped(&mut self, _: &crate::tasks::Context<Self>) {
-                system::lock(&self.log).push(self.id);
-                if let Some(entered) = self.entered.take() {
-                    let _ = entered.send(());
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::admission_closure_after_readiness_preserves_fixed_system_order"
+            ),
+            async move {
+                use crate::tasks::ActorStart;
+                struct Ordered {
+                    id: u32,
+                    log: Arc<Mutex<Vec<u32>>>,
+                    entered: Option<rt::oneshot::Sender<()>>,
+                    release: Option<rt::oneshot::Receiver<()>>,
                 }
-                if let Some(release) = self.release.take() {
-                    let _ = release.await;
+                impl Actor for Ordered {
+                    async fn started(&mut self, ctx: &crate::tasks::Context<Self>) {
+                        // v0.8: stopped() records the order only for a trapping
+                        // child (E3, decision 2).
+                        ctx.trap_exit(true);
+                    }
+                    async fn stopped(&mut self, _: &crate::tasks::Context<Self>) {
+                        system::lock(&self.log).push(self.id);
+                        if let Some(entered) = self.entered.take() {
+                            let _ = entered.send(());
+                        }
+                        if let Some(release) = self.release.take() {
+                            let _ = release.await;
+                        }
+                    }
                 }
-            }
-        }
-        let limit = Duration::from_secs(30);
-        let system = ActorSystem::new().unwrap();
-        let group = system.thread_group("fixed-order-2-1-2", 5).unwrap();
-        let log = Arc::new(Mutex::new(Vec::new()));
-        for id in 0..2 {
-            Ordered {
-                id,
-                log: log.clone(),
-                entered: None,
-                release: None,
-            }
-            .start_on(&group)
-            .unwrap()
-            .ready()
-            .await
-            .unwrap();
-        }
-        let mut builder = system.supervisor(SupervisorConfig::default()).unwrap();
-        let child_log = log.clone();
-        builder
-            .add(ChildSpec::new("middle", &group, move |_| {
-                let log = child_log.clone();
-                async move {
-                    Ok::<_, String>(Ordered {
-                        id: 100,
-                        log,
+                let limit = Duration::from_secs(30);
+                let system = ActorSystem::new().unwrap();
+                let group = system.thread_group("fixed-order-2-1-2", 5).unwrap();
+                let log = Arc::new(Mutex::new(Vec::new()));
+                for id in 0..2 {
+                    Ordered {
+                        id,
+                        log: log.clone(),
                         entered: None,
                         release: None,
-                    })
+                    }
+                    .start_on(&group)
+                    .unwrap()
+                    .ready()
+                    .await
+                    .unwrap();
                 }
-            }))
-            .unwrap();
-        let resume = CancellationToken::new();
-        let (passed, after_check) = watch::channel(false);
-        *system::lock(&builder.core.initial_ready_pause) = Some((resume.clone(), passed));
-        let tree = builder.start().await.unwrap();
-        Ordered {
-            id: 200,
-            log: log.clone(),
-            entered: None,
-            release: None,
-        }
-        .start_on(&group)
-        .unwrap()
-        .ready()
-        .await
-        .unwrap();
-        let (entered, arrival) = rt::oneshot::channel();
-        let (release, gate) = rt::oneshot::channel();
-        Ordered {
-            id: 201,
-            log: log.clone(),
-            entered: Some(entered),
-            release: Some(gate),
-        }
-        .start_on(&group)
-        .unwrap()
-        .ready()
-        .await
-        .unwrap();
-        let shutdown = system.shutdown(limit);
-        tokio::pin!(shutdown);
-        assert!(futures::poll!(&mut shutdown).is_pending());
-        rt::timeout(limit, arrival).await.unwrap().unwrap();
-        // The later standalone actor owns the current stop turn. Resume the
-        // supervisor exactly between readiness and its cancellation wait.
-        resume.cancel();
-        assert!(rt::timeout(limit, system::wait_true(after_check))
-            .await
-            .unwrap());
-        assert!(
-            !tree.core.cancel.is_cancelled(),
-            "admission closure stole the supervisor's stop turn"
-        );
-        release.send(()).unwrap();
-        assert!(rt::timeout(limit, shutdown).await.unwrap().complete);
-        assert_eq!(*system::lock(&log), vec![201, 200, 100, 1, 0]);
-    }
-
-    #[tokio::test]
-    async fn startup_completion_or_drop_after_readiness_preserves_system_order() {
-        use crate::tasks::ActorStart;
-        struct Ordered {
-            id: u32,
-            log: Arc<Mutex<Vec<u32>>>,
-            entered: Option<rt::oneshot::Sender<()>>,
-            release: Option<rt::oneshot::Receiver<()>>,
-        }
-        impl Actor for Ordered {
-            async fn stopped(&mut self, _: &crate::tasks::Context<Self>) {
-                system::lock(&self.log).push(self.id);
-                if let Some(entered) = self.entered.take() {
-                    let _ = entered.send(());
-                }
-                if let Some(release) = self.release.take() {
-                    let _ = release.await;
-                }
-            }
-        }
-        for complete_start in [true, false] {
-            let limit = Duration::from_secs(30);
-            let system = ActorSystem::new().unwrap();
-            let group = system.thread_group("fixed-order-2-1-2", 5).unwrap();
-            let log = Arc::new(Mutex::new(Vec::new()));
-            for id in 0..2 {
+                let mut builder = system.supervisor(SupervisorConfig::default()).unwrap();
+                let child_log = log.clone();
+                builder
+                    .add(ChildSpec::new("middle", &group, move |_| {
+                        let log = child_log.clone();
+                        async move {
+                            Ok::<_, String>(Ordered {
+                                id: 100,
+                                log,
+                                entered: None,
+                                release: None,
+                            })
+                        }
+                    }))
+                    .unwrap();
+                let resume = CancellationToken::new();
+                let (passed, after_check) = watch::channel(false);
+                *system::lock(&builder.core.initial_ready_pause) = Some((resume.clone(), passed));
+                let tree = builder.start().await.unwrap();
                 Ordered {
-                    id,
+                    id: 200,
                     log: log.clone(),
                     entered: None,
                     release: None,
@@ -2636,412 +2931,578 @@ mod policy_tests {
                 .ready()
                 .await
                 .unwrap();
-            }
-            let mut builder = system.supervisor(SupervisorConfig::default()).unwrap();
-            let child_log = log.clone();
-            // Hold construction until start() has been polled once, so the
-            // first poll is pending however fast the controller runs.
-            let (construct, gate) = rt::oneshot::channel::<()>();
-            let gate = Arc::new(Mutex::new(Some(gate)));
-            builder
-                .add(ChildSpec::new("middle", &group, move |_| {
-                    let log = child_log.clone();
-                    let gate = system::lock(&gate).take();
-                    async move {
-                        if let Some(gate) = gate {
-                            let _ = gate.await;
+                let (entered, arrival) = rt::oneshot::channel();
+                let (release, gate) = rt::oneshot::channel();
+                Ordered {
+                    id: 201,
+                    log: log.clone(),
+                    entered: Some(entered),
+                    release: Some(gate),
+                }
+                .start_on(&group)
+                .unwrap()
+                .ready()
+                .await
+                .unwrap();
+                let shutdown = system.shutdown(limit);
+                tokio::pin!(shutdown);
+                assert!(futures::poll!(&mut shutdown).is_pending());
+                rt::timeout(limit, arrival).await.unwrap().unwrap();
+                // The later standalone actor owns the current stop turn. Resume the
+                // supervisor exactly between readiness and its cancellation wait.
+                resume.cancel();
+                assert!(rt::timeout(limit, system::wait_true(after_check))
+                    .await
+                    .unwrap());
+                assert!(
+                    !tree.core.cancel.is_cancelled(),
+                    "admission closure stole the supervisor's stop turn"
+                );
+                release.send(()).unwrap();
+                assert!(rt::timeout(limit, shutdown).await.unwrap().complete);
+                assert_eq!(*system::lock(&log), vec![201, 200, 100, 1, 0]);
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn startup_completion_or_drop_after_readiness_preserves_system_order() {
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::startup_completion_or_drop_after_readiness_preserves_system_order"
+            ),
+            async move {
+                use crate::tasks::ActorStart;
+                struct Ordered {
+                    id: u32,
+                    log: Arc<Mutex<Vec<u32>>>,
+                    entered: Option<rt::oneshot::Sender<()>>,
+                    release: Option<rt::oneshot::Receiver<()>>,
+                }
+                impl Actor for Ordered {
+                    async fn started(&mut self, ctx: &crate::tasks::Context<Self>) {
+                        // v0.8: stopped() records the order only for a trapping
+                        // child (E3, decision 2).
+                        ctx.trap_exit(true);
+                    }
+                    async fn stopped(&mut self, _: &crate::tasks::Context<Self>) {
+                        system::lock(&self.log).push(self.id);
+                        if let Some(entered) = self.entered.take() {
+                            let _ = entered.send(());
                         }
-                        Ok::<_, String>(Ordered {
-                            id: 100,
-                            log,
+                        if let Some(release) = self.release.take() {
+                            let _ = release.await;
+                        }
+                    }
+                }
+                for complete_start in [true, false] {
+                    let limit = Duration::from_secs(30);
+                    let system = ActorSystem::new().unwrap();
+                    let group = system.thread_group("fixed-order-2-1-2", 5).unwrap();
+                    let log = Arc::new(Mutex::new(Vec::new()));
+                    for id in 0..2 {
+                        Ordered {
+                            id,
+                            log: log.clone(),
                             entered: None,
                             release: None,
-                        })
+                        }
+                        .start_on(&group)
+                        .unwrap()
+                        .ready()
+                        .await
+                        .unwrap();
                     }
-                }))
-                .unwrap();
-            let core = builder.core.clone();
-            let mut startup = Box::pin(builder.start());
-            assert!(futures::poll!(startup.as_mut()).is_pending());
-            construct.send(()).unwrap();
-            assert!(
-                rt::timeout(limit, system::wait_true(core.ready.subscribe()))
-                    .await
+                    let mut builder = system.supervisor(SupervisorConfig::default()).unwrap();
+                    let child_log = log.clone();
+                    // Hold construction until start() has been polled once, so the
+                    // first poll is pending however fast the controller runs.
+                    let (construct, gate) = rt::oneshot::channel::<()>();
+                    let gate = Arc::new(Mutex::new(Some(gate)));
+                    builder
+                        .add(ChildSpec::new("middle", &group, move |_| {
+                            let log = child_log.clone();
+                            let gate = system::lock(&gate).take();
+                            async move {
+                                if let Some(gate) = gate {
+                                    let _ = gate.await;
+                                }
+                                Ok::<_, String>(Ordered {
+                                    id: 100,
+                                    log,
+                                    entered: None,
+                                    release: None,
+                                })
+                            }
+                        }))
+                        .unwrap();
+                    let core = builder.core.clone();
+                    let mut startup = Box::pin(builder.start());
+                    assert!(futures::poll!(startup.as_mut()).is_pending());
+                    construct.send(()).unwrap();
+                    assert!(
+                        rt::timeout(limit, system::wait_true(core.ready.subscribe()))
+                            .await
+                            .unwrap()
+                    );
+                    Ordered {
+                        id: 200,
+                        log: log.clone(),
+                        entered: None,
+                        release: None,
+                    }
+                    .start_on(&group)
                     .unwrap()
-            );
-            Ordered {
-                id: 200,
-                log: log.clone(),
-                entered: None,
-                release: None,
-            }
-            .start_on(&group)
-            .unwrap()
-            .ready()
-            .await
-            .unwrap();
-            let (entered, arrival) = rt::oneshot::channel();
-            let (release, gate) = rt::oneshot::channel();
-            Ordered {
-                id: 201,
-                log: log.clone(),
-                entered: Some(entered),
-                release: Some(gate),
-            }
-            .start_on(&group)
-            .unwrap()
-            .ready()
-            .await
-            .unwrap();
-            let shutdown = system.shutdown(limit);
-            tokio::pin!(shutdown);
-            assert!(futures::poll!(&mut shutdown).is_pending());
-            rt::timeout(limit, arrival).await.unwrap().unwrap();
-            // Readiness committed, but the caller has not observed start's result.
-            // Admission now closes while the later actor still owns the stop turn.
-            if complete_start {
-                assert!(rt::timeout(limit, startup.as_mut()).await.unwrap().is_ok());
-            } else {
-                drop(startup);
-            }
-            assert!(
-                !core.cancel.is_cancelled(),
-                "completed readiness was rolled back"
-            );
-            release.send(()).unwrap();
-            assert!(rt::timeout(limit, shutdown).await.unwrap().complete);
-            assert_eq!(*system::lock(&log), vec![201, 200, 100, 1, 0]);
-        }
+                    .ready()
+                    .await
+                    .unwrap();
+                    let (entered, arrival) = rt::oneshot::channel();
+                    let (release, gate) = rt::oneshot::channel();
+                    Ordered {
+                        id: 201,
+                        log: log.clone(),
+                        entered: Some(entered),
+                        release: Some(gate),
+                    }
+                    .start_on(&group)
+                    .unwrap()
+                    .ready()
+                    .await
+                    .unwrap();
+                    let shutdown = system.shutdown(limit);
+                    tokio::pin!(shutdown);
+                    assert!(futures::poll!(&mut shutdown).is_pending());
+                    rt::timeout(limit, arrival).await.unwrap().unwrap();
+                    // Readiness committed, but the caller has not observed start's result.
+                    // Admission now closes while the later actor still owns the stop turn.
+                    if complete_start {
+                        assert!(rt::timeout(limit, startup.as_mut()).await.unwrap().is_ok());
+                    } else {
+                        drop(startup);
+                    }
+                    assert!(
+                        !core.cancel.is_cancelled(),
+                        "completed readiness was rolled back"
+                    );
+                    release.send(()).unwrap();
+                    assert!(rt::timeout(limit, shutdown).await.unwrap().complete);
+                    assert_eq!(*system::lock(&log), vec![201, 200, 100, 1, 0]);
+                }
+            },
+        )
+        .await;
     }
 
     #[tokio::test]
     async fn startup_success_remains_historical_after_unobserved_ready_then_failure() {
-        struct Idle;
-        impl Actor for Idle {}
-        let limit = Duration::from_secs(30);
-        let system = ActorSystem::new().unwrap();
-        let group = system.async_group("historical-ready-failure", 1).unwrap();
-        let mut builder = system
-            .supervisor(SupervisorConfig {
-                max_restarts: 0,
-                ..SupervisorConfig::default()
-            })
-            .unwrap();
-        // Hold construction until start() has been polled once, so the
-        // first poll is pending however fast the controller runs.
-        let (construct, gate) = rt::oneshot::channel::<()>();
-        let gate = Arc::new(Mutex::new(Some(gate)));
-        let child = builder
-            .add(ChildSpec::new("ready-then-failed", &group, move |_| {
-                let gate = system::lock(&gate).take();
-                async move {
-                    if let Some(gate) = gate {
-                        let _ = gate.await;
-                    }
-                    Ok::<_, String>(Idle)
-                }
-            }))
-            .unwrap();
-        let core = builder.core.clone();
-        let mut startup = Box::pin(builder.start());
-        assert!(futures::poll!(startup.as_mut()).is_pending());
-        construct.send(()).unwrap();
-        assert!(
-            rt::timeout(limit, system::wait_true(core.ready.subscribe()))
-                .await
-                .unwrap()
-        );
-        child
-            .current()
-            .unwrap()
-            .context()
-            .stop_with_reason(ExitReason::Kill);
-        assert!(rt::timeout(limit, system::wait_true(core.done.subscribe()))
-            .await
-            .unwrap());
-        let tree = rt::timeout(limit, startup).await.unwrap().unwrap();
-        assert!(tree.failure().unwrap().contains("budget exhausted"));
-        assert!(system.shutdown(limit).await.complete);
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::startup_success_remains_historical_after_unobserved_ready_then_failure"
+            ),
+            async move {
+                struct Idle;
+                impl Actor for Idle {}
+                let limit = Duration::from_secs(30);
+                let system = ActorSystem::new().unwrap();
+                let group = system.async_group("historical-ready-failure", 1).unwrap();
+                let mut builder = system
+                    .supervisor(SupervisorConfig {
+                        max_restarts: 0,
+                        ..SupervisorConfig::default()
+                    })
+                    .unwrap();
+                // Hold construction until start() has been polled once, so the
+                // first poll is pending however fast the controller runs.
+                let (construct, gate) = rt::oneshot::channel::<()>();
+                let gate = Arc::new(Mutex::new(Some(gate)));
+                let child = builder
+                    .add(ChildSpec::new("ready-then-failed", &group, move |_| {
+                        let gate = system::lock(&gate).take();
+                        async move {
+                            if let Some(gate) = gate {
+                                let _ = gate.await;
+                            }
+                            Ok::<_, String>(Idle)
+                        }
+                    }))
+                    .unwrap();
+                let core = builder.core.clone();
+                let mut startup = Box::pin(builder.start());
+                assert!(futures::poll!(startup.as_mut()).is_pending());
+                construct.send(()).unwrap();
+                assert!(
+                    rt::timeout(limit, system::wait_true(core.ready.subscribe()))
+                        .await
+                        .unwrap()
+                );
+                child
+                    .current()
+                    .unwrap()
+                    .context()
+                    .stop_with_reason(ExitReason::Kill);
+                assert!(rt::timeout(limit, system::wait_true(core.done.subscribe()))
+                    .await
+                    .unwrap());
+                let tree = rt::timeout(limit, startup).await.unwrap().unwrap();
+                assert!(tree.failure().unwrap().contains("budget exhausted"));
+                assert!(system.shutdown(limit).await.complete);
+            },
+        )
+        .await;
     }
 
     #[tokio::test]
     async fn started_failures_allow_n_restarts_and_escalate_the_next_failure() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        struct FailsStarted(Arc<AtomicUsize>);
-        impl Actor for FailsStarted {
-            async fn started(&mut self, _: &crate::tasks::Context<Self>) {
-                self.0.fetch_add(1, Ordering::SeqCst);
-                panic!("injected started failure");
-            }
-        }
-        for allowed in [0, 1, 3] {
-            let system = ActorSystem::new().unwrap();
-            let group = system.async_group("started-budget", 1).unwrap();
-            let count = Arc::new(AtomicUsize::new(0));
-            let attempts = count.clone();
-            let mut builder = system
-                .supervisor(SupervisorConfig {
-                    max_restarts: allowed,
-                    backoff: Backoff {
-                        initial: Duration::ZERO,
-                        maximum: Duration::ZERO,
-                        jitter: false,
-                        ..Backoff::default()
-                    },
-                    ..SupervisorConfig::default()
-                })
-                .unwrap();
-            let child = builder
-                .add(ChildSpec::new("startup-failure", &group, move |_| {
-                    let attempts = attempts.clone();
-                    async move { Ok::<_, String>(FailsStarted(attempts)) }
-                }))
-                .unwrap();
-            let core = builder.core.clone();
-            assert!(matches!(
-                rt::timeout(Duration::from_secs(30), builder.start())
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::started_failures_allow_n_restarts_and_escalate_the_next_failure"
+            ),
+            async move {
+                use std::sync::atomic::{AtomicUsize, Ordering};
+                // v0.8 (S1): a first start is not retried, so the first generation
+                // is healthy and every replacement panics in started().
+                struct FailsStarted(Arc<AtomicUsize>, bool);
+                impl Actor for FailsStarted {
+                    async fn started(&mut self, _: &crate::tasks::Context<Self>) {
+                        if self.1 {
+                            self.0.fetch_add(1, Ordering::SeqCst);
+                            panic!("injected started failure");
+                        }
+                    }
+                }
+                for allowed in [0, 1, 3] {
+                    let system = ActorSystem::new().unwrap();
+                    let group = system.async_group("started-budget", 1).unwrap();
+                    let count = Arc::new(AtomicUsize::new(0));
+                    let attempts = count.clone();
+                    let mut builder = system
+                        .supervisor(SupervisorConfig {
+                            max_restarts: allowed,
+                            backoff: Backoff {
+                                initial: Duration::ZERO,
+                                maximum: Duration::ZERO,
+                                jitter: false,
+                                ..Backoff::default()
+                            },
+                            ..SupervisorConfig::default()
+                        })
+                        .unwrap();
+                    let child = builder
+                        .add(ChildSpec::new("startup-failure", &group, move |ctx| {
+                            let attempts = attempts.clone();
+                            let fail = ctx.generation() > 1;
+                            async move { Ok::<_, String>(FailsStarted(attempts, fail)) }
+                        }))
+                        .unwrap();
+                    let core = builder.core.clone();
+                    rt::timeout(Duration::from_secs(30), builder.start())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    child.current().unwrap().child_handle().kill();
+                    assert!(rt::timeout(
+                        Duration::from_secs(30),
+                        system::wait_true(core.done.subscribe())
+                    )
                     .await
-                    .unwrap(),
-                Err(SupervisorError::Failed(_))
-            ));
-            assert!(rt::timeout(
-                Duration::from_secs(30),
-                system::wait_true(core.done.subscribe())
-            )
-            .await
-            .unwrap());
-            assert_eq!(count.load(Ordering::SeqCst), allowed + 1);
-            assert_eq!(child.snapshot().generation as usize, allowed + 1);
-            assert_eq!(
-                system::lock(&core.failure).as_ref().unwrap().kind,
-                FailureKind::RestartBudget
-            );
-            assert_eq!(child.snapshot().state, ChildState::Failed);
-            assert!(system.shutdown(Duration::from_secs(30)).await.complete);
-        }
+                    .unwrap());
+                    assert_eq!(count.load(Ordering::SeqCst), allowed);
+                    assert_eq!(child.snapshot().generation as usize, allowed + 1);
+                    assert_eq!(
+                        system::lock(&core.failure).as_ref().unwrap().kind,
+                        FailureKind::RestartBudget
+                    );
+                    assert_eq!(child.snapshot().state, ChildState::Failed);
+                    assert!(system.shutdown(Duration::from_secs(30)).await.complete);
+                }
+            },
+        )
+        .await;
     }
 
     #[tokio::test]
     async fn sliding_window_expires_only_old_grants_before_the_next_retry() {
-        let system = ActorSystem::new().unwrap();
-        let group = system.async_group("sliding-budget", 1).unwrap();
-        let window = Duration::from_secs(3600);
-        let mut builder = system
-            .supervisor(SupervisorConfig {
-                max_restarts: 2,
-                restart_window: window,
-                backoff: Backoff {
-                    initial: Duration::ZERO,
-                    maximum: Duration::ZERO,
-                    jitter: false,
-                    ..Backoff::default()
-                },
-                ..SupervisorConfig::default()
-            })
-            .unwrap();
-        let child = builder
-            .add(ChildSpec::new("worker", &group, |_| async {
-                Ok::<_, String>(CoordinatorWorker)
-            }))
-            .unwrap();
-        let core = builder.core.clone();
-        let tree = builder.start().await.unwrap();
-        let mut actor = child.current().unwrap();
-        for generation in 1..=2 {
-            actor
-                .child_handle()
-                .stop_with_reason(ExitReason::Panic("retry".into()));
-            actor = rt::timeout(
-                Duration::from_secs(30),
-                child.wait_for_generation(generation),
-            )
-            .await
-            .unwrap()
-            .unwrap();
-        }
-        {
-            let mut budget = system::lock(&core.budget);
-            assert_eq!(budget.attempts.len(), 2);
-            // Control just the oldest timestamp; the real controller still owns
-            // admission and retry. The second grant remains inside the window.
-            budget.attempts[0] = Instant::now().checked_sub(window).unwrap();
-        }
-        actor
-            .child_handle()
-            .stop_with_reason(ExitReason::Panic("expired oldest".into()));
-        let fourth = rt::timeout(Duration::from_secs(30), child.wait_for_generation(3))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(system::lock(&core.budget).attempts.len(), 2);
-        fourth
-            .child_handle()
-            .stop_with_reason(ExitReason::Panic("now exhausted".into()));
-        rt::timeout(Duration::from_secs(30), tree.join())
-            .await
-            .unwrap();
-        assert_eq!(child.snapshot().generation, 4);
-        assert_eq!(
-            system::lock(&core.failure).as_ref().unwrap().kind,
-            FailureKind::RestartBudget
-        );
-        assert!(system.shutdown(Duration::from_secs(30)).await.complete);
-    }
-
-    #[tokio::test]
-    async fn supersession_before_generation_admission_refunds_the_retry() {
-        let limit = Duration::from_secs(30);
-        let system = ActorSystem::new().unwrap();
-        let group = system
-            .async_group("refund-superseded-admission", 2)
-            .unwrap();
-        let mut builder = system
-            .supervisor(SupervisorConfig {
-                strategy: SupervisorStrategy::RestForOne,
-                max_restarts: 3,
-                backoff: Backoff {
-                    initial: Duration::ZERO,
-                    maximum: Duration::ZERO,
-                    jitter: false,
-                    ..Backoff::default()
-                },
-                ..SupervisorConfig::default()
-            })
-            .unwrap();
-        let mut children = Vec::new();
-        for name in ["upstream", "middle", "tail"] {
-            children.push(
-                builder
-                    .add(ChildSpec::new(name, &group, |_| async {
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::sliding_window_expires_only_old_grants_before_the_next_retry"
+            ),
+            async move {
+                let system = ActorSystem::new().unwrap();
+                let group = system.async_group("sliding-budget", 1).unwrap();
+                let window = Duration::from_secs(3600);
+                let mut builder = system
+                    .supervisor(SupervisorConfig {
+                        max_restarts: 2,
+                        restart_window: window,
+                        backoff: Backoff {
+                            initial: Duration::ZERO,
+                            maximum: Duration::ZERO,
+                            jitter: false,
+                            ..Backoff::default()
+                        },
+                        ..SupervisorConfig::default()
+                    })
+                    .unwrap();
+                let child = builder
+                    .add(ChildSpec::new("worker", &group, |_| async {
                         Ok::<_, String>(CoordinatorWorker)
                     }))
-                    .unwrap(),
-            );
-        }
-        let core = builder.core.clone();
-        let tree = builder.start().await.unwrap();
-        let resume = CancellationToken::new();
-        let (entered, arrival) = watch::channel(false);
-        *system::lock(&core.retry_admission_pause) = Some((resume.clone(), entered));
-        children[1]
-            .current()
-            .unwrap()
-            .child_handle()
-            .stop_with_reason(ExitReason::Panic("middle fails".into()));
-        assert!(rt::timeout(limit, system::wait_true(arrival))
-            .await
-            .unwrap());
-        let old_round = system::lock(&children[1].view.data)
-            .recovery
-            .as_ref()
-            .unwrap()
-            .meta
-            .id;
-        {
-            let budget = system::lock(&core.budget);
-            assert!(
-                budget.attempts.is_empty(),
-                "an unadmitted generation was charged"
-            );
-            assert_eq!(budget.reserved, 1);
-        }
-        children[0]
-            .current()
-            .unwrap()
-            .child_handle()
-            .stop_with_reason(ExitReason::Panic("upstream supersedes".into()));
-        let _new_round = rt::timeout(limit, children[1].view.next_recovery(old_round))
-            .await
-            .unwrap();
-        resume.cancel();
-        for child in &children {
-            rt::timeout(limit, child.wait_for_generation(1))
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(child.snapshot().generation, 2);
-        }
-        assert!(tree.failure().is_none());
-        {
-            let budget = system::lock(&core.budget);
-            assert_eq!(budget.attempts.len(), 3);
-            assert_eq!(budget.reserved, 0);
-        }
-        assert!(system.shutdown(limit).await.complete);
+                    .unwrap();
+                let core = builder.core.clone();
+                let tree = builder.start().await.unwrap();
+                let mut actor = child.current().unwrap();
+                for generation in 1..=2 {
+                    actor
+                        .child_handle()
+                        .stop_with_reason(ExitReason::Panic("retry".into()));
+                    actor = rt::timeout(
+                        Duration::from_secs(30),
+                        child.wait_for_generation(generation),
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                }
+                {
+                    let mut budget = system::lock(&core.budget);
+                    assert_eq!(budget.attempts.len(), 2);
+                    // Control just the oldest timestamp; the real controller still owns
+                    // admission and retry. The second grant remains inside the window.
+                    budget.attempts[0] = Instant::now().checked_sub(window).unwrap();
+                }
+                actor
+                    .child_handle()
+                    .stop_with_reason(ExitReason::Panic("expired oldest".into()));
+                let fourth = rt::timeout(Duration::from_secs(30), child.wait_for_generation(3))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(system::lock(&core.budget).attempts.len(), 2);
+                fourth
+                    .child_handle()
+                    .stop_with_reason(ExitReason::Panic("now exhausted".into()));
+                rt::timeout(Duration::from_secs(30), tree.join())
+                    .await
+                    .unwrap();
+                assert_eq!(child.snapshot().generation, 4);
+                assert_eq!(
+                    system::lock(&core.failure).as_ref().unwrap().kind,
+                    FailureKind::RestartBudget
+                );
+                assert!(system.shutdown(Duration::from_secs(30)).await.complete);
+            },
+        )
+        .await;
+    }
+
+    /// OTP charges `add_restart` when it decides a restart, before the
+    /// cohort is rebuilt: a superseded round keeps its charge, and the
+    /// superseding round is charged once more.
+    #[tokio::test]
+    async fn supersession_charges_each_selected_round_once() {
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::supersession_charges_each_selected_round_once"
+            ),
+            async move {
+                let limit = Duration::from_secs(30);
+                let system = ActorSystem::new().unwrap();
+                let group = system
+                    .async_group("refund-superseded-admission", 2)
+                    .unwrap();
+                let mut builder = system
+                    .supervisor(SupervisorConfig {
+                        strategy: SupervisorStrategy::RestForOne,
+                        max_restarts: 3,
+                        backoff: Backoff {
+                            initial: Duration::ZERO,
+                            maximum: Duration::ZERO,
+                            jitter: false,
+                            ..Backoff::default()
+                        },
+                        ..SupervisorConfig::default()
+                    })
+                    .unwrap();
+                let mut children = Vec::new();
+                for name in ["upstream", "middle", "tail"] {
+                    children.push(
+                        builder
+                            .add(ChildSpec::new(name, &group, |_| async {
+                                Ok::<_, String>(CoordinatorWorker)
+                            }))
+                            .unwrap(),
+                    );
+                }
+                let core = builder.core.clone();
+                let tree = builder.start().await.unwrap();
+                let resume = CancellationToken::new();
+                let (entered, arrival) = watch::channel(false);
+                *system::lock(&core.retry_admission_pause) = Some((resume.clone(), entered));
+                children[1]
+                    .current()
+                    .unwrap()
+                    .child_handle()
+                    .stop_with_reason(ExitReason::Panic("middle fails".into()));
+                assert!(rt::timeout(limit, system::wait_true(arrival))
+                    .await
+                    .unwrap());
+                let old_round = system::lock(&children[1].view.data)
+                    .recovery
+                    .as_ref()
+                    .unwrap()
+                    .meta
+                    .id;
+                {
+                    let budget = system::lock(&core.budget);
+                    // The round was charged once, at selection; its rebuilds hold
+                    // no reservation of their own.
+                    assert_eq!(budget.attempts.len(), 1);
+                    assert_eq!(budget.reserved, 0);
+                }
+                children[0]
+                    .current()
+                    .unwrap()
+                    .child_handle()
+                    .stop_with_reason(ExitReason::Panic("upstream supersedes".into()));
+                let _new_round = rt::timeout(limit, children[1].view.next_recovery(old_round))
+                    .await
+                    .unwrap();
+                resume.cancel();
+                for child in &children {
+                    rt::timeout(limit, child.wait_for_generation(1))
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(child.snapshot().generation, 2);
+                }
+                assert!(tree.failure().is_none());
+                {
+                    let budget = system::lock(&core.budget);
+                    // Two restart actions: the superseded round and its successor,
+                    // however many children each rebuilt.
+                    assert_eq!(budget.attempts.len(), 2);
+                    assert_eq!(budget.reserved, 0);
+                }
+                assert!(system.shutdown(limit).await.complete);
+            },
+        )
+        .await;
     }
 
     #[tokio::test]
-    async fn cohort_budget_retains_v07_per_child_grant_accounting() {
-        let limit = Duration::from_secs(30);
-        let system = ActorSystem::new().unwrap();
-        let group = system.async_group("cohort-budget-contract", 2).unwrap();
-        let mut builder = system
-            .supervisor(SupervisorConfig {
-                strategy: SupervisorStrategy::OneForAll,
-                max_restarts: 5,
-                backoff: Backoff {
-                    initial: Duration::ZERO,
-                    maximum: Duration::ZERO,
-                    jitter: false,
-                    ..Backoff::default()
-                },
-                ..SupervisorConfig::default()
-            })
-            .unwrap();
-        let mut children = Vec::new();
-        for index in 0..6 {
-            children.push(
-                builder
-                    .add(ChildSpec::new(
-                        format!("worker-{index}"),
-                        &group,
-                        |_| async { Ok::<_, String>(CoordinatorWorker) },
-                    ))
-                    .unwrap(),
-            );
-        }
-        let tree = builder.start().await.unwrap();
-        children[5]
-            .current()
-            .unwrap()
-            .child_handle()
-            .stop_with_reason(ExitReason::Panic("last child fails".into()));
-        rt::timeout(limit, tree.join()).await.unwrap();
-        assert!(tree.failure().unwrap().contains("budget exhausted"));
-        assert_eq!(
-            children
-                .iter()
-                .map(|child| child.snapshot().generation)
-                .collect::<Vec<_>>(),
-            vec![2, 2, 2, 2, 2, 1]
-        );
-        assert!(system.shutdown(limit).await.complete);
+    async fn cohort_round_takes_one_grant_for_all_rebuilt_children() {
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::cohort_round_takes_one_grant_for_all_rebuilt_children"
+            ),
+            async move {
+                let limit = Duration::from_secs(30);
+                let system = ActorSystem::new().unwrap();
+                let group = system.async_group("cohort-budget-contract", 2).unwrap();
+                let mut builder = system
+                    .supervisor(SupervisorConfig {
+                        strategy: SupervisorStrategy::OneForAll,
+                        max_restarts: 1,
+                        backoff: Backoff {
+                            initial: Duration::ZERO,
+                            maximum: Duration::ZERO,
+                            jitter: false,
+                            ..Backoff::default()
+                        },
+                        ..SupervisorConfig::default()
+                    })
+                    .unwrap();
+                let mut children = Vec::new();
+                for index in 0..6 {
+                    children.push(
+                        builder
+                            .add(ChildSpec::new(
+                                format!("worker-{index}"),
+                                &group,
+                                |_| async { Ok::<_, String>(CoordinatorWorker) },
+                            ))
+                            .unwrap(),
+                    );
+                }
+                let core = builder.core.clone();
+                let tree = builder.start().await.unwrap();
+                children[5]
+                    .current()
+                    .unwrap()
+                    .child_handle()
+                    .stop_with_reason(ExitReason::Panic("last child fails".into()));
+                // One grant rebuilds all six children (one restart action).
+                for child in &children {
+                    rt::timeout(limit, child.wait_for_generation(1))
+                        .await
+                        .unwrap()
+                        .unwrap();
+                }
+                assert!(tree.failure().is_none());
+                assert_eq!(system::lock(&core.budget).attempts.len(), 1);
+                children[5]
+                    .current()
+                    .unwrap()
+                    .child_handle()
+                    .stop_with_reason(ExitReason::Panic("second failure".into()));
+                rt::timeout(limit, tree.join()).await.unwrap();
+                assert!(tree
+                    .failure()
+                    .unwrap()
+                    .contains("budget exhausted by worker-5"));
+                assert_eq!(
+                    children
+                        .iter()
+                        .map(|child| child.snapshot().generation)
+                        .collect::<Vec<_>>(),
+                    vec![2; 6]
+                );
+                assert!(system.shutdown(limit).await.complete);
+            },
+        )
+        .await;
     }
 
     #[tokio::test]
     async fn retry_reservations_exclude_siblings_and_refund_interrupted_backoff() {
-        let system = ActorSystem::new().unwrap();
-        let tree = system
-            .supervisor(SupervisorConfig {
-                max_restarts: 1,
-                ..SupervisorConfig::default()
-            })
-            .unwrap();
-        let reservation = tree.core.reserve_retry(1).unwrap();
-        assert!(tree.core.reserve_retry(2).is_none());
-        assert_eq!(system::lock(&tree.core.budget).attempts.len(), 0);
-        drop(reservation);
-        let mut replacement = tree.core.reserve_retry(2).unwrap();
-        tree.core.close();
-        assert!(!trace::atomic(|| tree.core.retry(&mut replacement)));
-        drop(replacement);
-        {
-            let budget = system::lock(&tree.core.budget);
-            assert!(budget.attempts.is_empty());
-            assert_eq!(budget.reserved, 0);
-        }
-        drop(tree);
-        assert!(system.shutdown(Duration::from_secs(10)).await.complete);
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::retry_reservations_exclude_siblings_and_refund_interrupted_backoff"
+            ),
+            async move {
+                let system = ActorSystem::new().unwrap();
+                let tree = system
+                    .supervisor(SupervisorConfig {
+                        max_restarts: 1,
+                        ..SupervisorConfig::default()
+                    })
+                    .unwrap();
+                let reservation = tree.core.reserve_retry(1).unwrap();
+                assert!(tree.core.reserve_retry(2).is_none());
+                assert_eq!(system::lock(&tree.core.budget).attempts.len(), 0);
+                drop(reservation);
+                let mut replacement = tree.core.reserve_retry(2).unwrap();
+                tree.core.close();
+                assert!(!trace::atomic(|| tree.core.retry(&mut replacement)));
+                drop(replacement);
+                {
+                    let budget = system::lock(&tree.core.budget);
+                    assert!(budget.attempts.is_empty());
+                    assert_eq!(budget.reserved, 0);
+                }
+                drop(tree);
+                assert!(system.shutdown(Duration::from_secs(10)).await.complete);
+            },
+        )
+        .await;
     }
 
     #[test]

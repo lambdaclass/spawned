@@ -134,6 +134,14 @@ for model in $models; do
         # TemporaryStartsOnce: restart regardless of mode and exit reason.
         mutate "$module" restart-policy Supervision.tla \
           's/ELSE IF Retries\(Mode\[c\], exitR\[c\], readyGen\[c\], initial\[c\]\) THEN/ELSE IF TRUE THEN/' IndInv
+        # H_first (S1): v0.7's retry of a failed first start (restart before
+        # the tree committed ready).
+        mutate "$module" first-start-retry Supervision.tla \
+          's/    init \/\\ \(Restarts\(m, r\) \\\/ \(~ready \/\\ m # "Temporary"\)\)/    Restarts(m, r) \\\/ (~ready \/\\ init \/\\ m # "Temporary")/' IndInv
+        # H_first (S1): v0.7's immediate restart of a ready child that exits
+        # during the initial start (no deferral).
+        mutate "$module" no-deferral Supervision.tla \
+          's/(Decide\(c\) ==\s*\/\\ pc\[c\] = "decide")\s*\/\\ ~\(open \/\\ ~sready \/\\ readyGen\[c\]\)/$1/s' IndInv
         # AtMostOneGeneration: a self-exit skips cleanup and goes straight to decide.
         mutate "$module" skip-cleanup Supervision.tla \
           's/(SelfExit\(c, r\) ==.*?)Goto\(c, "cleanup"\)/$1Goto(c, "decide")/s' IndInv
@@ -153,7 +161,7 @@ for model in $models; do
     Cohorts|Nested)
       module="MC${model}Ind"
       if [[ "$model" == Cohorts ]]; then
-        probes=NoMidRoundState faults="Selection Cleanup Retirement Closed InPlaceRetry"
+        probes=NoMidRoundState faults="Selection Cleanup Retirement Closed InPlaceRetry FirstStartRetry PerChildCharge"
       else
         probes=NoFinishedSubtree faults="Join Closed"
       fi
@@ -187,7 +195,9 @@ for model in $models; do
         # without signalling the remaining targets (JoinAfterAllSignalled);
         # RollbackReady: the #209 bug, a ready root stopped by its startup
         # rollback outside the coordinator's order (OrderedShutdown).
-        for fault in ReleaseEarly ForgetFailure ForgetSignal RollbackReady; do
+        # NoKillAtGrace / KillEarly: v0.8 grace-expiry kill missing, or sent
+        # before the grace expired (GraceKillsRemaining, KillOnlyAtGrace).
+        for fault in ReleaseEarly ForgetFailure ForgetSignal RollbackReady NoKillAtGrace KillEarly; do
           mutate "$module" "$fault" "$module.tla" \
             "s/OVERRIDE_Fault == \"None\"/OVERRIDE_Fault == \"$fault\"/" IndInv 4
         done

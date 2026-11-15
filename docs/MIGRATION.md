@@ -5,6 +5,332 @@ every change; this guide covers what you need to edit when upgrading.
 
 ## Unreleased
 
+### 0.7 to 0.8: API call-site table
+
+0.8 is a breaking release. Every renamed or reshaped call is listed here
+(old call, new call); the sections below explain the semantics. Rows marked
+*(0.8 pre-release)* changed an API that only existed on the 0.8 branch
+(ported clients used it), not in 0.7.
+
+| Old call | New call |
+|---|---|
+| `ctx.pipe(work_future, done)` *(0.8 pre-release)* | `ctx.pipe(JobOptions::new(), \|_\| work_future, done)` |
+| `ctx.pipe_with(opts, work_future, done)` *(0.8 pre-release)* | `ctx.pipe(opts, \|_\| work_future, done)` |
+| `ctx.pipe_with_ctx(opts, \|job\| fut, done)` *(0.8 pre-release)* | `ctx.pipe(opts, \|job\| fut, done)` |
+| `ctx.pipe_keyed(key, work_future, done)` *(0.8 pre-release)* | `ctx.pipe(JobOptions::new().key(key), \|_\| work_future, done)` |
+| `ctx.pipe_blocking_with(opts, \|job: &JobCtx<_>\| .., done)` *(0.8 pre-release)* | `ctx.pipe_blocking(opts, \|job: JobCtx<_>\| .., done)` (the job context is passed by value) |
+| `ctx.pipe_reply(token, work_future, done)` *(0.8 pre-release)* | `ctx.pipe_reply(JobOptions::new(), token, \|_\| work_future, done)` |
+| `ctx.pipe_reply_with(opts, token, work_future, done)` *(0.8 pre-release)* | `ctx.pipe_reply(opts, token, \|_\| work_future, done)` |
+| `ctx.pipe_reply_blocking_with(opts, token, work, done)` *(0.8 pre-release)* | `ctx.pipe_reply_blocking(opts, token, work, done)` |
+| `ctx.reserve_job()?.pipe_with(opts, work, done)` *(0.8 pre-release)* | `ctx.reserve_job(opts)?.pipe(\|_\| work, done)` |
+| `ctx.reserve_blocking_job()?.pipe_blocking_with(opts, work, done)` *(0.8 pre-release)* | `ctx.reserve_blocking_job(opts)?.pipe_blocking(work, done)` |
+| `JobOptions { deadline: Some(at), key: Some(k), emit_credits: n, cancel_on_caller_gone: true }` *(0.8 pre-release)* | `JobOptions::new().deadline(at).key(k).emit_credits(NonZeroU16::new(n).unwrap()).cancel_on_caller_gone()` |
+| `JobOptions::default().deadline_after(d)` *(0.8 pre-release)* | `JobOptions::new().deadline(d)` (a `Duration`, an `Instant` or a `Deadline`) |
+| `JobOutcome::Ok(v)` / `JobOutcome::Err(e)` / `outcome.into_result()` *(0.8 pre-release)* | `Ok(v)` / `Err(e)` / `outcome` (`JobOutcome<T>` is `Result<T, JobError>`) |
+| `PipeError { kind: PipeErrorKind::Overloaded }`, `e.kind` *(0.8 pre-release)* | `PipeError::Overloaded`, `e` |
+| `PipeReplyError::Failed { token, kind }` *(0.8 pre-release)* | `PipeReplyError::Failed { token, error }` (`#[non_exhaustive]`) |
+| `DEFAULT_EMIT_CREDITS`, `default_max_native_jobs()` *(0.8 pre-release)* | removed from the public API (the defaults, 16 and `min(4, cores)`, are documented) |
+| `actor.request_raw(msg)` (0.7: no deadline) | `actor.send_request(msg, Deadline::Never)` (or a `Duration` / `Instant`) |
+| `actor.request_raw_until(msg, deadline)` *(0.8 pre-release)* | `actor.send_request(msg, deadline)` |
+| `Response::from_with_timeout(actor.request_raw(msg), t)` | `Response::from(actor.send_request(msg, t))` |
+| a `Recipient<M>` call `recipient.request_raw(msg)` | `recipient.send_request(msg, deadline)` (`Deadline`); implementing `Receiver<M>` is no longer possible (sealed, see below) |
+| `reply.deadline()` / `token.deadline()` / `rx.deadline()` returning `Option<Instant>` *(0.8 pre-release)* | return `Deadline` (`Deadline::Never` for none); forward with `other.send_request(msg, token.deadline())` |
+| `token.with_deadline(at)` *(0.8 pre-release)* | `token.shorten_deadline(at)` (a `Duration`, an `Instant` or a `Deadline`) |
+| `reply.has_caller()` *(0.8 pre-release)* | removed: `reply.defer()` returns `Err(DeferError::NoCaller)` for a send |
+| `PendingReply::detached()` *(0.8 pre-release)* | `spawned_test::detached_reply()` |
+| `PendingReplies::{purge, retained, live}` *(0.8 pre-release)* | `len()` / `is_empty()` (live tokens); purging is automatic on `insert` |
+| `InsertError<ReplyTo<R>>` *(0.8 pre-release)* | `InsertError<R>` (`#[non_exhaustive]`): match on `refused.kind()` (`InsertErrorKind`, also non-exhaustive) or take `let (kind, token) = refused.into_parts()`, so a wildcard arm still answers the token (e.g. `token.overloaded()`) instead of dropping it (`ReplyDropped`) |
+| `DEFAULT_MAX_OUTSTANDING` *(0.8 pre-release)* | removed from the public API (`Actor::MAX_OUTSTANDING` defaults to 1024) |
+| `system.shutdown(deadline)`, `supervisor.shutdown(deadline)`, `report.wait(deadline)` | unchanged calls; the `Duration` parameter is named `grace` (a deadline is an instant in 0.8) |
+| `Down { monitor_ref, reason }` (pattern) | `Down { monitor_ref, reason, .. }`; `Down` gains `actor: ActorId` (the monitored actor) and, like `Exit`, is `#[non_exhaustive]` |
+| exhaustive `match` on `SupervisorError`, `SystemError`, `HelperError`, `RegistryError`, `SupervisorStrategy`, `ExecutionProfile`, `ChildState`, `Backend`, `spawned_test::Outcome` | add a wildcard arm (all `#[non_exhaustive]`) |
+| struct literal or exhaustive pattern of `ChildSnapshot`, `SupervisorReport`, `ActorExit`, `metrics::Snapshot`, `HistogramSnapshot` | read the fields; patterns need `..` (all `#[non_exhaustive]`) |
+| `SupervisorConfig { strategy: s, max_restarts: n, ..Default::default() }` | `SupervisorConfig::new().strategy(s).max_restarts(n)` (or assign fields of `SupervisorConfig::default()`) |
+| `Backoff { initial: a, jitter: false, seed: Some(7), ..Default::default() }` | `Backoff::new().initial(a).jitter(false).seed(7)` |
+| `metrics::Config { timing_sample_every: n }` | `metrics::Config::new().timing_sample_every(n)` |
+| `#[handler]` on an `#[actor]` method | `#[request_handler]` (answers with the return value) or `#[send_handler]` |
+| `#[send_handler]` method returning a value | `#[request_handler]` (a send handler must return `()`; it used to answer a `request` with the value) |
+| `impl Receiver<M> for MyType` | not possible: `Receiver` is sealed (use `ActorRef`/`Context`, or `spawned_test`'s probe) |
+| `spawned_concurrency::reply::{PendingReply, ReplyTo, ..}` | `spawned_concurrency::{PendingReply, ReplyTo, ..}` (the `reply` module is hidden; jobs types are under `tasks::`/`threads::`) |
+| `actor.__in_turn(f)`, `reply.__discharge_stopped()`, `reply::reply_pair` *(0.8 pre-release, hidden)* | `spawned_test::{tasks, threads}::in_actor`, `spawned_test::reply_pair()`, `spawned_test::detached_reply()` |
+| `spawned_concurrency::lifecycle_trace` without the `lifecycle-trace` feature | only with the feature (test-only, no stability promise) |
+| `spawned_rt::time::{to_ticks, from_ticks, now_ticks, MAX_TICKS}` | still public for spawned-concurrency, `#[doc(hidden)]`, no stability promise |
+| `Context::from_ref(&actor_ref)` | `actor_ref.context()` |
+| `child_handle.shutdown()` | `child_handle.stop_with_reason(ExitReason::Shutdown)` |
+| tasks: `actor.query().unwrap()` without `.await` (panicked) | off a runtime it now waits for the reply; inside one it still panics: `actor.query().await.unwrap()` |
+| tasks: `response.is_ok()` / `is_err()` on an un-awaited response (answered `false`) | panics: `.await` it, or `response.into_result().is_ok()` off a runtime |
+
+### Exit signals, startup and runtime drops as in OTP (ranks 5e, 5f, 5g, targets 0.8, in progress)
+
+Design: [otp-exit-signals.md](design/otp-exit-signals.md) (its migration
+table is the full list). What to edit:
+
+- **`match` on `ExitReason`**: add a wildcard arm (`#[non_exhaustive]`, new
+  `Killed` and `NoProc`).
+- **`demonitor` flushes** (OTP `demonitor(Ref, [flush])`): a `Down` of that
+  monitor already in the mailbox is no longer handled. Code that demonitored
+  and then expected a racing `Down` (or tolerated one) needs no change; code
+  that relied on a queued `Down` arriving after `demonitor` must stop
+  demonitoring, or read `ChildHandle::exit_reason()`.
+- **`max_restarts` with OneForAll/RestForOne counts rounds** (rank 5f): one
+  recovery round takes one grant, however many children it rebuilds (v0.7
+  charged each rebuilt child). A cohort supervisor now tolerates more
+  failures for the same `max_restarts`; if you had raised it to cover
+  collateral rebuilds (for example `failures × children`), lower it to the
+  number of failures you mean to allow. OneForOne is unchanged.
+- **Kill from outside**: `ChildHandle::kill()` is the untrappable kill; the
+  actor ends `Killed` and `stopped()` is skipped unless already running.
+  `stop_with_reason(Kill)` stays an administrative stop ending `Kill`.
+- **`stopped()` no longer always runs.** It is skipped when the exit is begun
+  by a kill, an untrapped exit signal or link notice (a linked peer's
+  abnormal death), or a runtime drop (decision 2, as OTP skips `terminate`).
+  Cleanup that must run on every exit belongs in `Drop`. **To notice a
+  skip**, enable `debug` logs for `spawned_concurrency`: every skipped
+  `stopped()` logs `event = "stopped_skipped"` with the actor id and type,
+  `cause` (`kill`, `exit_signal`, `runtime_drop`) and `reason`. It is logged
+  for every skip, also for actors that do not override `stopped()`. The
+  remedy for a supervised actor is `ctx.trap_exit(true)` in `started()`
+  (below).
+
+> **Supervised and system-owned actors: `stopped()` is skipped on shutdown
+> unless the actor traps exits.** Supervisor and system shutdown send the
+> parent's `Shutdown` exit signal (OTP `exit(Child, shutdown)`). A
+> non-trapping child ends `Shutdown` at once (after its current handler)
+> **without `stopped()`**, as a gen_server that does not trap exits skips
+> `terminate`. An actor that needs `stopped()` for cleanup on shutdown must
+> trap exits, as in OTP; it then finishes the messages queued before the
+> shutdown and runs `stopped()`. A child that has not finished within its
+> `shutdown_timeout` is killed (`Killed`, `stopped()` skipped if it has not
+> begun); cleanup counts as stuck only after a second `shutdown_timeout`.
+> Unmanaged `.start()` actors have no parent and are unaffected.
+>
+> ```rust
+> #[actor(protocol = StoreProtocol)]
+> impl Store {
+>     #[started]
+>     async fn started(&mut self, ctx: &Context<Self>) {
+>         // v0.8: needed for stopped() to run on supervisor/system shutdown.
+>         ctx.trap_exit(true);
+>     }
+>
+>     #[stopped]
+>     async fn stopped(&mut self, _ctx: &Context<Self>) {
+>         self.flush_to_disk().await;
+>     }
+> }
+> ```
+>
+> A trapping actor also receives linked peers' deaths as `Exit` messages
+> (`exit_received`) instead of dying with them; trap only where that is
+> intended, or move the cleanup into `Drop`.
+>
+> A trapping actor still handles the messages queued before the shutdown. To
+> refuse that late work, check the new `ctx.exit_pending()` (both modes): it
+> is `true` once the actor's exit has begun or the parent's exit is queued
+> behind the current message (a peer's trapped `Exit` does not count). It is
+> advisory: a signal can arrive right after it returns `false`.
+
+- **Runtime drop** reports `Killed` (was `Kill` in tasks mode,
+  `Panic("unexpected framework panic")` in threads mode).
+- **Late link or monitor**: to an actor past its death point, `monitor`
+  delivers `Down { reason: NoProc }` and `link` delivers `NoProc` (a
+  non-trapping caller exits `NoProc`). Use `ctx.try_link` to get
+  `Err(NoProc)` instead, and `ChildHandle::exit_reason()` for the real
+  reason. `link` from an actor whose exit already began is inert.
+- **A late signal during exit**: a non-`Normal` link notice or exit signal
+  that reaches a non-trapping actor while it exits (for example during its
+  `stopped()`) now replaces its reason. The regression test
+  `late_link_failure_cannot_relabel_an_already_requested_normal_stop` was
+  inverted deliberately into
+  `late_link_failure_relabels_an_already_requested_normal_stop`.
+- **Panic in `stopped()`** after an abnormal reason now becomes the reason
+  (`Panic("panic in stopped(): ..")`), except after a kill.
+- **Destructor panics** (actor state, queued messages) after the death point
+  no longer change the exit reason: a `Normal` exit stays `Normal` and
+  `ChildHandle::cleanup_failure()` reports the failure
+  (`mailbox_cleanup_failure()` is a deprecated alias). A Transient child
+  restarts on an abnormal reason **or** a cleanup failure, also after
+  `Shutdown`; `ChildSnapshot::last_error` holds the failure.
+- **`start_linked` children that trap exits** end when their parent ends,
+  with the parent's reason (`Normal` included), through `stopped()`;
+  `exit_received` no longer sees the parent's exit. Use `ctx.link` instead
+  of `start_linked` to observe the parent's exit as an `Exit`.
+- **`spawned-test` `faults::exit`** now sends the exact exit signal
+  (`ChildHandle::exit`): `Normal` is ignored by a non-trapping target,
+  `Panic(msg)` ends it with exactly `Panic(msg)`, `Kill` ends it `Killed`, a
+  trapping target receives an `Exit`.
+- **Supervisor start (rank 5f):** any first-start failure of a child (factory
+  error or panic, panic or stop in `started()`, `startup_timeout`, placement)
+  fails `SupervisorBuilder::start()`, whatever its restart type, with no
+  opt-in retry (decision 7), as `SupervisorError::FailedToStartChild { child,
+  cause, rollback_failures }`; match on it (or keep treating any `Err` as a
+  failed start). Replacements still retry within the restart budget. A ready
+  child that exits while later siblings start is no longer restarted at once
+  (OneForOne) or fatal (OneForAll/RestForOne): its exit is processed after
+  the initial start completes. `start()` now returns its error after the
+  rollback, so it can take up to two `shutdown_timeout`s per started child; a
+  child whose cleanup is stuck is reported `Failed` and its work stays owned
+  by the system. **ethrex**:
+  the Transient discovery child's factory (`DiscoveryServer::build`) can fail
+  at boot when pinging a bootnode fails; v0.7 retried it, v0.8 fails
+  `start()` and `init_network` panics on `.expect("Network starts")`. Fix in
+  ethrex: make the bootnode ping best-effort (log and continue) so the
+  factory does not fail on it, or retry `start()` at application level.
+- **Caller errors carry the reason (with rank 11, decision 4).**
+  `ActorError::ActorStopped` is now `ActorStopped(ExitReason)`: the actor's
+  final exit reason, the one `wait_exit`, `Down` and linked actors see
+  (`Killed` after `kill()`, the signal's reason after an untrapped exit
+  signal, `Panic(..)` after a crash, `Normal`/`Shutdown` after a stop). A
+  `send` or `request` to an actor past its death point returns the new
+  `ActorError::NoProc` instead; one sent while the actor is still exiting
+  (for example during its `stopped()`) is admitted and answered at the death
+  point. Patterns change from `Err(ActorError::ActorStopped)` to
+  `Err(ActorError::ActorStopped(_))` (or a specific reason); code that
+  treated `ActorStopped` as "the actor is gone" for sends should also handle
+  `NoProc`. A request whose handler panicked, or a deferred token dropped
+  while the actor exits, is no longer answered at once: it is answered at the
+  death point (after `stopped()`) with the final reason, or by the caller's
+  own deadline first. With `metrics`, rejected requests count in the new
+  `requests_noproc_total`. `ActorError` stays `#[non_exhaustive]`; instead
+  of an exhaustive match, classify with `target_gone()` (`ActorStopped(_)`,
+  `NoProc`), `is_timeout()` (`RequestTimeout`), `is_transient()`
+  (`RequestTimeout`, `Overloaded`: retrying the same target may succeed;
+  not `ReplyDropped`) and `exit_reason()` (the reason of `ActorStopped`).
+  A variant added later is classified by these helpers. **ethrex**:
+  `peer_handler.rs:1251` matches `ActorError` exhaustively on purpose, so it
+  no longer compiles: add arms for `ActorStopped(_)` and `NoProc`, or replace
+  the match with the helpers above; two tests that construct
+  `ActorError::ActorStopped` must pass a reason (for example
+  `ActorStopped(ExitReason::Normal)`). **ethlambda**: one test mock
+  constructs `ActorStopped`; pass a reason the same way. A `spawned-test`
+  `Probe` closed with `close()` now returns `NoProc`, and a probe without a
+  reply answers `ActorStopped(NoProc)`.
+
+### Deferred replies (rank 11, targets 0.8, in progress)
+
+This is a breaking release. The notes below grow with the implementation:
+
+- Request timeouts follow OTP's `gen_server:call`: only the caller's expiry
+  (its timer, the owner's deadline heap for a raw `send_request` deadline,
+  or a deadline check such as `is_closed()`) times a request out; a reply
+  reads no clock. Code that relied on a reply at or past the deadline being
+  refused (`Delivery::Expired`) must not: a reply that lands after the
+  deadline but before the caller's expiry runs is `Delivered` and the caller
+  gets the value. `Expired` still means the caller already saw
+  `RequestTimeout`.
+
+- `ActorError` is `#[non_exhaustive]` and gains `ReplyDropped` and
+  `Overloaded`; add a wildcard arm to exhaustive matches.
+
+**Handlers.** `#[actor]` code is unchanged. A manual `impl Handler<M>` now
+takes the request's reply obligation and returns `()`:
+
+```rust
+// before
+impl Handler<GetCount> for Counter {
+    async fn handle(&mut self, _: GetCount, _: &Context<Self>) -> u64 { self.count }
+}
+// after
+impl Handler<GetCount> for Counter {
+    async fn handle(&mut self, _: GetCount, reply: PendingReply<'_, u64>, _: &Context<Self>) {
+        reply.reply(self.count);
+    }
+}
+```
+
+A handler that returns without answering a request now gives the caller
+`ReplyDropped` (a panic still gives `ActorStopped`, with the final reason at
+the actor's death point). Sends reach the same
+`handle` with a detached `PendingReply`. To call a manual handler directly in
+a test, use `spawned_test::reply_pair()`.
+
+**Timeouts.** The request timeout starts at send, not at first poll.
+
+**Raw API.** `request_raw(msg)` is now `send_request(msg, deadline)`
+(OTP's `gen_server:send_request/2`, plus an explicit deadline; OTP's
+`/4` form takes a label and a request-id collection instead). It takes the deadline explicitly: a
+`Duration` from now, an `Instant`, or `Deadline::Never`. **0.7's
+`request_raw` had no deadline**: `send_request(msg, Deadline::Never)` keeps
+that unbounded wait, and `send_request(msg, DEFAULT_REQUEST_TIMEOUT)` gives
+the 5 s `request` uses. It returns a `ReplyReceiver<R>` (a future in tasks
+mode, `recv()` in threads mode) yielding `Result<R, ActorError>`.
+`Response::from_with_timeout` is removed: `Response::from(actor.send_request(msg, t))`.
+`Receiver<M>` is sealed: call `send_request(msg, Deadline)` through a
+`Recipient<M>`; a type of your own cannot implement it (wrap an `ActorRef`
+or use `spawned_test`'s probe instead). A `recv_timeout` on the old native
+receiver has no counterpart: the deadline is fixed when the request is
+sent.
+
+**Metrics.** `metrics::Snapshot` gains `requests_reply_dropped_total` and
+`requests_overloaded_total`, the `deferred_*` and `jobs_*` fields (see the
+GUIDE's Metrics section) and the `deferred_reply_latency` histogram. It is
+`#[non_exhaustive]` and read-only: take one from `metrics::snapshot()` and
+read its fields; a struct literal or an exhaustive pattern no longer
+compiles (patterns need `..`).
+
+**Jobs (API refinements).**
+
+- One spawn per shape: `pipe` (async), `pipe_blocking`, `pipe_reply`,
+  `pipe_reply_blocking`, each taking `JobOptions` first (as OTP's `*_opt`
+  calls take an option list). The work of every form receives its
+  `JobCtx` (by value; `|_| fut` when unused). See the table above.
+- `JobOptions` is `#[non_exhaustive]`: build it with `JobOptions::new()`
+  and the `key`, `deadline`, `emit_credits` and `cancel_on_caller_gone`
+  methods. `deadline` takes a `Duration`, an `Instant` or a `Deadline`;
+  `emit_credits` takes a `NonZeroU16`. `cancel_on_caller_gone` applies to
+  `pipe_reply*` only (a `debug_assert!` in the plain forms).
+- `JobOutcome<T>` is `Result<T, JobError>`: `?` and the `Result`
+  combinators work, `into_result()` is gone. `JobError` and `PipeError`
+  (now the enum itself, without the `kind` wrapper) are
+  `#[non_exhaustive]`: add a wildcard arm.
+- `tasks` mode: `pipe_blocking` / `pipe_reply_blocking` run on
+  Tokio's blocking pool. Remove a `pipe(.., |_| async { spawn_blocking(f)
+  .await })` workaround (and its `resume_unwind` of the join error):
+  `pipe_blocking(opts, move |_job| f(), done)` reports a panic as
+  `JobError::Panicked`. **Size the native budget:** the default is
+  `min(4, available_parallelism)` blocking jobs per actor, easy to outgrow
+  (one client port needed 352), and under load its only symptom is
+  `PipeError::NativeBudget` refusals (the first one per actor is logged
+  as `native_budget_exhausted`). Raise it with
+  `#[actor(max_native_jobs = N)]` (or `ChildSpec::max_native_jobs(N)` for a
+  supervised child) instead of avoiding native jobs. A Tokio runtime being
+  dropped now waits for blocking jobs still running, as for any
+  `spawn_blocking`.
+- To keep "exactly one result" when a job is refused, reserve first instead
+  of cloning ahead: `let Ok(permit) = ctx.reserve_blocking_job(opts) else {
+  /* report with the values you still own */ };
+  permit.pipe_blocking(work, done);` (`reserve_job` for async
+  jobs). Spawning from a permit cannot fail.
+- A job that re-scheduled its messages with `send_after` (unfenced) can use
+  `job.emit_at(at, msg)` / `emit_at_blocking`: fenced with the job, counted
+  against its emit credits, and the terminal message waits for it.
+- Use `spawned_concurrency::Instant` instead of `spawned_rt::time::Instant`.
+  Job deadlines are hard (later emits fail, the result is dropped); for a
+  soft deadline, check the time in the work (see the GUIDE).
+
+**Send-only manual handlers.** A manual `impl Handler<M>` whose `Result` is
+`()` no longer needs the `_reply: PendingReply<'_, ()>` parameter: put
+`#[send_handler]` (from `spawned_concurrency`) on the impl and write
+`handle(&mut self, msg, ctx)`. Without it, a handler that drops its `()`
+reply gives a `request` caller `ReplyDropped`; with it, the caller gets
+`Ok(())`.
+
+**Tests.** Replace test-only "run this closure in the actor" messages and
+`cfg(test)` bypasses of handlers with `spawned_test::tasks::in_actor(&actor,
+|state, ctx| ..)` (`threads::in_actor` in threads mode). `in_actor` runs in
+a turn, so only after `started()` returned: it cannot replace a bypass
+inside `started()` itself. If `started()` does work a test must skip (for
+example `if handshake().await.is_err() { ctx.stop() }`), keep that work
+injectable instead: pass the handshake (or its outcome) in the actor's
+constructor, or move it to a message the test does not send, so the test
+builds the post-handshake state directly.
+
+**Lifecycle.** At death the registry closes (open deferred tokens answer
+`ActorStopped`), then the mailbox is disposed, then actor state is dropped:
+a state destructor that sends to its own actor now fails (with `NoProc`
+once the exit-signals change above is in) instead of enqueueing into a
+mailbox about to be dropped.
+
 **Simulation builds only (`--cfg spawned_sim`; determinism D1-D3).**
 
 - `sim_test` / `SimTest::run`, `sim::run_once`, `run_with`, `shrink` and
@@ -486,9 +812,9 @@ The `#[actor]` macro supports three handler attributes:
 |-----------|---------|
 | `#[request_handler]` | Messages that expect a reply (`Response<T>`) |
 | `#[send_handler]` | Fire-and-forget messages (no return or `-> ()`) |
-| `#[handler]` | Generic — works for either kind |
+| `#[handler]` | Generic — works for either kind (removed in 0.8) |
 
-All three generate the same `impl Handler<M>` code. The distinction is semantic: use `#[request_handler]` and `#[send_handler]` to document intent, or `#[handler]` when you don't want to commit to a specific kind.
+In 0.5 to 0.7 all three generate the same `impl Handler<M>` code. Since 0.8, `#[handler]` is removed and a `#[send_handler]` method must return `()` (see the 0.7 to 0.8 table).
 
 Handler signature: `fn name(&mut self, msg: MessageType, ctx: &Context<Self>) -> ReturnType`
 

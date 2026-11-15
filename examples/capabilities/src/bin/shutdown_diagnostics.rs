@@ -16,9 +16,15 @@ impl Message for Hold {
     type Result = ();
 }
 impl Handler<Hold> for Worker {
-    async fn handle(&mut self, msg: Hold, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Hold,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         let _ = msg.0.send(());
         let _ = msg.1.await;
+        reply.reply(());
     }
 }
 struct Unhealthy;
@@ -26,9 +32,15 @@ impl Message for Unhealthy {
     type Result = ();
 }
 impl Handler<Unhealthy> for Worker {
-    async fn handle(&mut self, _: Unhealthy, ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Unhealthy,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
         // Cooperative abnormal exit, without a panic or forced interruption.
         ctx.stop_with_reason(ExitReason::Panic("reported unhealthy worker".into()));
+        reply.reply(());
     }
 }
 

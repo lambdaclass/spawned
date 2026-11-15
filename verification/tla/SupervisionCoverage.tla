@@ -26,7 +26,8 @@ EXTENDS Supervision, TLC
 
 ChildActions == {"LoopTop", "RetryReserve", "RetryRelease", "BackoffDone",
                  "Attempt", "BecomeReady", "StartupFailed", "SelfExit",
-                 "StopObserved", "CleanupDone", "CleanupStuck", "Decide", "Finish"}
+                 "StopObserved", "CleanupDone", "CleanupStuck", "DeferExit", "Undefer",
+                 "Decide", "Finish"}
 
 Bucket(b) == IF b = 0 THEN "0" ELSE IF b >= MaxRestarts THEN "max" ELSE "mid"
 

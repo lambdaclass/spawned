@@ -40,8 +40,15 @@ impl Drop for Victim {
     }
 }
 impl Handler<Bomb> for Victim {
-    fn handle(&mut self, _: Bomb, _: &Context<Self>) {
-        panic!("queued handler ran");
+    fn handle(
+        &mut self,
+        _: Bomb,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("queued handler ran");
+        }
     }
 }
 
@@ -50,8 +57,15 @@ impl Message for Crash {
     type Result = ();
 }
 impl Handler<Crash> for Victim {
-    fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("native handler failure");
+    fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("native handler failure");
+        }
     }
 }
 
@@ -83,7 +97,14 @@ fn native_drop_child() {
             arrival.recv_timeout(LIMIT).unwrap();
             let dropped = Arc::new(AtomicUsize::new(0));
             let replies: Vec<_> = (0..2)
-                .map(|_| actor.request_raw(Bomb(dropped.clone())).unwrap())
+                .map(|_| {
+                    actor
+                        .send_request(
+                            Bomb(dropped.clone()),
+                            spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+                        )
+                        .unwrap()
+                })
                 .collect();
             actor.context().stop_with_reason(reason.clone());
             release.send(()).unwrap();
@@ -92,26 +113,17 @@ fn native_drop_child() {
             let (done, exit) = mpsc::channel();
             std::thread::spawn(move || done.send(waiter.wait_exit_blocking()).unwrap());
             let exit = exit.recv_timeout(LIMIT).unwrap();
-            if reason != ExitReason::Normal {
-                assert_eq!(exit, reason);
-            } else if state_panics {
-                assert_eq!(
-                    exit,
-                    ExitReason::Panic("actor state destructor: native state destructor".into())
-                );
-            } else {
-                assert_eq!(
-                    exit,
-                    ExitReason::Panic("queued message destructor: native queued destructor".into())
-                );
-            }
+            // Destructor panics after the death point are cleanup failures:
+            // the final reason is the requested one.
+            let _ = state_panics;
+            assert_eq!(exit, reason);
             assert_eq!(
-                child.mailbox_cleanup_failure().as_deref(),
+                child.cleanup_failure().as_deref(),
                 Some("native queued destructor")
             );
             assert_eq!(dropped.load(Ordering::SeqCst), 2);
             for reply in replies {
-                assert!(reply.recv_timeout(LIMIT).is_err());
+                assert!(reply.recv().is_err());
             }
             // Keep ActorRef alive through all assertions: cleanup cannot depend
             // on whoever eventually drops its last sender.

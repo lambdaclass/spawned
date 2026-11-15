@@ -43,8 +43,13 @@ mod native {
         }
     }
     impl Handler<Boom> for Victim {
-        fn handle(&mut self, _: Boom, _: &Context<Self>) -> u64 {
-            panic!("{PANIC_TEXT}")
+        fn handle(
+            &mut self,
+            _: Boom,
+            _reply: spawned_concurrency::PendingReply<'_, u64>,
+            _: &Context<Self>,
+        ) {
+            panic!("{PANIC_TEXT}");
         }
     }
     pub fn handler_panic() {
@@ -66,8 +71,13 @@ mod tasks {
         }
     }
     impl Handler<Boom> for Victim {
-        async fn handle(&mut self, _: Boom, _: &Context<Self>) -> u64 {
-            panic!("{PANIC_TEXT}")
+        async fn handle(
+            &mut self,
+            _: Boom,
+            _reply: spawned_concurrency::PendingReply<'_, u64>,
+            _: &Context<Self>,
+        ) {
+            panic!("{PANIC_TEXT}");
         }
     }
     pub fn handler_panic() {
@@ -93,15 +103,12 @@ mod tasks {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let system = ActorSystem::new().unwrap();
             let group = system.async_group("abort", 1).unwrap();
-            let config = SupervisorConfig {
-                backoff: Backoff {
-                    initial: Duration::from_millis(1),
-                    maximum: Duration::from_millis(1),
-                    jitter: false,
-                    ..Backoff::default()
-                },
-                ..SupervisorConfig::default()
-            };
+            let config = SupervisorConfig::default().backoff(
+                Backoff::default()
+                    .initial(Duration::from_millis(1))
+                    .maximum(Duration::from_millis(1))
+                    .jitter(false),
+            );
             let mut tree = system.supervisor(config).unwrap();
             let child = tree
                 .add(
@@ -118,7 +125,8 @@ mod tasks {
                 .await
                 .expect("no restart after Kill")
                 .expect("child unavailable after Kill");
-            new.child_handle().shutdown();
+            new.child_handle()
+                .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
             assert_eq!(new.wait_exit().await, ExitReason::Shutdown);
             let stayed = tokio::time::timeout(LIMIT, child.wait_for_generation(first + 1)).await;
             assert!(

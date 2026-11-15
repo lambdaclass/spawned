@@ -120,13 +120,21 @@ mod tasks_chain {
     }
     impl Actor for Hop {}
     impl Handler<relay::Forward> for Hop {
-        async fn handle(&mut self, msg: relay::Forward, _: &Context<Self>) -> Block {
-            let mut block = msg.block;
-            stamp(&mut block, self.index);
-            match &self.next {
-                Some(next) => next.forward(block).await.expect("downstream hop"),
-                None => block,
-            }
+        async fn handle(
+            &mut self,
+            msg: relay::Forward,
+            reply: spawned_concurrency::PendingReply<'_, Block>,
+            _: &Context<Self>,
+        ) {
+            let __reply_value: Block = {
+                let mut block = msg.block;
+                stamp(&mut block, self.index);
+                match &self.next {
+                    Some(next) => next.forward(block).await.expect("downstream hop"),
+                    None => block,
+                }
+            };
+            reply.reply(__reply_value);
         }
     }
 
@@ -218,15 +226,26 @@ mod tasks_chain {
     }
     impl Actor for Flaky {}
     impl Handler<Crash> for Flaky {
-        async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _: Crash,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             if self.generation == 1 {
                 panic!("injected stack-budget crash");
             }
+            reply.reply(());
         }
     }
     impl Handler<relay::Forward> for Flaky {
-        async fn handle(&mut self, msg: relay::Forward, _: &Context<Self>) -> Block {
-            msg.block
+        async fn handle(
+            &mut self,
+            msg: relay::Forward,
+            reply: spawned_concurrency::PendingReply<'_, Block>,
+            _: &Context<Self>,
+        ) {
+            reply.reply(msg.block);
         }
     }
 
@@ -238,17 +257,13 @@ mod tasks_chain {
                 system.async_group("stack-async", 2).unwrap(),
                 system.thread_group("stack-thread", 4).unwrap(),
             ] {
-                let config = SupervisorConfig {
-                    max_restarts: 10,
-                    backoff: Backoff {
-                        initial: Duration::ZERO,
-                        maximum: Duration::ZERO,
-                        jitter: false,
-                        seed: Some(1),
-                        ..Backoff::default()
-                    },
-                    ..SupervisorConfig::default()
-                };
+                let config = SupervisorConfig::default().max_restarts(10).backoff(
+                    Backoff::default()
+                        .initial(Duration::ZERO)
+                        .maximum(Duration::ZERO)
+                        .jitter(false)
+                        .seed(1),
+                );
                 let mut tree = system.supervisor(config).unwrap();
                 let child = tree
                     .add(ChildSpec::new("flaky", &group, |ctx| {
@@ -298,13 +313,21 @@ mod threads_chain {
     }
     impl Actor for Hop {}
     impl Handler<relay::Forward> for Hop {
-        fn handle(&mut self, msg: relay::Forward, _: &Context<Self>) -> Block {
-            let mut block = msg.block;
-            stamp(&mut block, self.index);
-            match &self.next {
-                Some(next) => next.forward(block).unwrap(),
-                None => block,
-            }
+        fn handle(
+            &mut self,
+            msg: relay::Forward,
+            reply: spawned_concurrency::PendingReply<'_, Block>,
+            _: &Context<Self>,
+        ) {
+            let __reply_value: Block = {
+                let mut block = msg.block;
+                stamp(&mut block, self.index);
+                match &self.next {
+                    Some(next) => next.forward(block).unwrap(),
+                    None => block,
+                }
+            };
+            reply.reply(__reply_value);
         }
     }
 

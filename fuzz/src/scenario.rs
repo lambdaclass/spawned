@@ -255,7 +255,7 @@ pub enum Op {
     DropSystem {
         sys: u8,
     },
-    /// `request_raw`, then drop the reply receiver (R4: not a cancellation).
+    /// `send_request`, then drop the reply receiver (R4: not a cancellation).
     DropReply {
         to: u8,
         cmd: Cmd,

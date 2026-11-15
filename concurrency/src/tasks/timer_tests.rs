@@ -46,51 +46,73 @@ impl Actor for Repeater {
 }
 
 impl Handler<Inc> for Repeater {
-    async fn handle(&mut self, _msg: Inc, _ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _msg: Inc,
+        reply: crate::reply::PendingReply<'_, ()>,
+        _ctx: &Context<Self>,
+    ) {
         self.count += 1;
+        reply.reply(());
     }
 }
 
 impl Handler<StopTimer> for Repeater {
-    async fn handle(&mut self, _msg: StopTimer, _ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _msg: StopTimer,
+        reply: crate::reply::PendingReply<'_, ()>,
+        _ctx: &Context<Self>,
+    ) {
         if let Some(ct) = self.cancellation_token.clone() {
             ct.cancel();
         }
+        reply.reply(());
     }
 }
 
 impl Handler<GetRepCount> for Repeater {
-    async fn handle(&mut self, _msg: GetRepCount, _ctx: &Context<Self>) -> i32 {
-        self.count
+    async fn handle(
+        &mut self,
+        _msg: GetRepCount,
+        reply: crate::reply::PendingReply<'_, i32>,
+        _ctx: &Context<Self>,
+    ) {
+        reply.reply(self.count);
     }
 }
 
 #[test]
 pub fn test_send_interval_and_cancellation() {
-    let runtime = rt::Runtime::new().unwrap();
-    runtime.block_on(async move {
-        let repeater = Repeater::new(0).start();
+    crate::test_wait::bounded(
+        concat!(module_path!(), "::test_send_interval_and_cancellation"),
+        move || {
+            let runtime = rt::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let repeater = Repeater::new(0).start();
 
-        // The interval keeps firing.
-        let count = wait_for_async(
-            || repeater.request(GetRepCount),
-            |count| matches!(count, Ok(n) if *n >= 3),
-        )
-        .await
-        .unwrap();
-        assert!(count >= 3, "interval stopped firing at {count}");
+                // The interval keeps firing.
+                let count = wait_for_async(
+                    || repeater.request(GetRepCount),
+                    |count| matches!(count, Ok(n) if *n >= 3),
+                )
+                .await
+                .unwrap();
+                assert!(count >= 3, "interval stopped firing at {count}");
 
-        // StopTimer is handled before the next request. A tick that raced the
-        // cancellation may still land, but no more than one.
-        repeater.send(StopTimer).unwrap();
-        let stopped_at = repeater.request(GetRepCount).await.unwrap();
-        rt::sleep(Duration::from_millis(500)).await;
-        let after = repeater.request(GetRepCount).await.unwrap();
-        assert!(
-            after <= stopped_at + 1,
-            "interval kept firing after cancellation: {stopped_at} -> {after}"
-        );
-    });
+                // StopTimer is handled before the next request. A tick that raced the
+                // cancellation may still land, but no more than one.
+                repeater.send(StopTimer).unwrap();
+                let stopped_at = repeater.request(GetRepCount).await.unwrap();
+                rt::sleep(Duration::from_millis(500)).await;
+                let after = repeater.request(GetRepCount).await.unwrap();
+                assert!(
+                    after <= stopped_at + 1,
+                    "interval kept firing after cancellation: {stopped_at} -> {after}"
+                );
+            });
+        },
+    );
 }
 
 // --- Delayed (send_after test) ---
@@ -122,77 +144,106 @@ impl Delayed {
 impl Actor for Delayed {}
 
 impl Handler<Inc> for Delayed {
-    async fn handle(&mut self, _msg: Inc, _ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _msg: Inc,
+        reply: crate::reply::PendingReply<'_, ()>,
+        _ctx: &Context<Self>,
+    ) {
         self.count += 1;
+        reply.reply(());
     }
 }
 
 impl Handler<GetDelCount> for Delayed {
-    async fn handle(&mut self, _msg: GetDelCount, _ctx: &Context<Self>) -> i32 {
-        self.count
+    async fn handle(
+        &mut self,
+        _msg: GetDelCount,
+        reply: crate::reply::PendingReply<'_, i32>,
+        _ctx: &Context<Self>,
+    ) {
+        reply.reply(self.count);
     }
 }
 
 impl Handler<StopDelayed> for Delayed {
-    async fn handle(&mut self, _msg: StopDelayed, ctx: &Context<Self>) -> i32 {
-        ctx.stop();
-        self.count
+    async fn handle(
+        &mut self,
+        _msg: StopDelayed,
+        reply: crate::reply::PendingReply<'_, i32>,
+        ctx: &Context<Self>,
+    ) {
+        let __reply_value: i32 = {
+            ctx.stop();
+            self.count
+        };
+        reply.reply(__reply_value);
     }
 }
 
 #[test]
 pub fn test_send_after_and_cancellation() {
-    let runtime = rt::Runtime::new().unwrap();
-    runtime.block_on(async move {
-        let repeater = Delayed::new(0).start();
+    crate::test_wait::bounded(
+        concat!(module_path!(), "::test_send_after_and_cancellation"),
+        move || {
+            let runtime = rt::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let repeater = Delayed::new(0).start();
 
-        let ctx = Context::from_ref(&repeater);
-        let _ = send_after(Duration::from_millis(100), ctx, Inc);
+                let ctx = repeater.context();
+                let _ = send_after(Duration::from_millis(100), ctx, Inc);
 
-        let count = wait_for_async(
-            || repeater.request(GetDelCount),
-            |count| matches!(count, Ok(n) if *n >= 1),
-        )
-        .await
-        .unwrap();
-        assert_eq!(1, count);
+                let count = wait_for_async(
+                    || repeater.request(GetDelCount),
+                    |count| matches!(count, Ok(n) if *n >= 1),
+                )
+                .await
+                .unwrap();
+                assert_eq!(1, count);
 
-        let ctx = Context::from_ref(&repeater);
-        let timer = send_after(Duration::from_millis(100), ctx, Inc);
+                let ctx = repeater.context();
+                let timer = send_after(Duration::from_millis(100), ctx, Inc);
 
-        timer.cancellation_token.cancel();
+                timer.cancellation_token.cancel();
 
-        rt::sleep(Duration::from_millis(200)).await;
+                rt::sleep(Duration::from_millis(200)).await;
 
-        let count2 = repeater.request(GetDelCount).await.unwrap();
-        assert_eq!(1, count2);
-    });
+                let count2 = repeater.request(GetDelCount).await.unwrap();
+                assert_eq!(1, count2);
+            });
+        },
+    );
 }
 
 #[test]
 pub fn test_send_after_gen_server_teardown() {
-    let runtime = rt::Runtime::new().unwrap();
-    runtime.block_on(async move {
-        let repeater = Delayed::new(0).start();
+    crate::test_wait::bounded(
+        concat!(module_path!(), "::test_send_after_gen_server_teardown"),
+        move || {
+            let runtime = rt::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let repeater = Delayed::new(0).start();
 
-        let ctx = Context::from_ref(&repeater);
-        let _ = send_after(Duration::from_millis(100), ctx, Inc);
+                let ctx = repeater.context();
+                let _ = send_after(Duration::from_millis(100), ctx, Inc);
 
-        let count = wait_for_async(
-            || repeater.request(GetDelCount),
-            |count| matches!(count, Ok(n) if *n >= 1),
-        )
-        .await
-        .unwrap();
-        assert_eq!(1, count);
+                let count = wait_for_async(
+                    || repeater.request(GetDelCount),
+                    |count| matches!(count, Ok(n) if *n >= 1),
+                )
+                .await
+                .unwrap();
+                assert_eq!(1, count);
 
-        let ctx = Context::from_ref(&repeater);
-        let _ = send_after(Duration::from_millis(100), ctx, Inc);
+                let ctx = repeater.context();
+                let _ = send_after(Duration::from_millis(100), ctx, Inc);
 
-        let count2 = repeater.request(StopDelayed).await.unwrap();
+                let count2 = repeater.request(StopDelayed).await.unwrap();
 
-        rt::sleep(Duration::from_millis(200)).await;
+                rt::sleep(Duration::from_millis(200)).await;
 
-        assert_eq!(1, count2);
-    });
+                assert_eq!(1, count2);
+            });
+        },
+    );
 }

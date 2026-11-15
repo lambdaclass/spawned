@@ -17,6 +17,7 @@ fn global_store() -> &'static Store {
 
 /// Errors that can occur when registering a value in the registry.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RegistryError {
     /// A value with this name is already registered.
     #[error("name '{0}' is already registered")]

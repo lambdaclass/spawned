@@ -68,10 +68,7 @@ fn instance<'a>(s: &'a State, c: &Call) -> Option<(usize, &'a Inst)> {
 
 /// Something other than its supervisor may have stopped this instance.
 fn could_stop_itself(s: &State, x: &Inst) -> bool {
-    !x.published
-        || x.panicked
-        || x.drop_panicked
-        || x.id.is_none_or(|id| s.may_stop.contains(&id))
+    !x.published || x.panicked || x.drop_panicked || x.id.is_none_or(|id| s.may_stop.contains(&id))
 }
 
 /// Tick at which an attempt ended: the factory's return, or the drop of the
@@ -99,6 +96,7 @@ fn upstream(strategy: SupervisorStrategy, j: usize, k: usize) -> bool {
         SupervisorStrategy::OneForOne => false,
         SupervisorStrategy::OneForAll => k != j,
         SupervisorStrategy::RestForOne => k < j,
+        _ => false, // #[non_exhaustive]: a later strategy is not judged here
     }
 }
 
@@ -106,11 +104,17 @@ fn abnormal(reason: &Option<ExitReason>) -> bool {
     reason.as_ref().is_none_or(ExitReason::is_abnormal)
 }
 
+// Cleanup failure preserves the published reason, but independently restarts
+// a Transient child (MIGRATION, destructor panics; RestartMode::restarts).
+fn abnormal_or_cleanup_failure(instance: &Inst) -> bool {
+    abnormal(&instance.reason) || instance.drop_panicked
+}
+
 /// V1/V2: every replacement is one the restart table or the strategy asks
 /// for. A replacement of slot `j` follows an attempt that ended by itself
 /// in a way its restart mode restarts (a failed or unpublished attempt
 /// unless Temporary, any exit for Permanent, an abnormal one for
-/// Transient), or an attempt of an upstream sibling that ended after the
+/// Transient, including a cleanup failure with a clean reason), or an attempt of an upstream sibling that ended after the
 /// previous attempt of `j` began (`j` was collateral of that sibling's
 /// round). Temporary replacements are V1's own check.
 fn restart_justified(
@@ -134,7 +138,9 @@ fn restart_justified(
                     could_stop_itself(s, x)
                         && match next.mode {
                             RestartMode::Permanent => true,
-                            RestartMode::Transient => !x.published || abnormal(&x.reason),
+                            RestartMode::Transient => {
+                                !x.published || abnormal_or_cleanup_failure(x)
+                            }
                             RestartMode::Temporary => false,
                         }
                 }
@@ -167,7 +173,7 @@ fn restart_justified(
 /// V1/V2/V5: in a tree that neither the driver closed nor failed, every
 /// restart the contract requires happened by the time teardown found it
 /// settled: a published Permanent instance, or a published Transient one
-/// that exited abnormally, has a successor; so does every live,
+/// that exited abnormally or failed cleanup, has a successor; so does every live,
 /// non-Temporary downstream sibling (its cohort). A missing restart means
 /// the budget was exhausted, which must fail the supervisor (V5).
 fn required_restarts(
@@ -191,7 +197,7 @@ fn required_restarts(
             let required = x.published
                 && match c.mode {
                     RestartMode::Permanent => true,
-                    RestartMode::Transient => abnormal(&x.reason),
+                    RestartMode::Transient => abnormal_or_cleanup_failure(x),
                     RestartMode::Temporary => false,
                 };
             if !required {
@@ -226,7 +232,12 @@ fn required_restarts(
                 if live && !after(j, dropped) {
                     found.push((
                         "V2: a sibling in the failed child's cohort was not restarted",
-                        format!("{} after {} w{i} ({:?})", slot_name(sup, j), c.slot, sup.strategy),
+                        format!(
+                            "{} after {} w{i} ({:?})",
+                            slot_name(sup, j),
+                            c.slot,
+                            sup.strategy
+                        ),
                     ));
                     return;
                 }
@@ -369,6 +380,88 @@ fn timers(s: &State, found: &mut Vec<(&'static str, String)>) {
                 ),
             ));
             return;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::world::State;
+    use spawned_concurrency::supervision::Backoff;
+
+    fn tree() -> SupInst {
+        SupInst {
+            root: 0,
+            max_restarts: 4,
+            window: Duration::from_secs(1),
+            cohort: false,
+            strategy: SupervisorStrategy::OneForOne,
+            backoff: Backoff::default(),
+            flat: true,
+            children: 1,
+            closed_at: None,
+            settled: Some(5),
+            failure: None,
+        }
+    }
+    fn attempt(seq: u64, outcome: Outcome) -> Call {
+        Call {
+            inst: 0,
+            slot: "r0/c0".into(),
+            index: 0,
+            at: Duration::ZERO,
+            seq,
+            mode: RestartMode::Transient,
+            outcome,
+        }
+    }
+    fn state(cleanup_failed: bool) -> State {
+        let mut state = State::default();
+        state.insts.push(Inst {
+            published: true,
+            dropped: Some(2),
+            reason: Some(ExitReason::Normal),
+            drop_panicked: cleanup_failed,
+            ..Inst::default()
+        });
+        state
+    }
+    #[test]
+    fn transient_restart_requires_abnormal_exit_or_failed_cleanup() {
+        let previous = attempt(1, Outcome::Instance(0));
+        let next = attempt(3, Outcome::Error);
+        for cleanup_failed in [false, true] {
+            let mut found = Vec::new();
+            restart_justified(
+                &state(cleanup_failed),
+                &tree(),
+                &[vec![&previous, &next]],
+                &mut found,
+            );
+            assert_eq!(
+                found.is_empty(),
+                cleanup_failed,
+                "a clean Normal exit alone must not permit a Transient restart"
+            );
+        }
+    }
+    #[test]
+    fn missing_transient_cleanup_restart_is_still_reported() {
+        let previous = attempt(1, Outcome::Instance(0));
+        for cleanup_failed in [false, true] {
+            let mut found = Vec::new();
+            required_restarts(
+                &state(cleanup_failed),
+                &tree(),
+                &[vec![&previous]],
+                &mut found,
+            );
+            assert_eq!(
+                !found.is_empty(),
+                cleanup_failed,
+                "failed cleanup requires a restart even when the reason stayed Normal"
+            );
         }
     }
 }

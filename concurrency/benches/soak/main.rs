@@ -361,9 +361,7 @@ fn main() {
     };
     LEAKS.set(args.leaks).unwrap();
     // Counters and gauges only: no sampled clocks.
-    let _ = metrics::configure(metrics::Config {
-        timing_sample_every: 0,
-    });
+    let _ = metrics::configure(metrics::Config::new().timing_sample_every(0));
     // Injected crashes are expected millions of times; keep other panics loud.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

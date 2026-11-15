@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Check feature builds, migrated APIs and declared v0.7 feature-split breaks."""
+"""Check feature builds, migrated APIs and the release's declared API breaks.
+
+`verification/api/release.json` names the baseline release and the release
+type of the work in progress. A `patch` release must keep the baseline's API
+(v0.7's feature-split breaks against v0.6.0 are declared item by item in
+`v0.6.0-no-default.json`); a breaking pre-1.0 release (`minor`, as 0.8 is
+against 0.7.3, declared `major` to the tool) only checks that both APIs build
+in every profile: the tool skips its breaking-change lints for a major
+release.
+"""
 import argparse
 import json
 import os
@@ -45,10 +54,15 @@ def declared_break(command, expected, root):
 
 
 def semver(root, baseline):
+    release = json.loads((root / "verification/api/release.json").read_text())
+    baseline = baseline or release["baseline"]
+    release_type = release["release_type"] if baseline == release["baseline"] else "patch"
+    if release_type != "patch":
+        print(f"Breaking release against {baseline} ({release_type}): {release['reason']}", flush=True)
     declarations = json.loads((root / "verification/api/v0.6.0-no-default.json").read_text())
-    if baseline != declarations["baseline"]:
+    if release_type == "patch" and baseline != declarations["baseline"]:
         raise ValueError("the declared feature-split audit requires baseline " + declarations["baseline"])
-    base = ["cargo", "semver-checks", "--color", "never", "--release-type", "patch", "--baseline-rev", baseline]
+    base = ["cargo", "semver-checks", "--color", "never", "--release-type", release_type, "--baseline-rev", baseline]
     libraries = ["-p", "spawned-concurrency", "-p", "spawned-rt"]
     # Old no-default consumers restore the previous API by explicitly enabling
     # async. Check this migration as well as defaults, with/without metrics.
@@ -60,6 +74,10 @@ def semver(root, baseline):
     ]:
         print("Checking API profile: " + profile, flush=True)
         run(*base, *features, *packages, cwd=root)
+    if release_type != "patch":
+        # Breaks are allowed and listed in MIGRATION; the item-level audit
+        # applies to the v0.6.0 -> v0.7 patch line only.
+        return
     for package, expected in declarations["packages"].items():
         print("Auditing raw no-default API: " + package, flush=True)
         command = base + ["--only-explicit-features", "-p", package]
@@ -104,7 +122,8 @@ def features(root, cache, offline):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("check", choices=("features", "semver"))
-    parser.add_argument("--baseline", default="v0.6.0")
+    # Default: the baseline of verification/api/release.json.
+    parser.add_argument("--baseline", default=None)
     parser.add_argument("--offline", action="store_true")
     args = parser.parse_args()
     if args.offline:

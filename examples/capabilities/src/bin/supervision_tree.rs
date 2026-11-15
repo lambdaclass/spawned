@@ -19,8 +19,15 @@ impl Message for Fail {
     type Result = ();
 }
 impl Handler<Fail> for Worker {
-    async fn handle(&mut self, _: Fail, _: &Context<Self>) {
-        panic!("example failure");
+    async fn handle(
+        &mut self,
+        _: Fail,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("example failure");
+        }
     }
 }
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
@@ -33,11 +40,11 @@ async fn main() {
         let controls = system.async_group("tree-control", 1).unwrap();
         let workers = system.thread_group("tree-workers", 3).unwrap();
         let mut tree = system
-            .supervisor(SupervisorConfig {
-                strategy,
-                max_restarts: 20,
-                ..SupervisorConfig::default()
-            })
+            .supervisor(
+                SupervisorConfig::default()
+                    .strategy(strategy)
+                    .max_restarts(20),
+            )
             .unwrap();
         let earlier = tree
             .add(ChildSpec::new("earlier", &workers, |_| async {
@@ -51,10 +58,7 @@ async fn main() {
             .add_supervisor(SupervisorSpec::new(
                 "subsystem",
                 &controls,
-                SupervisorConfig {
-                    max_restarts: 0,
-                    ..SupervisorConfig::default()
-                },
+                SupervisorConfig::default().max_restarts(0),
                 move |subtree| {
                     let child = subtree.add(ChildSpec::new("leaf", &placement, |_| async {
                         Ok::<_, String>(Worker)

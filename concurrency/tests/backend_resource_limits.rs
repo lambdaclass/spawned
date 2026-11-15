@@ -33,7 +33,14 @@ impl Actor for Worker {
     }
 }
 impl Handler<Ping> for Worker {
-    async fn handle(&mut self, _: Ping, _: &Context<Self>) {}
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
 }
 // Not simulated: Blocking backend workers are OS threads.
 #[cfg(not(spawned_sim))]
@@ -181,21 +188,21 @@ fn descriptor_limit_child() {
                     tokio::time::timeout(LIMIT, actor.wait_exit())
                         .await
                         .unwrap(),
-                    spawned_concurrency::ExitReason::Kill
+                    spawned_concurrency::ExitReason::Killed
                 );
                 assert_eq!(
                     actor.exit_reason(),
-                    Some(spawned_concurrency::ExitReason::Kill)
+                    Some(spawned_concurrency::ExitReason::Killed)
                 );
                 let child = actor.child_handle();
                 assert!(!child.is_alive());
                 assert_eq!(
                     child.exit_reason(),
-                    Some(spawned_concurrency::ExitReason::Kill)
+                    Some(spawned_concurrency::ExitReason::Killed)
                 );
                 assert_eq!(
                     child.wait_exit_blocking(),
-                    spawned_concurrency::ExitReason::Kill
+                    spawned_concurrency::ExitReason::Killed
                 );
             }
         }

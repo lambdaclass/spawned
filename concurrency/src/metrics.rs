@@ -6,7 +6,7 @@
 //!
 //! ```
 //! use spawned_concurrency::metrics::{self, Config};
-//! metrics::configure(Config { timing_sample_every: 16 }).unwrap();
+//! metrics::configure(Config::new().timing_sample_every(16)).unwrap();
 //! let snapshot = metrics::snapshot();
 //! assert_eq!(snapshot.actors_active, 0);
 //! let text = metrics::render_prometheus();
@@ -25,7 +25,9 @@ use spawned_rt::time::Instant;
 
 /// Timing samples are deterministic, one in every N observations per category.
 /// Zero disables clocks/histograms while retaining counters and gauges.
+/// Non-exhaustive: `Config::new().timing_sample_every(n)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Config {
     pub timing_sample_every: u64,
 }
@@ -34,6 +36,18 @@ impl Default for Config {
         Self {
             timing_sample_every: 1,
         }
+    }
+}
+impl Config {
+    /// Time every observation (`timing_sample_every = 1`).
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Time one in every `n` observations per category; 0 keeps counters
+    /// and gauges only.
+    pub fn timing_sample_every(mut self, n: u64) -> Self {
+        self.timing_sample_every = n;
+        self
     }
 }
 struct SamplingPolicy {
@@ -109,6 +123,7 @@ pub const BUCKET_BOUNDS_NS: [u64; 32] = {
     bounds
 };
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HistogramSnapshot {
     pub buckets: [u64; 32],
     pub count: u64,
@@ -159,8 +174,9 @@ macro_rules! counters {
         /// Process aggregates. Reads are independent atomic samples, not a
         /// transaction. Conservation equations hold after operations quiesce.
         #[derive(Debug, Clone)]
-        pub struct Snapshot { $( pub $name: u64, )* pub queue_wait: HistogramSnapshot, pub handler_duration: HistogramSnapshot, pub request_latency: HistogramSnapshot }
-        pub fn snapshot() -> Snapshot { Snapshot { $( $name: COUNTERS.$name.load(Relaxed), )* queue_wait: QUEUE_WAIT.snapshot(), handler_duration: HANDLER_DURATION.snapshot(), request_latency: REQUEST_LATENCY.snapshot() } }
+        #[non_exhaustive]
+        pub struct Snapshot { $( pub $name: u64, )* pub queue_wait: HistogramSnapshot, pub handler_duration: HistogramSnapshot, pub request_latency: HistogramSnapshot, pub deferred_reply_latency: HistogramSnapshot }
+        pub fn snapshot() -> Snapshot { Snapshot { $( $name: COUNTERS.$name.load(Relaxed), )* queue_wait: QUEUE_WAIT.snapshot(), handler_duration: HANDLER_DURATION.snapshot(), request_latency: REQUEST_LATENCY.snapshot(), deferred_reply_latency: DEFERRED_REPLY_LATENCY.snapshot() } }
         fn render_counters(out: &mut String, s: &Snapshot) {
             $(
                 let name = concat!("spawned_", stringify!($name));
@@ -177,6 +193,8 @@ counters!(
     actors_exited_shutdown_total,
     actors_exited_panic_total,
     actors_exited_kill_total,
+    actors_exited_killed_total,
+    actors_exited_noproc_total,
     messages_enqueued_total,
     messages_rejected_total,
     mailbox_depth,
@@ -193,11 +211,34 @@ counters!(
     requests_replied_total,
     requests_timed_out_total,
     requests_actor_stopped_total,
+    requests_noproc_total,
+    requests_reply_dropped_total,
+    requests_overloaded_total,
     requests_cancelled_total,
+    deferred_tokens_total,
+    deferred_pending,
+    deferred_replied_total,
+    deferred_expired_total,
+    deferred_dropped_total,
+    deferred_stopped_total,
+    deferred_abandoned_total,
+    deferred_overloaded_total,
+    jobs_started_total,
+    jobs_running,
+    jobs_completed_total,
+    jobs_panicked_total,
+    jobs_deadline_exceeded_total,
+    jobs_cancelled_total,
+    jobs_fenced_total,
+    jobs_rejected_total,
+    jobs_emits_total,
+    jobs_unfinished_at_stop_total,
 );
 static QUEUE_WAIT: Histogram = Histogram::new();
 static HANDLER_DURATION: Histogram = Histogram::new();
 static REQUEST_LATENCY: Histogram = Histogram::new();
+static DEFERRED_REPLY_LATENCY: Histogram = Histogram::new();
+static DEFERRED_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static MESSAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -214,6 +255,10 @@ pub fn render_prometheus() -> String {
             &snapshot.handler_duration,
         ),
         ("spawned_request_latency_seconds", &snapshot.request_latency),
+        (
+            "spawned_deferred_reply_latency_seconds",
+            &snapshot.deferred_reply_latency,
+        ),
     ] {
         writeln!(out, "# TYPE {name} histogram").unwrap();
         let mut count = 0;
@@ -241,6 +286,85 @@ pub fn render_prometheus() -> String {
         .unwrap();
     }
     out
+}
+
+/// Deferred-reply and pipe-to-self job accounting
+/// (docs/design/deferred-replies.md; `spawned_deferred_*`, `spawned_jobs_*`).
+pub(crate) mod hooks {
+    use super::{sample, Instant, COUNTERS, DEFERRED_REPLY_LATENCY, DEFERRED_SEQUENCE};
+    use std::sync::atomic::Ordering::Relaxed;
+
+    /// When a token was deferred, for a sampled reply latency.
+    pub(crate) type DeferStamp = Option<Instant>;
+
+    /// `defer()` took a credit: the slot now has a live token.
+    pub(crate) fn deferred() -> DeferStamp {
+        COUNTERS.deferred_tokens_total.fetch_add(1, Relaxed);
+        COUNTERS.deferred_pending.fetch_add(1, Relaxed);
+        sample(&DEFERRED_SEQUENCE)
+    }
+
+    /// A deferred token delivered its reply.
+    pub(crate) fn deferred_replied(at: &DeferStamp) {
+        if let Some(at) = at {
+            DEFERRED_REPLY_LATENCY.record(at.elapsed());
+        }
+    }
+
+    /// A slot left `OPEN` for `kind` (the model's terminal name); `token`
+    /// tells whether a deferred token was live.
+    pub(crate) fn left_open(kind: &'static str, token: bool) {
+        if kind == "overloaded" {
+            COUNTERS.deferred_overloaded_total.fetch_add(1, Relaxed);
+        }
+        if !token {
+            return;
+        }
+        COUNTERS.deferred_pending.fetch_sub(1, Relaxed);
+        match kind {
+            "ok" => &COUNTERS.deferred_replied_total,
+            "timeout" => &COUNTERS.deferred_expired_total,
+            "dropped" => &COUNTERS.deferred_dropped_total,
+            "stopped" => &COUNTERS.deferred_stopped_total,
+            "abandoned" => &COUNTERS.deferred_abandoned_total,
+            _ => return,
+        }
+        .fetch_add(1, Relaxed);
+    }
+
+    pub(crate) fn job_started() {
+        COUNTERS.jobs_started_total.fetch_add(1, Relaxed);
+        COUNTERS.jobs_running.fetch_add(1, Relaxed);
+    }
+    pub(crate) fn job_ended() {
+        COUNTERS.jobs_running.fetch_sub(1, Relaxed);
+    }
+    /// The terminal notification was taken: `ok`, `panicked` or `deadline`.
+    pub(crate) fn job_notified(end: &'static str) {
+        match end {
+            "ok" => &COUNTERS.jobs_completed_total,
+            "panicked" => &COUNTERS.jobs_panicked_total,
+            _ => &COUNTERS.jobs_deadline_exceeded_total,
+        }
+        .fetch_add(1, Relaxed);
+    }
+    pub(crate) fn job_cancelled() {
+        COUNTERS.jobs_cancelled_total.fetch_add(1, Relaxed);
+    }
+    pub(crate) fn job_fenced() {
+        COUNTERS.jobs_fenced_total.fetch_add(1, Relaxed);
+    }
+    pub(crate) fn job_rejected() {
+        COUNTERS.jobs_rejected_total.fetch_add(1, Relaxed);
+    }
+    pub(crate) fn job_emitted() {
+        COUNTERS.jobs_emits_total.fetch_add(1, Relaxed);
+    }
+    pub(crate) fn jobs_unfinished(n: usize) {
+        COUNTERS
+            .jobs_unfinished_at_stop_total
+            .fetch_add(n as u64, Relaxed);
+    }
 }
 
 #[derive(Clone, Default)]
@@ -361,6 +485,8 @@ impl ActorObservation {
             ExitReason::Shutdown => &COUNTERS.actors_exited_shutdown_total,
             ExitReason::Panic(_) => &COUNTERS.actors_exited_panic_total,
             ExitReason::Kill => &COUNTERS.actors_exited_kill_total,
+            ExitReason::Killed => &COUNTERS.actors_exited_killed_total,
+            ExitReason::NoProc => &COUNTERS.actors_exited_noproc_total,
         }
         .fetch_add(1, Relaxed);
     }
@@ -368,7 +494,7 @@ impl ActorObservation {
 impl Drop for ActorObservation {
     fn drop(&mut self) {
         if !self.finished {
-            self.finish(&ExitReason::Kill);
+            self.finish(&ExitReason::Killed);
         }
     }
 }
@@ -390,7 +516,10 @@ impl RequestObservation {
         match result {
             Ok(_) => &COUNTERS.requests_replied_total,
             Err(ActorError::RequestTimeout) => &COUNTERS.requests_timed_out_total,
-            Err(ActorError::ActorStopped) => &COUNTERS.requests_actor_stopped_total,
+            Err(ActorError::ActorStopped(_)) => &COUNTERS.requests_actor_stopped_total,
+            Err(ActorError::NoProc) => &COUNTERS.requests_noproc_total,
+            Err(ActorError::ReplyDropped) => &COUNTERS.requests_reply_dropped_total,
+            Err(ActorError::Overloaded) => &COUNTERS.requests_overloaded_total,
         }
         .fetch_add(1, Relaxed);
     }

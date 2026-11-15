@@ -52,7 +52,7 @@ fn controlled_failures_reach_every_required_window_on_every_backend() {
             assert_eq!(actor.wait(&rt), ExitReason::Normal);
             assert!(matches!(
                 queued.wait(&rt, LIMIT),
-                Err(ActorError::ActorStopped)
+                Err(ActorError::ActorStopped(ExitReason::Normal))
             ));
             assert!(effects.lock().unwrap().is_empty());
             reached.insert(REQUIRED[0]);
@@ -111,7 +111,7 @@ fn controlled_failures_reach_every_required_window_on_every_backend() {
             control.release();
             assert!(matches!(
                 response.wait(&rt, LIMIT),
-                Err(ActorError::ActorStopped)
+                Err(ActorError::ActorStopped(ExitReason::Panic(_)))
             ));
             assert!(matches!(actor.wait(&rt), ExitReason::Panic(_)));
             assert_eq!(*effects.lock().unwrap(), vec![9]);
@@ -148,11 +148,13 @@ fn controlled_failures_reach_every_required_window_on_every_backend() {
             cleanup.track(&target);
             peer.link(&target.child());
             peer.stop();
-            control.entered(); // Normal stop is committed while cleanup is pending.
+            control.entered(); // Normal stop is requested while stopped() runs.
             assert!(target.request(&rt, Command::Panic).is_err());
             assert!(matches!(target.wait(&rt), ExitReason::Panic(_)));
             control.release();
-            assert_eq!(peer.wait(&rt), ExitReason::Normal);
+            // The late abnormal link notice replaces the requested Normal
+            // before the death point (decision 8); stopped() still finished.
+            assert!(matches!(peer.wait(&rt), ExitReason::Panic(_)));
             reached.insert(REQUIRED[5]);
         }
         {

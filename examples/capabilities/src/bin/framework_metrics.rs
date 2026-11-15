@@ -11,14 +11,18 @@ impl Message for Ping {
 }
 impl Actor for Worker {}
 impl Handler<Ping> for Worker {
-    async fn handle(&mut self, _: Ping, _: &Context<Self>) {}
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
 }
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
-    metrics::configure(Config {
-        timing_sample_every: 16,
-    })
-    .unwrap();
+    metrics::configure(Config::default().timing_sample_every(16)).unwrap();
     let actor = Worker.start();
     for _ in 0..32 {
         actor.request(Ping).await.unwrap();

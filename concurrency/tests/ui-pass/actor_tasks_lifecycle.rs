@@ -25,11 +25,11 @@ mod asynchronous {
         async fn halt(&mut self, _ctx: &Context<Self>) {}
         #[exit_received]
         async fn trapped(&mut self, _exit: Exit, _ctx: &Context<Self>) {}
-        #[handler]
+        #[request_handler]
         async fn ping(&mut self, msg: Ping, _ctx: &Context<Self>) -> u32 {
             msg.0 + 1
         }
-        #[handler]
+        #[request_handler]
         fn pong(
             &mut self,
             msg: Pong,

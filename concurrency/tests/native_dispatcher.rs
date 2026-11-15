@@ -16,9 +16,17 @@ impl Message for Ping {
 struct Healthy;
 impl Actor for Healthy {}
 impl Handler<Ping> for Healthy {
-    async fn handle(&mut self, _: Ping, _: &Context<Self>) -> u64 {
-        tokio::task::yield_now().await;
-        42
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: u64 = {
+            tokio::task::yield_now().await;
+            42
+        };
+        reply.reply(__reply_value);
     }
 }
 struct DropPanic;

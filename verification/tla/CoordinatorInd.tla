@@ -20,6 +20,7 @@ TypeInd ==
     /\ finished \in SUBSET Targets
     /\ index \in 1..TargetCount + 1
     /\ crashed \in BOOLEAN /\ reported \in BOOLEAN /\ released \in BOOLEAN
+    /\ expired \in BOOLEAN /\ killed \in SUBSET Targets
 
 -----------------------------------------------------------------------------
 (* Helper lemma (the only one needed: without it Apalache returns a CTI   *)
@@ -34,14 +35,19 @@ TypeInd ==
 \* to Running. Begin then opens the ordered loop at target 1.
 H_cursor == phase = "Running" => index = 1
 
+\* The grace expires only in the ordered loop, which it ends: GraceExpired
+\* moves to Emergency, from which the loop is never re-entered.
+H_expired == expired => phase \in {"Emergency", "Joining", "Done"}
+
 -----------------------------------------------------------------------------
 (* The model's state invariants (Coordinator.tla). Safety contains its own *)
 (* typing conjuncts; OrderedShutdown and JoinAfterAllSignalled are the     *)
 (* ordered-shutdown properties.                                            *)
 
 SafetyInd == Safety /\ OrderedShutdown /\ JoinAfterAllSignalled
+             /\ KillOnlyAtGrace /\ GraceKillsRemaining
 
-Helpers == H_cursor
+Helpers == H_cursor /\ H_expired
 
 IndInv == TypeInd /\ Helpers /\ SafetyInd
 

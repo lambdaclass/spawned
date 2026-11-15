@@ -86,8 +86,10 @@ async fn request(&mut self, msg: Request, reply: PendingReply<'_, Message>, ctx:
     let Ok(token) = reply.defer() else { return }; // Overloaded (caller told) or Closed (caller gone)
     match state.current_requests.insert(id, token) {
         Ok(()) => state.outbox.push(msg.message),  // see note on the socket send
-        Err(InsertError::Duplicate(token)) => drop(token), // the new caller is told; the old one kept
-        Err(InsertError::Full(token)) => token.overloaded(), // caller gets Err(Overloaded)
+        Err(refused) => match refused.into_parts() {
+            (InsertErrorKind::Duplicate, token) => drop(token), // the new caller is told; the old one kept
+            (_, token) => token.overloaded(), // Full or a later reason: caller gets Err(Overloaded)
+        },
     }
 }
 // response path
@@ -203,11 +205,11 @@ Gaps:
 ### After (v1, before the rank 11b pool)
 
 ```rust
-let opts = JobOptions { deadline: Some(now + VERDICT_DEADLINE), ..Default::default() };
-match ctx.pipe_blocking_with(opts, move || object.stateful_checks(&store).map(|o| (o, object)),
-                             move |res| GossipVerdict { id, res }) {
+let opts = JobOptions::new().deadline(VERDICT_DEADLINE);
+match ctx.pipe_blocking(opts, move |_| object.stateful_checks(&store).map(|o| (o, object)),
+                        move |res| GossipVerdict { id, res }) {
     Ok(_job) => {}
-    Err(PipeError { kind: PipeErrorKind::Overloaded | PipeErrorKind::NativeBudget }) => {
+    Err(PipeError::Overloaded | PipeError::NativeBudget) => {
         report(server, id, Ignore(Overloaded)); forward(..);
     }
     Err(e) => { report(server, id, Ignore(Internal)); warn!(?e); }
@@ -215,9 +217,9 @@ match ctx.pipe_blocking_with(opts, move || object.stateful_checks(&store).map(|o
 impl Handler<GossipVerdict> for P2PServer {
     async fn handle(&mut self, msg: GossipVerdict, _: PendingReply<'_, ()>, _: &Context<Self>) {
         let outcome = match msg.res {
-            JobOutcome::Ok((outcome, _object)) => outcome,
-            JobOutcome::Err(JobError::Panicked(_)) => Ignore(Internal),
-            JobOutcome::Err(JobError::DeadlineExceeded) => Ignore(Timeout), // new: hung checks still yield
+            Ok((outcome, _object)) => outcome,
+            Err(JobError::DeadlineExceeded) => Ignore(Timeout), // new: hung checks still yield
+            Err(_) => Ignore(Internal), // a panic
         };
         self.settle(msg.id, outcome, ..);
     }
@@ -274,11 +276,10 @@ Hazards:
 ```rust
 fn start_aggregation_session(&mut self, slot: u64, ctx: &Context<Self>) -> Result<(), PipeError> {
     let snapshot = self.snapshot_for(slot);
-    let opts = JobOptions { key: Some(AGGREGATION), deadline: Some(interval_2_boundary(slot)),
-                            ..Default::default() };
+    let opts = JobOptions::new().key(AGGREGATION).deadline(interval_2_boundary(slot));
     // Keyed: cancels the prior session's job and fences its queued messages;
     // no join in the turn (the job set joins at stop, with a deadline).
-    ctx.pipe_blocking_with(opts, move |job: &JobCtx<Self>| {
+    ctx.pipe_blocking(opts, move |job: JobCtx<Self>| {
         for proof in snapshot.jobs() {
             if job.is_cancelled() { break }
             job.emit_blocking(AggregateProduced { slot, proof: prove(proof) })?; // fenced per emit
@@ -317,7 +318,7 @@ Also:
   `PendingReplies<K, R>` (sections 1 and 2). Expired requests are still
   dispatched (OTP), so handlers check `reply.is_closed()` or rely on
   `defer()` returning `Closed`.
-- `pipe_blocking_with`, `JobOptions { key, deadline }` and
+- `pipe_blocking`, `JobOptions::new().key(..).deadline(..)` and
   `JobCtx::emit_blocking` (sections 3 and 4).
 - Rank 11b for pool-based admission classes (section 3).
 - Ethrex is on spawned 0.5.0. These rewrites assume it first migrates to v0.7

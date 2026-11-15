@@ -112,7 +112,10 @@ async fn protocol_methods_run_directly_on_the_mock() {
 async fn unconfigured_request_fails_loudly() {
     let mock = Mock::new().allow_sends().start();
     let error = mock.reserve("x".into()).await.unwrap_err();
-    assert!(matches!(error, ActorError::ActorStopped));
+    assert!(matches!(
+        error,
+        ActorError::ActorStopped(ExitReason::Panic(_))
+    ));
     let ExitReason::Panic(reason) = join_within(&mock, WAIT).await else {
         panic!("mock should panic on an unconfigured request");
     };
@@ -207,7 +210,11 @@ async fn replying_probe_answers_and_closed_probe_rejects() {
     let error = tasks::request(&*silent.recipient(), Quote(1), WAIT)
         .await
         .unwrap_err();
-    assert!(matches!(error, ActorError::ActorStopped));
+    // No actor stands behind a probe: its reason is NoProc.
+    assert!(matches!(
+        error,
+        ActorError::ActorStopped(ExitReason::NoProc)
+    ));
     assert_eq!(silent.received()[0].outcome, Outcome::Unexpected);
 
     probe.close();
@@ -225,13 +232,24 @@ impl Message for Get {
 }
 impl Actor for Counter {}
 impl Handler<Bump> for Counter {
-    async fn handle(&mut self, _: Bump, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Bump,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.0.fetch_add(1, Ordering::SeqCst);
+        reply.reply(());
     }
 }
 impl Handler<Get> for Counter {
-    async fn handle(&mut self, _: Get, _: &Context<Self>) -> usize {
-        self.0.load(Ordering::SeqCst)
+    async fn handle(
+        &mut self,
+        _: Get,
+        reply: spawned_concurrency::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(self.0.load(Ordering::SeqCst));
     }
 }
 
@@ -251,25 +269,27 @@ async fn settle_waits_for_earlier_sends() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exit_injects_every_reason() {
-    for reason in [
-        ExitReason::Normal,
-        ExitReason::Shutdown,
-        ExitReason::Panic("injected".into()),
-        ExitReason::Kill,
+    // Exact exit_signal/2 semantics: the target ends with the signal's reason,
+    // a kill ends it Killed.
+    for (reason, expected) in [
+        (ExitReason::Shutdown, ExitReason::Shutdown),
+        (
+            ExitReason::Panic("injected".into()),
+            ExitReason::Panic("injected".into()),
+        ),
+        (ExitReason::Kill, ExitReason::Killed),
     ] {
         let actor = Counter(Arc::default()).start();
-        faults::exit(&actor.child_handle(), reason.clone());
-        let observed = join_within(&actor, WAIT).await;
-        match reason {
-            ExitReason::Panic(msg) => {
-                assert_eq!(
-                    observed,
-                    ExitReason::Panic(format!("panic in handler: {msg}"))
-                )
-            }
-            other => assert_eq!(observed, other),
-        }
+        faults::exit(&actor.child_handle(), reason);
+        assert_eq!(join_within(&actor, WAIT).await, expected);
     }
+    // Normal is ignored by a non-trapping target.
+    let actor = Counter(Arc::default()).start();
+    faults::exit(&actor.child_handle(), ExitReason::Normal);
+    assert_eq!(settle(&actor, Get, WAIT).await, 0);
+    assert_eq!(actor.child_handle().exit_reason(), None);
+    actor.context().stop();
+    assert_eq!(join_within(&actor, WAIT).await, ExitReason::Normal);
 }
 
 #[tokio::test]
@@ -284,15 +304,14 @@ async fn supervised_child_restarts_after_injected_crash() {
     let test = TestSystem::new();
     let mut tree = test
         .system()
-        .supervisor(SupervisorConfig {
-            backoff: Backoff {
-                initial: Duration::ZERO,
-                maximum: Duration::ZERO,
-                jitter: false,
-                ..Backoff::default()
-            },
-            ..SupervisorConfig::default()
-        })
+        .supervisor(
+            SupervisorConfig::default().backoff(
+                Backoff::default()
+                    .initial(Duration::ZERO)
+                    .maximum(Duration::ZERO)
+                    .jitter(false),
+            ),
+        )
         .unwrap();
     let child = tree
         .add(ChildSpec::new("counter", test.group(), |_| async {
@@ -330,10 +349,16 @@ impl Message for Hang {
 }
 impl Actor for Stuck {}
 impl Handler<Hang> for Stuck {
-    async fn handle(&mut self, _: Hang, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Hang,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.0.store(true, Ordering::SeqCst);
         // Blocking code is never preempted, so shutdown cannot finish in time.
         std::thread::sleep(Duration::from_millis(500));
+        reply.reply(());
     }
 }
 
@@ -393,9 +418,10 @@ async fn settle_within_uses_the_given_bound() {
         .delay::<inventory_protocol::Reserve>(Duration::from_millis(500))
         .start();
     // Occupy the mock; the fence queues behind the slow reply.
-    let _pending = mock
-        .actor_ref()
-        .request_raw(inventory_protocol::Reserve { item: "x".into() });
+    let _pending = mock.actor_ref().send_request(
+        inventory_protocol::Reserve { item: "x".into() },
+        spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+    );
     mock.settle_within(Duration::from_millis(20)).await;
 }
 
@@ -481,15 +507,14 @@ async fn restart_child_waits_out_a_restart_in_progress() {
     let test = TestSystem::new();
     let mut tree = test
         .system()
-        .supervisor(SupervisorConfig {
-            backoff: Backoff {
-                initial: Duration::from_millis(100),
-                maximum: Duration::from_millis(100),
-                jitter: false,
-                ..Backoff::default()
-            },
-            ..SupervisorConfig::default()
-        })
+        .supervisor(
+            SupervisorConfig::default().backoff(
+                Backoff::default()
+                    .initial(Duration::from_millis(100))
+                    .maximum(Duration::from_millis(100))
+                    .jitter(false),
+            ),
+        )
         .unwrap();
     let child = tree
         .add(ChildSpec::new("counter", test.group(), |_| async {
@@ -526,7 +551,7 @@ async fn exit_injection_never_blocks_a_current_thread_runtime() {
         let observed = join_within(&actor, WAIT).await;
         assert!(matches!(
             (&reason, &observed),
-            (ExitReason::Panic(_), ExitReason::Panic(_)) | (ExitReason::Kill, ExitReason::Kill)
+            (ExitReason::Panic(_), ExitReason::Panic(_)) | (ExitReason::Kill, ExitReason::Killed)
         ));
         // A second injection into the exited target is a non-blocking no-op.
         faults::exit(&actor.child_handle(), reason);
@@ -537,20 +562,19 @@ async fn exit_injection_never_blocks_a_current_thread_runtime() {
 // Regression: `deadline` bounds the whole call, not each of its phases. Each
 // phase here waits out a 400 ms backoff, so two phases exceed 600 ms.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[should_panic(expected = "one deadline for the whole call")]
+#[should_panic(expected = "one limit for the whole call")]
 async fn restart_child_has_one_deadline_for_the_whole_call() {
     let test = TestSystem::new();
     let mut tree = test
         .system()
-        .supervisor(SupervisorConfig {
-            backoff: Backoff {
-                initial: Duration::from_millis(400),
-                maximum: Duration::from_millis(400),
-                jitter: false,
-                ..Backoff::default()
-            },
-            ..SupervisorConfig::default()
-        })
+        .supervisor(
+            SupervisorConfig::default().backoff(
+                Backoff::default()
+                    .initial(Duration::from_millis(400))
+                    .maximum(Duration::from_millis(400))
+                    .jitter(false),
+            ),
+        )
         .unwrap();
     let child = tree
         .add(ChildSpec::new("counter", test.group(), |_| async {
@@ -577,18 +601,56 @@ async fn async_expect_names_its_caller() {
 }
 
 #[tokio::test]
-async fn direct_kill_and_shutdown_stop_trapping_targets_without_killing_trapping_peers() {
-    for reason in [ExitReason::Kill, ExitReason::Shutdown] {
-        let target = Counter(Arc::default()).start();
-        let observer = Counter(Arc::default()).start();
-        target.context().trap_exit(true);
-        observer.context().trap_exit(true);
-        observer.context().link(&target.child_handle());
-        faults::exit(&target.child_handle(), reason.clone());
-        assert_eq!(join_within(&target, WAIT).await, reason);
-        assert_eq!(settle(&observer, Get, WAIT).await, 0);
-        assert_eq!(observer.child_handle().exit_reason(), None);
-        observer.context().stop();
-        assert_eq!(join_within(&observer, WAIT).await, ExitReason::Normal);
+async fn kill_stops_a_trapping_target_and_other_signals_are_trapped() {
+    // A kill is untrappable: the trapping target ends Killed and its trapping
+    // peer receives the (trappable) Killed notice and survives.
+    let target = Counter(Arc::default()).start();
+    let observer = Counter(Arc::default()).start();
+    target.context().trap_exit(true);
+    observer.context().trap_exit(true);
+    observer.context().link(&target.child_handle());
+    faults::exit(&target.child_handle(), ExitReason::Kill);
+    assert_eq!(join_within(&target, WAIT).await, ExitReason::Killed);
+    assert_eq!(settle(&observer, Get, WAIT).await, 0);
+    assert_eq!(observer.child_handle().exit_reason(), None);
+    observer.context().stop();
+    assert_eq!(join_within(&observer, WAIT).await, ExitReason::Normal);
+    // Any other signal to a trapping target is queued as an Exit.
+    let target = Counter(Arc::default()).start();
+    target.context().trap_exit(true);
+    faults::exit(&target.child_handle(), ExitReason::Shutdown);
+    assert_eq!(settle(&target, Get, WAIT).await, 0);
+    assert_eq!(target.child_handle().exit_reason(), None);
+    target
+        .child_handle()
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
+    assert_eq!(join_within(&target, WAIT).await, ExitReason::Shutdown);
+}
+
+/// `in_actor` runs a closure in one of the actor's turns, after the messages
+/// sent before it, with the state and the `Context`.
+#[tokio::test]
+async fn in_actor_runs_a_closure_in_a_turn() {
+    struct Tally(u32);
+    #[actor]
+    impl Tally {
+        #[send_handler]
+        async fn add(&mut self, msg: AddOne, _: &Context<Self>) {
+            self.0 += msg.0;
+        }
     }
+    struct AddOne(u32);
+    impl Message for AddOne {
+        type Result = ();
+    }
+    let tally = Tally(0).start();
+    tally.send(AddOne(2)).unwrap();
+    let (seen, own) = spawned_test::tasks::in_actor(&tally, |state, ctx| {
+        state.0 += 1;
+        (state.0, ctx.id())
+    })
+    .await;
+    assert_eq!((seen, own), (3, tally.id()));
+    tally.context().stop();
+    tally.join().await;
 }

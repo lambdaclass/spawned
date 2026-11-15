@@ -1,6 +1,6 @@
 # Deferred replies and pipe-to-self: design contract
 
-**Status: design in progress, not implemented.**
+**Status: implementation in review (PR #239); see [Implementation notes](#implementation-notes).**
 
 - Covers ROADMAP rank 11 and the rank 11a decisions. The rank 11b compute pool
   is deferred to 11b.
@@ -32,8 +32,8 @@ See [Differences from OTP](#differences-from-otp).
 | `handle_call` returns `{noreply, State}` and keeps `From` | the handler receives a `PendingReply<'_, R>`; `defer()` gives a storable `ReplyTo<R>` |
 | `gen_server:reply(From, R)` | `reply_to.reply(value)` |
 | `handle_cast` | the same handler, reached by `send`; the `PendingReply` is detached |
-| delegating with `From` | `ctx.pipe_reply(token, other.request(msg), ..)`; the obligation stays here |
-| `Task.Supervisor.async_nolink` + `handle_info` | `ctx.pipe(work, done)`; the result or a caught panic arrives as one message |
+| delegating with `From` | `ctx.pipe_reply(opts, token, \|_\| other.request(msg), ..)`; the obligation stays here |
+| `Task.Supervisor.async_nolink` + `handle_info` | `ctx.pipe(opts, work, done)`; the result or a caught panic arrives as one message |
 | `gen_server:call/3` timeout (default 5000, or `infinity`) | one deadline fixed at send (default 5 s, or `Deadline::Never`) |
 | a call times out; the server still handles it; the late reply is dropped | the same: expired requests are dispatched, and a late reply is a no-op |
 | call monitors the server and fails when it dies | the owner's death discharges every token it holds |
@@ -81,16 +81,50 @@ compare-and-swap on that word, so "install a credit only if `OPEN`" and
 "terminalize and release the credit" cannot interleave.
 
 ```text
-word: AtomicU64 = state:4 | TOKEN:1 | REG:1 | JOBS:16 | (spare)
-  state: OPEN | WRITING | REPLIED | DROPPED | OVERLOADED | TIMED_OUT | STOPPED | ABANDONED
+word: AtomicU64 = state:4 | TOKEN:1 | REG:1 | JOBS:16 | PARKED:1 | SHORTENED:1 | RX_TRACKED:1 | OWNER:39
+  state: OPEN | REPLIED | DROPPED | OVERLOADED | TIMED_OUT | STOPPED | ABANDONED
   TOKEN: a deferred token holds this request's credit (set by defer())
   REG:   listed in the owner registry (set together with TOKEN)
   JOBS:  running linked jobs (pipe_reply); MAX_OUTSTANDING is limited to
          65535 at configuration, so the field cannot overflow
 deadline: AtomicU64   rt clock ticks; u64::MAX = never; only decreases
-value:    written only by the thread that moved the word to WRITING
-waker:    AtomicWaker (tasks) / Mutex+Condvar (threads)
+inner:    one mutex (the slot lock) over
+            value:  written only by the reply that won the word, before the
+                    CAS that publishes REPLIED
+            waker:  the caller's task waker, or the unparker of a thread
+                    blocked in recv() (then `parked` is set, so the death
+                    point's discharge wakes it before any other waker)
+            side:   boxed, created on demand: by defer() (the owner's credit
+                    pool and the token's watchers: ReplyTo::closed,
+                    caller-gone job cancellation) and by the owner's close
+                    (its final reason, stored before the STOPPED CAS so the
+                    caller reads it from the slot); a plain request never
+                    allocates it
+owner:    none outside lifecycle-trace builds (whose events name it): a
+          request takes no shared reference count on its owner. A raw
+          request with a deadline (`send_request`) records the owner's
+          registry key in the word's top 39 bits; its receiver, awaited and
+          still pending, finds the owner by that key and puts the deadline
+          in the owner's heap once (a request answered first never touches
+          the heap, and no heap entry outlives a slot answered before it).
+          An undispatched envelope is answered through the owner's mailbox
+          disposal at the death point (`discharge(replies)`). PARKED (bit
+          22) marks a blocking receiver. SHORTENED (bit 23) asks an async
+          receiver to re-arm its timer; it takes this mark before reading
+          the deadline, so another shortening leaves a fresh mark.
+          RX_TRACKED (bit 24) records that the raw receiver registered its
+          deadline with the owner's heap. State and credit transitions
+          preserve these bits and the key. They keep the slot inside the
+          allocator's small size classes. The slot lock also orders a
+          shortening against a reply's deadline read
 ```
+
+A terminal transition takes the waker under the slot lock after its CAS;
+a receiver checks the word under that lock before it registers, so either
+the transition finds its waker or the check sees the terminal state (no
+lost wakeup; `tests/reply_slot_loom.rs`). A blocking receiver parks its
+thread (no condvar). An `AtomicWaker` beside a value mutex was measured and
+costs more per request than one lock for both.
 
 **Credits held by a slot:**
 
@@ -114,29 +148,30 @@ operation first reads `now`, and if `now >= deadline` it performs
 | `defer()` `[deadline]` | `OPEN`, `TOKEN=0` | `OPEN`, `TOKEN=1`, `REG=1` | +1 if `JOBS=0` |
 | `pipe_reply` attach `[deadline]` | `OPEN`, `TOKEN=1` | `OPEN`, `JOBS+1` | +1 if `JOBS>=1` (the first job shares the token's credit) |
 | linked job ends | any, `JOBS>=1` | same state, `JOBS-1` | -1 if this lowers `credits` |
-| reply | `OPEN` | `WRITING`, then `REPLIED` or `TIMED_OUT` | -1 if `TOKEN` and `JOBS=0` |
+| reply | `OPEN` | `REPLIED` (no clock read) | -1 if `TOKEN` and `JOBS=0` |
 | drop, overloaded, expiry, abandonment, registry close | `OPEN` | `DROPPED` / `OVERLOADED` / `TIMED_OUT` / `ABANDONED` / `STOPPED` | -1 if `TOKEN` and `JOBS=0` |
 | `is_closed()` `[deadline]` | `OPEN`, past deadline | `TIMED_OUT` | as expiry |
 
 Rules:
 
-1. **Reply.** The reply is `CAS OPEN -> WRITING`, which keeps the
-   `TOKEN`/`REG`/`JOBS` bits. It then reads `deadline` and `now`:
-   - at or past the deadline: CAS the state field `WRITING -> TIMED_OUT`, and
-     return the value as `Expired`;
-   - otherwise: write the value, then CAS the state field
-     `WRITING -> REPLIED`.
-
-   These CASes change only the state field and retry on concurrent `JOBS`
-   changes; a whole-word store would lose a job-end decrement.
-
-   Only `REPLIED` publishes the value; a receiver that sees `WRITING` waits.
-   A registry close that finds `WRITING` waits for it to resolve. The window
-   is a value write; no user code runs in it.
-2. **Shortening.** `with_deadline(at)` is `fetch_min(deadline, at)`, then the
-   `[deadline]` check. The linearization point is the reply's `WRITING` CAS:
-   - a shortening before it is seen by the reply;
-   - a shortening after it finds the word not `OPEN` and does nothing.
+1. **Reply.** The reply writes the value under the slot lock and publishes
+   it with one `CAS OPEN -> REPLIED` (keeping the `TOKEN`/`REG`/`JOBS`
+   bits; it retries on concurrent `JOBS` changes). A deferred reply holds
+   the owner's reply permit across that CAS (the death-point fence). The
+   reply reads no clock: the caller's expiry is the only timeout authority, as in OTP's
+`gen_server:call`: a reply reads no clock. A reply that loses the race with
+the expiry (the caller's timer, the owner's deadline heap, or a
+`[deadline]` check) is discarded (`Delivery::Expired`) and the caller sees
+`RequestTimeout`; a reply that lands after the deadline instant but before
+the expiry runs is delivered (`Delivery::Delivered`, and the caller gets
+the value), as an OTP reply already in the caller's mailbox when its
+`after` clause would fire is received. A reply that finds the
+   word not `OPEN` takes its value back (`Expired`, `CallerGone`,
+   `OwnerExited`).
+2. **Shortening.** `shorten_deadline(at)` lowers the deadline under the slot
+   lock while the word is `OPEN`, then runs the `[deadline]` check: a new
+   deadline already passed expires the slot at once, racing any reply on
+   the word (exactly one wins; a shortening after the reply does nothing).
 3. **Registry.** The registry is a per-instance list of weak slot references,
    appended by `defer()` after its CAS and pruned lazily; the `REG` bit in the
    word is authoritative. Closing the registry CASes every listed slot that is
@@ -172,15 +207,15 @@ There is one timeout reason, as in OTP. `DeadlineExceeded` exists only on
 
 | Today | Proposed |
 |---|---|
-| `request_raw(msg) -> Result<oneshot::Receiver<R>, _>`, no timeout | `request_raw(msg) -> Result<ReplyReceiver<R>, _>`, default 5 s deadline (as `gen_server:call/2`); `request_raw_until(msg, Deadline)` with `Deadline::At(t)` or `Deadline::Never` |
-| `Receiver<M>::request_raw` | `request_raw_until(msg, Deadline)` (required) plus a provided `request_raw` |
-| erased `request(recipient, msg, timeout)` | computes the deadline before enqueueing, then `request_raw_until` |
+| `request_raw(msg) -> Result<oneshot::Receiver<R>, _>`, no timeout | `send_request(msg, impl Into<Deadline>) -> Result<ReplyReceiver<R>, _>` (OTP's `gen_server:send_request/2` with an explicit deadline): a `Duration`, an `Instant` or `Deadline::Never` |
+| `Receiver<M>::request_raw` | `send_request(msg, Deadline)` (required) |
+| erased `request(recipient, msg, timeout)` | computes the deadline before enqueueing, then `send_request` |
 | `Response::from(Result<oneshot::Receiver<T>, _>)`, `Response::from_with_timeout` | `Response::from(Result<ReplyReceiver<T>, _>)`; `from_with_timeout` removed (the deadline is already in the slot) |
-| `#[protocol]` tasks code: `from_with_timeout(target.request_raw(m), t)` | the timeout is chosen first (per-call override, method, protocol, default), then `Response::from(target.request_raw_until(m, now + t))` |
+| `#[protocol]` tasks code: `from_with_timeout(target.request_raw(m), t)` | the timeout is chosen first (per-call override, method, protocol, default), then `Response::from(target.send_request(m, Deadline::after(t)))` |
 | `#[protocol]` threads code: `Response::ready(target.request_with_timeout(m, t))` | unchanged: threads `Response` stays eager and blocks in the call |
 | `ActorError`, exhaustive | `#[non_exhaustive]`, plus `ReplyDropped` and `Overloaded` |
 | `metrics::Snapshot` request counters | add `requests_reply_dropped_total` and `requests_overloaded_total` (`RequestObservation::finish`) |
-| `spawned-test` `Mock`, `Probe<M>` | `Mock` implements the new `Handler` (below); `Probe` implements `request_raw_until` and discharges unexpected requests as `Stopped`, keeping its contract |
+| `spawned-test` `Mock`, `Probe<M>` | `Mock` implements the new `Handler` (below); `Probe` implements `send_request` and discharges unexpected requests as `Stopped`, keeping its contract |
 
 `ReplyReceiver<R>` is a future in `tasks` mode and has `recv()` in `threads`
 mode. Dropping it is `CAS OPEN -> ABANDONED`, which returns the token's credit
@@ -196,7 +231,7 @@ then expires the slot; there is one deadline, not two timers.
 The behaviour changes in two places, both in the migration notes:
 
 - a `#[protocol]` request's timeout used to start at first poll;
-- `request_raw` used to have no timeout.
+- `request_raw` used to have no timeout (`send_request` takes one explicitly).
 
 We use send time because the deadline is a property of the request, the server
 cannot learn when the caller polls, propagated deadlines (rank 19) need an
@@ -204,14 +239,25 @@ absolute instant, and OTP's `call` starts waiting when it sends.
 
 **Who expires a slot.**
 
-- **A polling receiver.** It sleeps until the slot's deadline (rt clock) and
-  then `CAS OPEN -> TIMED_OUT`.
+- **A polling receiver.** `request`, `request_with_timeout` and
+  `Response::from` sleep on the runtime's timer until the slot's deadline
+  and then `CAS OPEN -> TIMED_OUT` (so they follow paused Tokio clocks). A
+  raw receiver awaited directly (`send_request(..)?.await`) instead puts its
+  deadline once in the owner's heap, which expires it on the service's clock
+  (real time, or the simulated clock under `spawned_sim`), saving a timer
+  per request. A shortened deadline (`ReplyTo::shorten_deadline`) wakes the
+  awaiting or parked receiver, which re-arms for it.
+  For an implicit call timeout, the slot deadline is computed from the
+  monotonic service clock and a relative runtime sleep is created before
+  enqueue. The two captures are deliberate: a paused Tokio clock must not be
+  converted into an absolute service-clock instant. No coarse clock is used.
+  Absolute-deadline responses still create their timer when polled.
 - **`defer()`, the `pipe_reply` attach and `is_closed()`.** They check the
   deadline first, so an unpolled, expired request reports `Closed`.
 - **The owner's deadline heap,** for deferred tokens and for job deadlines.
   It returns credits and delivers job deadline notifications even when no
   caller is polling.
-- **A reply itself:** at or past the deadline it expires the slot (rule 2).
+- **Not the reply:** a reply reads no clock (rule 1, as OTP).
 
 A queued or in-turn request that nobody polls stays open until it is polled,
 replied (and expired), deferred (`defer()` on an expired slot returns
@@ -229,10 +275,12 @@ handles a call even after the caller timed out, and the late reply is dropped.
 
 - **Stale entries.** An entry is stale when its slot or job is terminal, or
   when its deadline is later than the current one (superseded by
-  `with_deadline`).
+  `shorten_deadline`).
 - **Compaction.** The heap is rebuilt when stale entries exceed live ones,
   per actor. So storage is at most about 2 × (live deferred tokens + live
-  jobs with deadlines), at most about 2 × (`MAX_OUTSTANDING` + job count).
+  jobs with deadlines + awaited raw receivers); the first two are bounded by
+  `MAX_OUTSTANDING` + job count, the last by the requests callers are
+  awaiting (each also holds a queued envelope or an open slot).
 - **Ownership.** Entries hold `Weak` references, so the heap owns no slot and
   no job. The heap is dropped at the owner's death, after the registry close.
 - **Service.** A per-system service holds one entry per actor: its earliest
@@ -296,6 +344,7 @@ impl PeerTable {
             Err(DeferError::Overloaded) => {}   // caller already answered Overloaded
             Err(DeferError::Closed) => {}       // caller already timed out or left
             Err(DeferError::NoCaller) => {}     // reached by send
+            Err(_) => {}                        // #[non_exhaustive]
         }
     }
 }
@@ -309,7 +358,7 @@ pub struct PendingReply<'t, R> { .. }
 impl<R> PendingReply<'_, R> {
     pub fn reply(self, value: R) -> Delivery;          // Delivered | CallerGone | Expired
     pub fn defer(self) -> Result<ReplyTo<R>, DeferError>;  // Overloaded | Closed | NoCaller
-    pub fn deadline(&self) -> Option<Instant>;
+    pub fn deadline(&self) -> Deadline;                // Never for sends
     pub fn is_closed(&self) -> bool;                   // checks the deadline first
     pub fn overloaded(self);                            // answer Err(Overloaded)
 }
@@ -318,8 +367,8 @@ impl<R> PendingReply<'_, R> {
 pub struct ReplyTo<R> { .. }                           // Send + 'static, not Clone
 impl<R: Send + 'static> ReplyTo<R> {
     pub fn reply(self, value: R) -> Delivery;          // .. | OwnerExited
-    pub fn deadline(&self) -> Option<Instant>;
-    pub fn with_deadline(&self, at: Instant);          // shorten only
+    pub fn deadline(&self) -> Deadline;
+    pub fn shorten_deadline(&self, d: impl Into<Deadline>); // shorten only
     pub fn is_closed(&self) -> bool;
     pub async fn closed(&self);                        // tasks mode
     pub fn owner(&self) -> ActorId;
@@ -345,6 +394,25 @@ No rule uses `thread::panicking()`. A drop that lands on the turn list from
 another task while a turn runs is committed at that turn's end. The delay is
 at most one turn, and the outcome only depends on whether that turn panicked.
 
+The implementation counts **externally owned tokens**, independently of live
+credits. A token remains counted until its complete drop/commit path finishes,
+including unwinding from a callback. Only a handler can create a token; borrowed
+`PendingReply` values are destroyed before that handler finishes. At turn end,
+an acquire read of zero external tokens therefore permits a load/store of the
+phase instead of an atomic exchange. Acquiring the last token's release also
+publishes that token's queued drop. If any external token remains, the exchange
+is retained against concurrent drops. Counting credits instead would be wrong:
+a token may already be terminal while its drop is still in progress. The
+production `TurnPhase` and its Loom cases check both paths; the observable
+`EndTurn`/`Panic` actions below are unchanged.
+
+**Refined by rank 5e** ([otp-exit-signals.md](otp-exit-signals.md#required-changes-to-rank-11-221-design-239-implementation),
+implemented in #240): a `Stopped` outcome is no longer answered at once. The
+slot becomes *exit pending*: it stays open in the registry and the death
+point answers it `ActorStopped` with the owner's final exit reason (or the
+caller's deadline comes first). An undispatched queued request is held the
+same way, and a send or request after the death point reports `NoProc`.
+
 ## 5. Owner lifecycle
 
 Each actor instance has a reply registry (its open deferred tokens and the
@@ -367,14 +435,38 @@ current turn's slot) and a job set. The order is:
    answered.
 3. **Death.** This happens only when `stopped()` has returned. Rust cannot
    preempt `stopped(&mut self)` or a hanging destructor, and it cannot
-   destroy state that is still borrowed. In this order:
-   1. the registry closes, and every open token it lists becomes `STOPPED`,
+   destroy state that is still borrowed. In this order, whether the run
+   loop or the runtime dropping the actor drives it:
+   1. job admission closes and every job is cancelled; outgoing replies of
+      deferred tokens and exit signals sent through the actor's contexts
+      are fenced (those in flight finish, later ones are refused: a reply
+      returns `OwnerExited`, a signal is inert);
+   2. the final reason is fixed, the link table closes and admission is
+      sealed (`NoProc`);
+   3. the registry closes, and every open token it lists becomes `STOPPED`,
       wherever the token is (state, job, helper, leaked);
-   2. the mailbox is disposed: queued envelopes are dropped as `STOPPED`, and
-      emit credits return;
-   3. actor state is dropped;
-   4. the deadline heap is dropped;
-   5. the exit reason is published, and monitors and links fire.
+   4. the mailbox closes and every queued request is answered `STOPPED`;
+   5. only then are payloads destroyed: queued envelopes (emit credits
+      return), then actor state;
+   6. the deadline heap is dropped;
+   7. the exit reason is published, and monitors and links fire.
+
+   Steps 1 to 4 run no user code: steps 3 and 4 only make terminal
+   transitions, and every slot they meet stays referenced (an unread
+   reply's value is user code when destroyed) until step 5. After the last
+   answer, and before step 5, run in this order: the parked blocking
+   receivers are notified (no user code, so none waits behind a waker), the
+   callers' wakers (executor or user code), a runtime drop's "stopped()
+   skipped" log, and the callbacks the jobs' cancellation owes (`cancelled()`
+   waiters, blocked emitters). Cancellation in step 1 only sets the jobs'
+   flag: the payloads it releases (held results, scheduled emits) are
+   destroyed in step 5. From the start of the exit (the jobs' cancellation)
+   to the end of discharge, every payload the framework drops for the owner
+   on any thread (a scheduled emit coming due, a job's refused outcome) is
+   held by the owner's drop sink and destroyed then too. Steps 3 and 4 follow the seal instead of being one atomic step
+   with it, but nothing between them depends on the requests they answer,
+   so the models' atomic death is a sound abstraction of them (they commute
+   left to the seal).
 
    `ActorStopped` keeps one meaning, "the actor is gone". An observer that
    sees `Down` knows every caller of the instance has been answered.
@@ -425,6 +517,12 @@ the actor's job set; it is not detached.
   non-exhaustive enum;
 - a request to an actor that has already died reports `NoProc`.
 
+Both are implemented in #240 as `ActorError::ActorStopped(ExitReason)` and
+`ActorError::NoProc`, with the death boundary of
+[otp-exit-signals.md](otp-exit-signals.md#phases-of-an-exit): the registry is
+sealed with the final reason at the death point, and exit errors wait for
+it.
+
 The slot's terminal kinds are defined so that rank 5e only adds the reason.
 
 ## 6. Delegation
@@ -433,11 +531,12 @@ There is no `ReplyTo::forward` in v1.
 
 ```rust
 let token = reply.defer()?;
-ctx.pipe_reply(token, other.request(msg), |res, token| Delegated { res, token })?;
+ctx.pipe_reply(JobOptions::new(), token, |_| other.request(msg), |res, token| Delegated { res, token })?;
 ```
 
 The downstream request is an ordinary request with the destination's own
-admission and deadline; it should use `token.deadline()`, which rank 19
+admission and deadline; it should pass `token.deadline()` on
+(`other.send_request(msg, token.deadline())`), which rank 19
 automates. The obligation and credit stay in this actor's registry. When the
 linked job ends or is cancelled, its future, and with it the downstream
 `ReplyReceiver`, is dropped. That abandons the downstream slot and returns
@@ -450,22 +549,30 @@ impl<K: Hash + Eq, R> PendingReplies<K, R> {
     pub fn with_capacity(cap: usize) -> Self;
     /// Purges terminal tokens, then inserts; a duplicate key or a full table
     /// hands the new token back.
-    pub fn insert(&mut self, key: K, token: ReplyTo<R>) -> Result<(), InsertError<ReplyTo<R>>>;
+    pub fn insert(&mut self, key: K, token: ReplyTo<R>) -> Result<(), InsertError<R>>;
     pub fn take(&mut self, key: &K) -> Option<ReplyTo<R>>;   // skips (and removes) terminal entries
-    pub fn purge(&mut self) -> usize;
-    pub fn retained(&self) -> usize;                          // entries held, without purging
-    pub fn live(&self) -> usize;                              // non-terminal entries (scan)
+    pub fn len(&self) -> usize;                               // live entries (scan)
+    pub fn is_empty(&self) -> bool;
+    pub fn drain(&mut self) -> impl Iterator<Item = (K, ReplyTo<R>)>; // live tokens, oldest first
 }
+#[non_exhaustive]
+pub enum InsertError<R> { Duplicate(ReplyTo<R>), Full(ReplyTo<R>) }   // kind(), into_inner(), into_parts()
 ```
 
 Retained entries never exceed `cap`, however fast tokens expire. The handler
 decides what to answer on `InsertError` (typically `Overloaded` or a domain
-error) and still owns the token.
+error) and still owns the token. Entries keep insertion order, so `drain`
+answers callers in the same order in every process: the order never comes
+from a per-process hash seed, and a same-seed simulator run reproduces it
+(#261; `reply::pending::tests::drain_follows_insertion_order`,
+`tests/sim.rs::pending_replies_drain_is_reproducible`). The table is a scan
+bounded by `cap`: `insert` already purges it whole, and `take` is linear.
 
 ## 8. Bounds
 
 **Credits per actor instance: `MAX_OUTSTANDING`** (an `Actor` constant,
-default 1024, overridable per `ChildSpec`). This is a count limit, not a
+default 1024; `#[actor(max_outstanding = N)]`, overridable per `ChildSpec`
+with `ChildSpec::max_outstanding`). This is a count limit, not a
 memory budget; byte credits are rank 18.
 
 - An in-place reply needs no credit.
@@ -491,7 +598,8 @@ matter which job finishes first: the request holds
 `max(running jobs, live token)` credits.
 
 **Native execution budget: `MAX_NATIVE_JOBS`** (an `Actor` constant,
-overridable per `ChildSpec`; provisional default
+`#[actor(max_native_jobs = N)]`, overridable per `ChildSpec` with
+`ChildSpec::max_native_jobs`; provisional default
 `min(4, available_parallelism)`). It covers `threads`-mode jobs and
 `pipe_blocking*`.
 
@@ -509,34 +617,44 @@ otherwise `PipeReplyError::WrongOwner` hands the token back.
 ## 9. Pipe-to-self jobs
 
 ```rust
-pub struct JobOptions {
-    pub deadline: Option<Instant>,          // none: no job deadline
-    pub key: Option<JobKey>,                // cancel-previous
-    pub cancel_on_caller_gone: bool,        // pipe_reply only; default false (OTP)
-    pub emit_credits: u16,                  // default 16
+#[non_exhaustive]
+pub struct JobOptions { /* private */ }     // OTP-style option list, passed first
+impl JobOptions {
+    pub fn new() -> Self;                                   // = default()
+    pub fn key(self, key: impl Into<JobKey>) -> Self;       // cancel-previous
+    pub fn deadline(self, d: impl Into<Deadline>) -> Self;  // Duration, Instant or Deadline
+    pub fn emit_credits(self, n: NonZeroU16) -> Self;       // default 16
+    pub fn cancel_on_caller_gone(self) -> Self;             // pipe_reply* only; off by default (OTP)
 }
-// Spawn at once; options are passed first, never chained afterwards.
-ctx.pipe(work, done)                                   -> Result<JobHandle, PipeError>
-ctx.pipe_with(opts, work, done)                        -> Result<JobHandle, PipeError>
-ctx.pipe_blocking_with(opts, |job| .., done)           -> Result<JobHandle, PipeError>
-ctx.pipe_reply(token, work, done)                      -> Result<JobHandle, PipeReplyError<R>>
-ctx.pipe_reply_with(opts, token, work, done)           -> Result<JobHandle, PipeReplyError<R>>
-ctx.pipe_reply_blocking_with(opts, token, |job| .., done) -> Result<JobHandle, PipeReplyError<R>>
+// One call per shape; spawn at once. `work` receives the job's `JobCtx`.
+ctx.pipe(opts, |job| async { .. }, done)                     -> Result<JobHandle, PipeError>
+ctx.pipe_blocking(opts, |job| .., done)                      -> Result<JobHandle, PipeError>
+ctx.pipe_reply(opts, token, |job| async { .. }, done)        -> Result<JobHandle, PipeReplyError<R>>
+ctx.pipe_reply_blocking(opts, token, |job| .., done)         -> Result<JobHandle, PipeReplyError<R>>
+// Reserve-then-spawn: the admission checks (owner running, credit, native
+// slot) before `work`/`done` exist; spawning from the permit cannot fail.
+ctx.reserve_job(opts)          -> Result<JobPermit<A>, PipeError>         // .pipe(work, done)
+ctx.reserve_blocking_job(opts) -> Result<BlockingJobPermit<A>, PipeError> // .pipe_blocking(work, done)
 
-pub enum PipeErrorKind { Overloaded, NativeBudget, SpawnFailed(io::Error), OwnerStopping }
-pub struct PipeError { pub kind: PipeErrorKind }
+#[non_exhaustive]
+pub enum PipeError { Overloaded, NativeBudget, SpawnFailed(io::Error), OwnerStopping }
+#[non_exhaustive]
 pub enum PipeReplyError<R> {
-    Failed { token: ReplyTo<R>, kind: PipeErrorKind },
+    Failed { token: ReplyTo<R>, error: PipeError },
     Closed(ReplyTo<R>),
     WrongOwner(ReplyTo<R>),
 }
-pub enum JobOutcome<T> { Ok(T), Err(JobError) }
+pub type JobOutcome<T> = Result<T, JobError>;
+#[non_exhaustive]
 pub enum JobError { Panicked(String), DeadlineExceeded }
 impl<A> JobCtx<A> {
     pub fn is_cancelled(&self) -> bool;
     pub async fn cancelled(&self);
     pub async fn emit<M>(&self, msg: M) -> Result<(), JobGone> where A: Handler<M>;
     pub fn emit_blocking<M>(&self, msg: M) -> Result<(), JobGone> where A: Handler<M>;
+    // Delayed emit: credit taken now, step 2 at `at` (see the emit protocol).
+    pub async fn emit_at<M>(&self, at: Instant, msg: M) -> Result<(), JobGone> where A: Handler<M>;
+    pub fn emit_at_blocking<M>(&self, at: Instant, msg: M) -> Result<(), JobGone> where A: Handler<M>;
 }
 ```
 
@@ -589,6 +707,20 @@ handle, the key map and every message it produces. It has three parts:
    which return `JobGone`. A blocked emitter therefore never holds up the
    stop-time join.
 
+**Delayed emits (`emit_at`).** Step 1 runs at the call. A scheduled emit is
+then registered under the job's lock (refused, `JobGone`, if the job is no
+longer accepting emits) and serviced by the owner's deadline heap; at its
+instant, step 2 runs as for `emit`. So it is fenced and credit-accounted like
+any emit. To keep the terminal message last, the work's result is **held**
+while scheduled emits remain: the last one to fire enqueues it. Cancellation
+drops the scheduled emits and a held result; a job deadline takes the
+notification as usual (deadlines are hard), and later scheduled emits are
+then dropped at their instant. Modelled in `DeferredJobs.tla`
+(`MCDeferredJobsHeld`: scheduled emits, the held result, the deadline taking
+it and the job's credit kept until the terminal message; controls
+`EarlyCredit` and `HeldDeadlineLost`); Loom model
+`scheduled_emit_vs_finish_and_cancel`.
+
 **Fencing at dispatch.** Every job message carries the job's `JobState` and
 the owner's `ActorId`. The run loop drops it before the handler runs if:
 
@@ -596,7 +728,7 @@ the owner's `ActorId`. The run loop drops it before the handler runs if:
   `ActorId`, not a per-slot supervisor generation); or
 - the job is cancelled.
 
-**Keyed replacement.** `pipe_keyed` / `JobOptions::key` cancels the previous
+**Keyed replacement.** `JobOptions::key` cancels the previous
 job for the key **whatever its notification state**: pending, notified (its
 deadline fired) or finished with a queued terminal message. So none of its
 queued messages reach the handler. The key map holds only the current job.
@@ -612,11 +744,14 @@ panic, so no consumed `FnOnce` has to be retried.
 
 **Executors.**
 
-- **`tasks` mode:** async jobs on the owner's runtime and blocking jobs on the
-  native budget.
+- **`tasks` mode:** async jobs on the owner's runtime; blocking jobs on
+  Tokio's blocking pool (`spawn_blocking` on the managed actor's group
+  runtime, or the current one), under the native budget. Outside a Tokio
+  runtime, and under the simulator, an owned thread.
 - **`threads` mode:** one owned native thread per admitted job under the
-  native budget. Spawning is fallible (`SpawnFailed`). The shared pool comes
-  in rank 11b.
+  native budget. Spawning is fallible (`SpawnFailed`); the thread is spawned
+  at reservation and parked until its job starts, so a permit's spawn is not.
+  A managed compute pool comes in rank 11b.
 - **Unmanaged actors** own their job set like managed ones; managed actors
   also register theirs with the scope.
 - **Jobs must not wait on their own owner.** Once the owner is exiting it no
@@ -698,7 +833,7 @@ Aligned with OTP, so not differences:
 - **`stopped()` may reply**, and callers learn at death.
 - **Replies are immediate.**
 - **Completions are turns** (`handle_info`).
-- **`pipe_keyed` is shorthand** for cancel then start.
+- **A keyed job (`JobOptions::key`) is shorthand** for cancel then start.
 
 ## Decisions on rank 11a
 
@@ -715,7 +850,7 @@ Aligned with OTP, so not differences:
 
 | Rank | Reuses |
 |---|---|
-| 11b | `JobState`, the emit protocol, fencing, `done`, credits, `PipeErrorKind` |
+| 11b | `JobState`, the emit protocol, fencing, `done`, credits, `PipeError` |
 | 13 | `stopped()` replies, the registry outstanding count, the unfinished report |
 | 15 | the per-instance job set, keyed cancel-previous, the bounded join |
 | 15a | a slot is a request scope; `JobOptions::deadline` is never later than its parent's |
@@ -739,16 +874,16 @@ Aligned with OTP, so not differences:
 **Timeouts.**
 
 - The request timeout starts at send, not at first poll.
-- `request_raw` gains a 5 s default; use `request_raw_until(msg,
-  Deadline::Never)` for the old unbounded wait.
+- `request_raw(msg)` becomes `send_request(msg, deadline)`; 0.7's
+  unbounded wait is `send_request(msg, Deadline::Never)`.
 
 **Raw API.**
 
-- `request_raw` returns `ReplyReceiver<R>`, which yields
+- `send_request` returns `ReplyReceiver<R>`, which yields
   `Result<R, ActorError>`.
 - `Response::from_with_timeout` is removed.
 - `Receiver<M>` implementors (including `Probe`) implement
-  `request_raw_until`.
+  `send_request`.
 
 **Lifecycle.**
 
@@ -792,16 +927,37 @@ Loom/Shuttle tests and trace validation once implemented. Measurements and
 the negative controls (each checked against its named invariant) are in
 [`verification/tla/README.md`](../../verification/tla/README.md#deferred-replies-rank-11-design).
 
+Completion closes new emit admission atomically with choosing to enqueue or
+hold the terminal. A retained `JobCtx` cannot reopen admission after the last
+timer takes the held result but before it enqueues that result. Blocked emitters
+are woken at completion even while a result remains held. `JobCore` records
+work completion separately from physical task termination and held-closure
+ownership. The shared-core Loom tests cover scheduling versus completion,
+the last-fire/release gap and blocked-emitter wakeup; `MCDeferredJobsEmitRace`
+checks `ReleasedHasNoScheduled` with a `ReopenAfterRelease` negative control.
+
 **`DeferredReplies.tla`** has a discrete clock, two callers, owner A with
 turns, a linked-job count per request, and downstream actor B.
 
-It establishes, within its bounds:
+`ReplyTimer.tla` separately refines receiver timer bookkeeping: consuming the
+shortening mark, reading the deadline, and installing the timer are separate
+steps. `MCReplyTimer` checks no early expiration, no lost re-arm and eventual
+expiration under the stated fairness assumptions, allowing timer lag. Its negative
+controls catch clearing the mark after reading and omitting the mark. The
+production slot implementation is also exercised directly by the two timer/
+bookkeeping races in `tests/reply_slot_loom.rs`; paused-time and overflow cases
+are in `tests/request_timer.rs`. This component model does not replace reply
+ownership or lifecycle trace validation.
+
+`DeferredReplies` establishes, within its bounds:
 
 - **Discharge.** At most one discharge per request (`AtMostOneDischarge`), and
   no open slot without a live holder, including job-held tokens at death
   (`NoOrphan`).
-- **Deadlines.** No success at or after the deadline
-  (`NoSuccessAfterDeadline`); deadlines are serviced while a turn is stuck
+- **Deadlines.** Only the expiry decides a timeout; no success after the
+  slot expired, so none after the deadline instant
+  (`NoSuccessAfterDeadline`: `okAt <= dl`; negative control `LateSuccess`, a
+  reply overriding an expired slot); deadlines are serviced while a turn is stuck
   (`TimelyExpiry`); shortening never extends past the caller's deadline
   (`DeadlineWithinCaller`).
 - **Credits.** Combined token and linked-job accounting with attach-on-open
@@ -815,6 +971,13 @@ It establishes, within its bounds:
   owner (cleanup deadline passed while `stopped()` runs) closes nothing
   early: no token is answered `Stopped` before death (`NoEarlyClose`).
   `stopped()` may still reply while stuck, and death may never follow.
+- **Death boundary.** Death is the three steps of `actor_cleanup.rs`: the
+  death point fences the reply gate and seals the registry, then the batch
+  answers every held token and queued request one at a time (callers and the
+  deadline service interleave), then the collected wake-ups run. No reply is
+  admitted after the death point (`NoReplyAfterDeath`, control
+  `NoReplyFence`), and a caller woken with `Stopped` finds the whole death
+  answered (`WokenAfterDischarge`, control `CallbackBeforeDischarge`).
 - **Downstream cleanup.** A downstream request ends with its last job
   (`DownstreamOwned`).
 - **Liveness without handler fairness:** `EveryAcceptedDischarged` and
@@ -837,6 +1000,12 @@ It establishes:
 - **Terminal messages.** `AtMostOneTerminal` and `TerminalLast`.
 - **Bounds.** `PermitsBounded` (running work keeps its permit), `OneLivePerKey`
   and `EmitCreditsBounded`.
+- **Held results.** A held result keeps its credit until its terminal
+  message (`HeldCounted`) and its deadline stays armed
+  (`DeadlineArmedWhileHeld`).
+- **Owner exit.** Admission and `cancel_all` are serialized, and the exit
+  cancels running work, scheduled emits and held results alike
+  (`ExitCancelsJobs`, controls `NoAdmissionFence` and `ExitKeepsHeld`).
 - **Liveness.** `JobReported` for jobs with a deadline.
 
 Abstraction: credits return at dispatch (fenced or not); mailbox disposal at
@@ -855,7 +1024,8 @@ Requests and timing:
 Tokens and synchronization:
 
 - token drops by other tasks during an unrelated turn;
-- `WRITING` versus registry close;
+- `WRITING` versus registry close (the reply permit is modelled as the
+  reply gate closing at the death point; the CAS race is Loom territory);
 - the packed-word counter deltas;
 - memory orderings and wakeups.
 
@@ -922,6 +1092,41 @@ ordering and `EmitCreditsBounded` checks in-flight emit credits.
 
 **Trace validation:** against both models.
 
+## Implementation notes
+
+Mechanism choices made by the implementation (PR #239). None changes the
+semantics above.
+
+- **Value cell.** The crates are `#![forbid(unsafe_code)]`, so the slot's value
+  and the caller's waker live under one uncontended `Mutex` instead of an
+  `UnsafeCell` plus `AtomicWaker`. The packed word, its CAS rules and every
+  credit delta are as specified; the reply reads the deadline under the same
+  lock that a shortening takes, which makes a shortening after the `WRITING`
+  CAS a no-op (Loom: `reply_vs_shortening`).
+- **Receiver and timer.** `ReplyReceiver<R>` is one pointer and implements
+  `IntoFuture`; the deadline timer lives in the awaiting `ReplyFuture`. On
+  the `request` and `Response` paths, when the runtime's timer fires the
+  receiver expires the slot, so paused Tokio clocks keep working. A raw
+  receiver awaited directly registers its deadline in the owner's heap
+  instead (no runtime timer per request), so it follows the deadline
+  service's clock, not a paused Tokio clock.
+- **Deadline service.** Unmanaged and managed actors share one process-wide
+  service thread (not a task on the `ActorSystem` control runtime); a dead
+  owner is forgotten at its registry close. Under `spawned_sim` each owner's
+  heap is served by a task of the simulated runtime, so clock domains never
+  mix.
+- **Cleanup deadline.** Armed when exit begins: the supervisor's
+  `shutdown_timeout` for a supervised child, the remaining system grace
+  during `ActorSystem::shutdown`, otherwise `DEFAULT_STOP_DEADLINE` (5 s).
+  Jobs still running then appear in `ShutdownReport::unfinished_jobs` and as
+  an `unfinished_at_stop` event.
+- **Async emits.** Every `pipe*` hands the work its `JobCtx` (`emit`,
+  `cancelled`): `ctx.pipe(opts, |job| async move { .. }, done)`; `|_| fut`
+  when the work needs neither.
+- **Destruction.** If an owner's lifecycle future is dropped (its runtime
+  destroyed), exit begins before its state is dropped and the registry
+  closes, so open tokens answer `ActorStopped`.
+
 ## Open questions
 
 1. Exact names (`PendingReply`, `DeferError`, `PipeReplyError`) and whether
@@ -961,7 +1166,7 @@ changes).
 | 2.1.1 Read before publish | `WRITING` state; `REPLIED` stored after the value (§1). |
 | 2.1.2 Permit install racing a terminal slot | `TOKEN` bit set by a CAS that requires `OPEN` (§4). |
 | 2.1.3 Undispatched envelope drop | Mailbox disposal discharges `STOPPED` (§5 step 3.2); only a turn's `PendingReply` drop gives `Dropped`. |
-| 2.2.1 `request_raw` gains a timeout | Stated; `Deadline::Never` keeps the unbounded wait (§1, migration). |
+| 2.2.1 `request_raw` gains a timeout | `send_request(msg, deadline)` takes it explicitly; `Deadline::Never` keeps the unbounded wait (§1, migration). |
 | 2.2.2 Stale doc comments in code | Implementation task: `macros/src/lib.rs` "timers start on poll" and `tasks/actor.rs` request docs. |
 | 2.3.1 Unpolled expired requests dispatched | Dispatched by design (OTP); `defer()` on an expired slot returns `Closed`; skipping is opt-in (rank 19). |
 | 2.3.2 Process-wide service on the first runtime | Dedicated service thread for unmanaged actors; per-sim-instance under sim (§2). |
@@ -972,14 +1177,14 @@ changes).
 | 2.5.1 Attach after expiry | Attach CAS requires `OPEN`; otherwise `Closed` with the token (§8). |
 | 2.5.2 `TimedOut` does not trigger cancellation | The opt-in coupling triggers on `ABANDONED` and `TIMED_OUT` (§9). |
 | 2.5.3 `WrongOwner` shape; token lost on error | `PipeReplyError<R>` returns the token in every variant (§9). |
-| 2.5.4 No `pipe_reply_with` | `pipe_reply_with` and `pipe_reply_blocking_with` added (§9). |
+| 2.5.4 No `pipe_reply_with` | `pipe_reply` and `pipe_reply_blocking` take `JobOptions` first (§9). |
 | 2.6.1 Keyed replacement after a deadline | Fixed (Codex 4). |
 | 2.6.2 Fenced payload drop panics | `DropFailures` path (§1 rule 5). |
 | 2.7.1 Emit credit deadlock on stop | Cancel and exit wake blocked emitters with `JobGone`; credits also return at mailbox disposal (§9). |
 | 2.7.2 Emits after the deadline | Emit check and terminal enqueue are serialized under the job lock (§9). |
 | 2.8 `R: From<ActorError>`, local-slot deadlock | Removed; explicit trait migration (§3). |
 | 2.9.1 Threads `Response` stays eager | Stated (§1 API table). |
-| 2.9.2 `Probe<M>` | Implements `request_raw_until`; unexpected requests answer `Stopped` (§1). |
+| 2.9.2 `Probe<M>` | Implements `send_request`; unexpected requests answer `Stopped` (§1). |
 | 2.9.3 `PendingReplies::len(&self)` | Replaced by non-mutating `retained` and `live`; purging is in `&mut` methods (§7). |
 | 2.9.4 Metrics type name | `metrics::Snapshot` and `RequestObservation::finish` (§1). |
 | 3.A model divergences | `HeldA` replaced by `Credits` with two holders; expiry abstraction stated; `pipe_reply` notification is a turn (`JobNotify`); cancellation is opt-in (`JobCancel` any closed slot). |

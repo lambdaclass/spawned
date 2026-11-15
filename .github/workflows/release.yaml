@@ -1,5 +1,6 @@
 # Before publishing a release, follow docs/TESTING.md "Release checklist"
-# (CI and client-compat green, a 4-hour soak on the release commit).
+# (CI and client-compat green, full Lifecycle model checks and a 4-hour soak
+# on the release commit).
 on:
   release:
     types: [published]

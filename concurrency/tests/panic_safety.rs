@@ -61,7 +61,9 @@ fn expected(fault: Fault) -> ExitReason {
         Fault::DownHandler => panic("panic in handler: injected Down panic"),
         Fault::MessageDrop => panic("panic in handler: injected message drop panic"),
         Fault::ReplyDrop => panic("panic in handler: injected reply drop panic"),
-        Fault::QueuedMessageDrop => panic("queued message destructor: injected queued drop panic"),
+        // A destructor panic after the death point is a cleanup failure
+        // (`ChildHandle::cleanup_failure`), never the exit reason.
+        Fault::QueuedMessageDrop => ExitReason::Normal,
     }
 }
 
@@ -195,41 +197,85 @@ mod tasks_actors {
         }
     }
     impl Handler<Poke> for TaskVictim {
-        async fn handle(&mut self, _: Poke, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _: Poke,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.0.fault(Fault::SendHandler, "injected handler panic");
+            reply.reply(());
         }
     }
     impl Handler<Ask> for TaskVictim {
-        async fn handle(&mut self, _: Ask, _: &Context<Self>) -> u64 {
-            self.0.ask()
+        async fn handle(
+            &mut self,
+            _: Ask,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
+            _: &Context<Self>,
+        ) {
+            reply.reply(self.0.ask());
         }
     }
     impl Handler<Payload> for TaskVictim {
-        async fn handle(&mut self, _: Payload, _: &Context<Self>) {}
+        async fn handle(
+            &mut self,
+            _: Payload,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            reply.reply(());
+        }
     }
     impl Handler<Gift> for TaskVictim {
-        async fn handle(&mut self, _: Gift, _: &Context<Self>) -> Bomb {
-            self.0.gift()
+        async fn handle(
+            &mut self,
+            _: Gift,
+            reply: spawned_concurrency::PendingReply<'_, Bomb>,
+            _: &Context<Self>,
+        ) {
+            reply.reply(self.0.gift());
         }
     }
     impl Handler<Hold> for TaskVictim {
-        async fn handle(&mut self, _: Hold, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _: Hold,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.0.gate.wait();
+            reply.reply(());
         }
     }
     impl Handler<Setup> for TaskVictim {
-        async fn handle(&mut self, setup: Setup, ctx: &Context<Self>) -> Option<MonitorRef> {
-            match setup {
-                Setup::Trap => ctx.trap_exit(true),
-                Setup::Link(target) => ctx.link(&target),
-                Setup::Watch(target) => return Some(ctx.monitor(&target)),
+        async fn handle(
+            &mut self,
+            setup: Setup,
+            reply: spawned_concurrency::PendingReply<'_, Option<MonitorRef>>,
+            ctx: &Context<Self>,
+        ) {
+            let __reply_value: Option<MonitorRef> = async {
+                match setup {
+                    Setup::Trap => ctx.trap_exit(true),
+                    Setup::Link(target) => ctx.link(&target),
+                    Setup::Watch(target) => return Some(ctx.monitor(&target)),
+                }
+                None
             }
-            None
+            .await;
+            reply.reply(__reply_value);
         }
     }
     impl Handler<Down> for TaskVictim {
-        async fn handle(&mut self, _: Down, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _: Down,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.0.fault(Fault::DownHandler, "injected Down panic");
+            reply.reply(());
         }
     }
 
@@ -243,25 +289,45 @@ mod tasks_actors {
         }
     }
     impl Handler<Down> for TaskObserver {
-        async fn handle(&mut self, down: Down, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            down: Down,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.0
                 .events
                 .push(Event::Down(down.monitor_ref, down.reason));
+            reply.reply(());
         }
     }
     impl Handler<Setup> for TaskObserver {
-        async fn handle(&mut self, setup: Setup, ctx: &Context<Self>) -> Option<MonitorRef> {
-            match setup {
-                Setup::Trap => ctx.trap_exit(true),
-                Setup::Link(target) => ctx.link(&target),
-                Setup::Watch(target) => return Some(ctx.monitor(&target)),
+        async fn handle(
+            &mut self,
+            setup: Setup,
+            reply: spawned_concurrency::PendingReply<'_, Option<MonitorRef>>,
+            ctx: &Context<Self>,
+        ) {
+            let __reply_value: Option<MonitorRef> = async {
+                match setup {
+                    Setup::Trap => ctx.trap_exit(true),
+                    Setup::Link(target) => ctx.link(&target),
+                    Setup::Watch(target) => return Some(ctx.monitor(&target)),
+                }
+                None
             }
-            None
+            .await;
+            reply.reply(__reply_value);
         }
     }
     impl Handler<Ask> for TaskObserver {
-        async fn handle(&mut self, _: Ask, _: &Context<Self>) -> u64 {
-            7
+        async fn handle(
+            &mut self,
+            _: Ask,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
+            _: &Context<Self>,
+        ) {
+            reply.reply(7);
         }
     }
 }
@@ -286,41 +352,84 @@ mod thread_actors {
         }
     }
     impl Handler<Poke> for ThreadVictim {
-        fn handle(&mut self, _: Poke, _: &Context<Self>) {
+        fn handle(
+            &mut self,
+            _: Poke,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.0.fault(Fault::SendHandler, "injected handler panic");
+            reply.reply(());
         }
     }
     impl Handler<Ask> for ThreadVictim {
-        fn handle(&mut self, _: Ask, _: &Context<Self>) -> u64 {
-            self.0.ask()
+        fn handle(
+            &mut self,
+            _: Ask,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
+            _: &Context<Self>,
+        ) {
+            reply.reply(self.0.ask());
         }
     }
     impl Handler<Payload> for ThreadVictim {
-        fn handle(&mut self, _: Payload, _: &Context<Self>) {}
+        fn handle(
+            &mut self,
+            _: Payload,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            reply.reply(());
+        }
     }
     impl Handler<Gift> for ThreadVictim {
-        fn handle(&mut self, _: Gift, _: &Context<Self>) -> Bomb {
-            self.0.gift()
+        fn handle(
+            &mut self,
+            _: Gift,
+            reply: spawned_concurrency::PendingReply<'_, Bomb>,
+            _: &Context<Self>,
+        ) {
+            reply.reply(self.0.gift());
         }
     }
     impl Handler<Hold> for ThreadVictim {
-        fn handle(&mut self, _: Hold, _: &Context<Self>) {
+        fn handle(
+            &mut self,
+            _: Hold,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.0.gate.wait();
+            reply.reply(());
         }
     }
     impl Handler<Setup> for ThreadVictim {
-        fn handle(&mut self, setup: Setup, ctx: &Context<Self>) -> Option<MonitorRef> {
-            match setup {
-                Setup::Trap => ctx.trap_exit(true),
-                Setup::Link(target) => ctx.link(&target),
-                Setup::Watch(target) => return Some(ctx.monitor(&target)),
-            }
-            None
+        fn handle(
+            &mut self,
+            setup: Setup,
+            reply: spawned_concurrency::PendingReply<'_, Option<MonitorRef>>,
+            ctx: &Context<Self>,
+        ) {
+            let __reply_value: Option<MonitorRef> = (|| {
+                match setup {
+                    Setup::Trap => ctx.trap_exit(true),
+                    Setup::Link(target) => ctx.link(&target),
+                    Setup::Watch(target) => return Some(ctx.monitor(&target)),
+                }
+                None
+            })();
+            reply.reply(__reply_value);
         }
     }
     impl Handler<Down> for ThreadVictim {
-        fn handle(&mut self, _: Down, _: &Context<Self>) {
+        fn handle(
+            &mut self,
+            _: Down,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.0.fault(Fault::DownHandler, "injected Down panic");
+            reply.reply(());
         }
     }
 
@@ -334,25 +443,44 @@ mod thread_actors {
         }
     }
     impl Handler<Down> for ThreadObserver {
-        fn handle(&mut self, down: Down, _: &Context<Self>) {
+        fn handle(
+            &mut self,
+            down: Down,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.0
                 .events
                 .push(Event::Down(down.monitor_ref, down.reason));
+            reply.reply(());
         }
     }
     impl Handler<Setup> for ThreadObserver {
-        fn handle(&mut self, setup: Setup, ctx: &Context<Self>) -> Option<MonitorRef> {
-            match setup {
-                Setup::Trap => ctx.trap_exit(true),
-                Setup::Link(target) => ctx.link(&target),
-                Setup::Watch(target) => return Some(ctx.monitor(&target)),
-            }
-            None
+        fn handle(
+            &mut self,
+            setup: Setup,
+            reply: spawned_concurrency::PendingReply<'_, Option<MonitorRef>>,
+            ctx: &Context<Self>,
+        ) {
+            let __reply_value: Option<MonitorRef> = (|| {
+                match setup {
+                    Setup::Trap => ctx.trap_exit(true),
+                    Setup::Link(target) => ctx.link(&target),
+                    Setup::Watch(target) => return Some(ctx.monitor(&target)),
+                }
+                None
+            })();
+            reply.reply(__reply_value);
         }
     }
     impl Handler<Ask> for ThreadObserver {
-        fn handle(&mut self, _: Ask, _: &Context<Self>) -> u64 {
-            7
+        fn handle(
+            &mut self,
+            _: Ask,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
+            _: &Context<Self>,
+        ) {
+            reply.reply(7);
         }
     }
 }
@@ -390,7 +518,7 @@ fn exercise(h: &dyn Harness, fault: Fault, gate: &Gate, events: &Events) -> Exit
             let trigger = h.spawn_trigger();
             h.victim_setup(Setup::Trap);
             h.victim_setup(Setup::Link(trigger.clone()));
-            trigger.shutdown();
+            trigger.stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
         }
         Fault::DownHandler => {
             let trigger = h.spawn_trigger();
@@ -422,20 +550,31 @@ fn exercise(h: &dyn Harness, fault: Fault, gate: &Gate, events: &Events) -> Exit
     );
     assert_eq!(h.observer_ask(), 7, "{fault:?}: observer stopped working");
     let seen = events.snapshot();
+    // A victim that panics in started() can pass its death point before the
+    // observer's monitor or link is registered: that registration gets NoProc.
+    let carries =
+        |r: &ExitReason| *r == reason || (fault == Fault::Started && *r == ExitReason::NoProc);
     assert_eq!(
         seen.iter()
-            .filter(|e| matches!(e, Event::Down(m, r) if *m == monitor && *r == reason))
+            .filter(|e| matches!(e, Event::Down(m, r) if *m == monitor && carries(r)))
             .count(),
         1,
         "{fault:?}: {seen:?}"
     );
     assert_eq!(
         seen.iter()
-            .filter(|e| matches!(e, Event::Exit(id, r) if *id == victim.id() && *r == reason))
+            .filter(|e| matches!(e, Event::Exit(id, r) if *id == victim.id() && carries(r)))
             .count(),
         1,
         "{fault:?}: {seen:?}"
     );
+    if fault == Fault::QueuedMessageDrop {
+        assert_eq!(
+            victim.cleanup_failure().as_deref(),
+            Some("injected queued drop panic"),
+            "{fault:?}"
+        );
+    }
     assert_eq!(seen.len(), 2, "{fault:?}: extra notification {seen:?}");
     reason
 }
@@ -475,7 +614,11 @@ mod threads_mode {
             self.victim.request_with_timeout(Ask, LIMIT).map_err(|_| ())
         }
         fn victim_abandoned_gift(&self) {
-            drop(self.victim.request_raw(Gift).unwrap());
+            drop(
+                self.victim
+                    .send_request(Gift, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                    .unwrap(),
+            );
         }
         fn victim_setup(&self, setup: Setup) -> Option<MonitorRef> {
             self.victim.request_with_timeout(setup, LIMIT).unwrap()
@@ -649,7 +792,11 @@ mod tasks_mode {
                 .map_err(|_| ())
         }
         fn victim_abandoned_gift(&self) {
-            drop(self.victim.request_raw(Gift).unwrap());
+            drop(
+                self.victim
+                    .send_request(Gift, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                    .unwrap(),
+            );
         }
         fn victim_setup(&self, setup: Setup) -> Option<MonitorRef> {
             self.env
@@ -738,17 +885,13 @@ mod tasks_mode {
     }
 
     fn config() -> SupervisorConfig {
-        SupervisorConfig {
-            max_restarts: 10,
-            backoff: Backoff {
-                initial: Duration::ZERO,
-                maximum: Duration::ZERO,
-                jitter: false,
-                seed: Some(1),
-                ..Backoff::default()
-            },
-            ..SupervisorConfig::default()
-        }
+        SupervisorConfig::default().max_restarts(10).backoff(
+            Backoff::default()
+                .initial(Duration::ZERO)
+                .maximum(Duration::ZERO)
+                .jitter(false)
+                .seed(1),
+        )
     }
 
     /// Under supervision the first generation fails in each callback; the
@@ -770,17 +913,21 @@ mod tasks_mode {
                 let child_gate = gate.clone();
                 let child = tree
                     .add(ChildSpec::new("victim", &group, move |ctx| {
-                        let fault = (ctx.generation() == 1).then_some(fault);
+                        // v0.8 (S1): a first start is not retried, so a
+                        // started() panic is injected into the replacement.
+                        let faulty = if fault == Fault::Started { 2 } else { 1 };
+                        let fault = (ctx.generation() == faulty).then_some(fault);
                         let victim = TaskVictim(Victim::new(fault, &child_gate));
                         async move { Ok::<_, String>(victim) }
                     }))
                     .unwrap();
                 let supervisor = env.bounded(tree.start()).unwrap();
                 if fault == Fault::Started {
-                    // The first generation never became ready; the retry did.
-                    let next = env.bounded(child.wait_ready()).unwrap();
+                    // The replacement never became ready; its retry did.
+                    child.current().unwrap().child_handle().kill();
+                    let next = env.bounded(child.wait_for_generation(2)).unwrap();
                     assert_eq!(env.bounded(next.request(Ask)).unwrap(), 1);
-                    assert_eq!(child.snapshot().generation, 2);
+                    assert_eq!(child.snapshot().generation, 3);
                     assert_eq!(child.snapshot().last_exit, Some(expected(fault)));
                 } else {
                     let first = child.current().unwrap();
@@ -825,7 +972,9 @@ mod tasks_mode {
                 let mut tree = env.system.as_ref().unwrap().supervisor(config()).unwrap();
                 let child = tree
                     .add(ChildSpec::new("factory", &group, move |ctx| {
-                        let first = ctx.generation() == 1;
+                        // v0.8 (S1): a first start is not retried, so the
+                        // panic is injected into the replacement.
+                        let first = ctx.generation() == 2;
                         if first && !in_future {
                             panic!("injected factory panic");
                         }
@@ -839,10 +988,11 @@ mod tasks_mode {
                     }))
                     .unwrap();
                 let supervisor = env.bounded(tree.start()).unwrap();
-                let actor = child.current().unwrap();
+                child.current().unwrap().child_handle().kill();
+                let actor = env.bounded(child.wait_for_generation(2)).unwrap();
                 assert_eq!(env.bounded(actor.request(Ask)).unwrap(), 1);
                 let snapshot = child.snapshot();
-                assert_eq!(snapshot.generation, 2, "{place:?} in_future={in_future}");
+                assert_eq!(snapshot.generation, 3, "{place:?} in_future={in_future}");
                 assert!(snapshot
                     .last_error
                     .as_deref()

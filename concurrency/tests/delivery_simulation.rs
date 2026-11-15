@@ -146,7 +146,7 @@ impl<'a> World<'a> {
                 if let Some(reply) = pending.take() {
                     assert!(matches!(
                         reply.wait(self.rt, LIMIT),
-                        Err(ActorError::ActorStopped)
+                        Err(ActorError::ActorStopped(ExitReason::Normal))
                     ));
                 }
             }

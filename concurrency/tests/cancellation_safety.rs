@@ -161,6 +161,11 @@ impl Probe {
 }
 impl Actor for Probe {
     async fn started(&mut self, ctx: &Context<Self>) {
+        // A stop gate slows stopped(); on a parent's shutdown it runs only
+        // for a trapping actor (v0.8, E3).
+        if self.stop_gate.is_some() {
+            ctx.trap_exit(true);
+        }
         if let Some(gate) = &self.start_gate {
             gate.notified().await;
         }
@@ -192,38 +197,52 @@ impl Message for Cmd {
     type Result = u64;
 }
 impl Handler<Cmd> for Probe {
-    async fn handle(&mut self, cmd: Cmd, ctx: &Context<Self>) -> u64 {
-        let c = &self.counters;
-        match cmd {
-            Cmd::Bump => c.effects.fetch_add(1, Ordering::SeqCst) as u64 + 1,
-            Cmd::Read => c.effects.load(Ordering::SeqCst) as u64,
-            Cmd::Watch(target) => {
-                ctx.monitor(&target);
-                c.watched.fetch_add(1, Ordering::SeqCst) as u64
+    async fn handle(
+        &mut self,
+        cmd: Cmd,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        ctx: &Context<Self>,
+    ) {
+        let __reply_value: u64 = {
+            let c = &self.counters;
+            match cmd {
+                Cmd::Bump => c.effects.fetch_add(1, Ordering::SeqCst) as u64 + 1,
+                Cmd::Read => c.effects.load(Ordering::SeqCst) as u64,
+                Cmd::Watch(target) => {
+                    ctx.monitor(&target);
+                    c.watched.fetch_add(1, Ordering::SeqCst) as u64
+                }
+                Cmd::Link(target) => {
+                    ctx.link(&target);
+                    c.linked.fetch_add(1, Ordering::SeqCst) as u64
+                }
+                Cmd::Trap => {
+                    ctx.trap_exit(true);
+                    0
+                }
+                Cmd::Boom => panic!("cancellation fixture crash"),
+                Cmd::Helper(gate) => {
+                    let task = ctx
+                        .spawn_helper(async move { gate.notified().await })
+                        .unwrap();
+                    // Drop the ScopedTask: the helper stays owned by the actor scope.
+                    drop(task);
+                    0
+                }
             }
-            Cmd::Link(target) => {
-                ctx.link(&target);
-                c.linked.fetch_add(1, Ordering::SeqCst) as u64
-            }
-            Cmd::Trap => {
-                ctx.trap_exit(true);
-                0
-            }
-            Cmd::Boom => panic!("cancellation fixture crash"),
-            Cmd::Helper(gate) => {
-                let task = ctx
-                    .spawn_helper(async move { gate.notified().await })
-                    .unwrap();
-                // Drop the ScopedTask: the helper stays owned by the actor scope.
-                drop(task);
-                0
-            }
-        }
+        };
+        reply.reply(__reply_value);
     }
 }
 impl Handler<Down> for Probe {
-    async fn handle(&mut self, _: Down, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Down,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.counters.downs.fetch_add(1, Ordering::SeqCst);
+        reply.reply(());
     }
 }
 
@@ -232,8 +251,15 @@ pub trait Bumper: Send + Sync {
     fn bump(&self) -> Response<u64>;
 }
 impl Handler<bumper::Bump> for Probe {
-    async fn handle(&mut self, _: bumper::Bump, _: &Context<Self>) -> u64 {
-        self.counters.effects.fetch_add(1, Ordering::SeqCst) as u64 + 1
+    async fn handle(
+        &mut self,
+        _: bumper::Bump,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: u64 =
+            { self.counters.effects.fetch_add(1, Ordering::SeqCst) as u64 + 1 };
+        reply.reply(__reply_value);
     }
 }
 
@@ -432,7 +458,9 @@ async fn monitor_and_link_setup_requests_are_cancel_safe() {
                         fx.counters.watched.load(Ordering::SeqCst)
                     };
                     assert_eq!(registered, usize::from(n > 0), "{op}: N={n}");
-                    target.child_handle().shutdown();
+                    target
+                        .child_handle()
+                        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
                     assert_eq!(
                         spawned_rt::tasks::timeout(LIMIT, target.wait_exit())
                             .await
@@ -557,17 +585,13 @@ async fn group_ready_wait_is_cancel_safe() {
 // ---------------------------------------------------------------------------
 
 fn config() -> SupervisorConfig {
-    SupervisorConfig {
-        max_restarts: 100,
-        backoff: Backoff {
-            initial: Duration::ZERO,
-            maximum: Duration::ZERO,
-            jitter: false,
-            seed: Some(1),
-            ..Backoff::default()
-        },
-        ..SupervisorConfig::default()
-    }
+    SupervisorConfig::default().max_restarts(100).backoff(
+        Backoff::default()
+            .initial(Duration::ZERO)
+            .maximum(Duration::ZERO)
+            .jitter(false)
+            .seed(1),
+    )
 }
 
 /// SupervisorBuilder::start: a dropped startup requests cleanup of every
@@ -785,19 +809,25 @@ async fn system_shutdown_is_cancel_safe() {
                 probe.stop_gate = Some(gate.clone());
                 let actor = fx.spawn(probe);
                 within!(actor.ready()).await.unwrap();
-                let report = fx.system.as_ref().unwrap().shutdown(Duration::ZERO).await;
+                // A short grace, not zero: the trapping probe must dispatch the
+                // parent's exit and enter stopped() before the kill at grace
+                // (E3). With zero grace the kill can land first and skip
+                // stopped() (E1, decision 2), leaving nothing stuck to wait for.
+                let report = fx.system.as_ref().unwrap().shutdown(PARK).await;
                 assert!(!report.complete);
                 let outcome = attempt(report.wait(LIMIT), n, PARK).await;
                 assert!(
                     !matches!(outcome, Attempt::Done(ref r) if r.complete),
                     "{op}"
                 );
+                // The kill at grace landed while stopped() still runs (E1).
+                spawned_rt::tasks::sleep(Duration::from_millis(50)).await;
                 gate.notify_one();
                 assert_eq!(
                     spawned_rt::tasks::timeout(LIMIT, actor.wait_exit())
                         .await
                         .unwrap(),
-                    ExitReason::Shutdown
+                    ExitReason::Killed
                 );
                 fx.finish(&[]).await;
                 outcome.finished()

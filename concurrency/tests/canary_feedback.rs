@@ -36,14 +36,26 @@ impl Message for Quit {
 struct Worker;
 impl Actor for Worker {}
 impl Handler<Hold> for Worker {
-    async fn handle(&mut self, hold: Hold, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        hold: Hold,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         let _ = hold.entered.send(());
         let _ = hold.release.await;
+        reply.reply(());
     }
 }
 impl Handler<Quit> for Worker {
-    async fn handle(&mut self, quit: Quit, ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        quit: Quit,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
         ctx.stop_with_reason(quit.0);
+        reply.reply(());
     }
 }
 
@@ -91,14 +103,14 @@ async fn unfinished_report_identifies_child_and_active_turn() {
         assert_eq!(detail.message_type, None);
         assert_eq!(detail.turn_age, None);
     }
+    // The system kills what remains at grace (E3); let the kill land
+    // before the turn returns, so the outcome does not race it.
+    spawned_rt::tasks::sleep(Duration::from_millis(100)).await;
     release.send(()).unwrap();
     let report = report.wait(LIMIT).await;
     assert!(report.complete);
     assert!(report.unfinished_actor_details.is_empty());
-    assert_eq!(
-        actor.child_handle().exit_reason(),
-        Some(ExitReason::Shutdown)
-    );
+    assert_eq!(actor.child_handle().exit_reason(), Some(ExitReason::Killed));
 }
 
 // Not simulated: uses spawn_blocking.
@@ -192,16 +204,14 @@ async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("canary-tracing", 1).unwrap();
     let mut builder = system
-        .supervisor(SupervisorConfig {
-            max_restarts: 1,
-            backoff: Backoff {
-                initial: Duration::ZERO,
-                maximum: Duration::ZERO,
-                jitter: false,
-                ..Backoff::default()
-            },
-            ..SupervisorConfig::default()
-        })
+        .supervisor(
+            SupervisorConfig::default().max_restarts(1).backoff(
+                Backoff::default()
+                    .initial(Duration::ZERO)
+                    .maximum(Duration::ZERO)
+                    .jitter(false),
+            ),
+        )
         .unwrap();
     let child = builder
         .add(
@@ -243,21 +253,22 @@ async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
     // Not simulated: the cohort case blocks a spawn_blocking helper.
     #[cfg(not(spawned_sim))]
     {
-        // The healthy collateral child takes the last retry grant. Its failing
-        // sibling must give up before a 60-second backoff, and lookups must report
-        // owner failure even while the healthy sibling's owned cleanup is pending.
+        // The round is the restart action: with no grant left the supervisor
+        // gives up when it would select the round, before the origin's
+        // 60-second backoff, and lookups must report owner failure even while
+        // the healthy sibling's owned cleanup is pending.
         let mut cohort = system
-            .supervisor(SupervisorConfig {
-                strategy: SupervisorStrategy::OneForAll,
-                max_restarts: 1,
-                backoff: Backoff {
-                    initial: Duration::from_secs(60),
-                    maximum: Duration::from_secs(60),
-                    jitter: false,
-                    ..Backoff::default()
-                },
-                ..SupervisorConfig::default()
-            })
+            .supervisor(
+                SupervisorConfig::default()
+                    .strategy(SupervisorStrategy::OneForAll)
+                    .max_restarts(0)
+                    .backoff(
+                        Backoff::default()
+                            .initial(Duration::from_secs(60))
+                            .maximum(Duration::from_secs(60))
+                            .jitter(false),
+                    ),
+            )
             .unwrap();
         let (release, gate) = std::sync::mpsc::channel();
         let gate = Arc::new(Mutex::new(Some(gate)));
@@ -266,7 +277,7 @@ async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
                 ChildSpec::new("canary-healthy", &group, move |ctx| {
                     let gate = gate.clone();
                     async move {
-                        if ctx.generation() == 2 {
+                        if ctx.generation() == 1 {
                             let gate = gate.lock().unwrap().take().unwrap();
                             let (entered, arrival) = oneshot::channel();
                             ctx.spawn_blocking_helper(move || {
@@ -308,7 +319,7 @@ async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
             healthy.current(),
             Err(ChildUnavailable(ChildState::Failed))
         ));
-        assert_eq!(healthy.snapshot().generation, 2);
+        assert_eq!(healthy.snapshot().generation, 1);
         release.send(()).unwrap();
         spawned_rt::tasks::timeout(LIMIT, cohort.join())
             .await
@@ -337,7 +348,7 @@ async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
             && fields.get("child").map(String::as_str) == Some("canary-give-up")
             && fields
                 .get("error")
-                .is_some_and(|e| e.contains("non-restartable child"))));
+                .is_some_and(|e| e.contains("failed to start child"))));
     let exhausted: Vec<_> = events
         .iter()
         .filter(|(_, fields)| {
@@ -397,7 +408,12 @@ async fn panicked_turn_is_cleared_before_stopped_hook() {
         }
     }
     impl Handler<Quit> for Panicking {
-        async fn handle(&mut self, _: Quit, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _: Quit,
+            _reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             panic!("diagnostic turn cleanup regression");
         }
     }
@@ -425,12 +441,14 @@ async fn panicked_turn_is_cleared_before_stopped_hook() {
         .unwrap();
     assert_eq!(detail.message_type, None);
     assert_eq!(detail.turn_age, None);
+    // Let the system's kill at grace land before stopped() returns: the
+    // report can be ready just before the kill is sent.
+    spawned_rt::tasks::sleep(Duration::from_millis(100)).await;
     release.send(()).unwrap();
     assert!(report.wait(LIMIT).await.complete);
-    assert!(matches!(
-        actor.child_handle().exit_reason(),
-        Some(ExitReason::Panic(_))
-    ));
+    // The system's kill at grace reached it inside stopped(), before its
+    // death point: Killed replaces the panic (E1).
+    assert_eq!(actor.child_handle().exit_reason(), Some(ExitReason::Killed));
 }
 
 #[cfg(feature = "diagnostics")]

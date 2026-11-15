@@ -26,15 +26,29 @@ impl Message for Ping {
 struct Worker;
 impl Actor for Worker {}
 impl Handler<Ping> for Worker {
-    async fn handle(&mut self, _: Ping, _: &Context<Self>) -> String {
-        std::thread::current()
-            .name()
-            .unwrap_or_default()
-            .to_string()
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::PendingReply<'_, String>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(
+            std::thread::current()
+                .name()
+                .unwrap_or_default()
+                .to_string(),
+        );
     }
 }
 impl Handler<Down> for Worker {
-    async fn handle(&mut self, _: Down, _: &Context<Self>) {}
+    async fn handle(
+        &mut self,
+        _: Down,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
 }
 
 // Not simulated: asserts OS worker thread names.
@@ -107,7 +121,10 @@ struct Starting {
     stopped: Arc<AtomicUsize>,
 }
 impl Actor for Starting {
-    async fn started(&mut self, _: &Context<Self>) {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        // v0.8: stopped() runs on the system's shutdown only for a
+        // trapping actor (E3, decision 2).
+        ctx.trap_exit(true);
         self.entered.take().unwrap().send(()).unwrap();
         let _ = self.release.take().unwrap().await;
     }
@@ -138,10 +155,16 @@ async fn expired_shutdown_retains_closed_runtime_until_startup_cleanup_finishes(
     assert_eq!(report.unfinished_groups, ["slow-start"]);
     assert!(group.is_closed());
     assert!(Worker.start_on(&group).is_err());
+    // The system kills what remains at grace (E3); let the kill land before
+    // started() returns, so the outcome does not race it.
+    spawned_rt::tasks::sleep(Duration::from_millis(100)).await;
     release.send(()).unwrap();
     assert!(report.wait(LIMIT).await.complete);
     assert!(within!(actor.ready()).await.is_err());
-    assert_eq!(stopped.load(Ordering::SeqCst), 1);
+    // The kill at grace (5 ms) arrived during started(): it ends Killed and
+    // skips the stopped() that had not begun (E1, decision 2).
+    assert_eq!(actor.wait_exit().await, ExitReason::Killed);
+    assert_eq!(stopped.load(Ordering::SeqCst), 0);
 }
 
 struct Probe(Arc<AtomicUsize>);
@@ -316,7 +339,7 @@ async fn ambient_actor_started_inside_group_is_unmanaged_and_aborted_at_teardown
         .unwrap()
         .starts_with("spawned-ambient-child"));
     assert!(system.shutdown(LIMIT).await.complete);
-    assert_eq!(within!(ambient.wait_exit()).await, ExitReason::Kill);
+    assert_eq!(within!(ambient.wait_exit()).await, ExitReason::Killed);
     assert_eq!(within!(managed.wait_exit()).await, ExitReason::Shutdown);
 }
 
@@ -341,9 +364,15 @@ impl Actor for FailedStartup {
     }
 }
 impl Handler<Queued> for FailedStartup {
-    async fn handle(&mut self, msg: Queued, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Queued,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.handled.fetch_add(1, Ordering::SeqCst);
         drop(msg.0);
+        reply.reply(());
     }
 }
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
@@ -367,7 +396,12 @@ async fn failed_startup_discards_queued_payloads_and_reply_channels_without_disp
         .await
         .unwrap()
         .unwrap();
-    let reply = actor.request_raw(Queued(Probe(dropped.clone()))).unwrap();
+    let reply = actor
+        .send_request(
+            Queued(Probe(dropped.clone())),
+            spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+        )
+        .unwrap();
     actor.send(Queued(Probe(dropped.clone()))).unwrap();
     assert_eq!(handled.load(Ordering::SeqCst), 0);
     release.send(()).unwrap();
@@ -458,6 +492,11 @@ async fn stuck_standalone_cleanup_does_not_leave_earlier_actor_running_forever()
         release: Option<tokio::sync::oneshot::Receiver<()>>,
     }
     impl Actor for Stuck {
+        async fn started(&mut self, ctx: &Context<Self>) {
+            // v0.8: stopped() runs on the system's shutdown only for a
+            // trapping actor (E3, decision 2).
+            ctx.trap_exit(true);
+        }
         async fn stopped(&mut self, _: &Context<Self>) {
             let _ = self.entered.take().unwrap().send(());
             let _ = self.release.take().unwrap().await;
@@ -476,11 +515,13 @@ async fn stuck_standalone_cleanup_does_not_leave_earlier_actor_running_forever()
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        spawned_rt::tasks::timeout(LIMIT, first.wait_exit())
-            .await
-            .unwrap(),
-        ExitReason::Shutdown
+    // Signalled after the grace expired, it also gets the kill at grace (E3).
+    let reason = spawned_rt::tasks::timeout(LIMIT, first.wait_exit())
+        .await
+        .unwrap();
+    assert!(
+        matches!(reason, ExitReason::Shutdown | ExitReason::Killed),
+        "{reason:?}"
     );
     release.send(()).unwrap();
     assert!(report.wait(LIMIT).await.complete);
@@ -526,11 +567,27 @@ async fn readiness_reports_actual_panic_after_startup_stop_instead_of_early_norm
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
+/// Held in a handler until released. A kill and the parent's exit both wait
+/// for the current handler (E1, E3), so the actor stays unfinished at any
+/// deadline. (A hold in a trapping actor's `stopped()` is skipped when the
+/// zero-grace kill lands before the parent's exit is dispatched: E1,
+/// decision 2.)
 struct SnapshotHeld {
     release: Option<tokio::sync::oneshot::Receiver<()>>,
 }
-impl Actor for SnapshotHeld {
-    async fn stopped(&mut self, _: &Context<Self>) {
+impl Actor for SnapshotHeld {}
+struct Hold(tokio::sync::oneshot::Sender<()>);
+impl Message for Hold {
+    type Result = ();
+}
+impl Handler<Hold> for SnapshotHeld {
+    async fn handle(
+        &mut self,
+        msg: Hold,
+        _: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        let _ = msg.0.send(());
         let _ = self.release.take().unwrap().await;
     }
 }
@@ -545,6 +602,9 @@ async fn concurrent_zero_deadline_reports_include_scopes_during_shutdown_initial
     .start_on(&group)
     .unwrap();
     within!(actor.ready()).await.unwrap();
+    let (entered, entered_rx) = tokio::sync::oneshot::channel();
+    actor.send(Hold(entered)).unwrap();
+    entered_rx.await.unwrap();
     let mut reporters = Vec::new();
     for _ in 0..64 {
         let owner = system.clone();
@@ -568,8 +628,13 @@ impl Message for CheckAdmission {
 struct HelperAware;
 impl Actor for HelperAware {}
 impl Handler<CheckAdmission> for HelperAware {
-    async fn handle(&mut self, _: CheckAdmission, ctx: &Context<Self>) -> bool {
-        ctx.spawn_helper(async {}).is_err()
+    async fn handle(
+        &mut self,
+        _: CheckAdmission,
+        reply: spawned_concurrency::PendingReply<'_, bool>,
+        ctx: &Context<Self>,
+    ) {
+        reply.reply(ctx.spawn_helper(async {}).is_err());
     }
 }
 struct Dependent {
@@ -577,6 +642,11 @@ struct Dependent {
     observed: Arc<AtomicUsize>,
 }
 impl Actor for Dependent {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        // v0.8: stopped() runs on the system's shutdown only for a
+        // trapping actor (E3, decision 2).
+        ctx.trap_exit(true);
+    }
     async fn stopped(&mut self, _: &Context<Self>) {
         assert!(self.earlier.request(CheckAdmission).await.unwrap());
         self.observed.fetch_add(1, Ordering::SeqCst);

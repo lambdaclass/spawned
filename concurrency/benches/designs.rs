@@ -123,41 +123,54 @@ impl Sink {
 }
 impl tasks::Actor for Sink {}
 impl tasks::Handler<Work> for Sink {
-    async fn handle(&mut self, work: Work, _: &tasks::Context<Self>) -> Ack {
-        let start = if work.timing {
-            Instant::now()
-        } else {
-            work.enqueued
-        };
-        match self.work.as_str() {
-            "timer" => tokio::time::sleep(self.wait).await,
-            "blocking" => std::thread::sleep(self.wait),
-            "tcp" => {
-                use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                if self.socket.is_none() {
-                    let socket = tokio::net::TcpStream::connect(self.address.unwrap())
-                        .await
-                        .unwrap();
-                    socket.set_nodelay(true).unwrap();
-                    self.socket = Some(socket);
+    async fn handle(
+        &mut self,
+        work: Work,
+        reply: spawned_concurrency::PendingReply<'_, Ack>,
+        _: &tasks::Context<Self>,
+    ) {
+        let __reply_value: Ack = {
+            let start = if work.timing {
+                Instant::now()
+            } else {
+                work.enqueued
+            };
+            match self.work.as_str() {
+                "timer" => tokio::time::sleep(self.wait).await,
+                "blocking" => std::thread::sleep(self.wait),
+                "tcp" => {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    if self.socket.is_none() {
+                        let socket = tokio::net::TcpStream::connect(self.address.unwrap())
+                            .await
+                            .unwrap();
+                        socket.set_nodelay(true).unwrap();
+                        self.socket = Some(socket);
+                    }
+                    let socket = self.socket.as_mut().unwrap();
+                    let mut frame = [0u8; 64];
+                    frame[..8].copy_from_slice(&work.id.to_le_bytes());
+                    let expected = frame;
+                    socket.write_all(&frame).await.unwrap();
+                    socket.read_exact(&mut frame).await.unwrap();
+                    assert_eq!(frame, expected);
                 }
-                let socket = self.socket.as_mut().unwrap();
-                let mut frame = [0u8; 64];
-                frame[..8].copy_from_slice(&work.id.to_le_bytes());
-                let expected = frame;
-                socket.write_all(&frame).await.unwrap();
-                socket.read_exact(&mut frame).await.unwrap();
-                assert_eq!(frame, expected);
+                _ => {}
             }
-            _ => {}
-        }
-        process_at(work, start)
+            process_at(work, start)
+        };
+        reply.reply(__reply_value);
     }
 }
 impl threads::Actor for Sink {}
 impl threads::Handler<Work> for Sink {
-    fn handle(&mut self, work: Work, _: &threads::Context<Self>) -> Ack {
-        process(work)
+    fn handle(
+        &mut self,
+        work: Work,
+        reply: spawned_concurrency::PendingReply<'_, Ack>,
+        _: &threads::Context<Self>,
+    ) {
+        reply.reply(process(work));
     }
 }
 enum ReplySender {
@@ -188,13 +201,29 @@ impl Message for Probe {
     type Result = ();
 }
 impl tasks::Handler<Probe> for Sink {
-    async fn handle(&mut self, probe: Probe, _: &tasks::Context<Self>) {
-        probe.reply.send(process(probe.work));
+    async fn handle(
+        &mut self,
+        probe: Probe,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &tasks::Context<Self>,
+    ) {
+        {
+            probe.reply.send(process(probe.work));
+        }
+        reply.reply(());
     }
 }
 impl threads::Handler<Probe> for Sink {
-    fn handle(&mut self, probe: Probe, _: &threads::Context<Self>) {
-        probe.reply.send(process(probe.work));
+    fn handle(
+        &mut self,
+        probe: Probe,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &threads::Context<Self>,
+    ) {
+        {
+            probe.reply.send(process(probe.work));
+        }
+        reply.reply(());
     }
 }
 enum TokioMessage {
@@ -264,6 +293,9 @@ enum Target {
 enum Reply {
     Tasks(tokio::sync::oneshot::Receiver<Ack>),
     Threads(mpsc::Receiver<Ack>),
+    /// A framework request's receiver (its deadline is fixed at send).
+    FrameworkTasks(spawned_concurrency::ReplyReceiver<Ack>),
+    FrameworkThreads(spawned_concurrency::ReplyReceiver<Ack>),
 }
 impl Target {
     fn request(&self, work: Work, kind: &str) -> Reply {
@@ -282,8 +314,16 @@ impl Target {
             return rx;
         }
         match self {
-            Self::Tasks(actor) => Reply::Tasks(actor.request_raw(work).expect("actor stopped")),
-            Self::Threads(actor) => Reply::Threads(actor.request_raw(work).expect("actor stopped")),
+            Self::Tasks(actor) => Reply::FrameworkTasks(
+                actor
+                    .send_request(work, spawned_concurrency::Deadline::Never)
+                    .expect("actor stopped"),
+            ),
+            Self::Threads(actor) => Reply::FrameworkThreads(
+                actor
+                    .send_request(work, spawned_concurrency::Deadline::Never)
+                    .expect("actor stopped"),
+            ),
             Self::Tokio(tx) => {
                 let (reply, rx) = tokio::sync::oneshot::channel();
                 tx.send(TokioMessage::Request(work, reply))
@@ -300,6 +340,11 @@ impl Reply {
             return match self {
                 Self::Tasks(rx) => futures::executor::block_on(rx).expect("reply dropped"),
                 Self::Threads(rx) => rx.recv().expect("reply dropped"),
+                Self::FrameworkTasks(rx) => {
+                    futures::executor::block_on(std::future::IntoFuture::into_future(rx))
+                        .expect("reply failed")
+                }
+                Self::FrameworkThreads(rx) => rx.recv().expect("reply failed"),
             };
         }
         match self {
@@ -312,6 +357,8 @@ impl Reply {
             Self::Threads(rx) => rx
                 .recv_timeout(Duration::from_secs(10))
                 .expect("reply timeout/disconnected"),
+            Self::FrameworkTasks(rx) => rt.block_on(async { rx.await.expect("reply failed") }),
+            Self::FrameworkThreads(rx) => rx.recv().expect("reply failed"),
         }
     }
 }
