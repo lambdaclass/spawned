@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Clarify dispatch admission when a stop races a message, and check deferred
+  token ownership before drop callbacks in debug builds. Release behavior is unchanged.
+
 ## 0.8.0 — 2026-11-15
 
 0.8 is a breaking release. It adds deferred replies and jobs, aligns exit
