@@ -68,13 +68,17 @@ def semver(root, baseline):
         )
     base = ["cargo", "semver-checks", "--color", "never", "--release-type", release_type, "--baseline-rev", baseline]
     libraries = ["-p", "spawned-concurrency", "-p", "spawned-rt"]
-    # Old no-default consumers restore the previous API by explicitly enabling
-    # async. Check this migration as well as defaults, with/without metrics.
+    # v0.6 always included Tokio and had no async feature: that historical
+    # migration enables async only on current. Modern baselines have the
+    # feature, so compare identical feature sets on both sides.
+    async_features = ["--current-features", "async"] if legacy_audit else ["--features", "async"]
+    metrics_async_features = (["--features", "metrics", "--current-features", "async"]
+                              if legacy_audit else ["--features", "async,metrics"])
     for profile, features, packages in [
         ("default", ["--default-features"], libraries),
         ("metrics", ["--default-features", "--features", "metrics"], ["-p", "spawned-concurrency"]),
-        ("no-default + explicit async migration", ["--only-explicit-features", "--current-features", "async"], libraries),
-        ("no-default + metrics + async migration", ["--only-explicit-features", "--features", "metrics", "--current-features", "async"], ["-p", "spawned-concurrency"]),
+        ("no-default + explicit async", ["--only-explicit-features", *async_features], libraries),
+        ("no-default + metrics + async", ["--only-explicit-features", *metrics_async_features], ["-p", "spawned-concurrency"]),
     ]:
         print("Checking API profile: " + profile, flush=True)
         run(*base, *features, *packages, cwd=root)
