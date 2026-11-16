@@ -1794,14 +1794,7 @@ impl<A: Actor> ActorRef<A> {
         // instance that can never answer.
         let inner_future = async move {
             let ((actor, ctx, rx, cancellation_token), mut cleanup) = startup.into_parts();
-            run_actor(
-                actor,
-                ctx,
-                rx,
-                cancellation_token,
-                &mut cleanup,
-            )
-            .await;
+            run_actor(actor, ctx, rx, cancellation_token, &mut cleanup).await;
             let reason = cleanup.die();
             if let Some(scope) = &managed {
                 scope.exited(reason);
@@ -4896,14 +4889,7 @@ mod stop_receive_probe {
                                 Some(stop_ctx.send_request(Ping, Deadline::Never).unwrap());
                         }))
                     });
-                    run_actor(
-                        Count(hits.clone()),
-                        ctx,
-                        rx,
-                        token,
-                        &mut cleanup,
-                    )
-                    .await;
+                    run_actor(Count(hits.clone()), ctx, rx, token, &mut cleanup).await;
                     assert_eq!(cleanup.die(), ExitReason::Normal);
                     let response = response
                         .borrow_mut()

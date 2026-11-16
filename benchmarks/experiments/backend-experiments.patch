@@ -164,7 +164,7 @@ index fa86bbbb..91426709 100644
              struct Node(Arc<AtomicUsize>);
              impl Actor for Node {}
 diff --git a/concurrency/src/tasks/actor.rs b/concurrency/src/tasks/actor.rs
-index f68af2e2..bda7e379 100644
+index f99ecbbf..bda7e379 100644
 --- a/concurrency/src/tasks/actor.rs
 +++ b/concurrency/src/tasks/actor.rs
 @@ -1769,6 +1769,38 @@ impl<A: Actor> ActorRef<A> {
@@ -206,26 +206,29 @@ index f68af2e2..bda7e379 100644
          let cleanup_token = cancellation_token.clone();
          let cleanup = crate::actor_cleanup::ActorCleanup::new(
              actor_ref.shared.id,
-@@ -1794,12 +1826,18 @@ impl<A: Actor> ActorRef<A> {
+@@ -1794,7 +1826,20 @@ impl<A: Actor> ActorRef<A> {
          // instance that can never answer.
          let inner_future = async move {
              let ((actor, ctx, rx, cancellation_token), mut cleanup) = startup.into_parts();
+-            run_actor(actor, ctx, rx, cancellation_token, &mut cleanup).await;
 +            #[cfg(feature = "backend-experiments")]
 +            let _borrowed_runtime = borrowed_runtime;
 +            #[cfg(feature = "backend-experiments")]
 +            let _borrowed_dispatcher = borrowed_dispatcher;
-             run_actor(
-                 actor,
-                 ctx,
-                 rx,
-                 cancellation_token,
-                 &mut cleanup,
++            run_actor(
++                actor,
++                ctx,
++                rx,
++                cancellation_token,
++                &mut cleanup,
 +                #[cfg(feature = "backend-experiments")]
 +                turn,
-             )
-             .await;
++            )
++            .await;
              let reason = cleanup.die();
-@@ -1842,13 +1880,49 @@ impl<A: Actor> ActorRef<A> {
+             if let Some(scope) = &managed {
+                 scope.exited(reason);
+@@ -1835,13 +1880,49 @@ impl<A: Actor> ActorRef<A> {
              Backend::Async => {
                  #[cfg(debug_assertions)]
                  let inner_future = warn_on_block::WarnOnBlocking::new(inner_future);
@@ -275,7 +278,7 @@ index f68af2e2..bda7e379 100644
              }
          }
  
-@@ -1856,6 +1930,70 @@ impl<A: Actor> ActorRef<A> {
+@@ -1849,6 +1930,70 @@ impl<A: Actor> ActorRef<A> {
      }
  }
  
@@ -346,7 +349,7 @@ index f68af2e2..bda7e379 100644
  /// A pending user future of the lifecycle: `started()`, a turn (handler,
  /// `exit_received`, a job's `done`) or `stopped()`. If the runtime drops the
  /// lifecycle while it is pending (G1), its `Drop` reaches the death point
-@@ -2016,6 +2154,7 @@ async fn run_actor<A: Actor, C: Fn()>(
+@@ -2009,6 +2154,7 @@ async fn run_actor<A: Actor, C: Fn()>(
      rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
      cancellation_token: StopToken,
      cleanup: &mut crate::actor_cleanup::ActorCleanup<C>,
@@ -354,7 +357,7 @@ index f68af2e2..bda7e379 100644
  ) {
      let request = ctx.shared.linked_reason.clone();
      let mut owned = ExitOnDrop {
-@@ -2029,6 +2168,8 @@ async fn run_actor<A: Actor, C: Fn()>(
+@@ -2022,6 +2168,8 @@ async fn run_actor<A: Actor, C: Fn()>(
          &mut owned.rx,
          &mut *owned.cleanup,
          cancellation_token,
@@ -363,7 +366,7 @@ index f68af2e2..bda7e379 100644
      ))
      .catch_unwind()
      .await
-@@ -2055,6 +2196,7 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
+@@ -2048,6 +2196,7 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
      rx: &mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
      cleanup: &mut crate::actor_cleanup::ActorCleanup<C>,
      cancellation_token: StopToken,
@@ -371,7 +374,7 @@ index f68af2e2..bda7e379 100644
  ) {
      let _monitor_cleanup = MonitorCleanup(ctx.shared.monitors.clone());
      let request = ctx.shared.linked_reason.clone();
-@@ -2122,7 +2264,7 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
+@@ -2115,7 +2264,7 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
                  // mailbox acquire and retain a rejected item for shutdown.
                  // The receive, check and trace event are one step
                  // of the lifecycle trace: a recorded stop is seen here.
@@ -380,7 +383,7 @@ index f68af2e2..bda7e379 100644
                      #[cfg(all(test, not(feature = "lifecycle-trace"), not(spawned_sim)))]
                      stop_receive_probe::before_receive();
                      let received = rx.poll_recv(cx);
-@@ -2137,7 +2279,16 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
+@@ -2130,7 +2279,16 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
                          });
                      }
                      result
@@ -398,7 +401,7 @@ index f68af2e2..bda7e379 100644
              }));
              let mut recv = recv;
              future::poll_fn(|cx| match recv.as_mut().poll(cx) {
-@@ -2233,6 +2384,15 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
+@@ -2226,6 +2384,15 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
                      });
                      break;
                  }
@@ -414,7 +417,7 @@ index f68af2e2..bda7e379 100644
              }
              None => break,
          }
-@@ -2444,7 +2604,10 @@ mod warn_on_block {
+@@ -2437,7 +2604,10 @@ mod warn_on_block {
              cx: &mut std::task::Context<'_>,
          ) -> std::task::Poll<Self::Output> {
              let type_id = std::any::type_name::<F>();
@@ -425,7 +428,7 @@ index f68af2e2..bda7e379 100644
              let this = self.project();
              let now = Instant::now();
              let res = this.inner.poll(cx);
-@@ -4435,6 +4598,139 @@ mod early_stop_regression {
+@@ -4428,6 +4598,139 @@ mod early_stop_regression {
      }
  }
  
@@ -565,7 +568,7 @@ index f68af2e2..bda7e379 100644
  #[cfg(test)]
  mod idle_stop_regression {
      use super::*;
-@@ -4475,6 +4771,8 @@ mod idle_stop_regression {
+@@ -4468,6 +4771,8 @@ mod idle_stop_regression {
                          rx,
                          token.clone(),
                          &mut cleanup,
@@ -574,16 +577,25 @@ index f68af2e2..bda7e379 100644
                      ));
                      // Start and park the actual actor loop, without allowing another
                      // executor task to run it between admission and stop below.
-@@ -4902,6 +5200,8 @@ mod stop_receive_probe {
-                         rx,
-                         token,
-                         &mut cleanup,
+@@ -4889,7 +5194,16 @@ mod stop_receive_probe {
+                                 Some(stop_ctx.send_request(Ping, Deadline::Never).unwrap());
+                         }))
+                     });
+-                    run_actor(Count(hits.clone()), ctx, rx, token, &mut cleanup).await;
++                    run_actor(
++                        Count(hits.clone()),
++                        ctx,
++                        rx,
++                        token,
++                        &mut cleanup,
 +                        #[cfg(feature = "backend-experiments")]
 +                        None,
-                     )
-                     .await;
++                    )
++                    .await;
                      assert_eq!(cleanup.die(), ExitReason::Normal);
-@@ -5012,6 +5312,8 @@ mod stop_receive_probe {
+                     let response = response
+                         .borrow_mut()
+@@ -4998,6 +5312,8 @@ mod stop_receive_probe {
                              rx,
                              token,
                              &mut cleanup,
