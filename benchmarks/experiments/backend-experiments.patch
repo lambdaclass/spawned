@@ -10,7 +10,9 @@ only (benchmarks/experiments/prepare.sh applies it; never commit the result).
 
 These hooks sit on the actor hot path, so they cannot live in the published
 crates even behind a feature. Removed from the tree after 0.8.0; the last
-commit that still had them in place is d082d0d8.diff --git a/concurrency/Cargo.toml b/concurrency/Cargo.toml
+commit that still had them in place is d082d0d8.
+
+diff --git a/concurrency/Cargo.toml b/concurrency/Cargo.toml
 --- a/concurrency/Cargo.toml
 +++ b/concurrency/Cargo.toml
 @@ -59,6 +59,8 @@
