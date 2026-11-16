@@ -8,7 +8,8 @@
 
 `paths`: fails if the PR changes a code file a model covers without changing
 any of that file's models (model, MC configurations, inductive/coverage
-modules or trace spec). Exempt: changes to comments only or only inside a
+modules or trace spec) and, for a Loom-checked core (`[loom.*]`), without
+changing a Loom harness that includes it (both sides are required). Exempt: changes to comments only or only inside a
 `#[cfg(test)] mod` block, and PRs with the `no-model-change` label AND a body
 line `Model: no change because <reason>`. Labels and body come from
 `GITHUB_EVENT_PATH` in Actions, `--pr N` (gh CLI) or `--labels`/`--body`.
@@ -25,7 +26,9 @@ printed as warnings.
 validation (a Trace*.tla spec that trace_check.py runs and recorded events
 reach), unless it has a `tlc_only` allowlist entry with a reason and a
 tracking item; and each model's covered action keys in
-coverage-baseline.json may not drop below its `coverage_floor`.
+coverage-baseline.json may not drop below its `coverage_floor`. Every Loom
+harness that `#[path]`-includes production code needs a `[loom.*]` entry whose
+`code` is exactly what it includes.
 
 Standard library only; Python 3.9+ (a TOML subset parser is used when
 `tomllib` is unavailable).
@@ -357,11 +360,21 @@ def tla_content(src):
     return [l.strip() for l in src.splitlines() if l.strip()]
 
 
+def rust_content(src):
+    """Rust source without `//` comment lines and blank lines."""
+    return [l.strip() for l in src.splitlines() if l.strip() and not l.strip().startswith("//")]
+
+
 def model_file_changed(root, base, head, path):
-    """A model-side file counts as updated unless its change is comments only."""
-    if base is None or not path.endswith(".tla"):
+    """A model-side file (TLA+ module or Loom harness) counts as updated
+    unless its change is comments only."""
+    if base is None:
         return True
-    return tla_content(show(root, base, path)) != tla_content(show(root, head, path))
+    if path.endswith(".tla"):
+        return tla_content(show(root, base, path)) != tla_content(show(root, head, path))
+    if path.endswith(".rs"):
+        return rust_content(show(root, base, path)) != rust_content(show(root, head, path))
+    return True
 
 
 def pr_context(args):
@@ -394,7 +407,10 @@ def check_paths(args, root):
         print("model-sync: merge queue run; the pull_request run already enforced the check")
         return 0
     config = load_map(root)
-    models = config["models"]
+    # TLA+ models and Loom harnesses are separate checks of the same code:
+    # one updated covering model satisfies the TLA+ side, one updated
+    # covering harness the Loom side, and a file both cover needs both.
+    groups = [("", config["models"]), ("Loom ", config.get("loom", {}))]
     if args.files is not None:
         changed, base, head = list(args.files), None, None
     else:
@@ -405,27 +421,35 @@ def check_paths(args, root):
             print(f"model-sync: no merge base between {args.base or 'origin/main'} and {head}; fetch it or pass --base")
             return 2
         changed = git(root, "diff", "--name-only", "--no-renames", f"{base}...{head}").split()
+    entries = {prefix + name: m for prefix, group in groups for name, m in group.items()}
     model_changes = [p for p in changed
-                     if any(glob_match(p, g) for m in models.values() for g in m["files"])]
+                     if any(glob_match(p, g) for m in entries.values() for g in m["files"])]
     for p in model_changes:
         if not model_file_changed(root, base, head, p):
             print(f"note    {p}: comments only, does not count as a model update")
     model_changes = [p for p in model_changes if model_file_changed(root, base, head, p)]
-    touched = {name for name, m in models.items()
+    touched = {name for name, m in entries.items()
                if any(glob_match(p, g) for p in model_changes for g in m["files"])}
     missing = {}
     for path in changed:
-        covering = sorted(name for name, m in models.items() if any(glob_match(path, g) for g in m["code"]))
-        if not covering:
+        stale, updated = [], []
+        for prefix, group in groups:
+            covering = sorted(prefix + name for name, m in group.items()
+                              if any(glob_match(path, g) for g in m["code"]))
+            if covering and touched.intersection(covering):
+                updated += sorted(touched.intersection(covering))
+            elif covering:
+                stale += covering
+        if not stale and not updated:
             continue
-        if touched.intersection(covering):
-            print(f"ok      {path}: model updated ({', '.join(sorted(touched.intersection(covering)))})")
+        if not stale:
+            print(f"ok      {path}: model updated ({', '.join(updated)})")
             continue
         kind = exempt_change(root, base, head, path) if base else None
         if kind:
             print(f"ok      {path}: {kind} only")
             continue
-        missing[path] = covering
+        missing[path] = stale
     if not missing:
         print("model-sync: every changed modelled file has its model updated (or is exempt)")
         return 0
@@ -439,8 +463,9 @@ def check_paths(args, root):
         return 0
     print(f"""
 model-sync: this PR changes modelled code without changing its model.
-Models track the code: update the model (verification/tla/) in this PR, or,
-if the behaviour the model specifies is unchanged, add the `{LABEL}` label
+Models track the code: update the model (verification/tla/) or Loom harness
+(concurrency/tests/*_loom.rs) in this PR, or, if the behaviour the model
+specifies is unchanged, add the `{LABEL}` label
 AND a PR body line `Model: no change because <reason>`.
 Missing now: {'' if has_label else f'the `{LABEL}` label; '}{'' if has_reason else 'the `Model: no change because ...` line'}
 Mapping: {MAP}""")
@@ -664,6 +689,48 @@ def trace_validation(root, config, model):
     return None, "; ".join(reasons) or "no trace spec"
 
 
+LOOM_HARNESSES = "*/tests/*_loom.rs"
+
+
+def loom_includes(root, harness):
+    """Repository paths of the sources a Loom harness compiles with
+    `#[path]` (the production cores it checks against Loom's types);
+    attributes in comments do not count."""
+    src = (root / harness).read_text()
+    masked, strings = rust_mask(src)
+    out = set()
+    for m in re.finditer(r'#\[path\s*=\s*"', masked):
+        target = Path(os.path.normpath((root / harness).parent / strings[m.end() - 1]))
+        out.add(target.relative_to(root).as_posix())
+    return out
+
+
+def check_loom(config, root):
+    """Every Loom harness that includes production code is in the map, and
+    each [loom.X] entry's `code` is exactly what its `files` include, so the
+    paths check cannot miss a core."""
+    errors, rows = [], []
+    loom = config.get("loom", {})
+    mapped = set()
+    for name, entry in sorted(loom.items()):
+        files, code = entry.get("files", []), set(entry.get("code", []))
+        included = set()
+        for f in files:
+            mapped.add(f)
+            if not (root / f).is_file():
+                errors.append(f"[loom.{name}]: harness {f} does not exist")
+                continue
+            included |= loom_includes(root, f)
+        if included != code:
+            errors.append(f"[loom.{name}]: `code` must list exactly the files its harness includes with #[path]: "
+                          f"missing {sorted(included - code)}, extra {sorted(code - included)}")
+        rows.append(f"{'Loom ' + name:18} {', '.join(files)} -> {', '.join(sorted(code))}")
+    for harness in sorted(p.relative_to(root).as_posix() for p in root.glob(LOOM_HARNESSES)):
+        if harness not in mapped and loom_includes(root, harness):
+            errors.append(f"Loom harness {harness} includes production code but has no [loom.*] entry in {MAP}")
+    return errors, rows
+
+
 def check_models(args, root):
     config = load_map(root)
     models = config["models"]
@@ -705,6 +772,9 @@ def check_models(args, root):
         elif spec and key in baseline:
             errors.append(f"{model}: trace-validated with a coverage baseline but no `coverage_floor` in {MAP}")
         rows.append(f"{model:18} {status}")
+    loom_errors, loom_rows = check_loom(config, root)
+    errors += loom_errors
+    rows += loom_rows
     for r in rows:
         print(r)
     for w in warnings:

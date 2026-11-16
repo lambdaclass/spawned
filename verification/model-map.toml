@@ -8,7 +8,8 @@
 # body line `Model: no change because <reason>`. Changes to comments only,
 # or only inside a `#[cfg(test)] mod` block, are exempt. Globs: `*` stays
 # within a path segment, `**` crosses segments. Paths that do not exist yet
-# (code still on an open PR) are harmless.
+# (code still on an open PR) are harmless. Loom harnesses are mapped the same
+# way under [loom.*] (below).
 #
 # Every model in verification/tla needs an entry here, and either trace
 # validation (a Trace*.tla spec that trace_check.py runs against events the
@@ -190,6 +191,44 @@ code = []
 [models.Introspection.tlc_only]
 reason = "introspection v1 design model (0.9); process_info, get_state, the watchdog's fenced kill and the console are not implemented"
 tracking = "trace validation is part of implementing introspection v1 (design: PR #256; event table in docs/design/introspection.md)"
+
+# Loom harnesses. Each tests/*_loom.rs that compiles a production core with
+# `#[path]` (against Loom's types, through the core's `sync` shim) is a model
+# of that core too: a PR changing a core under `code` must also change (not
+# just in comments) one of the harnesses covering it, in addition to any
+# TLA+ model covering it, or carry the same `no-model-change` waiver. `code`
+# must be exactly what the harness includes (`check-model-sync.py models`
+# fails otherwise, and on a harness with no entry). Direct std/parking_lot
+# synchronization in a core is rejected by concurrency/clippy.toml.
+
+[loom.RegistryTurn]
+files = ["concurrency/tests/registry_turn_loom.rs"]
+code = ["concurrency/src/reply/turn.rs"]
+
+[loom.ReplySlot]
+files = ["concurrency/tests/reply_slot_loom.rs"]
+code = ["concurrency/src/reply/slot.rs"]
+
+[loom.JobCore]
+files = ["concurrency/tests/job_core_loom.rs"]
+code = ["concurrency/src/reply/job_core.rs", "concurrency/src/reply/slot.rs"]
+
+[loom.LinkFence]
+files = ["concurrency/tests/link_fence_loom.rs"]
+code = ["concurrency/src/link/table.rs", "concurrency/src/monitor/fence.rs"]
+
+[loom.StopToken]
+files = ["concurrency/tests/stop_token_loom.rs"]
+code = ["concurrency/src/stop_token/core.rs"]
+
+[loom.MailboxAdmission]
+files = ["concurrency/tests/mailbox_admission_loom.rs"]
+code = ["concurrency/src/mailbox_admission.rs"]
+
+[loom.ReadyGate]
+# The scheduler prototype's ready gate (benchmarks/experiments only).
+files = ["benchmarks/experiments/tests/ready_gate_loom.rs"]
+code = ["benchmarks/experiments/benches/support/ready_gate.rs"]
 
 # Trace events. Each [[trace]] table names one event struct of
 # concurrency/src/lifecycle_trace.rs, the calls that create one (a regex

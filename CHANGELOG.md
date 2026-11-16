@@ -13,6 +13,11 @@
   hooks to a scratch tree (see `benchmarks/README.md`).
 - Clarify dispatch admission when a stop races a message, and check deferred
   token ownership before drop callbacks in debug builds. Release behavior is unchanged.
+- Keep the Loom models from drifting: a clippy ban (`concurrency/clippy.toml`,
+  checked under the Loom cfg) on direct std/`parking_lot` synchronization in the
+  Loom-checked cores, and `model-sync` now requires a PR changing such a core to
+  update its Loom harness (`[loom.*]` in `verification/model-map.toml`) or carry
+  the `no-model-change` waiver.
 
 ## 0.8.0 — 2026-11-15
 

@@ -11,6 +11,7 @@ mod sync {
 }
 
 #[allow(dead_code)]
+#[deny(clippy::disallowed_types, clippy::disallowed_methods)] // concurrency/clippy.toml
 #[path = "../src/reply/turn.rs"]
 mod turn;
 
