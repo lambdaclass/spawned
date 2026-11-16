@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::message::Message;
 use std::thread;

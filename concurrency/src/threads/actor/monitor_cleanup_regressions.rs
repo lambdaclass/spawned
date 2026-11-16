@@ -1,4 +1,3 @@
-
 use super::*;
 struct Idle;
 impl Actor for Idle {}
