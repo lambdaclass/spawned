@@ -13,9 +13,10 @@ crates even behind a feature. Removed from the tree after 0.8.0; the last
 commit that still had them in place is d082d0d8.
 
 diff --git a/concurrency/Cargo.toml b/concurrency/Cargo.toml
+index 491681ee..9519d766 100644
 --- a/concurrency/Cargo.toml
 +++ b/concurrency/Cargo.toml
-@@ -61,7 +61,7 @@
+@@ -61,7 +61,7 @@ lifecycle-trace = ["async"]
  failpoints = []
  # No-ops kept for 0.8 patch compatibility (removing a feature is a breaking
  # change). The experiments live in benchmarks/experiments; drop these at 0.9.
@@ -166,10 +167,57 @@ index fa86bbbb..91426709 100644
              struct Node(Arc<AtomicUsize>);
              impl Actor for Node {}
 diff --git a/concurrency/src/tasks/actor.rs b/concurrency/src/tasks/actor.rs
-index f99ecbbf..bda7e379 100644
+index 34b6c48a..d6a44a4d 100644
 --- a/concurrency/src/tasks/actor.rs
 +++ b/concurrency/src/tasks/actor.rs
-@@ -1769,6 +1769,38 @@ impl<A: Actor> ActorRef<A> {
+@@ -42,6 +42,8 @@ mod context;
+ mod lifecycle;
+ #[cfg(test)]
+ use lifecycle::run_actor;
++#[cfg(all(test, feature = "backend-experiments"))]
++use lifecycle::MessageTurn;
+ 
+ // ---------------------------------------------------------------------------
+ // Backend
+@@ -444,7 +446,10 @@ mod warn_on_block {
+             cx: &mut std::task::Context<'_>,
+         ) -> std::task::Poll<Self::Output> {
+             let type_id = std::any::type_name::<F>();
++            #[cfg(not(feature = "backend-experiments"))]
+             let task_id = rt::task_id();
++            #[cfg(feature = "backend-experiments")]
++            let task_id = rt::experimental::try_task_id();
+             let this = self.project();
+             let now = Instant::now();
+             let res = this.inner.poll(cx);
+@@ -470,6 +475,9 @@ mod monitor_cleanup_regressions;
+ #[cfg(test)]
+ mod early_stop_regression;
+ 
++#[cfg(all(test, feature = "backend-experiments"))]
++mod turn_regressions;
++
+ #[cfg(test)]
+ mod idle_stop_regression;
+ 
+diff --git a/concurrency/src/tasks/actor/idle_stop_regression.rs b/concurrency/src/tasks/actor/idle_stop_regression.rs
+index 81956895..c38ea120 100644
+--- a/concurrency/src/tasks/actor/idle_stop_regression.rs
++++ b/concurrency/src/tasks/actor/idle_stop_regression.rs
+@@ -36,6 +36,8 @@ fn stop_while_idle_does_not_dispatch_a_queued_request_on_resume() {
+                     rx,
+                     token.clone(),
+                     &mut cleanup,
++                    #[cfg(feature = "backend-experiments")]
++                    None,
+                 ));
+                 // Start and park the actual actor loop, without allowing another
+                 // executor task to run it between admission and stop below.
+diff --git a/concurrency/src/tasks/actor/lifecycle.rs b/concurrency/src/tasks/actor/lifecycle.rs
+index a88489ac..8790cefc 100644
+--- a/concurrency/src/tasks/actor/lifecycle.rs
++++ b/concurrency/src/tasks/actor/lifecycle.rs
+@@ -93,6 +93,38 @@ impl<A: Actor> ActorRef<A> {
          // Recorded from here: the start_linked link is the model's initial one.
          crate::lifecycle_trace::life_spawn(id.raw(), parent_id);
  
@@ -208,7 +256,7 @@ index f99ecbbf..bda7e379 100644
          let cleanup_token = cancellation_token.clone();
          let cleanup = crate::actor_cleanup::ActorCleanup::new(
              actor_ref.shared.id,
-@@ -1794,7 +1826,20 @@ impl<A: Actor> ActorRef<A> {
+@@ -118,7 +150,20 @@ impl<A: Actor> ActorRef<A> {
          // instance that can never answer.
          let inner_future = async move {
              let ((actor, ctx, rx, cancellation_token), mut cleanup) = startup.into_parts();
@@ -230,7 +278,7 @@ index f99ecbbf..bda7e379 100644
              let reason = cleanup.die();
              if let Some(scope) = &managed {
                  scope.exited(reason);
-@@ -1835,13 +1880,49 @@ impl<A: Actor> ActorRef<A> {
+@@ -159,13 +204,49 @@ impl<A: Actor> ActorRef<A> {
              Backend::Async => {
                  #[cfg(debug_assertions)]
                  let inner_future = warn_on_block::WarnOnBlocking::new(inner_future);
@@ -280,22 +328,22 @@ index f99ecbbf..bda7e379 100644
              }
          }
  
-@@ -1849,6 +1930,70 @@ impl<A: Actor> ActorRef<A> {
+@@ -173,6 +254,70 @@ impl<A: Actor> ActorRef<A> {
      }
  }
  
 +// Batch only between completed handlers: never preempt or concurrently poll an actor.
 +#[cfg(feature = "backend-experiments")]
-+struct MessageTurn {
-+    limit: usize,
-+    adaptive: bool,
-+    slice: Option<Duration>,
-+    completed: usize,
-+    began: Option<std::time::Instant>,
++pub(super) struct MessageTurn {
++    pub(super) limit: usize,
++    pub(super) adaptive: bool,
++    pub(super) slice: Option<Duration>,
++    pub(super) completed: usize,
++    pub(super) began: Option<std::time::Instant>,
 +}
 +#[cfg(feature = "backend-experiments")]
 +impl MessageTurn {
-+    fn from_env() -> Self {
++    pub(super) fn from_env() -> Self {
 +        let batch: usize = std::env::var("SPAWNED_EXPERIMENT_BATCH")
 +            .unwrap_or_else(|_| "16".into())
 +            .parse()
@@ -314,19 +362,19 @@ index f99ecbbf..bda7e379 100644
 +            began: None,
 +        }
 +    }
-+    fn parked(&mut self) {
++    pub(super) fn parked(&mut self) {
 +        self.completed = 0;
 +        if self.adaptive {
 +            self.limit = 1;
 +        }
 +        self.began = None;
 +    }
-+    fn resumed(&mut self) {
++    pub(super) fn resumed(&mut self) {
 +        if self.slice.is_some() {
 +            self.began.get_or_insert_with(std::time::Instant::now);
 +        }
 +    }
-+    async fn after_message(&mut self, empty: bool) {
++    pub(super) async fn after_message(&mut self, empty: bool) {
 +        if empty {
 +            self.parked();
 +            return;
@@ -351,7 +399,7 @@ index f99ecbbf..bda7e379 100644
  /// A pending user future of the lifecycle: `started()`, a turn (handler,
  /// `exit_received`, a job's `done`) or `stopped()`. If the runtime drops the
  /// lifecycle while it is pending (G1), its `Drop` reaches the death point
-@@ -2009,6 +2154,7 @@ async fn run_actor<A: Actor, C: Fn()>(
+@@ -333,6 +478,7 @@ pub(super) async fn run_actor<A: Actor, C: Fn()>(
      rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
      cancellation_token: StopToken,
      cleanup: &mut crate::actor_cleanup::ActorCleanup<C>,
@@ -359,7 +407,7 @@ index f99ecbbf..bda7e379 100644
  ) {
      let request = ctx.shared.linked_reason.clone();
      let mut owned = ExitOnDrop {
-@@ -2022,6 +2168,8 @@ async fn run_actor<A: Actor, C: Fn()>(
+@@ -346,6 +492,8 @@ pub(super) async fn run_actor<A: Actor, C: Fn()>(
          &mut owned.rx,
          &mut *owned.cleanup,
          cancellation_token,
@@ -368,7 +416,7 @@ index f99ecbbf..bda7e379 100644
      ))
      .catch_unwind()
      .await
-@@ -2048,6 +2196,7 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
+@@ -372,6 +520,7 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
      rx: &mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
      cleanup: &mut crate::actor_cleanup::ActorCleanup<C>,
      cancellation_token: StopToken,
@@ -376,7 +424,7 @@ index f99ecbbf..bda7e379 100644
  ) {
      let _monitor_cleanup = MonitorCleanup(ctx.shared.monitors.clone());
      let request = ctx.shared.linked_reason.clone();
-@@ -2115,7 +2264,7 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
+@@ -439,7 +588,7 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
                  // mailbox acquire and retain a rejected item for shutdown.
                  // The receive, check and trace event are one step
                  // of the lifecycle trace: a recorded stop is seen here.
@@ -385,7 +433,7 @@ index f99ecbbf..bda7e379 100644
                      #[cfg(all(test, not(feature = "lifecycle-trace"), not(spawned_sim)))]
                      stop_receive_probe::before_receive();
                      let received = rx.poll_recv(cx);
-@@ -2130,7 +2279,16 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
+@@ -454,7 +603,16 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
                          });
                      }
                      result
@@ -403,7 +451,7 @@ index f99ecbbf..bda7e379 100644
              }));
              let mut recv = recv;
              future::poll_fn(|cx| match recv.as_mut().poll(cx) {
-@@ -2226,6 +2384,15 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
+@@ -550,6 +708,15 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
                      });
                      break;
                  }
@@ -419,193 +467,171 @@ index f99ecbbf..bda7e379 100644
              }
              None => break,
          }
-@@ -2437,7 +2604,10 @@ mod warn_on_block {
-             cx: &mut std::task::Context<'_>,
-         ) -> std::task::Poll<Self::Output> {
-             let type_id = std::any::type_name::<F>();
-+            #[cfg(not(feature = "backend-experiments"))]
-             let task_id = rt::task_id();
-+            #[cfg(feature = "backend-experiments")]
-+            let task_id = rt::experimental::try_task_id();
-             let this = self.project();
-             let now = Instant::now();
-             let res = this.inner.poll(cx);
-@@ -4428,6 +4598,139 @@ mod early_stop_regression {
-     }
- }
- 
-+#[cfg(all(test, feature = "backend-experiments"))]
-+mod turn_regressions {
-+    use super::*;
-+    use std::sync::atomic::{AtomicUsize, Ordering};
-+    #[test]
-+    fn idle_time_is_excluded_and_an_empty_mailbox_needs_no_yield() {
-+        crate::test_wait::bounded(
-+            concat!(
-+                module_path!(),
-+                "::idle_time_is_excluded_and_an_empty_mailbox_needs_no_yield"
-+            ),
-+            move || {
-+                let mut turn = MessageTurn {
-+                    limit: 16,
-+                    adaptive: false,
-+                    slice: Some(Duration::from_micros(50)),
-+                    completed: 0,
-+                    began: Some(std::time::Instant::now()),
-+                };
-+                turn.parked();
-+                assert!(turn.began.is_none());
-+                let wake = std::time::Instant::now();
-+                turn.resumed();
-+                assert!(turn.began.unwrap() >= wake);
-+                futures::executor::block_on(turn.after_message(true));
-+                assert!(turn.began.is_none());
-+                assert_eq!(turn.completed, 0);
-+            },
-+        );
-+    }
-+    #[test]
-+    fn count_only_turn_never_starts_a_clock_and_yields_at_its_count() {
-+        crate::test_wait::bounded(
-+            concat!(
-+                module_path!(),
-+                "::count_only_turn_never_starts_a_clock_and_yields_at_its_count"
-+            ),
-+            move || {
-+                rt::Runtime::new().unwrap().block_on(async {
-+                    let mut turn = MessageTurn {
-+                        limit: 4,
-+                        adaptive: false,
-+                        slice: None,
-+                        completed: 0,
-+                        began: None,
-+                    };
-+                    turn.resumed();
-+                    for _ in 0..3 {
-+                        let mut message = Box::pin(turn.after_message(false));
-+                        assert!(futures::poll!(message.as_mut()).is_ready());
-+                    }
-+                    assert!(turn.began.is_none());
-+                    let mut fourth = Box::pin(turn.after_message(false));
-+                    assert!(futures::poll!(fourth.as_mut()).is_pending());
-+                    fourth.await;
-+                    assert_eq!(turn.completed, 0);
-+                    assert!(turn.began.is_none());
-+                    turn.parked();
-+                    turn.resumed();
-+                    assert!(turn.began.is_none());
-+                });
-+            },
-+        );
-+    }
-+    #[test]
-+    fn stop_during_batch_yield_does_not_execute_the_next_queued_message() {
-+        crate::test_wait::bounded(
-+            concat!(
-+                module_path!(),
-+                "::stop_during_batch_yield_does_not_execute_the_next_queued_message"
-+            ),
-+            move || {
-+                struct Count(Arc<AtomicUsize>);
-+                impl Actor for Count {}
-+                struct Inc;
-+                impl Message for Inc {
-+                    type Result = ();
-+                }
-+                impl Handler<Inc> for Count {
-+                    async fn handle(
-+                        &mut self,
-+                        _: Inc,
-+                        reply: crate::reply::PendingReply<'_, ()>,
-+                        _: &Context<Self>,
-+                    ) {
-+                        self.0.fetch_add(1, Ordering::SeqCst);
-+                        reply.reply(());
-+                    }
-+                }
-+                rt::Runtime::new().unwrap().block_on(async {
-+                    let (tx, rx) = mpsc::channel();
-+                    let token = StopToken::new();
-+                    let (ctx, mut cleanup) = test_context(&tx, &token);
-+                    let count = Arc::new(AtomicUsize::new(0));
-+                    for _ in 0..2 {
-+                        tx.send(Box::new(MessageEnvelope {
-+                            msg: Some(Inc),
-+                            slot: None,
-+                            #[cfg(feature = "metrics")]
-+                            observation: None,
-+                            #[cfg(feature = "lifecycle-trace")]
-+                            from: 0,
-+                        })
-+                            as Box<dyn Envelope<Count> + Send>)
-+                            .unwrap();
-+                    }
-+                    let turn = MessageTurn {
-+                        limit: 1,
-+                        adaptive: false,
-+                        slice: Some(Duration::from_micros(50)),
-+                        completed: 0,
-+                        began: None,
-+                    };
-+                    let mut job = Box::pin(run_actor(
-+                        Count(count.clone()),
-+                        ctx,
-+                        rx,
-+                        token.clone(),
-+                        &mut cleanup,
-+                        Some(turn),
-+                    ));
-+                    assert!(futures::poll!(job.as_mut()).is_pending());
-+                    assert_eq!(count.load(Ordering::SeqCst), 1);
-+                    token.cancel();
-+                    job.await;
-+                    assert_eq!(cleanup.die(), ExitReason::Normal);
-+                    assert_eq!(count.load(Ordering::SeqCst), 1);
-+                });
-+            },
-+        );
-+    }
-+}
-+
- #[cfg(test)]
- mod idle_stop_regression {
-     use super::*;
-@@ -4468,6 +4771,8 @@ mod idle_stop_regression {
+diff --git a/concurrency/src/tasks/actor/stop_receive_probe.rs b/concurrency/src/tasks/actor/stop_receive_probe.rs
+index 6155de04..03743a8d 100644
+--- a/concurrency/src/tasks/actor/stop_receive_probe.rs
++++ b/concurrency/src/tasks/actor/stop_receive_probe.rs
+@@ -41,7 +41,16 @@ fn stop_between_check_and_receive_discards_post_stop_request() {
+                             Some(stop_ctx.send_request(Ping, Deadline::Never).unwrap());
+                     }))
+                 });
+-                run_actor(Count(hits.clone()), ctx, rx, token, &mut cleanup).await;
++                run_actor(
++                    Count(hits.clone()),
++                    ctx,
++                    rx,
++                    token,
++                    &mut cleanup,
++                    #[cfg(feature = "backend-experiments")]
++                    None,
++                )
++                .await;
+                 assert_eq!(cleanup.die(), ExitReason::Normal);
+                 let response = response
+                     .borrow_mut()
+@@ -145,6 +154,8 @@ fn receive_rejected_by_stop_keeps_its_caller_until_the_death_point() {
                          rx,
-                         token.clone(),
+                         token,
                          &mut cleanup,
 +                        #[cfg(feature = "backend-experiments")]
 +                        None,
                      ));
-                     // Start and park the actual actor loop, without allowing another
-                     // executor task to run it between admission and stop below.
-@@ -4889,7 +5194,16 @@ mod stop_receive_probe {
-                                 Some(stop_ctx.send_request(Ping, Deadline::Never).unwrap());
-                         }))
-                     });
--                    run_actor(Count(hits.clone()), ctx, rx, token, &mut cleanup).await;
-+                    run_actor(
-+                        Count(hits.clone()),
-+                        ctx,
-+                        rx,
-+                        token,
-+                        &mut cleanup,
-+                        #[cfg(feature = "backend-experiments")]
-+                        None,
-+                    )
-+                    .await;
-                     assert_eq!(cleanup.die(), ExitReason::Normal);
-                     let response = response
-                         .borrow_mut()
-@@ -4998,6 +5312,8 @@ mod stop_receive_probe {
-                             rx,
-                             token,
-                             &mut cleanup,
-+                            #[cfg(feature = "backend-experiments")]
-+                            None,
-                         ));
-                         let expected = if park {
-                             assert!(futures::poll!(actor.as_mut()).is_pending());
+                     let expected = if park {
+                         assert!(futures::poll!(actor.as_mut()).is_pending());
+diff --git a/concurrency/src/tasks/actor/turn_regressions.rs b/concurrency/src/tasks/actor/turn_regressions.rs
+new file mode 100644
+index 00000000..924ee83d
+--- /dev/null
++++ b/concurrency/src/tasks/actor/turn_regressions.rs
+@@ -0,0 +1,128 @@
++use super::*;
++use std::sync::atomic::{AtomicUsize, Ordering};
++#[test]
++fn idle_time_is_excluded_and_an_empty_mailbox_needs_no_yield() {
++    crate::test_wait::bounded(
++        concat!(
++            module_path!(),
++            "::idle_time_is_excluded_and_an_empty_mailbox_needs_no_yield"
++        ),
++        move || {
++            let mut turn = MessageTurn {
++                limit: 16,
++                adaptive: false,
++                slice: Some(Duration::from_micros(50)),
++                completed: 0,
++                began: Some(std::time::Instant::now()),
++            };
++            turn.parked();
++            assert!(turn.began.is_none());
++            let wake = std::time::Instant::now();
++            turn.resumed();
++            assert!(turn.began.unwrap() >= wake);
++            futures::executor::block_on(turn.after_message(true));
++            assert!(turn.began.is_none());
++            assert_eq!(turn.completed, 0);
++        },
++    );
++}
++#[test]
++fn count_only_turn_never_starts_a_clock_and_yields_at_its_count() {
++    crate::test_wait::bounded(
++        concat!(
++            module_path!(),
++            "::count_only_turn_never_starts_a_clock_and_yields_at_its_count"
++        ),
++        move || {
++            rt::Runtime::new().unwrap().block_on(async {
++                let mut turn = MessageTurn {
++                    limit: 4,
++                    adaptive: false,
++                    slice: None,
++                    completed: 0,
++                    began: None,
++                };
++                turn.resumed();
++                for _ in 0..3 {
++                    let mut message = Box::pin(turn.after_message(false));
++                    assert!(futures::poll!(message.as_mut()).is_ready());
++                }
++                assert!(turn.began.is_none());
++                let mut fourth = Box::pin(turn.after_message(false));
++                assert!(futures::poll!(fourth.as_mut()).is_pending());
++                fourth.await;
++                assert_eq!(turn.completed, 0);
++                assert!(turn.began.is_none());
++                turn.parked();
++                turn.resumed();
++                assert!(turn.began.is_none());
++            });
++        },
++    );
++}
++#[test]
++fn stop_during_batch_yield_does_not_execute_the_next_queued_message() {
++    crate::test_wait::bounded(
++        concat!(
++            module_path!(),
++            "::stop_during_batch_yield_does_not_execute_the_next_queued_message"
++        ),
++        move || {
++            struct Count(Arc<AtomicUsize>);
++            impl Actor for Count {}
++            struct Inc;
++            impl Message for Inc {
++                type Result = ();
++            }
++            impl Handler<Inc> for Count {
++                async fn handle(
++                    &mut self,
++                    _: Inc,
++                    reply: crate::reply::PendingReply<'_, ()>,
++                    _: &Context<Self>,
++                ) {
++                    self.0.fetch_add(1, Ordering::SeqCst);
++                    reply.reply(());
++                }
++            }
++            rt::Runtime::new().unwrap().block_on(async {
++                let (tx, rx) = mpsc::channel();
++                let token = StopToken::new();
++                let (ctx, mut cleanup) = test_context(&tx, &token);
++                let count = Arc::new(AtomicUsize::new(0));
++                for _ in 0..2 {
++                    tx.send(Box::new(MessageEnvelope {
++                        msg: Some(Inc),
++                        slot: None,
++                        #[cfg(feature = "metrics")]
++                        observation: None,
++                        #[cfg(feature = "lifecycle-trace")]
++                        from: 0,
++                    }) as Box<dyn Envelope<Count> + Send>)
++                        .unwrap();
++                }
++                let turn = MessageTurn {
++                    limit: 1,
++                    adaptive: false,
++                    slice: Some(Duration::from_micros(50)),
++                    completed: 0,
++                    began: None,
++                };
++                let mut job = Box::pin(run_actor(
++                    Count(count.clone()),
++                    ctx,
++                    rx,
++                    token.clone(),
++                    &mut cleanup,
++                    Some(turn),
++                ));
++                assert!(futures::poll!(job.as_mut()).is_pending());
++                assert_eq!(count.load(Ordering::SeqCst), 1);
++                token.cancel();
++                job.await;
++                assert_eq!(cleanup.die(), ExitReason::Normal);
++                assert_eq!(count.load(Ordering::SeqCst), 1);
++            });
++        },
++    );
++}
 diff --git a/rt/Cargo.toml b/rt/Cargo.toml
 index 0d653554..ac506c8e 100644
 --- a/rt/Cargo.toml
