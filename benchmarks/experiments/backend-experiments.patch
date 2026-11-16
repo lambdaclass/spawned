@@ -15,15 +15,15 @@ commit that still had them in place is d082d0d8.
 diff --git a/concurrency/Cargo.toml b/concurrency/Cargo.toml
 --- a/concurrency/Cargo.toml
 +++ b/concurrency/Cargo.toml
-@@ -59,6 +59,8 @@
- # Named fault-injection sites in lifecycle code (`failpoints` module). Test-only;
- # disabled by default, and the sites compile to nothing without it.
+@@ -61,7 +61,7 @@
  failpoints = []
-+# Private benchmark prototypes (benchmarks/experiments); no stable runtime-selection API.
+ # No-ops kept for 0.8 patch compatibility (removing a feature is a breaking
+ # change). The experiments live in benchmarks/experiments; drop these at 0.9.
+-backend-experiments = []
 +backend-experiments = ["async", "spawned-rt/backend-experiments"]
+ io-experiments = []
+ profiling-experiments = []
  
- [target.'cfg(spawned_scheduler_loom)'.dev-dependencies]
- loom = { version = "0.7", features = ["futures"] }
 diff --git a/concurrency/src/link_regression_tests.rs b/concurrency/src/link_regression_tests.rs
 index fa86bbbb..91426709 100644
 --- a/concurrency/src/link_regression_tests.rs
@@ -607,7 +607,7 @@ index f99ecbbf..bda7e379 100644
                          let expected = if park {
                              assert!(futures::poll!(actor.as_mut()).is_pending());
 diff --git a/rt/Cargo.toml b/rt/Cargo.toml
-index e0accc3d..ac506c8e 100644
+index 0d653554..ac506c8e 100644
 --- a/rt/Cargo.toml
 +++ b/rt/Cargo.toml
 @@ -14,6 +14,9 @@ ctrlc = "3.4"
@@ -620,10 +620,13 @@ index e0accc3d..ac506c8e 100644
  [lib]
  path = "./src/lib.rs"
  
-@@ -34,6 +37,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_loom)', 'cfg(spawn
+@@ -34,9 +37,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_loom)', 'cfg(spawn
  [features]
  default = ["async"]
  async = ["dep:tokio", "dep:tokio-util", "dep:tokio-stream", "dep:nix"]
+-# No-op kept for 0.8 patch compatibility; the experiments live in
+-# benchmarks/experiments. Drop at 0.9.
+-backend-experiments = []
 +backend-experiments = ["async", "dep:async-task", "dep:crossbeam-deque"]
  
  [target.'cfg(target_os = "linux")'.dependencies]
