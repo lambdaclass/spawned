@@ -34,6 +34,8 @@ class RepoCopy(unittest.TestCase):
         shutil.copytree(ROOT / "concurrency" / "src", tmp / "concurrency" / "src")
         (tmp / "concurrency" / "tests").mkdir()
         shutil.copy(ROOT / "concurrency" / "tests" / "cohort_trace.rs", tmp / "concurrency" / "tests")
+        for harness in (ROOT / "concurrency" / "tests").glob("*_loom.rs"):
+            shutil.copy(harness, tmp / "concurrency" / "tests")
         shutil.copytree(ROOT / "verification", tmp / "verification")
         return tmp
 
@@ -184,6 +186,30 @@ class ModelInventory(RepoCopy):
         self.assertEqual(code, 1, out)
         self.assertIn("below the floor 36", out)
 
+    def test_unmapped_loom_harness_fails(self):
+        tmp = self.copy()
+        (tmp / "concurrency" / "tests" / "new_core_loom.rs").write_text(
+            '#[path = "../src/registry.rs"]\nmod registry;\n')
+        code, out = run("--root", str(tmp), "models")
+        self.assertEqual(code, 1, out)
+        self.assertIn("concurrency/tests/new_core_loom.rs includes production code but has no [loom.*] entry", out)
+
+    def test_commented_include_is_not_a_loom_harness(self):
+        tmp = self.copy()
+        (tmp / "concurrency" / "tests" / "new_core_loom.rs").write_text(
+            '// #[path = "../src/registry.rs"]\nfn main() {}\n')
+        code, out = run("--root", str(tmp), "models")
+        self.assertEqual(code, 0, out)
+
+    def test_loom_code_must_match_includes(self):
+        tmp = self.copy()
+        self.edit_map(tmp, 'code = ["concurrency/src/reply/job_core.rs", "concurrency/src/reply/slot.rs"]',
+                      'code = ["concurrency/src/reply/job_core.rs"]')
+        code, out = run("--root", str(tmp), "models")
+        self.assertEqual(code, 1, out)
+        self.assertIn("[loom.JobCore]: `code` must list exactly", out)
+        self.assertIn("missing ['concurrency/src/reply/slot.rs']", out)
+
 
 ACTOR_CLEANUP = """//! Shared terminal publication.
 pub fn publish(x: u32) -> u32 {
@@ -205,11 +231,18 @@ class ModelPaths(unittest.TestCase):
         self.repo = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.repo)
         (self.repo / "verification" / "tla").mkdir(parents=True)
-        (self.repo / "concurrency" / "src").mkdir(parents=True)
+        for d in ("concurrency/src/monitor", "concurrency/src/stop_token", "concurrency/tests"):
+            (self.repo / d).mkdir(parents=True)
         shutil.copy(ROOT / "verification" / "model-map.toml", self.repo / "verification")
         self.write("verification/tla/Lifecycle.tla", "---- MODULE Lifecycle ----\n====\n")
         self.write("concurrency/src/actor_cleanup.rs", ACTOR_CLEANUP)
         self.write("concurrency/src/registry.rs", "pub fn lookup() {}\n")
+        # Loom-checked cores: fence.rs has only a Loom harness, core.rs also
+        # a TLA+ model (Lifecycle).
+        self.write("concurrency/src/monitor/fence.rs", "pub fn close() -> u32 {\n    1\n}\n")
+        self.write("concurrency/tests/link_fence_loom.rs", '#[path = "../src/monitor/fence.rs"]\nmod fence;\nfn check() {}\n')
+        self.write("concurrency/src/stop_token/core.rs", "pub fn cancel() -> u32 {\n    1\n}\n")
+        self.write("concurrency/tests/stop_token_loom.rs", '#[path = "../src/stop_token/core.rs"]\nmod core;\nfn check() {}\n')
         self.git("init", "-q")
         self.git("add", "-A")
         self.git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
@@ -320,6 +353,53 @@ class ModelPaths(unittest.TestCase):
         code, out = run("--root", str(self.repo), "paths", "--base", self.base,
                         env={"GITHUB_EVENT_NAME": "pull_request", "GITHUB_EVENT_PATH": str(event)})
         self.assertEqual(code, 0, out)
+
+    def test_loom_core_change_without_harness_fails(self):
+        self.edit("concurrency/src/monitor/fence.rs", "1", "2")
+        code, out = self.check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("MISSING concurrency/src/monitor/fence.rs: covered by Loom LinkFence", out)
+
+    def test_loom_core_change_with_harness_passes(self):
+        self.edit("concurrency/src/monitor/fence.rs", "1", "2")
+        self.edit("concurrency/tests/link_fence_loom.rs", "fn check() {}", "fn check() { assert!(true); }")
+        code, out = self.check()
+        self.assertEqual(code, 0, out)
+        self.assertIn("model updated (Loom LinkFence)", out)
+
+    def test_comment_only_harness_change_does_not_count(self):
+        self.edit("concurrency/src/monitor/fence.rs", "1", "2")
+        self.edit("concurrency/tests/link_fence_loom.rs", "fn check() {}", "// still checked\nfn check() {}")
+        code, out = self.check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("comments only, does not count", out)
+
+    def test_tla_update_does_not_cover_loom(self):
+        self.edit("concurrency/src/stop_token/core.rs", "1", "2")
+        self.edit("verification/tla/Lifecycle.tla", "====", "Step == TRUE\n====")
+        code, out = self.check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("MISSING concurrency/src/stop_token/core.rs: covered by Loom StopToken", out)
+
+    def test_loom_update_does_not_cover_tla(self):
+        self.edit("concurrency/src/stop_token/core.rs", "1", "2")
+        self.edit("concurrency/tests/stop_token_loom.rs", "fn check() {}", "fn check() { assert!(true); }")
+        code, out = self.check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("MISSING concurrency/src/stop_token/core.rs: covered by Lifecycle, none changed", out)
+
+    def test_loom_and_tla_update_passes(self):
+        self.edit("concurrency/src/stop_token/core.rs", "1", "2")
+        self.edit("concurrency/tests/stop_token_loom.rs", "fn check() {}", "fn check() { assert!(true); }")
+        self.edit("verification/tla/Lifecycle.tla", "====", "Step == TRUE\n====")
+        code, out = self.check()
+        self.assertEqual(code, 0, out)
+
+    def test_loom_core_waiver(self):
+        self.edit("concurrency/src/monitor/fence.rs", "1", "2")
+        code, out = self.check("no-model-change", "Model: no change because the fence protocol is unchanged.")
+        self.assertEqual(code, 0, out)
+        self.assertIn("waived", out)
 
 
 class TomlSubset(unittest.TestCase):

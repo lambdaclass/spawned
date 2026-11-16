@@ -1058,6 +1058,17 @@ RUSTFLAGS="--cfg spawned_scheduler_loom" cargo test --release -p spawned-concurr
   --test link_fence_loom --test stop_token_loom
 ```
 
+Two checks keep these models in step with the cores. A direct std or
+`parking_lot` atomic, lock or condvar in a core would bypass the shim and be
+invisible to Loom: `concurrency/clippy.toml` bans them, and each harness denies
+the lint on the `#[path]`-included core, so clippy under the Loom cfg (the
+`mailbox-loom` job in `verification.yml`) rejects any that is left; production
+shims re-export the same types, so the ordinary build pays nothing and the lint
+is allowed there. And `verification/model-map.toml` maps every harness to the
+cores it includes (`[loom.*]`): the required `model-sync` check fails a PR that
+changes a core without changing one of its harnesses, unless it carries the
+`no-model-change` waiver.
+
 `stop_token_loom` shares the private actor stop flag (`src/stop_token/core.rs`).
 A stop publishes its flag before notifying Tokio's cancellation waiter; the
 message loop checks that flag with one acquire load after receiving and before
