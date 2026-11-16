@@ -7,7 +7,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-monoio = { version = "0.2.4", optional = true, default-features = false, features = ["legacy", "iouring", "sync"] }
 spawned-rt = { workspace = true, default-features = false }
 spawned-macros = { workspace = true }
 tracing = { workspace = true }
@@ -60,49 +59,12 @@ lifecycle-trace = ["async"]
 # Named fault-injection sites in lifecycle code (`failpoints` module). Test-only;
 # disabled by default, and the sites compile to nothing without it.
 failpoints = []
-io-experiments = ["async", "dep:monoio"]
-# Private benchmark prototypes; no stable runtime-selection API.
-backend-experiments = ["async", "spawned-rt/backend-experiments"]
-profiling-experiments = ["async", "dep:pprof"]
-
-[[bench]]
-name = "designs"
-harness = false
-required-features = ["backend-experiments"]
-
-[[bench]]
-name = "io_designs"
-harness = false
-required-features = ["io-experiments"]
-
-[[bench]]
-name = "workload_research"
-harness = false
-required-features = ["backend-experiments"]
-
-[target.'cfg(target_os = "linux")'.dependencies]
-pprof = { version = "0.15", optional = true, features = ["flamegraph"] }
 
 [target.'cfg(spawned_scheduler_loom)'.dev-dependencies]
 loom = { version = "0.7", features = ["futures"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_scheduler_loom)', 'cfg(spawned_sim)', 'cfg(kani)', 'cfg(kani_slow)'] }
-
-[[bench]]
-name = "lifecycle_soak"
-harness = false
-required-features = ["backend-experiments"]
-
-[[bench]]
-name = "pinned_pipeline"
-harness = false
-required-features = ["backend-experiments"]
-
-[[bench]]
-name = "runtime_isolation"
-harness = false
-required-features = ["backend-experiments"]
 
 # Long-running resource-leak soak, run by hand (docs/TESTING.md, "Soak harness").
 # Not built by `cargo test`; `--all-targets` clippy keeps it compiling.

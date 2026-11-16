@@ -1769,38 +1769,6 @@ impl<A: Actor> ActorRef<A> {
         // Recorded from here: the start_linked link is the model's initial one.
         crate::lifecycle_trace::life_spawn(id.raw(), parent_id);
 
-        #[cfg(feature = "backend-experiments")]
-        let scheduler = if managed.is_some() {
-            String::new()
-        } else {
-            std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default()
-        };
-        #[cfg(feature = "backend-experiments")]
-        let turn = (backend == Backend::Async
-            && matches!(
-                scheduler.as_str(),
-                "sharded"
-                    | "tokio-batch"
-                    | "native-global"
-                    | "native-local"
-                    | "native-steal"
-                    | "native-root"
-                    | "native-runnable"
-                    | "native-deque"
-            ))
-        .then(MessageTurn::from_env);
-        #[cfg(feature = "backend-experiments")]
-        let borrowed_runtime = if backend != Backend::Async {
-            rt::experimental::lease_if_initialized()
-        } else {
-            None
-        };
-        #[cfg(feature = "backend-experiments")]
-        let borrowed_dispatcher = if backend != Backend::Async {
-            rt::experimental::dispatcher::lease_if_initialized()
-        } else {
-            None
-        };
         let cleanup_token = cancellation_token.clone();
         let cleanup = crate::actor_cleanup::ActorCleanup::new(
             actor_ref.shared.id,
@@ -1826,18 +1794,12 @@ impl<A: Actor> ActorRef<A> {
         // instance that can never answer.
         let inner_future = async move {
             let ((actor, ctx, rx, cancellation_token), mut cleanup) = startup.into_parts();
-            #[cfg(feature = "backend-experiments")]
-            let _borrowed_runtime = borrowed_runtime;
-            #[cfg(feature = "backend-experiments")]
-            let _borrowed_dispatcher = borrowed_dispatcher;
             run_actor(
                 actor,
                 ctx,
                 rx,
                 cancellation_token,
                 &mut cleanup,
-                #[cfg(feature = "backend-experiments")]
-                turn,
             )
             .await;
             let reason = cleanup.die();
@@ -1880,117 +1842,17 @@ impl<A: Actor> ActorRef<A> {
             Backend::Async => {
                 #[cfg(debug_assertions)]
                 let inner_future = warn_on_block::WarnOnBlocking::new(inner_future);
-                #[cfg(feature = "backend-experiments")]
-                if let Some(policy) = rt::experimental::dispatcher::policy_for_scheduler(&scheduler)
-                {
-                    use rt::experimental::dispatcher;
-                    if let Err(error) = dispatcher::spawn(policy, inner_future) {
-                        actor_ref.shared.cancellation_token.cancel();
-                        drop(MonitorCleanup(actor_ref.shared.monitors.clone()));
-                        tracing::error!("Experimental executor startup failed: {error}");
-                    }
-                    return Ok(actor_ref);
-                }
-                #[cfg(feature = "backend-experiments")]
-                if scheduler == "sharded" {
-                    if let Err(error) = rt::experimental::spawn_sharded(inner_future) {
-                        actor_ref.shared.cancellation_token.cancel();
-                        drop(MonitorCleanup(actor_ref.shared.monitors.clone()));
-                        tracing::error!("Experimental shard startup failed: {error}");
-                    }
-                    return Ok(actor_ref);
-                }
                 let _handle = rt::spawn(inner_future);
             }
             Backend::Blocking => {
                 let _handle = rt::spawn_blocking(move || rt::block_on(inner_future));
             }
             Backend::Thread => {
-                #[cfg(not(feature = "backend-experiments"))]
                 let _handle = threads::spawn(move || threads::block_on(inner_future));
-                #[cfg(feature = "backend-experiments")]
-                {
-                    // Experiment-only selection; the default path is unchanged.
-                    let mode = std::env::var("SPAWNED_EXPERIMENT_RUNTIME").unwrap_or_default();
-                    let shared = rt::Handle::try_current().ok();
-                    let _handle = threads::spawn(move || {
-                        if mode == "shared" {
-                            shared
-                                .expect("shared experiment needs a caller runtime")
-                                .block_on(inner_future)
-                        } else {
-                            threads::block_on(inner_future)
-                        }
-                    });
-                }
             }
         }
 
         Ok(actor_ref)
-    }
-}
-
-// Batch only between completed handlers: never preempt or concurrently poll an actor.
-#[cfg(feature = "backend-experiments")]
-struct MessageTurn {
-    limit: usize,
-    adaptive: bool,
-    slice: Option<Duration>,
-    completed: usize,
-    began: Option<std::time::Instant>,
-}
-#[cfg(feature = "backend-experiments")]
-impl MessageTurn {
-    fn from_env() -> Self {
-        let batch: usize = std::env::var("SPAWNED_EXPERIMENT_BATCH")
-            .unwrap_or_else(|_| "16".into())
-            .parse()
-            .expect("SPAWNED_EXPERIMENT_BATCH must be an integer");
-        assert!(batch <= 64, "experimental batch: 0 (adaptive) or 1..=64");
-        let slice_us: u64 = std::env::var("SPAWNED_EXPERIMENT_SLICE_US")
-            .unwrap_or_else(|_| "50".into())
-            .parse()
-            .expect("experimental slice microseconds");
-        assert!(slice_us <= 1_000_000);
-        Self {
-            slice: (slice_us != 0).then_some(Duration::from_micros(slice_us)),
-            limit: batch.max(1),
-            adaptive: batch == 0,
-            completed: 0,
-            began: None,
-        }
-    }
-    fn parked(&mut self) {
-        self.completed = 0;
-        if self.adaptive {
-            self.limit = 1;
-        }
-        self.began = None;
-    }
-    fn resumed(&mut self) {
-        if self.slice.is_some() {
-            self.began.get_or_insert_with(std::time::Instant::now);
-        }
-    }
-    async fn after_message(&mut self, empty: bool) {
-        if empty {
-            self.parked();
-            return;
-        }
-        self.completed += 1;
-        if self.completed >= self.limit
-            || self
-                .began
-                .zip(self.slice)
-                .is_some_and(|(t, slice)| t.elapsed() >= slice)
-        {
-            if self.adaptive {
-                self.limit = if empty { 1 } else { (self.limit * 2).min(64) };
-            }
-            self.completed = 0;
-            rt::experimental::yield_now().await;
-            self.began = self.slice.map(|_| std::time::Instant::now());
-        }
     }
 }
 
@@ -2154,7 +2016,6 @@ async fn run_actor<A: Actor, C: Fn()>(
     rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: StopToken,
     cleanup: &mut crate::actor_cleanup::ActorCleanup<C>,
-    #[cfg(feature = "backend-experiments")] turn: Option<MessageTurn>,
 ) {
     let request = ctx.shared.linked_reason.clone();
     let mut owned = ExitOnDrop {
@@ -2168,8 +2029,6 @@ async fn run_actor<A: Actor, C: Fn()>(
         &mut owned.rx,
         &mut *owned.cleanup,
         cancellation_token,
-        #[cfg(feature = "backend-experiments")]
-        turn,
     ))
     .catch_unwind()
     .await
@@ -2196,7 +2055,6 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
     rx: &mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cleanup: &mut crate::actor_cleanup::ActorCleanup<C>,
     cancellation_token: StopToken,
-    #[cfg(feature = "backend-experiments")] mut turn: Option<MessageTurn>,
 ) {
     let _monitor_cleanup = MonitorCleanup(ctx.shared.monitors.clone());
     let request = ctx.shared.linked_reason.clone();
@@ -2280,14 +2138,6 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
                     }
                     result
                 });
-                #[cfg(feature = "backend-experiments")]
-                if let Some(turn) = &mut turn {
-                    if result.is_pending() {
-                        turn.parked();
-                    } else if matches!(result, std::task::Poll::Ready(Some(_))) {
-                        turn.resumed();
-                    }
-                }
                 result
             }));
             let mut recv = recv;
@@ -2383,15 +2233,6 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
                             .panic(ExitReason::Panic(format!("panic in handler: {msg}")));
                     });
                     break;
-                }
-                #[cfg(feature = "backend-experiments")]
-                if let Some(turn) = &mut turn {
-                    // Do not yield on the way out of an already-stopped
-                    // handler. After a yield, the receive guard checks again.
-                    if cancellation_token.is_cancelled() {
-                        break;
-                    }
-                    turn.after_message(rx.is_empty()).await;
                 }
             }
             None => break,
@@ -2604,10 +2445,7 @@ mod warn_on_block {
             cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<Self::Output> {
             let type_id = std::any::type_name::<F>();
-            #[cfg(not(feature = "backend-experiments"))]
             let task_id = rt::task_id();
-            #[cfg(feature = "backend-experiments")]
-            let task_id = rt::experimental::try_task_id();
             let this = self.project();
             let now = Instant::now();
             let res = this.inner.poll(cx);
@@ -4598,139 +4436,6 @@ mod early_stop_regression {
     }
 }
 
-#[cfg(all(test, feature = "backend-experiments"))]
-mod turn_regressions {
-    use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    #[test]
-    fn idle_time_is_excluded_and_an_empty_mailbox_needs_no_yield() {
-        crate::test_wait::bounded(
-            concat!(
-                module_path!(),
-                "::idle_time_is_excluded_and_an_empty_mailbox_needs_no_yield"
-            ),
-            move || {
-                let mut turn = MessageTurn {
-                    limit: 16,
-                    adaptive: false,
-                    slice: Some(Duration::from_micros(50)),
-                    completed: 0,
-                    began: Some(std::time::Instant::now()),
-                };
-                turn.parked();
-                assert!(turn.began.is_none());
-                let wake = std::time::Instant::now();
-                turn.resumed();
-                assert!(turn.began.unwrap() >= wake);
-                futures::executor::block_on(turn.after_message(true));
-                assert!(turn.began.is_none());
-                assert_eq!(turn.completed, 0);
-            },
-        );
-    }
-    #[test]
-    fn count_only_turn_never_starts_a_clock_and_yields_at_its_count() {
-        crate::test_wait::bounded(
-            concat!(
-                module_path!(),
-                "::count_only_turn_never_starts_a_clock_and_yields_at_its_count"
-            ),
-            move || {
-                rt::Runtime::new().unwrap().block_on(async {
-                    let mut turn = MessageTurn {
-                        limit: 4,
-                        adaptive: false,
-                        slice: None,
-                        completed: 0,
-                        began: None,
-                    };
-                    turn.resumed();
-                    for _ in 0..3 {
-                        let mut message = Box::pin(turn.after_message(false));
-                        assert!(futures::poll!(message.as_mut()).is_ready());
-                    }
-                    assert!(turn.began.is_none());
-                    let mut fourth = Box::pin(turn.after_message(false));
-                    assert!(futures::poll!(fourth.as_mut()).is_pending());
-                    fourth.await;
-                    assert_eq!(turn.completed, 0);
-                    assert!(turn.began.is_none());
-                    turn.parked();
-                    turn.resumed();
-                    assert!(turn.began.is_none());
-                });
-            },
-        );
-    }
-    #[test]
-    fn stop_during_batch_yield_does_not_execute_the_next_queued_message() {
-        crate::test_wait::bounded(
-            concat!(
-                module_path!(),
-                "::stop_during_batch_yield_does_not_execute_the_next_queued_message"
-            ),
-            move || {
-                struct Count(Arc<AtomicUsize>);
-                impl Actor for Count {}
-                struct Inc;
-                impl Message for Inc {
-                    type Result = ();
-                }
-                impl Handler<Inc> for Count {
-                    async fn handle(
-                        &mut self,
-                        _: Inc,
-                        reply: crate::reply::PendingReply<'_, ()>,
-                        _: &Context<Self>,
-                    ) {
-                        self.0.fetch_add(1, Ordering::SeqCst);
-                        reply.reply(());
-                    }
-                }
-                rt::Runtime::new().unwrap().block_on(async {
-                    let (tx, rx) = mpsc::channel();
-                    let token = StopToken::new();
-                    let (ctx, mut cleanup) = test_context(&tx, &token);
-                    let count = Arc::new(AtomicUsize::new(0));
-                    for _ in 0..2 {
-                        tx.send(Box::new(MessageEnvelope {
-                            msg: Some(Inc),
-                            slot: None,
-                            #[cfg(feature = "metrics")]
-                            observation: None,
-                            #[cfg(feature = "lifecycle-trace")]
-                            from: 0,
-                        })
-                            as Box<dyn Envelope<Count> + Send>)
-                            .unwrap();
-                    }
-                    let turn = MessageTurn {
-                        limit: 1,
-                        adaptive: false,
-                        slice: Some(Duration::from_micros(50)),
-                        completed: 0,
-                        began: None,
-                    };
-                    let mut job = Box::pin(run_actor(
-                        Count(count.clone()),
-                        ctx,
-                        rx,
-                        token.clone(),
-                        &mut cleanup,
-                        Some(turn),
-                    ));
-                    assert!(futures::poll!(job.as_mut()).is_pending());
-                    assert_eq!(count.load(Ordering::SeqCst), 1);
-                    token.cancel();
-                    job.await;
-                    assert_eq!(cleanup.die(), ExitReason::Normal);
-                    assert_eq!(count.load(Ordering::SeqCst), 1);
-                });
-            },
-        );
-    }
-}
-
 #[cfg(test)]
 mod idle_stop_regression {
     use super::*;
@@ -4771,8 +4476,6 @@ mod idle_stop_regression {
                         rx,
                         token.clone(),
                         &mut cleanup,
-                        #[cfg(feature = "backend-experiments")]
-                        None,
                     ));
                     // Start and park the actual actor loop, without allowing another
                     // executor task to run it between admission and stop below.
@@ -5200,8 +4903,6 @@ mod stop_receive_probe {
                         rx,
                         token,
                         &mut cleanup,
-                        #[cfg(feature = "backend-experiments")]
-                        None,
                     )
                     .await;
                     assert_eq!(cleanup.die(), ExitReason::Normal);
@@ -5312,8 +5013,6 @@ mod stop_receive_probe {
                             rx,
                             token,
                             &mut cleanup,
-                            #[cfg(feature = "backend-experiments")]
-                            None,
                         ));
                         let expected = if park {
                             assert!(futures::poll!(actor.as_mut()).is_pending());
