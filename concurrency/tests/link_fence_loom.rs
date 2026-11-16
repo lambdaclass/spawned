@@ -57,10 +57,12 @@ pub(crate) struct SignalTarget {
 }
 
 #[allow(dead_code)]
+#[deny(clippy::disallowed_types, clippy::disallowed_methods)] // concurrency/clippy.toml
 #[path = "../src/link/table.rs"]
 mod table;
 
 #[allow(dead_code)]
+#[deny(clippy::disallowed_types, clippy::disallowed_methods)] // concurrency/clippy.toml
 #[path = "../src/monitor/fence.rs"]
 mod fence;
 
