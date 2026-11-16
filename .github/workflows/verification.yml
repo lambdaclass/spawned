@@ -190,6 +190,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: mailbox-loom
+      # Under the Loom cfg every `sync` shim type is Loom's, so a std or
+      # parking_lot atomic/lock left in a core is a direct use the model
+      # cannot see (concurrency/clippy.toml; the harnesses deny it on the
+      # included core). Other clippy lints are the ci.yml job's business.
+      - name: Loom-checked cores synchronize only through their shim
+        env:
+          RUSTFLAGS: --cfg spawned_scheduler_loom
+        run: cargo clippy --locked -p spawned-concurrency --no-default-features --test mailbox_admission_loom --test reply_slot_loom --test registry_turn_loom --test job_core_loom --test link_fence_loom --test stop_token_loom -- -A clippy::all
       - name: Model-check the production mailbox admission algorithm
         env:
           RUSTFLAGS: --cfg spawned_scheduler_loom

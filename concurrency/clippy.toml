@@ -1,0 +1,45 @@
+# Synchronization the Loom models must see (docs/TESTING.md, Loom).
+#
+# The Loom-checked cores (reply/turn.rs, reply/slot.rs, reply/job_core.rs,
+# stop_token/core.rs, link/table.rs, monitor/fence.rs, mailbox_admission.rs)
+# take every atomic, lock and condition variable from a `sync` shim: the
+# parent module's re-exports of the std/parking_lot types in production (so
+# zero cost), Loom's types in the tests/*_loom.rs harness that includes the
+# core with `#[path]`. A direct std or parking_lot type in a core is invisible
+# to Loom, so the model would silently stop covering it.
+#
+# Because the production shim *re-exports* the same types, the lint cannot
+# tell a shim use from a direct one in an ordinary build, so the package
+# allows both lints (Cargo.toml [lints.clippy]) and each Loom harness denies
+# them on the included core's `mod` item. The verification workflow runs
+# clippy on those harnesses with `--cfg spawned_scheduler_loom`, where every
+# shim type is Loom's and anything left on these lists is a direct use.
+disallowed-types = [
+    { path = "std::sync::Mutex", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "std::sync::MutexGuard", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "std::sync::RwLock", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "std::sync::Condvar", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "std::sync::Barrier", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "std::sync::atomic::AtomicBool", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "std::sync::atomic::AtomicU8", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "std::sync::atomic::AtomicU16", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "std::sync::atomic::AtomicU32", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "std::sync::atomic::AtomicU64", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "std::sync::atomic::AtomicUsize", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "std::sync::atomic::AtomicI8", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "std::sync::atomic::AtomicI16", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "std::sync::atomic::AtomicI32", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "std::sync::atomic::AtomicI64", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "std::sync::atomic::AtomicIsize", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "std::sync::atomic::AtomicPtr", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "parking_lot::Mutex", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "parking_lot::MutexGuard", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "parking_lot::RwLock", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "parking_lot::Condvar", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "parking_lot::ReentrantMutex", reason = "Loom-checked core: use the `sync` shim" },
+]
+disallowed-methods = [
+    { path = "std::sync::atomic::fence", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "std::thread::spawn", reason = "Loom-checked core: use the `sync` shim" },
+    { path = "std::thread::yield_now", reason = "Loom-checked core: use the `sync` shim" },
+]

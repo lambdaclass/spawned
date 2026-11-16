@@ -3,6 +3,7 @@ use loom::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, Condvar, Mutex,
 };
+#[deny(clippy::disallowed_types, clippy::disallowed_methods)] // concurrency/clippy.toml
 #[path = "../src/mailbox_admission.rs"]
 mod admission;
 

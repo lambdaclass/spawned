@@ -131,10 +131,12 @@ mod model_arc {
 }
 
 #[allow(dead_code)]
+#[deny(clippy::disallowed_types, clippy::disallowed_methods)] // concurrency/clippy.toml
 #[path = "../src/reply/job_core.rs"]
 mod job_core;
 
 #[allow(dead_code)]
+#[deny(clippy::disallowed_types, clippy::disallowed_methods)] // concurrency/clippy.toml
 #[path = "../src/reply/slot.rs"]
 mod slot;
 

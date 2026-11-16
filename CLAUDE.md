@@ -35,7 +35,7 @@ spawned/
 | `CHANGELOG.md` | The only release history (keep `Unreleased` current) |
 | `ROADMAP.md` | Single planning doc: phases + ranked backlog + examples to add |
 | `docs/GUIDE.md` | User guide (lifecycle, backends, links, execution groups, supervision, metrics) |
-| `docs/MIGRATION.md` | Per-version upgrade notes |
+| `docs/MIGRATION.md` | Per-version upgrade notes (0.7 → 0.8 has an old-call → new-call table) |
 | `docs/TESTING.md` | Test suites, verification layers, TLA+ model |
 | `docs/design/semantics.md` | The semantics contract: every guarantee, what checks it, non-guarantees; review new designs against it |
 | `docs/design/execution-groups-supervision.md` | Active design contract |
@@ -58,15 +58,17 @@ Both provide identical Actor API. The `tasks` module has `Backend` enum: `Async`
 | Type | Description |
 |------|-------------|
 | `Actor` | Trait for stateful message handlers |
-| `Handler<M>` | One impl per message type (RPITIT, not object-safe) |
+| `Handler<M>` | One impl per message type (RPITIT, not object-safe); `handle(msg, reply: PendingReply<R>, ctx)`. `#[actor]` generates it from `#[request_handler]`, `#[send_handler]`, `#[deferred_handler]` |
+| `PendingReply<R>` / `ReplyTo<R>` | Reply obligation: answer now, or `defer()` to a token answered from a later turn, job or `stopped()` (v0.8) |
+| `ctx.pipe` / `pipe_blocking` / `emit_at` | Actor-owned jobs whose result comes back as a message, fenced at stop (v0.8) |
 | `ActorRef<A>` | External handle to communicate with a running actor |
 | `Context<A>` | Handler-side handle (passed to handlers) |
 | `Response<T>` | Unified request-response wrapper (tasks: `.await`, threads: `.unwrap()`) |
 | `Recipient<M>` | Type-erased per-message reference (`Arc<dyn Receiver<M>>`) |
-| `CancellationToken` | Signal cancellation to timers/actors |
+| `CancellationToken` | Cancels timers (actors stop through `ctx.stop()` / an internal stop flag) |
 | `TimerHandle` | Handle for `send_after`/`send_interval` |
 | `ChildHandle` / `ActorId` | Type-erased handle and identity for monitors, links and exits |
-| `ExitReason` | `Normal`, `Shutdown`, `Panic(String)`, `Kill` |
+| `ExitReason` | `Normal`, `Shutdown`, `Panic(String)`, `Kill`, `Killed`, `NoProc` (OTP `killed`/`noproc`, v0.8) |
 | `MonitorRef` / `Down` | Unidirectional death observation (`ctx.monitor`) |
 | `Exit` / `#[exit_received]` | Bidirectional links and trapped exits (`ctx.link`, `ctx.trap_exit`) |
 | `ActorSystem` / `ExecutionGroup` | Owned placement with worker budgets and ordered shutdown (v0.7) |
@@ -75,8 +77,10 @@ Both provide identical Actor API. The `tasks` module has `Backend` enum: `Async`
 ## Actor Lifecycle
 
 1. `started(&mut self, ctx: &Context<Self>)` - Setup before message loop
-2. `Handler<M>::handle(&mut self, msg: M, ctx: &Context<Self>)` - Process messages
-3. `stopped(&mut self, ctx: &Context<Self>)` - Cleanup after stop
+2. `Handler<M>::handle(&mut self, msg: M, reply: PendingReply<'_, M::Result>, ctx: &Context<Self>)` - Process messages
+3. `stopped(&mut self, ctx: &Context<Self>)` - Cleanup after stop (skipped on kill or an untrapped exit signal)
+
+Death has one point (`actor_cleanup.rs`): every caller is answered and links/monitors are fenced before any user code (destructors, wakers, tracing) runs. See `docs/design/semantics.md`.
 
 ## Common Patterns
 
@@ -90,7 +94,8 @@ let result = ns.find("key".into()).await.unwrap();
 
 // Low-level send/request (without protocols)
 actor.send(MyMessage { data: 42 })?;
-let reply = actor.request(MyRequest { key: "foo".into() }).await?;
+let reply = actor.request(MyRequest { key: "foo".into() }).await?;   // 5 s timeout
+let rx = actor.send_request(MyRequest { key: "foo".into() }, Deadline::Never)?; // explicit deadline
 
 // Timer
 send_after(Duration::from_secs(5), ctx.clone(), Tick);

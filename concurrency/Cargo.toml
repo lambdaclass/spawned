@@ -72,6 +72,12 @@ loom = { version = "0.7", features = ["futures"] }
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_scheduler_loom)', 'cfg(spawned_sim)', 'cfg(kani)', 'cfg(kani_slow)'] }
 
+# clippy.toml bans direct std/parking_lot synchronization in the Loom-checked
+# cores; only the Loom harnesses deny it (on the included core), see there.
+[lints.clippy]
+disallowed_types = "allow"
+disallowed_methods = "allow"
+
 # Long-running resource-leak soak, run by hand (docs/TESTING.md, "Soak harness").
 # Not built by `cargo test`; `--all-targets` clippy keeps it compiling.
 [[bench]]
