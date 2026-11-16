@@ -115,7 +115,7 @@ Recovery of state is the application's job through persistence.
 
 ### Spawned v0.7.0
 
-Read from `concurrency/src/supervision.rs`, `supervision/nested.rs` and the
+Read from `concurrency/src/supervision.rs`, `supervision/` (`run.rs`, `nested.rs`) and the
 [guide](../GUIDE.md#construct-fresh-children-after-failure):
 
 - **Strategies:** `OneForOne` (default), `OneForAll`, `RestForOne`. Cohorts stop

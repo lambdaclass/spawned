@@ -100,12 +100,12 @@ not wait for the current turn (X4). A handler stopping its own actor prevents
 the next dispatch. Queued messages are dropped one by one and every
 queued request is answered (callers get `ActorStopped` with the final reason)
 before the exit is published.
-Checked by: `src/tasks/actor.rs::stop_receive_probe` (untraced stop/receive gap,
+Checked by: `src/tasks/actor/stop_receive_probe.rs` (untraced stop/receive gap,
 caller-before-payload ordering and runtime drop), `stop_token_loom` (queue
 publication versus post-receive admission),
-`src/tasks/actor.rs::stop_while_idle_does_not_dispatch_a_queued_request_on_resume`,
-`src/threads/actor.rs::repeated_stop_during_a_handler_discards_queued_requests`,
-`src/threads/actor.rs::stop_while_receiving_does_not_dispatch_a_later_request`,
+`src/tasks/actor/idle_stop_regression.rs::stop_while_idle_does_not_dispatch_a_queued_request_on_resume`,
+`src/threads/actor/stop_wakeup_regression.rs::repeated_stop_during_a_handler_discards_queued_requests`,
+`src/threads/actor/idle_stop_regression.rs::stop_while_receiving_does_not_dispatch_a_later_request`,
 [`shutdown_publication`][shutdown_publication], [`mailbox_drop_panic`][mailbox_drop_panic],
 [`semantics_gaps`][semantics_gaps]`::{native,tasks}_contract::stop_window_accepts_then_discards_and_releases_before_join`
 (payloads dropped and reply senders closed when `join()` returns, every placement),
@@ -133,7 +133,7 @@ the owner's final exit reason, the one `wait_exit` and `Down` report),
 `NoProc`; a slow teardown can still produce a timeout first. `ActorStopped` is
 reported only at the owner's actual death, never while `stopped()` still
 runs (otp-exit-signals.md, "Exit errors wait for D").
-Checked by: [`actor_scenarios`][actor_scenarios], `src/tasks/actor.rs::request_timeout`,
+Checked by: [`actor_scenarios`][actor_scenarios], `src/tasks/actor/tests.rs::request_timeout`,
 [`timeout_outcomes`][ex_timeout_outcomes] example.
 
 **R2. Reply identity.** Each request has its own reply channel; a reply reaches
@@ -295,7 +295,7 @@ returns and the reason becomes `Panic`, replacing an earlier requested reason
 unless a kill was received (then `Killed` stands). `stopped()` does not run
 after a kill, an untrapped exit signal or link notice, or a runtime drop
 (see X3, X4); one that already began finishes.
-Checked by: `src/{tasks,threads}/actor.rs::panic_in_started_stops_actor`,
+Checked by: `src/{tasks,threads}/actor/tests.rs::panic_in_started_stops_actor`,
 `panic_in_handler_stops_actor`, `panic_in_stopped_still_completes`,
 `panic_during_early_stop_is_reported`; [`panic_safety`][panic_safety],
 [`foreign_panics::panicking_subscriber_keeps_handler_reason_and_runs_stopped`][foreign_panics],
@@ -339,7 +339,7 @@ Checked by: `Lifecycle!DownAtMostOnce`, `Lifecycle!NoProcIffLate`, `Lifecycle!Do
 [`link_fence_loom`][link_fence_loom]`::monitor_racing_death_gets_exactly_one_down`;
 [`exit_signals_sim::link_and_monitor_race_the_death_point`][exit_signals_sim];
 [`actor_scenarios::demonitor_before_exit_suppresses_notification_and_races_do_not_duplicate`][actor_scenarios],
-[`exit_signal_matrix`][exit_signal_matrix], `src/*/actor.rs::monitor_*`,
+[`exit_signal_matrix`][exit_signal_matrix], `src/*/actor/tests.rs::monitor_*`,
 `multiple_monitors_each_get_own_ref_and_down`,
 [`otp_exit_signals::tasks_mode::registrations_after_death_report_noproc`][otp_exit_signals],
 [`cancellation_safety::monitor_and_link_setup_requests_are_cancel_safe`][cancellation_safety].
@@ -358,7 +358,7 @@ and `try_link` returns `Ok(())` (a dead process cannot call `link` in OTP;
 design otp-exit-signals.md, "Sender lifetime").
 Checked by: `Lifecycle!CancelFenced` (TLC, `MCLifecycleFence`; the
 `NoDemonitorFlush` control runs a flushed `Down`);
-`src/*/actor.rs::{demonitor_before_target_dies_suppresses_down, demonitor_flushes_a_queued_down}`,
+`src/*/actor/tests.rs::{demonitor_before_target_dies_suppresses_down, demonitor_flushes_a_queued_down}`,
 `src/monitor.rs::tests::demonitor_flushes_a_queued_down`;
 [`link_fence_loom`][link_fence_loom]`::demonitor_flushes_a_down_in_dispatch`
 (a dispatch racing `demonitor` on another thread);
@@ -395,7 +395,7 @@ Checked by: `Lifecycle!TrapRespected`, `Lifecycle!NormalSignalIgnored`, `Lifecyc
 `threads_mode::kill_exit_and_noproc_in_threads_mode`;
 `failpoints::an_exit_signal_is_not_overtaken_by_its_senders_death_notice`;
 `src/link.rs::tests::signal_rules_follow_exit_signal_2`;
-`src/tasks/actor.rs::link_propagates_panic_to_non_trapping_peer`,
+`src/tasks/actor/tests.rs::link_propagates_panic_to_non_trapping_peer`,
 `link_delivers_exit_to_trapping_peer`, `link_normal_exit_not_propagated_to_non_trapping_peer`,
 `chain_propagation_through_non_trapping_middle` (and threads equivalents),
 [`exit_signal_matrix`][exit_signal_matrix], [`linked_exit_macro`][linked_exit_macro],
@@ -433,7 +433,7 @@ fence under Loom: `unlink_fences_a_death_notice`, `link_racing_death_gets_exactl
 [`exit_signals_sim`][exit_signals_sim]`::{link_and_monitor_race_the_death_point, unlink_and_demonitor_fence_delivery}`;
 `src/link.rs::tests::{closure_is_terminal_and_delivers_each_edge_once, try_link_to_a_dead_actor_keeps_no_record, unlink_fences_a_notice_taken_at_death}`;
 [`otp_exit_signals::tasks_mode::registrations_after_death_report_noproc`][otp_exit_signals];
-`src/tasks/actor.rs::duplicate_link_is_idempotent`, `unlink_prevents_signal_delivery`;
+`src/tasks/actor/tests.rs::duplicate_link_is_idempotent`, `unlink_prevents_signal_delivery`;
 `src/native_link_regression_tests.rs::start_linked_registers_before_threads_started`;
 lifecycle traces `late_registrations_get_noproc`, `unlink_fences_a_notice_taken_at_death`,
 `demonitor_fences_a_down`.
@@ -536,7 +536,7 @@ reverse order.
 Checked by: `Supervision!BudgetBounded`; Kani `restart_window_admits_exactly_within_budget`;
 [`supervision::restart_budget_is_shared_between_siblings_and_exhaustion_closes_tree`][supervision],
 `disabled_retries_fail_without_waiting_for_a_long_backoff`,
-`src/supervision.rs::retry_reservations_exclude_siblings_and_refund_interrupted_backoff`,
+`src/supervision/policy_tests.rs::retry_reservations_exclude_siblings_and_refund_interrupted_backoff`,
 `sliding_window_expires_only_old_grants_before_the_next_retry`,
 [`supervision_strategies::cohort_reconstruction_consumes_shared_factory_attempt_budget`][supervision_strategies].
 
@@ -546,7 +546,7 @@ zero through the bound, so `initial` is a cap, not a minimum. Without jitter the
 delay equals the bound. The exponent resets after the same generation stays
 ready for `stable_after` (default 30 s); collateral children add no delay.
 Checked by: Kani `backoff_bound_is_capped`, `backoff_jitter_stays_in_range`,
-`backoff_bound_is_monotone_*`, `jitter_*`; `src/supervision.rs::capped_backoff_and_seeded_jitter_remain_bounded_after_long_failure_streaks`,
+`backoff_bound_is_monotone_*`, `jitter_*`; `src/supervision/policy_tests.rs::capped_backoff_and_seeded_jitter_remain_bounded_after_long_failure_streaks`,
 [`supervision::backoff_exponent_resets_only_after_a_stable_generation`][supervision],
 [`semantics_gaps`][semantics_gaps]`::supervision_contract::collateral_children_add_no_backoff`.
 
@@ -689,7 +689,7 @@ checked by construction only.
 `Context` created it and never retargets a supervised replacement. Managed
 timers run on the actor's group. `send_message_on` does not send if the actor
 stopped first.
-Checked by: `src/tasks/actor.rs::send_message_on_cancelled`,
+Checked by: `src/tasks/actor/tests.rs::send_message_on_cancelled`,
 [`semantics_gaps`][semantics_gaps]`::tasks_contract::managed_timers_run_on_the_group_and_die_with_the_actor`
 (the timer task runs on the actor's async group),
 [`semantics_gaps`][semantics_gaps]`::tasks::timers_are_not_carried_to_a_supervised_replacement` (supervision
