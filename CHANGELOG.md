@@ -5,9 +5,10 @@
 - Move the private `backend-experiments`, `io-experiments` and
   `profiling-experiments` features out of `spawned-rt` and
   `spawned-concurrency` into a standalone, unpublished crate in
-  `benchmarks/experiments/`. The published crates lose the features, their
-  optional dependencies (monoio, pprof, async-task, crossbeam-deque) and the
-  experiment branches in the dispatch loop; default builds are unchanged. The
+  `benchmarks/experiments/`. The published crates lose their optional
+  dependencies (monoio, pprof, async-task, crossbeam-deque) and the experiment
+  branches in the dispatch loop; the feature names stay as no-ops until 0.9 so
+  0.8 stays patch-compatible. Default builds are unchanged. The
   experiments stay runnable: `benchmarks/experiments/prepare.sh` applies the
   hooks to a scratch tree (see `benchmarks/README.md`).
 - Split the largest source files without changing behaviour or API:
