@@ -36,6 +36,14 @@ jobs:
         run: python3 scripts/check-model-sync.py events
       - name: Every model is trace-validated (or allowlisted), coverage floors hold
         run: python3 scripts/check-model-sync.py models
+      # The planted-bug patches (docs/TESTING.md, "Planted-bug sensitivity")
+      # must keep applying to the code they mutate, or the matrix rots silently.
+      # A PR that moves planted code regenerates the affected patches.
+      - name: Planted-bug patches apply
+        run: |
+          for p in verification/planted/patches/*.patch; do
+            git apply --check "$p" || { echo "::error file=$p::no longer applies; regenerate it against this tree"; exit 1; }
+          done
       # On merge_group and push the script passes: the pull_request run
       # already enforced it (labels are not visible in the merge queue).
       - name: Modelled code changes update their model

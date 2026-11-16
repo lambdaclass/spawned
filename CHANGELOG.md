@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Regenerate the 11 planted-bug patches (04, 10-17, 19, 20) that no longer
+  applied, each planting the same fault where the code now lives, and check in
+  the required `model-sync` job that every planted patch still applies.
 - Move the private `backend-experiments`, `io-experiments` and
   `profiling-experiments` features out of `spawned-rt` and
   `spawned-concurrency` into a standalone, unpublished crate in

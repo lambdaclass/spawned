@@ -1,16 +1,15 @@
-Planted bug 12 (link-dead-peer-normal): Linking to an already-exited peer reports Normal instead of its reason
+Planted bug 12 (link-dead-peer-normal): Linking to an already-exited peer reports Normal instead of NoProc
 
 diff --git a/concurrency/src/link.rs b/concurrency/src/link.rs
-index 48cf54a8..a85bdb9a 100644
+index ff5b35ef..45e66107 100644
 --- a/concurrency/src/link.rs
 +++ b/concurrency/src/link.rs
-@@ -154,7 +154,8 @@ pub(crate) fn register_link(
-             return None;
-         }
-         if let Some(reason) = &b.exited {
--            return Some(reason.clone());
-+            let _ = reason;
-+            return Some(ExitReason::Normal);
-         }
-         a.entries.push(LinkEntry {
-             peer_id,
+@@ -383,7 +383,7 @@ fn link_in_section(
+         });
+     }
+     let delivery = if outcome == LinkOutcome::NoProc && !try_only {
+-        deliver_notice_in_section(own_links, own, peer.id, gen, ExitReason::NoProc)
++        deliver_notice_in_section(own_links, own, peer.id, gen, ExitReason::Normal)
+     } else {
+         DeliveryCleanup::default()
+     };

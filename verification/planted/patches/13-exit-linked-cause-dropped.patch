@@ -1,15 +1,21 @@
 Planted bug 13 (exit-linked-cause-dropped): An actor killed through a link exits Normal, so the crash stops propagating
 
-diff --git a/concurrency/src/actor_cleanup.rs b/concurrency/src/actor_cleanup.rs
-index 69e376ff..0fa2c19d 100644
---- a/concurrency/src/actor_cleanup.rs
-+++ b/concurrency/src/actor_cleanup.rs
-@@ -72,7 +72,7 @@ impl<C: Fn()> ActorCleanup<C> {
-             }
-         }
-         if matches!(reason, ExitReason::Normal) {
--            if let Some(linked) = cause.as_ref() {
-+            if let Some(linked) = cause.as_ref().filter(|c| !c.is_abnormal()) {
-                 reason = linked.clone();
-             }
-             if reason == ExitReason::Normal {
+diff --git a/concurrency/src/link.rs b/concurrency/src/link.rs
+index ff5b35ef..cf77cea9 100644
+--- a/concurrency/src/link.rs
++++ b/concurrency/src/link.rs
+@@ -310,7 +310,13 @@ fn apply_signal(
+     if exit.reason == ExitReason::Normal {
+         return;
+     }
+-    if request.untrapped(exit.reason) {
++    // Planted: a link notice ends the receiver Normal, dropping the cause.
++    let reason = if origin == Origin::Link {
++        ExitReason::Normal
++    } else {
++        exit.reason
++    };
++    if request.untrapped(reason) {
+         drop(request);
+         (target.wake)();
+     }
