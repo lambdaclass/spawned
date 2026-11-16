@@ -2122,7 +2122,7 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
                 // mailbox acquire and retain a rejected item for shutdown.
                 // The receive, check and trace event are one step
                 // of the lifecycle trace: a recorded stop is seen here.
-                let result = crate::lifecycle_trace::life_section(trace_id, || {
+                crate::lifecycle_trace::life_section(trace_id, || {
                     #[cfg(all(test, not(feature = "lifecycle-trace"), not(spawned_sim)))]
                     stop_receive_probe::before_receive();
                     let received = rx.poll_recv(cx);
@@ -2137,8 +2137,7 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
                         });
                     }
                     result
-                });
-                result
+                })
             }));
             let mut recv = recv;
             future::poll_fn(|cx| match recv.as_mut().poll(cx) {

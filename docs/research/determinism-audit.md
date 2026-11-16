@@ -40,7 +40,6 @@ Remaining escapes that affect behaviour under simulation:
 |---|---|---|
 | Process-global id counters | Actor, monitor and trace ids depend on what ran earlier in the process | Documented; D5 |
 | `failpoints.rs:338` | `FailScenario::setup()` without `SPAWNED_FAILPOINTS_SEED` seeds from `SystemTime` | Documented; D5 |
-| `tasks/actor.rs:979-1177` | `backend-experiments` env knobs and `std::time::Instant` time slice | Feature-gated, documented |
 | `sim.rs` watchdog and turn budget | Wall-clock verdicts: can fail a run on an overloaded machine, never change a schedule | D10 |
 | `test_wait::wait_for_async` | `std::time::Instant` deadline around simulated sleeps (unit tests only) | Test helper |
 | 0.8: `tasks/jobs.rs` `RunnerPool::Thread` | Native jobs run on an owned OS thread under sim | Documented in [deferred replies](../design/deferred-replies.md) §10; D8 |

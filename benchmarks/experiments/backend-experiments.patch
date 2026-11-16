@@ -10,9 +10,7 @@ only (benchmarks/experiments/prepare.sh applies it; never commit the result).
 
 These hooks sit on the actor hot path, so they cannot live in the published
 crates even behind a feature. Removed from the tree after 0.8.0; the last
-commit that still had them in place is d082d0d8.
-
-diff --git a/concurrency/Cargo.toml b/concurrency/Cargo.toml
+commit that still had them in place is d082d0d8.diff --git a/concurrency/Cargo.toml b/concurrency/Cargo.toml
 --- a/concurrency/Cargo.toml
 +++ b/concurrency/Cargo.toml
 @@ -59,6 +59,8 @@
@@ -166,7 +164,7 @@ index fa86bbbb..91426709 100644
              struct Node(Arc<AtomicUsize>);
              impl Actor for Node {}
 diff --git a/concurrency/src/tasks/actor.rs b/concurrency/src/tasks/actor.rs
-index 0784b42a..bda7e379 100644
+index f68af2e2..bda7e379 100644
 --- a/concurrency/src/tasks/actor.rs
 +++ b/concurrency/src/tasks/actor.rs
 @@ -1769,6 +1769,38 @@ impl<A: Actor> ActorRef<A> {
@@ -373,10 +371,21 @@ index 0784b42a..bda7e379 100644
  ) {
      let _monitor_cleanup = MonitorCleanup(ctx.shared.monitors.clone());
      let request = ctx.shared.linked_reason.clone();
-@@ -2138,6 +2280,14 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
+@@ -2122,7 +2264,7 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
+                 // mailbox acquire and retain a rejected item for shutdown.
+                 // The receive, check and trace event are one step
+                 // of the lifecycle trace: a recorded stop is seen here.
+-                crate::lifecycle_trace::life_section(trace_id, || {
++                let result = crate::lifecycle_trace::life_section(trace_id, || {
+                     #[cfg(all(test, not(feature = "lifecycle-trace"), not(spawned_sim)))]
+                     stop_receive_probe::before_receive();
+                     let received = rx.poll_recv(cx);
+@@ -2137,7 +2279,16 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
+                         });
                      }
                      result
-                 });
+-                })
++                });
 +                #[cfg(feature = "backend-experiments")]
 +                if let Some(turn) = &mut turn {
 +                    if result.is_pending() {
@@ -385,10 +394,11 @@ index 0784b42a..bda7e379 100644
 +                        turn.resumed();
 +                    }
 +                }
-                 result
++                result
              }));
              let mut recv = recv;
-@@ -2234,6 +2384,15 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
+             future::poll_fn(|cx| match recv.as_mut().poll(cx) {
+@@ -2233,6 +2384,15 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
                      });
                      break;
                  }
@@ -404,7 +414,7 @@ index 0784b42a..bda7e379 100644
              }
              None => break,
          }
-@@ -2445,7 +2604,10 @@ mod warn_on_block {
+@@ -2444,7 +2604,10 @@ mod warn_on_block {
              cx: &mut std::task::Context<'_>,
          ) -> std::task::Poll<Self::Output> {
              let type_id = std::any::type_name::<F>();
@@ -415,7 +425,7 @@ index 0784b42a..bda7e379 100644
              let this = self.project();
              let now = Instant::now();
              let res = this.inner.poll(cx);
-@@ -4436,6 +4598,139 @@ mod early_stop_regression {
+@@ -4435,6 +4598,139 @@ mod early_stop_regression {
      }
  }
  
@@ -555,7 +565,7 @@ index 0784b42a..bda7e379 100644
  #[cfg(test)]
  mod idle_stop_regression {
      use super::*;
-@@ -4476,6 +4771,8 @@ mod idle_stop_regression {
+@@ -4475,6 +4771,8 @@ mod idle_stop_regression {
                          rx,
                          token.clone(),
                          &mut cleanup,
@@ -564,7 +574,7 @@ index 0784b42a..bda7e379 100644
                      ));
                      // Start and park the actual actor loop, without allowing another
                      // executor task to run it between admission and stop below.
-@@ -4903,6 +5200,8 @@ mod stop_receive_probe {
+@@ -4902,6 +5200,8 @@ mod stop_receive_probe {
                          rx,
                          token,
                          &mut cleanup,
@@ -573,7 +583,7 @@ index 0784b42a..bda7e379 100644
                      )
                      .await;
                      assert_eq!(cleanup.die(), ExitReason::Normal);
-@@ -5013,6 +5312,8 @@ mod stop_receive_probe {
+@@ -5012,6 +5312,8 @@ mod stop_receive_probe {
                              rx,
                              token,
                              &mut cleanup,

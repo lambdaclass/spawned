@@ -96,11 +96,13 @@ if args.phase in ['tests','stress','all']:
  run('scenarios',[tests['actor_scenarios']],{'PROPTEST_CASES':'256','PROPTEST_RNG_SEED':'20261106'},timeout=300)
  run('churn',[tests['actor_scenarios'],'sustained_actor_churn','--ignored'],{'SPAWNED_STRESS_ROUNDS':'100'},timeout=300)
  run('cancellation-model',['cargo','test','--locked','-p','spawned-rt','--test','cancellation_loom'],{'RUSTFLAGS':'--cfg spawned_loom'},timeout=300,rss_limit=2048)
- run('ready-model',['cargo','test','--locked','-p','spawned-concurrency','--features','backend-experiments','--test','ready_gate_loom'],{'RUSTFLAGS':'--cfg spawned_scheduler_loom'},timeout=300,rss_limit=2048)
+ run('ready-model',['cargo','test','--manifest-path','benchmarks/experiments/Cargo.toml','--test','ready_gate_loom'],{'RUSTFLAGS':'--cfg spawned_scheduler_loom'},timeout=300,rss_limit=2048)
 if args.phase in ['startup','bench','all']:
- built=run('build-drivers',['cargo','build','--locked','--release','-p','spawned-concurrency','--features','backend-experiments','--bench','baseline','--bench','workload_research','--bench','lifecycle_soak','--message-format=json'],timeout=600,rss_limit=2048)
+ # baseline is a spawned-concurrency bench; the others live in benchmarks/experiments.
+ built=[run('build-baseline',['cargo','build','--locked','--release','-p','spawned-concurrency','--bench','baseline','--message-format=json'],timeout=600,rss_limit=2048),
+        run('build-drivers',['cargo','build','--release','--manifest-path','benchmarks/experiments/Cargo.toml','--bench','workload_research','--bench','lifecycle_soak','--message-format=json'],timeout=600,rss_limit=2048)]
  binaries={}
- for line in built.read_text().splitlines():
+ for line in (l for b in built for l in b.read_text().splitlines()):
   try:obj=json.loads(line)
   except ValueError:continue
   if obj.get('reason')=='compiler-artifact' and obj.get('executable'):binaries[obj['target']['name']]=obj['executable']
