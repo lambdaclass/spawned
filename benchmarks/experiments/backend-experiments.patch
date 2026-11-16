@@ -1,29 +1,17 @@
 Re-adds the backend experiments to the published crates, for a scratch tree
 only (benchmarks/experiments/prepare.sh applies it; never commit the result).
 
-- spawned-rt: the `backend-experiments` feature, the sharded pool and native
+- spawned-rt: the real `backend-experiments` feature (published as a no-op
+  until 0.9) with its dependencies, the sharded pool and native
   dispatchers (rt/src/tasks/experimental*), the dispatch gate and the
   SPAWNED_EXPERIMENT_RUNTIME selection in threads::block_on.
-- spawned-concurrency: the `backend-experiments` feature, scheduler routing at
-  actor spawn (SPAWNED_EXPERIMENT_SCHEDULER), MessageTurn batching/time slicing
+- spawned-concurrency: scheduler routing at actor spawn (SPAWNED_EXPERIMENT_SCHEDULER), MessageTurn batching/time slicing
   in the dispatch loop and its unit tests.
 
 These hooks sit on the actor hot path, so they cannot live in the published
 crates even behind a feature. Removed from the tree after 0.8.0; the last
 commit that still had them in place is d082d0d8.
 
-diff --git a/concurrency/Cargo.toml b/concurrency/Cargo.toml
---- a/concurrency/Cargo.toml
-+++ b/concurrency/Cargo.toml
-@@ -61,7 +61,7 @@
- failpoints = []
- # No-ops kept for 0.8 patch compatibility (removing a feature is a breaking
- # change). The experiments live in benchmarks/experiments; drop these at 0.9.
--backend-experiments = []
-+backend-experiments = ["async", "spawned-rt/backend-experiments"]
- io-experiments = []
- profiling-experiments = []
- 
 diff --git a/concurrency/src/link_regression_tests.rs b/concurrency/src/link_regression_tests.rs
 index fa86bbbb..91426709 100644
 --- a/concurrency/src/link_regression_tests.rs
@@ -607,7 +595,7 @@ index f99ecbbf..bda7e379 100644
                          let expected = if park {
                              assert!(futures::poll!(actor.as_mut()).is_pending());
 diff --git a/rt/Cargo.toml b/rt/Cargo.toml
-index 0d653554..ac506c8e 100644
+index 7ce38903..ac506c8e 100644
 --- a/rt/Cargo.toml
 +++ b/rt/Cargo.toml
 @@ -14,6 +14,9 @@ ctrlc = "3.4"
@@ -626,7 +614,7 @@ index 0d653554..ac506c8e 100644
  async = ["dep:tokio", "dep:tokio-util", "dep:tokio-stream", "dep:nix"]
 -# No-op kept for 0.8 patch compatibility; the experiments live in
 -# benchmarks/experiments. Drop at 0.9.
--backend-experiments = []
+-backend-experiments = ["async"]
 +backend-experiments = ["async", "dep:async-task", "dep:crossbeam-deque"]
  
  [target.'cfg(target_os = "linux")'.dependencies]
