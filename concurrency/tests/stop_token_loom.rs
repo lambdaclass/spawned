@@ -4,6 +4,7 @@
 mod sync {
     pub(crate) use loom::sync::atomic::{AtomicBool, Ordering};
 }
+#[deny(clippy::disallowed_types, clippy::disallowed_methods)] // concurrency/clippy.toml
 #[path = "../src/stop_token/core.rs"]
 mod core;
 use self::core::StopFlag;
