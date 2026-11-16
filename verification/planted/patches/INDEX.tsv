@@ -1,12 +1,12 @@
 id	name	file	bug
-01	sup-budget-off-by-one	supervision.rs	Restart window admits max+1 restarts (`>=` became `>`)
-02	sup-window-edge	supervision.rs	A restart stamped exactly `window` ago still counts against the budget
-03	sup-restforone-wrong-side	supervision.rs	RestForOne rebuilds the failed child and the children *before* it
+01	sup-budget-off-by-one	supervision/state.rs	Restart window admits max+1 restarts (`>=` became `>`)
+02	sup-window-edge	supervision/state.rs	A restart stamped exactly `window` ago still counts against the budget
+03	sup-restforone-wrong-side	supervision/run.rs	RestForOne rebuilds the failed child and the children *before* it
 04	sup-transient-restarts-on-shutdown	supervision.rs	Transient restarts on Shutdown (only Normal treated as clean)
-05	sup-temporary-collateral-rebuilt	supervision.rs	A Temporary sibling stopped as collateral by OneForAll/RestForOne is rebuilt
-06	sup-backoff-never-resets	supervision.rs	Backoff failure streak never resets after a stable generation
-07	sup-shutdown-forward-order	supervision.rs	Supervisor stops children in declaration order instead of reverse
-08	sup-budget-exhaustion-silent	supervision.rs	Exhausting the restart budget retires the child instead of failing the supervisor
+05	sup-temporary-collateral-rebuilt	supervision/run.rs	A Temporary sibling stopped as collateral by OneForAll/RestForOne is rebuilt
+06	sup-backoff-never-resets	supervision/run.rs	Backoff failure streak never resets after a stable generation
+07	sup-shutdown-forward-order	supervision/run.rs	Supervisor stops children in declaration order instead of reverse
+08	sup-budget-exhaustion-silent	supervision/run.rs	Exhausting the restart budget retires the child instead of failing the supervisor
 09	nested-restart-mode-ignored	supervision/nested.rs	A nested supervisor's restart mode is ignored (always Permanent)
 10	link-normal-exit-kills	link.rs	A Normal exit kills a non-trapping linked peer
 11	link-unlink-one-sided	link.rs	unlink removes only the caller's edge; the peer still signals it

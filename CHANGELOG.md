@@ -10,6 +10,12 @@
   experiment branches in the dispatch loop; default builds are unchanged. The
   experiments stay runnable: `benchmarks/experiments/prepare.sh` applies the
   hooks to a scratch tree (see `benchmarks/README.md`).
+- Split the largest source files without changing behaviour or API:
+  `tasks/actor.rs` and `threads/actor.rs` into `actor/{envelope,context,actor_ref,lifecycle}.rs`
+  plus one file per test module, `supervision.rs` into
+  `supervision/{child,state,builder,run,policy_tests}.rs`, and the macros
+  crate into one module per macro (`protocol`, `actor`, `lints`,
+  `send_handler`, `sim_test`). Test names are unchanged.
 - Clarify dispatch admission when a stop races a message, and check deferred
   token ownership before drop callbacks in debug builds. Release behavior is unchanged.
 

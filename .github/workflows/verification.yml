@@ -275,7 +275,9 @@ jobs:
       - name: Mutate supervision and system code
         run: >
           cargo mutants -p spawned-concurrency
-          -f concurrency/src/supervision.rs -f concurrency/src/supervision/nested.rs
+          -f concurrency/src/supervision.rs -f concurrency/src/supervision/child.rs
+          -f concurrency/src/supervision/state.rs -f concurrency/src/supervision/builder.rs
+          -f concurrency/src/supervision/run.rs -f concurrency/src/supervision/nested.rs
           -f concurrency/src/system.rs -f concurrency/src/system/group.rs
           -j 2 --timeout 120 || true
       - uses: actions/upload-artifact@v4

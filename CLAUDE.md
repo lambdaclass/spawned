@@ -11,7 +11,7 @@ spawned/
 │       ├── tasks/   # Async version (requires tokio runtime)
 │       ├── threads/ # Sync version (native OS threads)
 │       ├── system.rs       # ActorSystem, ExecutionGroup (v0.7)
-│       ├── supervision.rs  # ChildSpec, all three strategies, nested trees (v0.7)
+│       ├── supervision.rs  # ChildSpec, all three strategies (supervision/: core, runners, nested trees)
 │       ├── child_handle.rs # ChildHandle, ActorId, ExitReason
 │       ├── monitor.rs      # MonitorRef, Down
 │       ├── link.rs         # links, Exit, trap_exit

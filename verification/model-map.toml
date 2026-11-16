@@ -39,7 +39,7 @@ coverage_floor = 36   # of 40 action keys
 
 [models.Cohorts]
 # OneForAll/RestForOne rounds (selection, stop, cleanup, join barrier,
-# resume, supersession, retirement), in supervision.rs.
+# resume, supersession, retirement), in supervision.rs and supervision/.
 files = [
     "verification/tla/Cohorts.tla",
     "verification/tla/CohortsInd.tla",
@@ -58,7 +58,7 @@ coverage_floor = 40   # of 46 action keys
 
 [models.NestedSupervision]
 # Subtree ownership, attachment, parent join after descendants, shutdown
-# propagation: supervision.rs (TBegin..TDone) and supervision/nested.rs.
+# propagation: supervision.rs and supervision/ (TBegin..TDone), supervision/nested.rs.
 files = [
     "verification/tla/NestedSupervision.tla",
     "verification/tla/NestedSupervisionInd.tla",
@@ -107,7 +107,9 @@ code = [
     "concurrency/src/stop_token/core.rs",
     "concurrency/src/actor_cleanup.rs",
     "concurrency/src/tasks/actor.rs",
+    "concurrency/src/tasks/actor/**",
     "concurrency/src/threads/actor.rs",
+    "concurrency/src/threads/actor/**",
     "concurrency/src/link.rs",
     "concurrency/src/link/table.rs",
     "concurrency/src/monitor.rs",
@@ -134,7 +136,7 @@ coverage_floor = 14   # of 14 action keys (TraceReplies arms)
 [models.ReplyTimer]
 # Receiver-side refinement: the shared runtime deadline and shortening mark.
 files = ["verification/tla/ReplyTimer.tla", "verification/tla/MCReplyTimer*"]
-code = ["concurrency/src/reply/mod.rs", "concurrency/src/reply/slot.rs", "concurrency/src/tasks/actor.rs", "rt/src/tasks/tokio/mod.rs", "rt/src/tasks/sim.rs", "rt/src/time.rs"]
+code = ["concurrency/src/reply/mod.rs", "concurrency/src/reply/slot.rs", "concurrency/src/tasks/actor.rs", "concurrency/src/tasks/actor/**", "rt/src/tasks/tokio/mod.rs", "rt/src/tasks/sim.rs", "rt/src/time.rs"]
 [models.ReplyTimer.tlc_only]
 reason = "receiver-local timer bookkeeping has no actor lifecycle trace events; production slot races are shared with Loom"
 tracking = "receiver timer projection of rank 11; see tests/reply_slot_loom.rs and tests/request_timer.rs"

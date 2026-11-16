@@ -532,7 +532,7 @@ SPAWNED_SIM_TURN_BUDGET=ms sets the budget, 0 disables it)
 ```
 
 The actor dispatch loop marks each turn (a `#[cfg(spawned_sim)]` guard in
-`tasks/actor.rs`); the executor times only the stretches of a poll that run
+`tasks/actor/lifecycle.rs`); the executor times only the stretches of a poll that run
 inside a turn and keeps the turn of a task suspended at an `.await`, so a
 poll that handles several messages charges each turn separately and the
 budget applies to each stretch between awaits, not to the whole turn. A
@@ -1159,7 +1159,7 @@ is asserted; allocator retention can differ between platforms.
    At most one is now sent per actor
    (`concurrent_cancellation_enqueues_exactly_one_shutdown`,
    `repeated_stop_during_a_handler_discards_queued_requests`). The #168 tests are
-   in `concurrency/src/threads/actor.rs`.
+   in `concurrency/src/threads/actor/`.
 
 Reviews and evidence: [PR #166](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/pr-166-links.md) and
 [PR #168](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/pr-168-security.md).
@@ -1456,7 +1456,7 @@ updates the model in the same PR, and drift is a bug. The `model-sync` job
 
 - **Paths.** `verification/model-map.toml` maps code to the models that
   cover it (for example `actor_cleanup.rs`, `link.rs`, `monitor.rs` and the
-  actor loops to `Lifecycle`; `supervision.rs` to `Supervision`, `Cohorts`
+  actor loops to `Lifecycle`; `supervision.rs` and `supervision/` to `Supervision`, `Cohorts`
   and `NestedSupervision`; `system.rs` to `Coordinator`). If a PR changes a
   mapped file but none of its models (the model, its MC configurations,
   inductive or coverage modules, or trace spec; a comment-only model edit
