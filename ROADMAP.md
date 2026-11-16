@@ -1,6 +1,6 @@
 # Spawned roadmap
 
-Updated 2026-11-10. This is the single planning document: the phases below give
+Updated 2026-11-16. This is the single planning document: the phases below give
 the implementation order in brief, and the [ranked backlog](#ranked-backlog)
 holds the detail, tradeoffs and client evidence behind it. It is an order, not
 a release schedule, and no speculative feature is promised by a date.
@@ -33,28 +33,33 @@ handlers and the existing default behavior. New policies are explicit and opt-in
 - **v0.7.3:** OTP-aligned restart retry with OneForAll cohort rebuild, and the
   deterministic simulator (virtual time, decision tapes, PCT, bounded DFS).
   Ethrex and Ethlambda run 0.7.3 in their draft PRs and on canary nodes.
-- **v0.8:** deferred replies and pipe-to-self (rank 11), OTP exit signals,
-  startup and runtime-drop semantics (5e, 5f, 5g). Implementation and review
-  fixes merged in #240; release metadata/publication is in #271. The final
-  performance and paired four-hour soak gates pass. Client ports are ready
-  on the clients' `spawned-v0.8` branches.
-- **Deadline-service follow-up:** separate user payload disposal from shared
-  deadline bookkeeping, with no default-path cost. Acceptance: block a job
-  result destructor in actor A while actor B's unpolled token/raw deadline
-  expires and returns its credit. Keep foreign-waker progress assumptions
-  explicit; never make exit wait for a pre-exit destructor that can wait for
-  the owner's callers. The current scheduling limit is documented in the guide.
-- **Next feature:** dynamic supervisor (rank 12a), design and TLA+ model in
-  review (PR #245).
-- **v0.9 design in review:** unified start API (rank 5h, PR #259,
-  [design](docs/design/unified-start.md)).
-- **0.9 introspection (priority tier 2):** design and TLA+ model in review
-  (PR #256, [design](docs/design/introspection.md)): `process_info`-style
-  `info()` readable while a handler is wedged, `sys:get_state`/`get_status`
-  between turns, supervision-tree and system snapshots, structured crash and
-  supervisor reports, the stall watchdog (rank 8) and an attachable remote
-  console on a local Unix socket (`spawned-ctl`, gap G23; starts with
-  `ActorSystem::new`, read-only by default). Revision 3 answers two review rounds. Flight recorder (rank 9) deferred to 0.10.
+- **v0.8.0 (released 2026-11-15):** deferred replies and pipe-to-self jobs
+  (rank 11), OTP exit signals, startup and runtime-drop semantics (5e, 5f, 5g),
+  one death point, and the API cleanup (#240, #271). Qualified by a frozen
+  performance campaign against 0.7.3, paired four-hour soaks and the full
+  Lifecycle models (evidence attached to the GitHub release). Ethrex and
+  Ethlambda pin 0.8.0 in their draft PRs and run it on 24-hour canaries.
+- **Deadline-service follow-up (known 0.8 limit):** separate user payload
+  disposal from shared deadline bookkeeping, with no default-path cost.
+  Acceptance: block a job result destructor in actor A while actor B's
+  unpolled token/raw deadline expires and returns its credit. Keep
+  foreign-waker progress assumptions explicit; never make exit wait for a
+  pre-exit destructor that can wait for the owner's callers. The current
+  scheduling limit is documented in the guide.
+- **Post-0.8 cleanups (in progress):** experiment features moved to
+  `benchmarks/`; the large actor and supervision files split; a lint and a
+  `model-sync` mapping that keep the Loom-checked cores tied to their Loom tests.
+- **Next release, 0.9: introspection and the attachable console** (design
+  approved and merged, #256, [design](docs/design/introspection.md)):
+  `process_info`-style `info()` readable while a handler is wedged,
+  `sys:get_state`/`get_status` between turns, supervision-tree and system
+  snapshots, structured crash and supervisor reports, the stall watchdog
+  (rank 8) and `spawned-ctl attach` on a local Unix socket (gap G23; starts
+  with `ActorSystem::new`, read-only by default). Flight recorder (rank 9)
+  later.
+- **0.10 designs:** unified start API (rank 5h, approved and merged, #259,
+  [design](docs/design/unified-start.md)); dynamic supervisor (rank 12a),
+  design and TLA+ model in review (#245).
 - **Process:** every PR merges through GitHub's merge queue with 21 required
   checks, including the simulated suites (`sim`). Robustness features must add
   no cost on the default path (see [Non-goals](#non-goals)).
@@ -69,7 +74,7 @@ protocol/forwarding compatibility when designing an explicit erased dispatch API
 
 Decided 2026-11-11, in this order: **soundness, introspection, determinism, testing, features, performance.** The first four are the product: Spawned's value is guarantees verified once and inherited by every application, failures you can see, and failures that replay exactly. A lower tier waits unless a client needs it.
 
-1. **Soundness.** A bug in what Spawned promises outranks any feature or speedup. Ship 0.8 only after every review fix and a re-review; close the remaining semantics-coverage gaps; planted-bug sensitivity; long-running soak tests (memory, threads, tasks, file descriptors and registry entries flat over hours of churn; run by hand on fede before each release, no schedule); Apalache for the new models; longer fuzzer campaigns run by hand. Includes **a smaller, stable API**: review the public surface before 0.8 is published (merge overlapping functions, hide what only the clients needed, mark the rest experimental), then a 1.0 with a written stability promise.
+1. **Soundness.** A bug in what Spawned promises outranks any feature or speedup. Close the remaining semantics-coverage gaps; planted-bug sensitivity; long-running soak tests (memory, threads, tasks, file descriptors and registry entries flat over hours of churn; run by hand on fede before each release, no schedule); Apalache for the new models; longer fuzzer campaigns run by hand. Includes **a smaller, stable API**: the pre-0.8 API pass is done; a final review before 1.0, then a 1.0 with a written stability promise.
 2. **Introspection.** Operators must be able to answer "which actor is stuck, on what message, with how much queued" the way Erlang's `observer`, `sys:get_state`, `process_info` and `recon` do: per-actor info (lifecycle state, mailbox length, current message type and turn age, restarts, links and monitors), supervision-tree and system snapshots, `spawned-top` (rank 30), the stall watchdog (8), the flight recorder (9) and causal tracing (28). Cheap counters and opt-in tracing, under the no-cost rule.
 3. **Determinism.** Every run that can be made deterministic should be: a failure that replays exactly can be debugged, shrunk and kept as a regression test. Widen what the simulator controls: code that calls `tokio::spawn` or `tokio::time` directly (route it through `spawned-rt`, or catch it in the simulator); network I/O through actor-owned I/O and a simulated network (rank 22a); threads-mode actors (research: run native actors as simulator tasks); same-seed reruns producing identical traces (S2); and record in production, replay in simulation (ranks 21-22). Determinism also has to hold across releases: a saved tape keeps replaying.
 4. **Testing.** For Spawned and for applications: `#[spawned_concurrency::sim_test]`, the `spawned-test` kit, model-derived tests, whole-node simulation of Ethrex and Ethlambda on top of tier 3, behaviour snapshots and the remaining planned layers in [TESTING.md](docs/TESTING.md).
@@ -99,8 +104,8 @@ Sockets stay with rank 22a; synchronous databases, EVM execution and cryptograph
 
 1.0 is a promise, not a feature set: the API is stable, every guarantee is checked, and it has been proven in production. Planned order (each release follows the [Priorities](#priorities)):
 
-- **0.8:** deferred replies and pipe-to-self (rank 11), OTP exit signals, startup and runtime-drop semantics (5e, 5f, 5g), and an API cleanup (smaller job API, `#[non_exhaustive]` and builders, OTP names such as `send_request`).
-- **0.9: introspection and the attachable console** (design approved, [introspection.md](docs/design/introspection.md)): `process_info`-style `info()` that answers while a handler is wedged, `get_state`/`get_status` between turns, actor listing with labels, supervision-tree and system snapshots, structured crash and supervisor reports, the opt-in stall watchdog (rank 8), and `spawned-ctl attach` on every binary that runs an `ActorSystem`. Also the determinism fixes from the audit (D1-D3).
+- **0.8 (released 2026-11-15):** deferred replies and pipe-to-self (rank 11), OTP exit signals, startup and runtime-drop semantics (5e, 5f, 5g), the D1-D3 determinism fixes and an API cleanup (smaller job API, `#[non_exhaustive]` and builders, OTP names such as `send_request`).
+- **0.9: introspection and the attachable console** (design approved, [introspection.md](docs/design/introspection.md)): `process_info`-style `info()` that answers while a handler is wedged, `get_state`/`get_status` between turns, actor listing with labels, supervision-tree and system snapshots, structured crash and supervisor reports, the opt-in stall watchdog (rank 8), and `spawned-ctl attach` on every binary that runs an `ActorSystem`. (The determinism fixes D1-D3 shipped in 0.8.)
 - **0.10: starting and supervising, OTP-complete** (designs approved: [unified-start.md](docs/design/unified-start.md); dynamic supervisor in [#245](https://github.com/lambdaclass/spawned/pull/245)): the unified start API (`spawn`, `start`, `start_link`, `start_monitor` with `StartOptions`, fallible `started()` with `Init`, placement inheritance, typed names), the dynamic supervisor (12a), and supervisor alignment with OTP (budget exhaustion exits `Shutdown`, static `terminate_child`).
 - **0.11:** the admission package designed together: bounded mailboxes (17), byte credits (18), deadlines (19); bounded draining on shutdown (13); the OTP control lane (14); per-actor memory limits (18a).
 - **1.0:** stabilization.
@@ -123,7 +128,7 @@ What 1.0 requires:
 
 1. **Stable API with written rules:** a final full API review; every public enum `#[non_exhaustive]`; user-implemented traits sealed where possible; `spawned-rt` declared internal; a semver, MSRV and deprecation policy.
 2. **Complete, versioned semantics contract:** every guarantee in `semantics.md` checked by something that fails if it breaks; every OTP deviation listed with its Rust-forced reason; every TLA+ model with trace validation and Apalache inductive proofs of its safety invariants.
-3. **Production-safe defaults:** the 0.10 admission package; 1.0 does not ship with only unbounded mailboxes.
+3. **Production-safe defaults:** the 0.11 admission package; 1.0 does not ship with only unbounded mailboxes.
 4. **Introspection complete:** `spawned-top` (30), the flight recorder (9) and causal tracing (28) on top of 0.9's introspection v1.
 5. **Determinism complete for spawned itself:** nothing in spawned escapes the simulator; a CI check that the same seed gives identical traces; a versioned decision-tape format, so a tape saved on 1.0 replays on any 1.x.
 6. **Release gates run every time:** a soak run, the benchmark regression gate, a long fuzzer campaign, a mutation-score target on the core modules, and the planted-bug matrix catching every planted bug.
@@ -649,6 +654,9 @@ earlier [detailed acceptance criteria](https://github.com/lambdaclass/spawned/bl
 | Fallible startup / readiness | Fallible startup and readiness for supervised children. The `result_on_start` branch is not the implementation; unsupervised `started()` still cannot fail. |
 | Instance-bound references | Decided: references are instance-bound; replacements are found by explicit lookup. Stable logical proxies remain an optional later design. |
 | Ordered shutdown | Implemented for groups and supervisors. No drain policy yet (rank 13). |
+| Deferred replies and jobs (rank 11, 0.8) | `PendingReply`/`ReplyTo` obligations, `pipe`/`pipe_blocking`/`emit_at` jobs with keyed replacement, deadlines, bounded outstanding work and fencing at stop. |
+| OTP exit signals and one death point (5e-5g, 0.8) | `Killed`/`NoProc`, `exit/2`, `try_link`, fenced `unlink`/`demonitor` (with flush), callers answered before any user code at death, restart budget counting rounds. |
+| Simulator determinism D1-D3 (0.8) | Clock/entropy interposition (`spawned-sim-libc`), inline `spawn_blocking`, sim timers/`JoinSet`, strict escape diagnostics. |
 | Simulator turn budget (rank 8b) | Under `--cfg spawned_sim`, an actor turn that runs past `SPAWNED_SIM_TURN_BUDGET` (default 250 ms, 0 disables) inside one poll fails the test, naming the actor and message type, with seed and tape replay lines. Compiled only under the cfg. |
 | Supervision lifecycle observation off the user backlog | Implemented for supervision. A generic public priority API is deferred (rank 14). |
 
