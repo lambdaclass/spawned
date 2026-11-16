@@ -1,15 +1,41 @@
 Planted bug 15 (mon-down-after-demonitor): The monitor waiter delivers Down even when demonitor already removed it
 
-diff --git a/concurrency/src/tasks/actor.rs b/concurrency/src/tasks/actor.rs
-index a7fb0ec2..09ec5c06 100644
---- a/concurrency/src/tasks/actor.rs
-+++ b/concurrency/src/tasks/actor.rs
-@@ -458,7 +458,7 @@ impl<A: Actor> Context<A> {
-                 .as_mut()
-                 .and_then(|entries| entries.remove(&monitor_ref))
-                 .is_some();
--            if deliver {
-+            if deliver || reason.is_abnormal() {
-                 let _ = actor_ref.send(Down {
-                     monitor_ref,
-                     reason,
+diff --git a/concurrency/src/monitor/fence.rs b/concurrency/src/monitor/fence.rs
+index f7bbaa27..d7778cf3 100644
+--- a/concurrency/src/monitor/fence.rs
++++ b/concurrency/src/monitor/fence.rs
+@@ -83,7 +83,7 @@ pub(crate) fn register<K: Hash + Eq, V>(
+ /// and enqueue the `Down` (`deliver`) in one critical section, so once
+ /// [`demonitor`] returns no `Down` of this monitor is enqueued, and one
+ /// already enqueued is flushed. Returns whether it was delivered.
+-pub(crate) fn deliver<K: Hash + Eq, V>(
++pub(crate) fn deliver<K: Hash + Eq + Clone, V>(
+     table: &Entries<K, V>,
+     key: &K,
+     deliver: impl FnOnce(),
+@@ -95,7 +95,14 @@ pub(crate) fn deliver<K: Hash + Eq, V>(
+             *entry = Entry::Queued;
+             true
+         }
+-        _ => false,
++        Some(Entry::Queued) => false,
++        // Planted: a removed (demonitored) entry is delivered anyway.
++        None => {
++            if let Some(entries) = guard.as_mut() {
++                entries.insert(key.clone(), Entry::Queued);
++            }
++            true
++        }
+     };
+     if active {
+         deliver();
+@@ -155,7 +162,8 @@ pub(crate) fn demonitor<K: Hash + Eq, V>(
+     let entry = guard.as_mut().and_then(|entries| entries.remove(key))?;
+     removed();
+     match entry {
+-        Entry::Active(value) => Some(value),
++        // Planted: the waiter is not woken, so it still delivers.
++        Entry::Active(_value) => None,
+         Entry::Queued => None,
+     }
+ }

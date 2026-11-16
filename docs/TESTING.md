@@ -1538,7 +1538,25 @@ The runner applies a patch, runs each layer, records `caught`/`missed` and the
 wall time in `OUT/results.tsv`, then reverts the patch and deletes any proptest
 seed files the run created (a seed found under one bug must not help the next).
 Simulator and fuzzer tapes go to `OUT/tmp`. Patches touch
-`concurrency/src` only; they are never applied in CI.
+`concurrency/src` only. CI never runs them, but the required `model-sync`
+check runs `git apply --check` on every patch, so a PR that moves planted
+code must regenerate the affected patches (same fault, new location).
+
+Regenerated after 0.8.0 (the 0.8 lifecycle rewrite and the file splits had
+left 11 patches unapplicable), each planting the same fault where the code now
+lives: 04 (`supervision.rs`), 10, 12, 13 (`link.rs`), 11 (`link/table.rs`),
+14 (`child_handle.rs`), 15, 16 (`monitor/fence.rs`, shared by both modes),
+17 (`monitor.rs`), 19 (`tasks/actor/lifecycle.rs`), 20
+(`tasks/actor/actor_ref.rs`). Three are adapted to the 0.8 design: 11 keeps
+the *caller's* record (the receiver-side fence makes dropping only the peer's
+record harmless); 12 delivers `Normal` instead of `NoProc` (0.8 linking to a
+dead peer reports `NoProc`, OTP's `noproc`); 14 plants the fault in
+`ChildHandle::stop_with_reason(Shutdown)` (`shutdown()` was removed in 0.8).
+A spot check with each applied (unit and integration tests only) caught 04,
+10, 11, 12, 13, 15, 16 and 19; 15, a miss in every layer below, is now caught
+by `demonitor_before_target_dies_suppresses_down` and
+`demonitor_releases_waiter` in both modes. The table predates the
+regeneration; rerun the matrix before citing rows 04, 10-17, 19 and 20.
 
 **Results** (2026-11-12, after the follow-ups below, `53c0995d`, the 30-core
 shared server at `nice 19`, one patch at a time). Times are seconds for the
@@ -1561,10 +1579,10 @@ cells are from that rerun; the first matrix (without that oracle) missed both.
 | 08 | Exhausted budget retires the child instead of failing the supervisor | 212 (19 tests) | 14 | 8 | 2 (V5) | 14 | - |
 | 09 | Nested supervisor's restart mode ignored (always Permanent) | 44 (1 test) | 14 | 8 | <1 (V1) | - | - |
 | 10 | `Normal` exit kills a non-trapping linked peer | 46 | 15 | 8 | 1 (X3) | - | - |
-| 11 | `unlink` removes only the caller's edge | 43 (2 unit tests) | - | - | 17 (X5) | - | - |
-| 12 | Linking to a dead peer reports `Normal`, not its reason | 54 | - | 8 | <1 (X3) | - | - |
+| 11 | `unlink` is one-sided (the peer's death still signals the caller) | 43 (2 unit tests) | - | - | 17 (X5) | - | - |
+| 12 | Linking to a dead peer reports `Normal`, not `NoProc` | 54 | - | 8 | <1 (X3) | - | - |
 | 13 | Actor killed through a link exits `Normal` (no transitive propagation) | 43 | 17 | 9 | <1 (X3) | - | - |
-| 14 | `ChildHandle::shutdown` commits `Normal` instead of `Shutdown` | 44 | 17 | 9 | <1 (X8) | - | - |
+| 14 | An administrative `Shutdown` stop commits `Normal` | 44 | 17 | 9 | <1 (X8) | - | - |
 | 15 | Monitor waiter delivers `Down` after `demonitor` removed it | - | - | - | - | - | - |
 | 16 | Monitoring an already-dead actor gives no `Down` | 137 | - | 9 | 5 (X1) | - | - |
 | 17 | Exiting observer does not cancel its monitor waiters | 59 | 14 | - | - | - | - |

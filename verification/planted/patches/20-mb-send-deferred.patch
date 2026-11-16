@@ -1,22 +1,29 @@
 Planted bug 20 (mb-send-deferred): ActorRef::send enqueues from a spawned task, so a later request can overtake it (D1)
 
-diff --git a/concurrency/src/tasks/actor.rs b/concurrency/src/tasks/actor.rs
-index a7fb0ec2..dc6fabc2 100644
---- a/concurrency/src/tasks/actor.rs
-+++ b/concurrency/src/tasks/actor.rs
-@@ -749,7 +749,14 @@ impl<A: Actor> ActorRef<A> {
+diff --git a/concurrency/src/tasks/actor/actor_ref.rs b/concurrency/src/tasks/actor/actor_ref.rs
+index c32dc8d3..8046bf5e 100644
+--- a/concurrency/src/tasks/actor/actor_ref.rs
++++ b/concurrency/src/tasks/actor/actor_ref.rs
+@@ -31,12 +31,16 @@ impl<A: Actor> ActorRef<A> {
          A: Handler<M>,
          M: Message,
      {
--        enqueue(&self.shared.sender, &self.shared.mailbox, msg, None)
-+        if self.shared.cancellation_token.is_cancelled() {
-+            return Err(ActorError::ActorStopped);
-+        }
+-        enqueue_send(
+-            &self.shared.sender,
+-            &self.shared.mailbox,
+-            &self.shared.replies,
+-            msg,
+-        )
 +        let this = self.clone();
-+        spawned_rt::tasks::spawn(async move {
-+            let _ = enqueue(&this.shared.sender, &this.shared.mailbox, msg, None);
++        let _ = rt::spawn(async move {
++            let _ = enqueue_send(
++                &this.shared.sender,
++                &this.shared.mailbox,
++                &this.shared.replies,
++                msg,
++            );
 +        });
 +        Ok(())
      }
  
-     /// Send a request and get a raw oneshot receiver for the reply.
+     /// Send a request without waiting (`gen_server:send_request/2` with an explicit deadline) and get

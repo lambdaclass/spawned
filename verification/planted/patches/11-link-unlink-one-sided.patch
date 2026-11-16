@@ -1,15 +1,17 @@
-Planted bug 11 (link-unlink-one-sided): unlink removes only the caller's edge; the peer still signals it
+Planted bug 11 (link-unlink-one-sided): unlink is one-sided: the caller keeps its record, so the peer's death still signals it
 
-diff --git a/concurrency/src/link.rs b/concurrency/src/link.rs
-index 48cf54a8..c68b389b 100644
---- a/concurrency/src/link.rs
-+++ b/concurrency/src/link.rs
-@@ -192,7 +192,7 @@ pub(crate) fn unregister_link(
-     if own_id == peer_id || Arc::ptr_eq(own, peer) {
-         return;
-     }
--    let removed = with_pair(own, peer, |a, b| (remove(a, peer_id), remove(b, own_id)));
-+    let removed = with_pair(own, peer, |a, _b| remove(a, peer_id));
-     drop(removed);
+diff --git a/concurrency/src/link/table.rs b/concurrency/src/link/table.rs
+index c7ce16e5..f57cc071 100644
+--- a/concurrency/src/link/table.rs
++++ b/concurrency/src/link/table.rs
+@@ -157,9 +157,7 @@ pub(crate) fn remove_pair(
+     peer_id: ActorId,
+     peer: &LinkTable,
+ ) -> (Option<LinkEntry>, Option<LinkEntry>) {
+-    with_pair(own_id, own, peer_id, peer, |a, b| {
+-        (remove(a, peer_id), remove(b, own_id))
+-    })
++    with_pair(own_id, own, peer_id, peer, |_a, b| (None, remove(b, own_id)))
  }
  
+ /// Receiver-side delivery: under the receiver's table lock, apply the notice
