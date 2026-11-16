@@ -1,0 +1,68 @@
+# Backend, I/O and profiling experiments: benches, tests and their private
+# dependencies, kept out of the published crates. Not a workspace member and
+# never published. The backend experiments need hooks in spawned-rt and
+# spawned-concurrency, so build this only in a tree prepared by
+# `benchmarks/experiments/prepare.sh` (see benchmarks/README.md).
+[package]
+name = "spawned-experiments"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Standalone: keeps monoio and pprof out of the root lockfile and its audits.
+[workspace]
+
+[dependencies]
+spawned-rt = { path = "../../rt" }
+spawned-concurrency = { path = "../../concurrency" }
+futures = "0.3.1"
+tokio = { version = "1", features = ["full"] }
+monoio = { version = "0.2.4", optional = true, default-features = false, features = ["legacy", "iouring", "sync"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+pprof = { version = "0.15", optional = true, features = ["flamegraph"] }
+
+[target.'cfg(spawned_scheduler_loom)'.dev-dependencies]
+loom = { version = "0.7", features = ["futures"] }
+
+[features]
+default = ["async", "backend-experiments", "io-experiments", "profiling-experiments"]
+# Kept so the moved benches and tests compile unchanged.
+async = []
+backend-experiments = ["spawned-concurrency/backend-experiments", "spawned-rt/backend-experiments"]
+io-experiments = ["dep:monoio"]
+profiling-experiments = ["dep:pprof"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_scheduler_loom)', 'cfg(spawned_sim)'] }
+
+[[bench]]
+name = "designs"
+harness = false
+required-features = ["backend-experiments"]
+
+[[bench]]
+name = "io_designs"
+harness = false
+required-features = ["io-experiments"]
+
+[[bench]]
+name = "workload_research"
+harness = false
+required-features = ["backend-experiments"]
+
+[[bench]]
+name = "lifecycle_soak"
+harness = false
+required-features = ["backend-experiments"]
+
+[[bench]]
+name = "pinned_pipeline"
+harness = false
+required-features = ["backend-experiments"]
+
+[[bench]]
+name = "runtime_isolation"
+harness = false
+required-features = ["backend-experiments"]

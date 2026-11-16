@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Move the private `backend-experiments`, `io-experiments` and
+  `profiling-experiments` features out of `spawned-rt` and
+  `spawned-concurrency` into a standalone, unpublished crate in
+  `benchmarks/experiments/`. The published crates lose their optional
+  dependencies (monoio, pprof, async-task, crossbeam-deque) and the experiment
+  branches in the dispatch loop; the feature names stay as no-ops until 0.9 so
+  0.8 stays patch-compatible. Default builds are unchanged. The
+  experiments stay runnable: `benchmarks/experiments/prepare.sh` applies the
+  hooks to a scratch tree (see `benchmarks/README.md`).
 - Clarify dispatch admission when a stop races a message, and check deferred
   token ownership before drop callbacks in debug builds. Release behavior is unchanged.
 - Keep the Loom models from drifting: a clippy ban (`concurrency/clippy.toml`,

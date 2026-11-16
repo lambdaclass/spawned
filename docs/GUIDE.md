@@ -319,10 +319,10 @@ compatibility alone is not a reason to create more runtimes. For owned,
 budgeted runtimes use [execution groups](#execution-groups-and-supervision).
 
 Public owned parked pinned shards and bounded native pools are described under
-[execution groups](#execution-groups-and-supervision). The `backend-experiments`
-feature still contains private research selectors (pinned
-and spinning shards, alternative schedulers). They are not stable configuration
-APIs, and Tokio stays the default. Their measurements and reproduction guides are
+[execution groups](#execution-groups-and-supervision). The private research
+selectors (pinned and spinning shards, alternative schedulers) are not part of
+the published crates; they live in `benchmarks/experiments` (see
+[benchmarks](../benchmarks/README.md#experiments)), and Tokio stays the default. Their measurements and reproduction guides are
 archived in [the backend notes](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/BACKENDS.md) and the
 [backend research index](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/research/backend-experiments/README.md).
 
@@ -1851,8 +1851,8 @@ release's semver promise.
   `FactoryContext` (rank 15).
 - Placement: `Backend::{Blocking, Thread}`, `pinned_group`, the affinity
   functions, `thread_group_with_helpers`, `async_group_on`.
-- The `diagnostics` feature and the `*-experiments` features; the
-  `lifecycle-trace` and `failpoints` features are test-only.
+- The `diagnostics` feature; the `lifecycle-trace` and `failpoints`
+  features are test-only.
 - `spawned_test::linearizability`.
 - `spawned-rt`'s re-exports of Tokio and std types (beyond `run`,
   `block_on`, `ctrl_c`, `time::Instant` and the simulation entry points).

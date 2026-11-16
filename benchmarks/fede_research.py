@@ -107,8 +107,7 @@ class Campaign:
             self.meta['topology'][cpu] = dict(package=core[0], core=core[1])
         subprocess.run(['taskset', '-c', args.driver_cpus, 'true'], check=True)
         subprocess.run(['taskset', '-c', args.collector_cpus, 'true'], check=True)
-        command = ['cargo', 'bench', '--locked', '-p', 'spawned-concurrency',
-                   '--features', 'backend-experiments,profiling-experiments',
+        command = ['cargo', 'bench', '--manifest-path', 'benchmarks/experiments/Cargo.toml',
                    '--bench', 'workload_research', '--bench', 'designs',
                    '--no-run', '--message-format=json']
         build = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)

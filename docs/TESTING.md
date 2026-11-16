@@ -405,10 +405,9 @@ RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim \
 | `delivery_simulation` | Enumerate 125 states of a finite cooperative-stop model and replay 500 witnesses across four backends, plus seeded scripts and an audit digest | Controls handler-progress gates, not arbitrary OS/Tokio scheduling, network, clocks or all lifecycle signals |
 | `payload_stress` | Unique owned payloads from 128 concurrent producers; verify FIFO delivery or complete destruction on stop | Explicitly bounded payload volume; not a whole-process memory proof |
 | `process_failures` (Unix) | Abort or kill an owned subprocess after an actor effect; check process failure does not promise cleanup callbacks or rollback | Temporary marker is not a storage durability acknowledgement |
-| `benchmark_startup` | Startup rendezvous opens for all participants, aborts after setup failure and has a finite timeout | Tests the research driver, not production actor supervision |
 
 ```sh
-cargo test --locked -p spawned-concurrency --test failure_windows --test request_histories --test delivery_simulation --test process_failures --test benchmark_startup
+cargo test --locked -p spawned-concurrency --test failure_windows --test request_histories --test delivery_simulation --test process_failures
 SPAWNED_HISTORY_CASES=128 SPAWNED_HISTORY_SEED=20261106 SPAWNED_LINEARIZABLE_CASES=256 cargo test --locked -p spawned-concurrency --test request_histories -- --nocapture
 SPAWNED_SIM_CASES=256 SPAWNED_SIM_SEED=20261106 cargo test --locked -p spawned-concurrency --test delivery_simulation -- --nocapture
 SPAWNED_STRESS_PRODUCERS=128 SPAWNED_STRESS_MESSAGES=256 SPAWNED_STRESS_PAYLOAD=1024 cargo test --locked -p spawned-concurrency --test payload_stress -- --ignored --nocapture
@@ -709,8 +708,7 @@ these limits:
   disables it. The actor turn budget is wall-clock based too and can fail a
   run on such a machine; `SPAWNED_SIM_TURN_BUDGET=0` disables it. `registry::registered()` returns names sorted, so its order
   does not depend on the hash map's random state. Also wall-clock based:
-  the experimental time slice of `backend-experiments` actors
-  (`std::time::Instant`) and `FailScenario::setup()` without
+  `FailScenario::setup()` without
   `SPAWNED_FAILPOINTS_SEED` (seeded from `SystemTime`; use `with_seed`).
   The harness's panic-output filter installs one process-wide panic hook.
 
@@ -1453,8 +1451,8 @@ killed by the Kani proofs below, and by unit tests so that `cargo mutants`
 (which does not run Kani) sees them caught too.
 
 Most other survivors are equivalent in a default build: arguments of
-`lifecycle-trace` events (`count`, trace indices), code behind `metrics`,
-`diagnostics` or `backend-experiments`, the random seed fallback, and the
+`lifecycle-trace` events (`count`, trace indices), code behind `metrics`
+or `diagnostics`, the random seed fallback, and the
 `with_pair` lock order flipped to `>`/`<=` (any consistent order is
 deadlock-free; `==`, which is not, is caught). Run cargo-mutants with the
 feature that compiles a mutated line before treating it as a gap. Code inside
@@ -2125,16 +2123,11 @@ setting but not CPU confinement.
 `deny.toml` configures cargo-deny (advisories, licenses, duplicate versions as
 warnings, crates.io as the only source) and `.cargo/audit.toml` configures
 cargo-audit; the `supply-chain` CI job runs both. Unmaintained, unsound and
-yanked crates fail the job like vulnerabilities. Accepted advisories, each
-reachable only through a private experiment feature:
-
-| Advisory | Crate | Path | Why accepted |
-|---|---|---|---|
-| RUSTSEC-2026-0194, RUSTSEC-2026-0195 | quick-xml 0.26 | pprof 0.15 → inferno 0.11, `profiling-experiments` (Linux) | Writes flamegraphs of our own profiles, parses no untrusted XML; pprof 0.15 is the latest release |
-| RUSTSEC-2025-0057 (unmaintained) | fxhash 0.2 | monoio 0.2, `io-experiments` | Benchmark-only backend; no monoio release drops it |
-
-The only license exception is CDDL-1.0 for `inferno` (same pprof path). Keep
-both ignore lists identical and drop entries when the upstream path moves.
+yanked crates fail the job like vulnerabilities. The benchmark experiments
+(monoio, pprof) are a standalone crate outside the workspace
+(`benchmarks/experiments`), so neither tool scans them. Each accepted
+advisory is listed with its path and reason in `deny.toml`; keep both ignore
+lists identical and drop entries when the upstream path moves.
 
 ```sh
 cargo deny --all-features check

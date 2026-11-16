@@ -14,9 +14,6 @@ ctrlc = "3.4"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
-crossbeam-deque = { version = "=0.8.8", optional = true }
-async-task = { version = "=4.7.1", optional = true }
-
 [lib]
 path = "./src/lib.rs"
 
@@ -37,7 +34,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_loom)', 'cfg(spawn
 [features]
 default = ["async"]
 async = ["dep:tokio", "dep:tokio-util", "dep:tokio-stream", "dep:nix"]
-backend-experiments = ["async", "dep:async-task", "dep:crossbeam-deque"]
+# No-op kept for 0.8 patch compatibility; the experiments live in
+# benchmarks/experiments. Drop at 0.9.
+backend-experiments = ["async"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { version = "0.30.1", features = ["sched"], optional = true }

@@ -66,12 +66,39 @@ same cores and reports the median and spread. See
 (closed-loop requests, actor graphs, offered load and churn); see
 [testing](../docs/TESTING.md) for the command and its limits.
 
+## Experiments
+
+The backend, I/O and profiling experiments (alternative schedulers, sharded
+and native dispatchers, message batching and time slicing, monoio, pprof) are
+not part of the published crates. Their benches (`designs`, `io_designs`,
+`workload_research`, `lifecycle_soak`, `pinned_pipeline`,
+`runtime_isolation`), tests and dependencies live in the standalone,
+unpublished crate `benchmarks/experiments/`. The scheduler hooks they need sit
+on the actor hot path, so `backend-experiments.patch` keeps them out of the
+tree and `prepare.sh` puts them back in a scratch worktree:
+
+```sh
+dir=$(benchmarks/experiments/prepare.sh)        # target/experiments-tree
+cd "$dir"
+cargo test --manifest-path benchmarks/experiments/Cargo.toml
+cargo bench --manifest-path benchmarks/experiments/Cargo.toml --bench designs -- --help
+RUSTFLAGS="--cfg spawned_scheduler_loom" \
+  cargo test --manifest-path benchmarks/experiments/Cargo.toml --test ready_gate_loom
+```
+
+Never commit a prepared tree. When the patch stops applying, rebase it (see
+the header of `prepare.sh`), or run the in-tree originals at `d082d0d8`, the
+last commit before they moved. `run_reliability.py` builds `baseline` from
+`spawned-concurrency` and its other drivers from this crate, so run it in a
+prepared tree too.
+
 ## Research drivers and report renderers
 
 The other scripts here (`design_experiments.py`, `fede_*.py`,
 `render_*.py`, `collect_*.py`, `verify_fede_overnight.py`) reproduce archived
-backend studies. They need the `backend-experiments` feature, Linux for most
-campaigns, and the plotting environment:
+backend studies. They build from `benchmarks/experiments`, so run them from a
+prepared tree (above); most campaigns need Linux, and the renderers need the
+plotting environment:
 
 ```sh
 python3 -m venv /tmp/spawned-plots

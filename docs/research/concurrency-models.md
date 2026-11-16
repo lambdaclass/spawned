@@ -363,8 +363,8 @@ Every Erlang/Elixir system relies on reductions; every Go program on async
 preemption since 1.14; every Tokio application on coop budgets. In Spawned
 itself, the async mailbox is a Tokio unbounded channel, so a long burst of
 messages already yields after Tokio's budget, and a private time-slice
-experiment (yield after N messages or T µs) exists behind
-`backend-experiments` (`MessageTurn` in `concurrency/src/tasks/actor.rs`).
+experiment (yield after N messages or T µs) exists out of tree
+(`MessageTurn` in `benchmarks/experiments/backend-experiments.patch`).
 
 ### What it means for Spawned
 

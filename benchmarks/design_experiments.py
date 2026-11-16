@@ -58,7 +58,7 @@ def allowed(variant,case):
 def run(args):
  out=args.output.resolve();out.mkdir(parents=True,exist_ok=False);(out/'logs').mkdir()
  benches=['designs','io_designs']
- built=subprocess.run(['cargo','bench','--locked','-p','spawned-concurrency','--features','backend-experiments,io-experiments','--no-run','--message-format=json']+sum((['--bench',b] for b in benches),[]),cwd=ROOT,text=True,capture_output=True)
+ built=subprocess.run(['cargo','bench','--manifest-path','benchmarks/experiments/Cargo.toml','--no-run','--message-format=json']+sum((['--bench',b] for b in benches),[]),cwd=ROOT,text=True,capture_output=True)
  (out/'build.log').write_text(built.stderr);built.check_returncode()
  binaries={}
  for line in built.stdout.splitlines():

@@ -94,17 +94,6 @@ fn never_polled_actor_propagates_runtime_shutdown_to_peer() {
             "::never_polled_actor_propagates_runtime_shutdown_to_peer"
         ),
         move || {
-            #[cfg(feature = "backend-experiments")]
-            {
-                let selector = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
-                if selector == "sharded"
-                    || spawned_rt::tasks::experimental::dispatcher::policy_for_scheduler(&selector)
-                        .is_some()
-                {
-                    return; // Those process-owned pools deliberately outlive the caller runtime.
-                }
-            }
-
             let owner = runtime();
             let survivor = runtime();
             let target = {
@@ -155,16 +144,6 @@ fn polled_actor_propagates_runtime_shutdown_to_peer() {
             "::polled_actor_propagates_runtime_shutdown_to_peer"
         ),
         move || {
-            #[cfg(feature = "backend-experiments")]
-            {
-                let selector = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
-                if selector == "sharded"
-                    || spawned_rt::tasks::experimental::dispatcher::policy_for_scheduler(&selector)
-                        .is_some()
-                {
-                    return;
-                }
-            }
             let owner = runtime();
             let survivor = runtime();
             let target = {
@@ -209,16 +188,6 @@ fn never_polled_actor_notifies_monitor_on_runtime_shutdown() {
             "::never_polled_actor_notifies_monitor_on_runtime_shutdown"
         ),
         move || {
-            #[cfg(feature = "backend-experiments")]
-            {
-                let selector = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
-                if selector == "sharded"
-                    || spawned_rt::tasks::experimental::dispatcher::policy_for_scheduler(&selector)
-                        .is_some()
-                {
-                    return;
-                }
-            }
             let owner = runtime();
             let survivor = runtime();
             let target = {
@@ -391,16 +360,6 @@ fn never_polled_monitor_owner_releases_waiter_and_refuses_late_registration() {
             "::never_polled_monitor_owner_releases_waiter_and_refuses_late_registration"
         ),
         move || {
-            #[cfg(feature = "backend-experiments")]
-            {
-                let selector = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
-                if selector == "sharded"
-                    || spawned_rt::tasks::experimental::dispatcher::policy_for_scheduler(&selector)
-                        .is_some()
-                {
-                    return;
-                }
-            }
             let owner_rt = runtime();
             let survivor = runtime();
             let (tx, _rx) = spawned_rt::tasks::oneshot::channel();
@@ -452,16 +411,6 @@ fn linked_runtime_abort_is_trappable() {
     crate::test_wait::bounded(
         concat!(module_path!(), "::linked_runtime_abort_is_trappable"),
         move || {
-            #[cfg(feature = "backend-experiments")]
-            {
-                let selector = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
-                if selector == "sharded"
-                    || spawned_rt::tasks::experimental::dispatcher::policy_for_scheduler(&selector)
-                        .is_some()
-                {
-                    return;
-                }
-            }
             let owner = runtime();
             let survivor = runtime();
             let events = Arc::new(Mutex::new(Vec::new()));
@@ -507,16 +456,6 @@ fn never_polled_completion_waits_for_actor_payload_destruction() {
             "::never_polled_completion_waits_for_actor_payload_destruction"
         ),
         move || {
-            #[cfg(feature = "backend-experiments")]
-            {
-                let selector = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
-                if selector == "sharded"
-                    || spawned_rt::tasks::experimental::dispatcher::policy_for_scheduler(&selector)
-                        .is_some()
-                {
-                    return;
-                }
-            }
             struct BlockingDrop {
                 entered: std::sync::mpsc::Sender<()>,
                 release: std::sync::mpsc::Receiver<()>,
@@ -562,16 +501,6 @@ fn linked_runtime_abort_cancels_an_idle_threads_actor() {
             "::linked_runtime_abort_cancels_an_idle_threads_actor"
         ),
         move || {
-            #[cfg(feature = "backend-experiments")]
-            {
-                let selector = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
-                if selector == "sharded"
-                    || spawned_rt::tasks::experimental::dispatcher::policy_for_scheduler(&selector)
-                        .is_some()
-                {
-                    return;
-                }
-            }
             use crate::threads::{Actor as ThreadActor, ActorStart as ThreadStart};
             struct ThreadPeer;
             impl ThreadActor for ThreadPeer {}
@@ -619,16 +548,6 @@ fn dropping_runtime_with_large_polled_link_cycle_reclaims_every_actor() {
             "::dropping_runtime_with_large_polled_link_cycle_reclaims_every_actor"
         ),
         move || {
-            #[cfg(feature = "backend-experiments")]
-            {
-                let selector = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
-                if selector == "sharded"
-                    || spawned_rt::tasks::experimental::dispatcher::policy_for_scheduler(&selector)
-                        .is_some()
-                {
-                    return;
-                }
-            }
             use std::sync::atomic::{AtomicUsize, Ordering};
             struct Node(Arc<AtomicUsize>);
             impl Actor for Node {}

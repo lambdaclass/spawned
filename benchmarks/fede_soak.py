@@ -27,7 +27,7 @@ def main():
     assert os.sched_getaffinity(0)=={2,3,4,5}
     meta=dict(started_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),revision=capture('git','rev-parse','HEAD'),dirty=bool(capture('git','status','--porcelain')),rustc=capture('rustc','--version'),cargo=capture('cargo','--version'),cpu=capture('lscpu'),load_before=Path('/proc/loadavg').read_text(),actor_cpus='2,3,4,5',driver_cpus='6,7,14,15',sampler_cpus='8,9,16,17',nice=os.nice(0),seconds=a.seconds,smoke=a.smoke,controller_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),schedule=[],environment={k:os.environ.get(k) for k in ['RUSTFLAGS','CARGO_PROFILE_BENCH_DEBUG','CARGO_BUILD_JOBS']})
     assert not meta['dirty']
-    result=subprocess.run(['cargo','bench','--locked','-p','spawned-concurrency','--features','backend-experiments,profiling-experiments','--bench','lifecycle_soak','--no-run','--message-format=json'],cwd=ROOT,capture_output=True,text=True)
+    result=subprocess.run(['cargo','bench','--manifest-path','benchmarks/experiments/Cargo.toml','--bench','lifecycle_soak','--no-run','--message-format=json'],cwd=ROOT,capture_output=True,text=True)
     (out/'build.log').write_text(result.stderr);result.check_returncode()
     artifacts=[json.loads(line) for line in result.stdout.splitlines()]
     executable=next(x['executable'] for x in artifacts if x.get('reason')=='compiler-artifact' and x['target']['name']=='lifecycle_soak' and 'bench' in x['target']['kind'] and x.get('executable'))
