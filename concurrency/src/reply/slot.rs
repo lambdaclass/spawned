@@ -545,10 +545,15 @@ impl<R> Slot<R> {
     /// [`run_wake`](Self::run_wake) once a whole batch is closed, so no
     /// waker (executor or user code) runs between two closes.
     pub(crate) fn close_collect(&self) -> Option<Wake> {
+        self.terminate_collect(STOPPED)
+    }
+
+    /// `OPEN -> target` with its credit return; the wake-up is returned.
+    fn terminate_collect(&self, target: u64) -> Option<Wake> {
         let (old, new) = self
             .cas::<()>(None, |w| {
                 if state(w) == OPEN {
-                    Ok(with_state(w, STOPPED))
+                    Ok(with_state(w, target))
                 } else {
                     Err(())
                 }
@@ -623,16 +628,7 @@ impl<R> Slot<R> {
         if deadline == NEVER || now < deadline {
             return None;
         }
-        let (old, new) = self
-            .cas::<()>(None, |w| {
-                if state(w) == OPEN {
-                    Ok(with_state(w, TIMED_OUT))
-                } else {
-                    Err(())
-                }
-            })
-            .ok()?;
-        Some(self.after(old, new))
+        self.terminate_collect(TIMED_OUT)
     }
 
     /// `is_closed()`: not `OPEN`, or past its deadline (then expired).
