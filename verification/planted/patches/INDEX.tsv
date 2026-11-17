@@ -23,3 +23,13 @@ id	name	file	bug
 22	timer-interval-outlives-actor	tasks/time.rs	send_interval keeps ticking after its actor stops (only its own token stops it)
 23	sys-shutdown-forward-order	system.rs	ActorSystem shutdown stops targets in admission order instead of reverse
 24	sys-targets-unsorted	system.rs	System shutdown stops all standalone actors before all trees, ignoring admission order
+25	start-timer-overrides-ready	start.rs	The init timer commits TimedOut over a Ready commitment (kills a ready child)
+26	start-trapping-parent-signal	start.rs	A waiting trapping parent gets the failed start's link notice delivered instead of diverted to the answer
+27	start-normal-notice-delivered	start.rs	A Normal failed-start notice to a waiting non-trapping parent is delivered instead of dropped
+28	start-reports-requested-reason	start.rs	A post-publication answer reports the requested reason, not the final one (a kill after D lost)
+29	start-admin-stop-lost	link.rs	An administrative stop held during started() is discarded when the start commits ready
+30	start-admin-stop-fails-init	link.rs	An administrative stop during started() fails the start without stopped() (revision 3's row 3)
+31	start-trapping-fails-on-signal	link.rs	A trapping child fails its start on a held non-Normal signal instead of queueing it
+32	start-link-to-exiting-parent	tasks/actor/lifecycle.rs	A start_link commits its link to a parent already exiting (stage-1 check misses a requested exit)
+33	start-kill-below-signal	link.rs	A held untrapped signal outranks a kill during started() (final reason not Killed)
+34	start-ready-in-closing-group	system.rs	A start commits ready while its execution group is closing (row 9 lost)

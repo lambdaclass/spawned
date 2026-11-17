@@ -1,0 +1,15 @@
+diff --git a/concurrency/src/system.rs b/concurrency/src/system.rs
+index 0c78f5db..b5eec13b 100644
+--- a/concurrency/src/system.rs
++++ b/concurrency/src/system.rs
+@@ -1197,9 +1197,7 @@ impl Scope {
+         let group = self.group.upgrade();
+         let group_state = group.as_ref().map(|g| lock(&g.state));
+         let mut scope = lock(&self.state);
+-        let open = parent.as_deref() != Some(&false)
+-            && group_state.as_ref().is_some_and(|g| !g.closing)
+-            && scope.open;
++        let open = parent.as_deref() != Some(&false) && group_state.is_some() && scope.open;
+         let (result, ready) = decide(open);
+         if ready {
+             scope.ready_at = Some(Instant::now());

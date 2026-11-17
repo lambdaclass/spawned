@@ -1,0 +1,15 @@
+diff --git a/concurrency/src/link.rs b/concurrency/src/link.rs
+index 7409e951..da10dead 100644
+--- a/concurrency/src/link.rs
++++ b/concurrency/src/link.rs
+@@ -325,9 +325,7 @@ impl ExitRequest {
+             // A held administrative stop now begins an ordinary exit: the
+             // run loop (already woken) dispatches nothing and runs stopped().
+             // (Its `SExit` is recorded right after the ready `SResolve`.)
+-            if let Some(reason) = admin {
+-                self.reason = Some(reason);
+-            }
++            let _ = admin;
+         } else {
+             self.frozen = true;
+             self.skip_hook = true;
