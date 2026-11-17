@@ -152,48 +152,79 @@ def generate_replies(trace, workdir):
 
 
 def generate_disposal(trace, workdir):
-    """The deadline service's hand-off and the disposal workers against
-    Disposal.tla. Expire ids number the requests 1..N, Release ids the
-    payloads 1..P, each in order of appearance. Numbering is over the whole
-    log, so a worker step logged before its hand-off keeps its request or
-    payload and the model rejects it; one never handed off gets 0 (no item)."""
+    """The deadline service's hand-off and the disposal pool against
+    Disposal.tla. The leading `Pool` event gives the idle workers when
+    recording started (InitIdle = 1..K; a worker that appears without
+    `Begin` is one of them). Requests (Expire), payloads (Defer drop), other
+    items (Defer other) and started workers (Begin) are numbered in order of
+    appearance, over the whole log, so an event out of order keeps its item
+    and the model rejects it; an item never handed off gets kind "none"."""
     for model in ("Disposal.tla", "TraceDisposal.tla"):
         shutil.copy(os.path.join(HERE, model), workdir)
-    reqs, pays, records = {}, {}, []
-    for e in trace["events"]:
-        a, raw = e["a"], int(e["id"])
-        if a == "Expire":
-            if raw in reqs:
+    events = list(trace["events"])
+    if not events or events[0]["a"] != "Pool":
+        raise ValueError("a disposal trace starts with the pool's state (Pool)")
+    pool = events.pop(0)
+    idle, started = int(pool["w"]), int(pool["r"])
+    if idle != started or pool["x"]:
+        raise ValueError(f"recording must start with the pool quiescent: {pool}")
+    reqs, items, counts = {}, {}, {"drop": 0, "other": 0}
+    for e in events:
+        if e["a"] == "Expire":
+            r = int(e["r"])
+            if r in reqs:
                 raise ValueError(f"a slot expired twice: {e}")
-            reqs[raw] = len(reqs) + 1
-        elif a == "Release":
-            if raw in pays:
-                raise ValueError(f"a payload released twice: {e}")
-            pays[raw] = len(pays) + 1
-    for e in trace["events"]:
-        a, raw = e["a"], int(e["id"])
-        if a in {"Expire", "Wake"}:
-            ident = reqs.get(raw, 0)
-        elif a in {"Release", "Drop"}:
-            ident = pays.get(raw, 0)
+            reqs[r] = len(reqs) + 1
+            if int(e["id"]):
+                items[int(e["id"])] = ("wake", reqs[r])
+        elif e["a"] == "Defer":
+            kind = e["x"]
+            counts[kind] += 1
+            items[int(e["id"])] = (kind, counts[kind])
+    begun = {int(e["w"]) for e in events if e["a"] == "Begin"}
+    workers, preexisting = {}, 0
+    for e in events:
+        w = int(e.get("w", 0))
+        if not w or w in workers:
+            continue
+        if w in begun:
+            workers[w] = None  # numbered after the pre-existing ones
         else:
-            ident = 0
-        records.append("[a |-> {}, id |-> {}, x |-> {}]".format(
-            tla_string(a), ident, tla_string(e["x"])))
+            preexisting += 1
+            if preexisting > idle:
+                raise ValueError(f"more pre-existing workers than were idle: {e}")
+            workers[w] = preexisting
+    following = idle
+    for w in workers:
+        if workers[w] is None:
+            following += 1
+            workers[w] = following
+    records = []
+    for e in events:
+        a = e["a"]
+        if a == "Expire":
+            k, n = ("wake" if e["x"] == "wake" else "none"), reqs[int(e["r"])]
+        elif a in {"Defer", "Take", "Run", "Settle", "Done"}:
+            k, n = items.get(int(e["id"]), ("none", 0))
+        else:
+            k, n = "none", 0
+        records.append("[a |-> {}, w |-> {}, k |-> {}, n |-> {}, x |-> {}]".format(
+            tla_string(a), workers.get(int(e.get("w", 0)), 0), tla_string(k), n,
+            tla_string(e["x"])))
     if not records:
         raise ValueError("a disposal trace needs at least one event")
     with open(os.path.join(workdir, "TraceRun.tla"), "w") as out:
         out.write("---- MODULE TraceRun ----\nEXTENDS TraceDisposal\n"
-                  "TraceBlocking == {}\nTraceLog == <<\n    "
+                  f"TraceBlocking == {{}}\nTraceInitIdle == 1..{idle}\nTraceLog == <<\n    "
                   + ",\n    ".join(records) + "\n>>\n====\n")
     with open(os.path.join(workdir, "TraceRun.cfg"), "w") as out:
-        # Deadlines are chosen by TLC; one tick makes every slot due. One
-        # worker per item, plus one, so no recorded run waits for a worker.
+        # Deadlines are chosen by TLC; one tick makes every slot due. The
+        # worker cap is the code's (MAX_WORKERS).
         out.write("INIT TraceInit\nNEXT TraceNext\nCONSTANTS\n"
-                  f"    N = {len(reqs)}\n    P = {len(pays)}\n    MaxTime = 1\n"
-                  f"    Workers = {len(reqs) + len(pays) + 1}\n"
-                  "    Blocking <- TraceBlocking\n    Fault = \"None\"\n"
-                  "    Trace <- TraceLog\n"
+                  f"    N = {len(reqs)}\n    P = {counts['drop']}\n    O = {counts['other']}\n"
+                  "    MaxTime = 1\n    Workers = 64\n"
+                  "    Blocking <- TraceBlocking\n    InitIdle <- TraceInitIdle\n"
+                  "    Fault = \"None\"\n    Trace <- TraceLog\n"
                   "INVARIANT Safety\nINVARIANT TraceIncomplete\n")
 
 

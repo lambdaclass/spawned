@@ -181,18 +181,22 @@ impl ReplyEvent {
 }
 
 /// One action of `verification/tla/Disposal.tla`: the deadline service's
-/// expiry and hand-off, the disposal workers' steps, and the owner's payload
-/// hold. `Expire` (a slot's transition on the service thread; `x`: `wake` if
-/// it handed off a wake-up, else `none`), `Release` (a payload deferred from
-/// the service thread), `Submit` (a visit's work handed to the pool), `Wake`
-/// (a worker runs a handed-off wake-up), `Drop` (a worker settles a payload;
-/// `x`: `held` or `dropped`), `Exit` (the owner's hold begins) and `Death`
-/// (its hold is released at the death point). `id` numbers the slot or
-/// payload (fresh per Expire/Release; normalized by the checker).
+/// expiry and hand-off, the disposal pool's steps, and the owner's payload
+/// hold. On the service thread: `Expire` (a slot's transition; `r` the
+/// request, `id` its wake-up item, `x`: `wake` or `none`), `Defer` (an item
+/// handed off; `x`: `drop` or `other`) and `Submit` (the visit's items
+/// queued; `x`: `spawn` if a worker start was decided). In the pool (`w` the
+/// worker): `Begin`, `Take` (`id`, `x` as for `Submit`), `Run` and `Done`
+/// (an item starts and returns), `Settle` (a payload's hold check; `x`:
+/// `held` or `dropped`), `Wait`, `Woke` and `Retire`. The owner: `Exit`
+/// (its hold begins) and `Death` (the hold is released at the death point).
+/// Numbers are fresh and normalized by the checker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisposalEvent {
     pub action: &'static str,
+    pub w: u64,
     pub id: u64,
+    pub r: u64,
     pub x: &'static str,
 }
 
@@ -200,8 +204,8 @@ impl DisposalEvent {
     /// JSON object understood by `verification/tla/trace_check.py`.
     pub fn to_json(&self) -> String {
         format!(
-            r#"{{"a":"{}","id":{},"x":"{}"}}"#,
-            self.action, self.id, self.x
+            r#"{{"a":"{}","w":{},"id":{},"r":{},"x":"{}"}}"#,
+            self.action, self.w, self.id, self.r, self.x
         )
     }
 }
@@ -520,10 +524,24 @@ mod imp {
     /// Start recording disposal events until [`take_disposal`]. Tests that
     /// record must not run concurrently with each other or with other
     /// deadline expiries or actor exits in the process.
+    ///
+    /// The first event, `Pool`, is the pool's state when recording starts
+    /// (`w`: idle workers, `r`: workers, `x`: `starting` if a start is in
+    /// flight); the checker starts the model from it.
     pub fn record_disposal() {
-        atomic(|| {
-            lock(&DISPOSAL).clear();
-            DISPOSAL_ON.store(true, Ordering::Release);
+        crate::reply::disposal::with_pool_state(|idle, workers, starting| {
+            atomic(|| {
+                let mut events = lock(&DISPOSAL);
+                events.clear();
+                events.push(super::DisposalEvent {
+                    action: "Pool",
+                    w: idle as u64,
+                    id: 0,
+                    r: workers as u64,
+                    x: if starting { "starting" } else { "" },
+                });
+                DISPOSAL_ON.store(true, Ordering::Release);
+            });
         });
     }
 
@@ -560,16 +578,30 @@ mod imp {
     }
 
     /// Record a disposal action (inside the section of the step it names).
-    /// An `id` of 0 (taken while recording was off) is not recorded.
-    pub(crate) fn disposal(action: &'static str, id: u64, x: &'static str) {
+    /// An item or request numbered 0 (taken while recording was off), or a
+    /// worker step off a worker, is not recorded.
+    pub(crate) fn disposal(action: &'static str, w: u64, id: u64, r: u64, x: &'static str) {
         if !disposal_on() {
             return;
         }
-        atomic(|| {
-            if id != 0 || matches!(action, "Submit" | "Exit" | "Death") {
-                lock(&DISPOSAL).push(super::DisposalEvent { action, id, x });
-            }
-        });
+        let recorded = match action {
+            "Expire" => r != 0,
+            "Defer" => id != 0,
+            "Take" | "Run" | "Done" | "Settle" => id != 0 && w != 0,
+            "Begin" | "Wait" | "Woke" | "Retire" => w != 0,
+            _ => true,
+        };
+        if recorded {
+            atomic(|| {
+                lock(&DISPOSAL).push(super::DisposalEvent {
+                    action,
+                    w,
+                    id,
+                    r,
+                    x,
+                });
+            });
+        }
     }
 
     /// Whether actor `id` is recorded.
@@ -1170,7 +1202,7 @@ mod imp {
     }
     #[allow(dead_code)]
     #[inline(always)]
-    pub(crate) fn disposal(_: &'static str, _: u64, _: &'static str) {}
+    pub(crate) fn disposal(_: &'static str, _: u64, _: u64, _: u64, _: &'static str) {}
     #[inline(always)]
     pub(crate) fn disposal_section<R>(f: impl FnOnce() -> R) -> R {
         f()

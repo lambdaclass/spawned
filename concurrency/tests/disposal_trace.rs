@@ -2,10 +2,14 @@
 //! actors, for TLA+ trace validation against `verification/tla/Disposal.tla`
 //! (verification/tla/README.md). Each scenario writes `disposal_<name>.json`
 //! to `$LIFECYCLE_TRACE_DIR` (default `target/lifecycle-traces`);
-//! `verification/tla/trace_check.py` checks them (schema `disposal-v1`).
+//! `verification/tla/trace_check.py` checks them (schema `disposal-v1`). A
+//! negative control recorded from deliberately broken code (the
+//! `disposal.batch_serial` failpoint) goes to `controls/` there, and
+//! `negative_checks.py` requires it to be rejected.
 //!
-//! The recording is process-wide (the service is), so scenarios run one at a
-//! time and each waits for its workers before taking the trace.
+//! The recording is process-wide (the service and the pool are), so
+//! scenarios run one at a time, start with the pool quiescent and wait for
+//! their workers before taking the trace.
 #![cfg(all(feature = "lifecycle-trace", feature = "async"))]
 
 use spawned_concurrency::{
@@ -34,8 +38,16 @@ fn trace_dir() -> PathBuf {
         })
 }
 
-/// Stop recording and write the trace; returns the events as `Action:x`.
-fn write(name: &str) -> Vec<String> {
+/// Let the pool settle (every worker waiting), then record.
+async fn record() {
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    lifecycle_trace::record_disposal();
+}
+
+/// Let the workers finish, stop recording and write the trace to `dir`;
+/// returns the events as `Action:x`.
+async fn write_to(dir: PathBuf, name: &str) -> Vec<String> {
+    tokio::time::sleep(Duration::from_millis(100)).await;
     let events = lifecycle_trace::take_disposal();
     let json = format!(
         "{{\"name\":\"disposal_{name}\",\"schema\":\"disposal-v1\",\"events\":[\n{}\n]}}\n",
@@ -45,7 +57,6 @@ fn write(name: &str) -> Vec<String> {
             .collect::<Vec<_>>()
             .join(",\n")
     );
-    let dir = trace_dir();
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(format!("disposal_{name}.json")), json).unwrap();
     events
@@ -58,6 +69,10 @@ fn write(name: &str) -> Vec<String> {
             }
         })
         .collect()
+}
+
+async fn write(name: &str) -> Vec<String> {
+    write_to(trace_dir(), name).await
 }
 
 fn count(events: &[String], event: &str) -> usize {
@@ -132,13 +147,9 @@ async fn discard_an_emit(owner: &ActorRef<Owner>, drops: &Arc<AtomicUsize>) {
     .unwrap();
 }
 
-/// Expired requests: two waiting callers are woken by workers, a third
-/// (never polled) has nothing to wake.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn expired_callers_are_woken_by_workers() {
-    let _serial = SERIAL.lock().await;
-    let owner = Owner::default().start();
-    lifecycle_trace::record_disposal();
+/// Two callers waiting with the same deadline (expired in one visit) and
+/// one that never polls.
+async fn expire_callers(owner: &ActorRef<Owner>) {
     let deadline = Deadline::after(Duration::from_millis(50));
     let first = owner.send_request(Park, deadline).unwrap();
     let second = owner.send_request(Park, deadline).unwrap();
@@ -146,15 +157,28 @@ async fn expired_callers_are_woken_by_workers() {
     let (a, b) = tokio::join!(first, second);
     assert!(matches!(a, Err(ActorError::RequestTimeout)));
     assert!(matches!(b, Err(ActorError::RequestTimeout)));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+}
+
+async fn stop(owner: ActorRef<Owner>) {
     owner.context().stop();
     owner.join().await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let events = write("expired_callers");
+}
+
+/// Expired requests: two waiting callers are woken by workers, a third
+/// (never polled) has nothing to wake.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn expired_callers_are_woken_by_workers() {
+    let _serial = SERIAL.lock().await;
+    let owner = Owner::default().start();
+    record().await;
+    expire_callers(&owner).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    stop(owner).await;
+    let events = write("expired_callers").await;
     assert_eq!(count(&events, "Expire:wake"), 2, "{events:?}");
     assert_eq!(count(&events, "Expire:none"), 1, "{events:?}");
-    assert_eq!(count(&events, "Wake"), 2, "{events:?}");
-    assert!(count(&events, "Submit") >= 1, "{events:?}");
+    assert!(count(&events, "Run") >= 2, "{events:?}");
+    assert_eq!(count(&events, "Run"), count(&events, "Done"), "{events:?}");
 }
 
 /// Payloads released on the deadline service are dropped by workers while
@@ -164,7 +188,7 @@ async fn released_payloads_are_dropped_by_workers() {
     let _serial = SERIAL.lock().await;
     let owner = Owner::default().start();
     let drops = Arc::new(AtomicUsize::new(0));
-    lifecycle_trace::record_disposal();
+    record().await;
     discard_an_emit(&owner, &drops).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(
@@ -172,70 +196,112 @@ async fn released_payloads_are_dropped_by_workers() {
         1,
         "the discarded emit was dropped"
     );
-    owner.context().stop();
-    owner.join().await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let events = write("released_payloads");
-    assert!(count(&events, "Release") >= 1, "{events:?}");
+    stop(owner).await;
+    let events = write("released_payloads").await;
+    assert!(count(&events, "Defer:drop") >= 1, "{events:?}");
     assert_eq!(
-        count(&events, "Drop:dropped"),
-        count(&events, "Release"),
+        count(&events, "Settle:dropped"),
+        count(&events, "Defer:drop"),
         "{events:?}"
     );
-    assert_eq!(count(&events, "Drop:held"), 0, "{events:?}");
+    assert_eq!(count(&events, "Settle:held"), 0, "{events:?}");
 }
 
-/// A payload handed off before the owner's exit, reaching its worker after
-/// the exit began (the worker is delayed at `disposal.item`), is held and
-/// dropped only at the death point.
 #[cfg(feature = "failpoints")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_payload_handed_off_before_exit_waits_for_the_death_point() {
+mod with_failpoints {
+    use super::*;
     use spawned_concurrency::failpoints::{self, Action, FailPoint, FailScenario};
-    let _serial = SERIAL.lock().await;
-    let _scenario = FailScenario::setup();
-    let (release, gate) = std::sync::mpsc::channel();
-    let (stopping_tx, stopping) = std::sync::mpsc::channel();
-    let owner = Owner {
-        gate: Some((gate, stopping_tx)),
-        ..Owner::default()
+
+    /// A payload handed off before the owner's exit, reaching its worker
+    /// after the exit began (the worker is delayed at `disposal.item`), is
+    /// held and dropped only at the death point.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_payload_handed_off_before_exit_waits_for_the_death_point() {
+        let _serial = SERIAL.lock().await;
+        let _scenario = FailScenario::setup();
+        let (release, gate) = std::sync::mpsc::channel();
+        let (stopping_tx, stopping) = std::sync::mpsc::channel();
+        let owner = Owner {
+            gate: Some((gate, stopping_tx)),
+            ..Owner::default()
+        }
+        .start();
+        let drops = Arc::new(AtomicUsize::new(0));
+        record().await;
+        failpoints::configure(
+            "disposal.item",
+            FailPoint::new(Action::Delay(Duration::from_millis(400))),
+        )
+        .unwrap();
+        discard_an_emit(&owner, &drops).await;
+        // The emit is discarded at 40 ms; its worker waits until ~440 ms.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        owner.context().stop();
+        tokio::task::spawn_blocking(move || stopping.recv_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .expect("stopped() began");
+        // The worker settles the payload while stopped() still runs.
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let before_death = drops.load(Ordering::SeqCst);
+        release.send(()).unwrap();
+        owner.join().await;
+        failpoints::remove("disposal.item");
+        let events = write("held_until_death").await;
+        assert_eq!(
+            before_death, 0,
+            "a payload handed off before the exit was dropped before the death point"
+        );
+        assert_eq!(
+            drops.load(Ordering::SeqCst),
+            1,
+            "dropped at the death point"
+        );
+        let held = events.iter().position(|e| e == "Settle:held");
+        let exit = events.iter().position(|e| e == "Exit");
+        let death = events.iter().position(|e| e == "Death");
+        assert!(exit < held && held < death && held.is_some(), "{events:?}");
     }
-    .start();
-    let drops = Arc::new(AtomicUsize::new(0));
-    failpoints::configure(
-        "disposal.item",
-        FailPoint::new(Action::Delay(Duration::from_millis(400))),
-    )
-    .unwrap();
-    lifecycle_trace::record_disposal();
-    discard_an_emit(&owner, &drops).await;
-    // The emit is discarded at 40 ms; its worker waits until ~440 ms.
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    owner.context().stop();
-    tokio::task::spawn_blocking(move || stopping.recv_timeout(Duration::from_secs(5)))
-        .await
-        .unwrap()
-        .expect("stopped() began");
-    // The worker settles the payload while stopped() still runs.
-    tokio::time::sleep(Duration::from_millis(600)).await;
-    let before_death = drops.load(Ordering::SeqCst);
-    release.send(()).unwrap();
-    owner.join().await;
-    failpoints::remove("disposal.item");
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let events = write("held_until_death");
-    assert_eq!(
-        before_death, 0,
-        "a payload handed off before the exit was dropped before the death point"
-    );
-    assert_eq!(
-        drops.load(Ordering::SeqCst),
-        1,
-        "dropped at the death point"
-    );
-    assert!(count(&events, "Drop:held") >= 1, "{events:?}");
-    let held = events.iter().position(|e| e == "Drop:held").unwrap();
-    let exit = events.iter().position(|e| e == "Exit").unwrap();
-    let death = events.iter().position(|e| e == "Death").unwrap();
-    assert!(exit < held && held < death, "{events:?}");
+
+    /// Idle workers retire (keep-alive shortened) and later work starts new
+    /// ones.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn idle_workers_retire_and_new_ones_start() {
+        let _serial = SERIAL.lock().await;
+        let _scenario = FailScenario::setup();
+        failpoints::configure("disposal.keep_alive", FailPoint::new(Action::Error)).unwrap();
+        // Let the workers left by earlier scenarios retire first.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let owner = Owner::default().start();
+        record().await;
+        expire_callers(&owner).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        expire_callers(&owner).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        stop(owner).await;
+        let events = write("workers_retire").await;
+        failpoints::remove("disposal.keep_alive");
+        assert!(count(&events, "Retire") >= 1, "{events:?}");
+        assert!(count(&events, "Begin") >= 2, "{events:?}");
+    }
+
+    /// Negative control recorded from broken code: with
+    /// `disposal.batch_serial` the batch runs serially on one worker. The
+    /// callers are still woken (nothing blocks here), but the trace must be
+    /// rejected: a worker runs an item it never took.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn batch_serial_control() {
+        let _serial = SERIAL.lock().await;
+        let _scenario = FailScenario::setup();
+        let owner = Owner::default().start();
+        record().await;
+        failpoints::configure("disposal.batch_serial", FailPoint::new(Action::Error)).unwrap();
+        expire_callers(&owner).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        failpoints::remove("disposal.batch_serial");
+        stop(owner).await;
+        let events = write_to(trace_dir().join("controls"), "batch_serial").await;
+        assert_eq!(count(&events, "Expire:wake"), 2, "{events:?}");
+        assert!(count(&events, "Run") > count(&events, "Take"), "{events:?}");
+    }
 }

@@ -54,7 +54,18 @@ pub(crate) trait Closeable: Send + Sync {
 /// with the wake-up its close collected, if it closed it.
 type PendingWake = (Arc<dyn Closeable>, Option<Wake>);
 
-impl<R: Send> Expirable for Slot<R> {
+impl<R: Send + 'static> Expirable for Slot<R> {
+    /// Only a `REPLIED` slot can hold a value (an unread reply, user code
+    /// when destroyed), so only its drop is handed off, and that of a slot
+    /// not yet terminal (a reply still `WRITING` may store one). Any other
+    /// terminal state is final and holds no value: dropped in place.
+    fn dispose(self: Arc<Self>) {
+        if !self.is_terminal()
+            || Terminal::of(super::slot::state(self.word())) == Some(Terminal::Replied)
+        {
+            super::disposal::defer_drop(self);
+        }
+    }
     fn pending_deadline(&self) -> Option<u64> {
         let deadline = self.deadline();
         (!self.is_terminal() && deadline != NEVER).then_some(deadline)
@@ -65,22 +76,23 @@ impl<R: Send> Expirable for Slot<R> {
     fn expire(&self, now: u64) {
         if let Some(mut wake) = self.expire_collect(now) {
             wake.notify_parked();
-            // Disposal.tla `Expire` (after the transition and its credit
-            // return) and, on a worker, `Wake`. Compiled out without
-            // `lifecycle-trace`; recorded only on the collecting service.
-            let id = if cfg!(feature = "lifecycle-trace") && super::disposal::collecting() {
+            // Disposal.tla `Expire`: after the transition and its credit
+            // return, the wake-up (if any) is handed off. Compiled out
+            // without `lifecycle-trace`; recorded only on the service.
+            let request = if cfg!(feature = "lifecycle-trace") && super::disposal::collecting() {
                 crate::lifecycle_trace::disposal_id()
             } else {
                 0
             };
-            let kind = if wake.is_empty() { "none" } else { "wake" };
-            crate::lifecycle_trace::disposal("Expire", id, kind);
-            if !wake.is_empty() {
-                super::disposal::defer(move || {
-                    crate::lifecycle_trace::disposal("Wake", id, "");
-                    wake.run()
-                });
-            }
+            let (item, kind) = if wake.is_empty() {
+                (0, "none")
+            } else {
+                (
+                    super::disposal::defer_as("wake", move || wake.run()),
+                    "wake",
+                )
+            };
+            crate::lifecycle_trace::disposal("Expire", 0, item, request, kind);
         }
     }
 }
@@ -327,8 +339,8 @@ impl Registry {
                 if item.pending_deadline().is_some_and(|d| d <= now) {
                     item.expire(now);
                 }
-                // Possibly the last reference.
-                super::disposal::defer_drop(item);
+                // Possibly the last reference (see `Expirable::dispose`).
+                item.dispose();
             });
         }
         lock(&self.lists).deadlines.earliest()

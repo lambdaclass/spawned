@@ -156,7 +156,7 @@ code = [
     "concurrency/src/threads/jobs.rs",
     "concurrency/src/lifecycle_trace.rs",
 ]
-coverage_floor = 7   # of 7 action keys (TraceDisposal arms)
+coverage_floor = 13   # of 13 action keys (TraceDisposal arms)
 
 [models.ReplyTimer]
 # Receiver-side refinement: the shared runtime deadline and shortening mark.

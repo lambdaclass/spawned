@@ -1,29 +1,33 @@
 ----------------------------- MODULE TraceDisposal -----------------------------
 (***************************************************************************)
 (* Trace validation for Disposal.tla: the deadline service's hand-off of   *)
-(* wake-ups and payloads to the disposal workers, and the owner's hold.    *)
+(* wake-ups and payloads to the disposal workers, the pool's bookkeeping,  *)
+(* and the owner's hold.                                                   *)
 (*                                                                         *)
 (* With the `lifecycle-trace` feature, while `record_disposal` is on, the  *)
-(* code records (concurrency/src/lifecycle_trace.rs, DisposalEvent; `id`   *)
-(* is fresh per Expire or Release and numbered by trace_check.py):         *)
-(*   Expire   a slot's OPEN -> TIMED_OUT and credit return on the service  *)
-(*            thread, in a collecting visit (registry.rs, Expirable for    *)
-(*            Slot); x: "wake" if a wake-up was handed off, else "none"    *)
+(* code records (concurrency/src/lifecycle_trace.rs, DisposalEvent):       *)
+(* on the service thread                                                   *)
+(*   Expire   a slot's OPEN -> TIMED_OUT and credit return, in a visit     *)
+(*            (registry.rs); x: "wake" if its wake-up was handed off       *)
 (*            (Expire, with the caller's `waiting` matching x)             *)
-(*   Release  a payload deferred from the service thread, in one section   *)
-(*            with the hold check (DropFailures::discard) (Release)        *)
-(*   Submit   the visit's work handed to the pool (deadline.rs) (Submit;   *)
-(*            a visit whose items are all untracked, such as the last      *)
-(*            reference to an entry, submits an empty batch here)          *)
-(*   Wake     a worker runs a handed-off wake-up (Run of a wake item)      *)
-(*   Drop     a worker settles a payload in one section with the hold     *)
-(*            check (DropFailures::settle); x: "held" or "dropped" (Run of *)
-(*            a drop item)                                                 *)
-(*   Exit     the owner's hold begins (DropFailures::hold) (Exit)          *)
-(*   Death    the hold is released at the death point (Death)             *)
+(*   Defer    a payload (x: "drop", DropFailures::discard, in one section  *)
+(*            with the hold check) or another item (x: "other": the last   *)
+(*            reference to a job or registry, emitter wakers, a slot with  *)
+(*            an unread reply) handed off (Release, Other)                 *)
+(*   Submit   the visit's items queued and the start rule (x: "spawn" if   *)
+(*            a worker start was decided) (Submit)                         *)
+(* in the pool (disposal.rs `run`, each under the pool lock except Run,    *)
+(* Settle and Done)                                                        *)
+(*   Begin, Take (x as for Submit), Wait, Woke, Retire  (same names)       *)
+(*   Run      the worker starts its item (a wake-up wakes its caller) (Run)*)
+(*   Settle   a payload's hold check, x: "held" or "dropped" (Settle)      *)
+(*   Done     the item returned (Done)                                    *)
+(* and the owner: Exit (DropFailures::hold) and Death (release).          *)
 (*                                                                         *)
-(* Silent: the clock, and the workers' Start, Take and Retire. No item     *)
-(* blocks in a recorded run (Blocking = {}).                               *)
+(* trace_check.py turns the leading `Pool` event (the pool when recording *)
+(* starts: its idle workers) into InitIdle, numbers requests, payloads,    *)
+(* other items and workers, and sets Workers to the code's cap. The clock  *)
+(* is silent. No item blocks in a recorded run (Blocking = {}).            *)
 (***************************************************************************)
 EXTENDS Disposal, TLC
 
@@ -35,27 +39,31 @@ traceVars == <<vars, i>>
 
 TraceInit == Init /\ i = 0
 
-\* Some worker runs `item` next.
-WorkerRuns(item) == \E w \in W : cur[w] # <<>> /\ Head(cur[w]) = item /\ Run(w)
+Item(e) == [k |-> e.k, id |-> e.n]
 
 Step(e) ==
-    CASE e.a = "Expire"  -> e.id \in Req /\ waiting[e.id] = (e.x = "wake") /\ Expire(e.id)
-      [] e.a = "Release" -> e.id \in Pay /\ Release(e.id)
-      [] e.a = "Submit"  -> \/ Submit
-                            \/ batch = <<>> /\ UNCHANGED vars
-      [] e.a = "Wake"    -> e.id \in Req /\ WorkerRuns(WakeItem(e.id))
-      [] e.a = "Drop"    -> e.id \in Pay /\ WorkerRuns(DropItem(e.id)) /\ payload'[e.id] = e.x
-      [] e.a = "Exit"    -> Exit
-      [] e.a = "Death"   -> Death
-      [] OTHER           -> FALSE
-
-Silent == \/ Tick
-          \/ \E w \in W : Start(w) \/ Take(w) \/ Retire(w)
+    CASE e.a = "Expire" -> e.n \in Req /\ waiting[e.n] = (e.x = "wake") /\ Expire(e.n)
+      [] e.a = "Defer"  -> \/ e.k = "drop" /\ e.n \in Pay /\ Release(e.n)
+                           \/ e.k = "other" /\ e.n \in Oth /\ Other(e.n)
+      [] e.a = "Submit" -> SubmitDecide(e.x = "spawn")
+      [] e.a = "Begin"  -> e.w \in W /\ Begin(e.w)
+      [] e.a = "Take"   -> e.w \in W /\ queue # <<>> /\ Head(queue) = <<Item(e)>>
+                           /\ TakeDecide(e.w, e.x = "spawn")
+      [] e.a = "Wait"   -> e.w \in W /\ Wait(e.w)
+      [] e.a = "Woke"   -> e.w \in W /\ Woke(e.w)
+      [] e.a = "Retire" -> e.w \in W /\ Retire(e.w)
+      [] e.a = "Run"    -> e.w \in W /\ cur[e.w] # <<>> /\ Head(cur[e.w]) = Item(e) /\ Run(e.w)
+      [] e.a = "Settle" -> e.w \in W /\ cur[e.w] # <<>> /\ Head(cur[e.w]) = Item(e)
+                           /\ SettleTo(e.w, e.x)
+      [] e.a = "Done"   -> e.w \in W /\ cur[e.w] # <<>> /\ Head(cur[e.w]) = Item(e) /\ Done(e.w)
+      [] e.a = "Exit"   -> Exit
+      [] e.a = "Death"  -> Death
+      [] OTHER          -> FALSE
 
 TraceNext ==
     /\ i < Len(Trace)
     /\ \/ Step(Trace[i + 1]) /\ i' = i + 1
-       \/ Silent /\ UNCHANGED i
+       \/ Tick /\ UNCHANGED i
 
 TraceSpec == TraceInit /\ [][TraceNext]_traceVars
 

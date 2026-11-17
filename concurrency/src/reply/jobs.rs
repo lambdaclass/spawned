@@ -257,6 +257,22 @@ pub(crate) struct JobState {
 /// Payloads an owner's exit took from a job, destroyed after its death point.
 type ExitReleased = (Option<HeldTerminal>, Vec<Arc<ScheduledEmit>>);
 
+impl Drop for JobState {
+    /// The last reference can go on the deadline service (a job deadline or
+    /// emit entry): what exit released and nobody disposed of yet is user
+    /// payload, so it goes to a disposal worker there (inline elsewhere).
+    fn drop(&mut self) {
+        let released = self
+            .exit_released
+            .get_mut()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(released) = released {
+            super::disposal::defer_drop(released);
+        }
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -1056,7 +1072,7 @@ impl Drop for ScheduledEmit {
             .get_mut()
             .unwrap_or_else(|p| p.into_inner())
             .take();
-        self.failures.discard(send);
+        self.failures.discard_some(send);
     }
 }
 
@@ -1092,8 +1108,11 @@ impl ScheduledEmit {
         let delivered = result.is_ok();
         // Whatever was not enqueued (the refused envelope, the uncalled send
         // or the discarded one, each with its credit guard) drops here,
-        // unlocked and contained.
-        self.failures.discard((result, unused, discarded));
+        // unlocked and contained. A delivered emit leaves nothing to drop:
+        // no hand-off then.
+        if result.is_err() || unused.is_some() || discarded.is_some() {
+            self.failures.discard((result, unused, discarded));
+        }
         lock(&job.scheduled).retain(|emit| !std::ptr::eq(Arc::as_ptr(emit), self));
         if let Some(held) = held {
             held();

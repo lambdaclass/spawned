@@ -36,7 +36,7 @@ impl DropFailures {
             let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
             if held.is_none() {
                 *held = Some(Vec::new());
-                crate::lifecycle_trace::disposal("Exit", 0, "");
+                crate::lifecycle_trace::disposal("Exit", 0, 0, 0, "");
             }
         });
     }
@@ -47,7 +47,7 @@ impl DropFailures {
         let held = crate::lifecycle_trace::disposal_section(|| {
             let held = self.held.lock().unwrap_or_else(|p| p.into_inner()).take();
             if held.is_some() {
-                crate::lifecycle_trace::disposal("Death", 0, "");
+                crate::lifecycle_trace::disposal("Death", 0, 0, 0, "");
             }
             held
         });
@@ -62,7 +62,8 @@ impl DropFailures {
     pub(crate) fn discard<T: Send + 'static>(self: &Arc<Self>, value: T) {
         let mut value = Some(value);
         // One step of Disposal.tla with `Exit` and `Death`: the hold check
-        // and, on the service thread, `Release` (the hand-off).
+        // and, on the service thread, `Release` (the hand-off, recorded as
+        // `Defer` with `x: drop`).
         let inline = crate::lifecycle_trace::disposal_section(|| {
             let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(held) = held.as_mut() {
@@ -72,11 +73,9 @@ impl DropFailures {
             }
             drop(held);
             if crate::reply::disposal::collecting() {
-                let id = crate::lifecycle_trace::disposal_id();
-                crate::lifecycle_trace::disposal("Release", id, "");
                 let failures = self.clone();
                 let value = value.take();
-                crate::reply::disposal::defer(move || failures.settle(value, id));
+                crate::reply::disposal::defer_as("drop", move || failures.settle(value));
                 return false;
             }
             true
@@ -85,18 +84,30 @@ impl DropFailures {
             self.drop_contained(value);
         }
     }
-    /// A disposal worker's step for a payload the service handed off: held
-    /// if the owner's exit began meanwhile (dropped at its death point),
-    /// else dropped now (Disposal.tla `Drop`).
-    fn settle<T: Send + 'static>(&self, value: T, _id: u64) {
+    /// [`discard`](Self::discard) of an optional payload: nothing to dispose
+    /// of (and no hand-off) when it is `None`.
+    #[inline]
+    pub(crate) fn discard_some<T: Send + 'static>(self: &Arc<Self>, value: Option<T>) {
+        if let Some(value) = value {
+            self.discard(value);
+        }
+    }
+    /// A disposal worker's step for a payload the service handed off
+    /// (Disposal.tla `Settle`, then the destructor until `Done`): held if
+    /// the owner's exit began meanwhile (dropped at its death point), else
+    /// dropped now. A drop decided before the exit is pre-exit work and may
+    /// still run while the exit proceeds; the exit never waits for it
+    /// (deferred-replies.md §5).
+    fn settle<T: Send + 'static>(&self, value: T) {
         let mut value = Some(value);
+        let (w, item) = crate::reply::disposal::current();
         crate::lifecycle_trace::disposal_section(|| {
             let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(held) = held.as_mut() {
                 held.push(Box::new(value.take()));
-                crate::lifecycle_trace::disposal("Drop", _id, "held");
+                crate::lifecycle_trace::disposal("Settle", w, item, 0, "held");
             } else {
-                crate::lifecycle_trace::disposal("Drop", _id, "dropped");
+                crate::lifecycle_trace::disposal("Settle", w, item, 0, "dropped");
             }
         });
         self.drop_contained(value);

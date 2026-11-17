@@ -29,6 +29,12 @@ pub(crate) trait Expirable: Send + Sync {
     fn pending_deadline(&self) -> Option<u64>;
     /// The deadline passed (`now >= deadline`): expire the item.
     fn expire(&self, now: u64);
+    /// Drop the service's reference after the visit. It may be the last:
+    /// an item whose last drop can run user code hands that drop off
+    /// ([`super::disposal`]); others drop in place, with no hand-off.
+    fn dispose(self: Arc<Self>) {
+        drop(self);
+    }
 }
 
 struct Entry {
@@ -320,10 +326,7 @@ mod thread_service {
                             }
                         });
                     });
-                    // Disposal.tla `Submit`: the visit's work goes to the pool.
-                    if !released.is_empty() {
-                        crate::lifecycle_trace::disposal("Submit", 0, "");
-                    }
+                    // Disposal.tla `Submit` (recorded there).
                     super::super::disposal::submit(released);
                     state = lock(service);
                 }

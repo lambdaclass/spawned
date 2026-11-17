@@ -1,21 +1,33 @@
 //! Disposal off the deadline service thread
-//! (docs/design/deferred-replies.md §2, "Callback progress").
+//! (docs/design/deferred-replies.md §2, "Callback progress"; modelled in
+//! verification/tla/Disposal.tla, whose actions the comments name).
 //!
 //! The process-wide deadline thread decides expiry: it pops due entries,
 //! makes their terminal transitions and returns their deferral credits
 //! (atomics and framework locks only). What an expiry releases that can run
 //! user code (a caller's waker, a payload destructor routed to the owner's
-//! failure sink, the last reference to an entry) is collected while the
-//! thread services a visit ([`collect`]) and handed to the disposal workers
-//! ([`submit`]) one item at a time. A worker that blocks in user code holds
-//! only the item it runs: a queued item that finds no idle worker starts
-//! another one, so a blocking destructor or waker delays no other expiry and
-//! no other wake-up, of another actor or of the same one.
+//! failure sink, the last reference to a job or registry, a slot holding an
+//! unread reply) is collected while the thread services a visit
+//! ([`collect`]) and handed to the disposal workers ([`submit`]) one item at
+//! a time. A worker that blocks in user code holds only the item it runs: a
+//! queued item that finds no idle worker starts another one, so, while fewer
+//! than [`MAX_WORKERS`] callbacks are blocked at once, a blocking destructor
+//! or waker delays no other expiry and no other wake-up, of another actor or
+//! of the same one. Past the cap, later items queue (expiry does not).
+//!
+//! The service thread still runs, inline: the owner's own executor wake
+//! (enqueueing a job's message), dropping (not waking) a job's stored
+//! wakers, the `tracing` subscriber for a contained panic or the cap
+//! warning, a panic payload's destructor (`dispose_panic`), and, only if no
+//! disposal thread exists and none can be spawned, the work itself.
 //!
 //! Outside a [`collect`] scope, [`defer`] and [`defer_drop`] run inline, so
 //! every other thread (owner turns, jobs, the simulated service task) keeps
 //! its behaviour. The check is one thread-local read, made only on paths
 //! that already have something to wake or drop.
+//!
+//! A burst of quick items can start workers that are then idle: at most one
+//! start is in flight, and idle workers exit after [`KEEP_ALIVE`].
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -24,9 +36,55 @@ use std::time::Duration;
 
 pub(crate) type Work = Box<dyn FnOnce() + Send>;
 
+/// One handed-off item. With `lifecycle-trace`, its number in disposal
+/// traces (0: not recorded).
+pub(crate) struct Item {
+    work: Work,
+    #[cfg(feature = "lifecycle-trace")]
+    id: u64,
+}
+
+impl Item {
+    #[cfg_attr(not(feature = "lifecycle-trace"), allow(unused_variables))]
+    fn new(work: Work, id: u64) -> Self {
+        Self {
+            work,
+            #[cfg(feature = "lifecycle-trace")]
+            id,
+        }
+    }
+    fn id(&self) -> u64 {
+        #[cfg(feature = "lifecycle-trace")]
+        return self.id;
+        #[cfg(not(feature = "lifecycle-trace"))]
+        0
+    }
+}
+
+impl From<Work> for Item {
+    fn from(work: Work) -> Self {
+        Self::new(work, 0)
+    }
+}
+
 thread_local! {
     /// `Some` while the deadline thread services a visit.
-    static BATCH: RefCell<Option<Vec<Work>>> = const { RefCell::new(None) };
+    static BATCH: RefCell<Option<Vec<Item>>> = const { RefCell::new(None) };
+}
+
+#[cfg(feature = "lifecycle-trace")]
+thread_local! {
+    /// This disposal worker's number in traces (0: not a worker), and the
+    /// item it runs.
+    static WORKER: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// The current worker and item numbers (0, 0 outside a worker's item).
+pub(crate) fn current() -> (u64, u64) {
+    #[cfg(feature = "lifecycle-trace")]
+    return WORKER.try_with(|w| w.get()).unwrap_or((0, 0));
+    #[cfg(not(feature = "lifecycle-trace"))]
+    (0, 0)
 }
 
 /// Run `work` now, or, on the deadline thread inside [`collect`], defer it
@@ -34,17 +92,33 @@ thread_local! {
 /// thread-local destructor dropping a payload at thread exit) or borrowed.
 #[inline]
 pub(crate) fn defer(work: impl FnOnce() + Send + 'static) {
+    defer_as("other", work);
+}
+
+/// [`defer`] an item of `kind` (`wake`, `drop` or `other`). Returns its
+/// number in disposal traces (0 if it ran inline or nothing is recorded).
+/// Records `Defer` (Disposal.tla `Release`/`Other`) except for a wake-up,
+/// whose hand-off is part of `Expire`.
+#[inline]
+pub(crate) fn defer_as(kind: &'static str, work: impl FnOnce() + Send + 'static) -> u64 {
     let mut work = Some(work);
+    let mut id = 0;
     let _ = BATCH.try_with(|batch| {
         if let Ok(mut batch) = batch.try_borrow_mut() {
             if let Some(batch) = batch.as_mut() {
-                batch.push(Box::new(work.take().expect("not yet taken")));
+                id = crate::lifecycle_trace::disposal_id();
+                if kind != "wake" {
+                    crate::lifecycle_trace::disposal("Defer", 0, id, 0, kind);
+                }
+                let work: Work = Box::new(work.take().expect("not yet taken"));
+                batch.push(Item::new(work, id));
             }
         }
     });
     if let Some(work) = work {
         work();
     }
+    id
 }
 
 /// Drop `value` now, or defer its drop (see [`defer`]).
@@ -73,10 +147,10 @@ pub(crate) fn collecting() -> bool {
 
 /// Run `step` with deferral on, and return what it deferred. If `step`
 /// unwinds, what it deferred so far is submitted, not dropped here.
-pub(crate) fn collect(step: impl FnOnce()) -> Vec<Work> {
+pub(crate) fn collect(step: impl FnOnce()) -> Vec<Item> {
     struct Scope;
     impl Scope {
-        fn take() -> Vec<Work> {
+        fn take() -> Vec<Item> {
             BATCH
                 .try_with(|batch| batch.borrow_mut().take().unwrap_or_default())
                 .unwrap_or_default()
@@ -102,7 +176,7 @@ pub(crate) fn collect(step: impl FnOnce()) -> Vec<Work> {
 
 /// Workers beyond this many wait for a busy one: a bound on threads, reached
 /// only when that many callbacks are blocked at once.
-const MAX_WORKERS: usize = 64;
+pub(crate) const MAX_WORKERS: usize = 64;
 /// An idle worker exits after this long without work.
 #[cfg(not(test))]
 const KEEP_ALIVE: Duration = Duration::from_secs(10);
@@ -112,7 +186,7 @@ const KEEP_ALIVE: Duration = Duration::from_millis(2);
 
 #[derive(Default)]
 struct State {
-    queue: VecDeque<Work>,
+    queue: VecDeque<Item>,
     /// Workers waiting for work (or woken and not yet back under the lock).
     idle: usize,
     workers: usize,
@@ -124,8 +198,8 @@ struct State {
 }
 
 impl State {
-    /// Queued work needs another worker: more items than idle workers that
-    /// could take them, and none starting. Returns whether to start one.
+    /// `NeedsWorker`: queued work needs another worker (more items than idle
+    /// workers that could take them, none starting, below the cap).
     fn needs_worker(&mut self) -> Start {
         if self.queue.len() <= self.idle || self.starting {
             return Start::No;
@@ -149,6 +223,17 @@ enum Start {
     Capped,
 }
 
+impl Start {
+    /// The decision as a disposal trace's `x`.
+    #[allow(dead_code)] // recorded only with `lifecycle-trace`
+    fn x(&self) -> &'static str {
+        match self {
+            Start::Yes => "spawn",
+            _ => "",
+        }
+    }
+}
+
 #[derive(Default)]
 struct Pool {
     state: Mutex<State>,
@@ -164,19 +249,38 @@ fn lock(pool: &Pool) -> std::sync::MutexGuard<'_, State> {
     pool.state.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// Hand deferred work to the disposal workers, one queue entry per item, so
-/// a blocking item delays none of the others. When queued items outnumber
-/// idle workers a new worker starts (one at a time, up to [`MAX_WORKERS`]);
-/// each worker re-checks when it takes an item.
-pub(crate) fn submit(work: Vec<Work>) {
+/// Run `f` with the pool's (idle, workers, starting) under its lock: a
+/// recording starts from a consistent pool state (lock order: pool, then
+/// the trace section, as everywhere).
+#[cfg(feature = "lifecycle-trace")]
+pub(crate) fn with_pool_state<R>(f: impl FnOnce(usize, usize, bool) -> R) -> R {
+    let state = lock(pool());
+    f(state.idle, state.workers, state.starting)
+}
+
+/// `Submit`: hand deferred work to the disposal workers, one queue entry per
+/// item, so a blocking item delays none of the others. When queued items
+/// outnumber idle workers a new worker starts (one at a time, up to
+/// [`MAX_WORKERS`]); each worker re-checks when it takes an item.
+pub(crate) fn submit(work: Vec<Item>) {
     if work.is_empty() {
         return;
     }
+    #[allow(unused_mut)]
+    let mut work = work;
+    // Test-only: run the batch serially on one worker (the shared-batch
+    // bug), so trace validation can be shown to reject it.
+    fail_point!("disposal.batch_serial" => {
+        let items = std::mem::take(&mut work);
+        let serial: Work = Box::new(move || items.into_iter().for_each(run_item));
+        work = vec![Item::from(serial)];
+    });
     let pool = pool();
     let mut state = lock(pool);
     let wake = work.len().min(state.idle);
     state.queue.extend(work);
     let start = state.needs_worker();
+    crate::lifecycle_trace::disposal("Submit", 0, 0, 0, start.x());
     drop(state);
     for _ in 0..wake {
         pool.ready.notify_one();
@@ -219,9 +323,21 @@ fn start_worker(pool: &Arc<Pool>, start: Start) {
     }
 }
 
+/// A worker's loop (Disposal.tla `Begin`, `Take`, `Wait`, `Woke`, `Retire`;
+/// each recorded under the pool lock, with the start decision on `Take`).
 fn run(pool: &Arc<Pool>) {
+    #[cfg(feature = "lifecycle-trace")]
+    let w = {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let w = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let _ = WORKER.try_with(|c| c.set((w, 0)));
+        w
+    };
+    #[cfg(not(feature = "lifecycle-trace"))]
+    let w = 0;
     let mut state = lock(pool);
     state.starting = false;
+    crate::lifecycle_trace::disposal("Begin", w, 0, 0, "");
     loop {
         if let Some(item) = state.queue.pop_front() {
             // Whatever is still queued must not wait for this item.
@@ -229,6 +345,7 @@ fn run(pool: &Arc<Pool>) {
                 pool.ready.notify_one();
             }
             let start = state.needs_worker();
+            crate::lifecycle_trace::disposal("Take", w, item.id(), 0, start.x());
             drop(state);
             start_worker(pool, start);
             run_item(item);
@@ -236,30 +353,55 @@ fn run(pool: &Arc<Pool>) {
             continue;
         }
         state.idle += 1;
+        crate::lifecycle_trace::disposal("Wait", w, 0, 0, "");
+        let keep_alive = keep_alive();
         let (next, timeout) = pool
             .ready
-            .wait_timeout(state, KEEP_ALIVE)
+            .wait_timeout(state, keep_alive)
             .unwrap_or_else(|p| p.into_inner());
         state = next;
         state.idle -= 1;
+        crate::lifecycle_trace::disposal("Woke", w, 0, 0, "");
         if timeout.timed_out() && state.queue.is_empty() {
             state.workers -= 1;
             state.capped = false;
+            crate::lifecycle_trace::disposal("Retire", w, 0, 0, "");
             return;
         }
     }
 }
 
-/// Contained, so a failing callback ends neither its worker nor the others.
-fn run_item(item: Work) {
+/// [`KEEP_ALIVE`]; the `disposal.keep_alive` failpoint (Error) shortens it so
+/// a test sees workers retire.
+fn keep_alive() -> Duration {
+    fail_point!("disposal.keep_alive" => return Duration::from_millis(5));
+    KEEP_ALIVE
+}
+
+/// `Run` then `Done`: contained, so a failing callback ends neither its
+/// worker nor the others.
+fn run_item(item: Item) {
     fail_point!("disposal.item");
-    super::registry::contain_entry(item);
+    let (w, _) = current();
+    let id = item.id();
+    #[cfg(feature = "lifecycle-trace")]
+    let _ = WORKER.try_with(|c| c.set((w, id)));
+    crate::lifecycle_trace::disposal("Run", w, id, 0, "");
+    super::registry::contain_entry(item.work);
+    crate::lifecycle_trace::disposal("Done", w, id, 0, "");
+    #[cfg(feature = "lifecycle-trace")]
+    let _ = WORKER.try_with(|c| c.set((w, 0)));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::mpsc;
+
+    /// Submit plain work (untraced items).
+    fn submit(work: Vec<Work>) {
+        super::submit(work.into_iter().map(Item::from).collect());
+    }
 
     /// Generous: sanitizer builds are slow, and a panic's first report there
     /// can take seconds.
@@ -285,7 +427,7 @@ mod tests {
         assert!(!collecting());
         assert!(rx.try_recv().is_err(), "deferred, not run");
         assert_eq!(work.len(), 2);
-        submit(work);
+        super::submit(work);
         assert_eq!(rx.recv_timeout(WAIT), Ok(1));
     }
 

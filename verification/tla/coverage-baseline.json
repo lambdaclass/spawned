@@ -151,12 +151,18 @@
   "A|StopNext"
  ],
  "Disposal": [
+  "A|Begin",
   "A|Death",
-  "A|Drop",
+  "A|Defer",
+  "A|Done",
   "A|Exit",
   "A|Expire",
-  "A|Release",
+  "A|Retire",
+  "A|Run",
+  "A|Settle",
   "A|Submit",
-  "A|Wake"
+  "A|Take",
+  "A|Wait",
+  "A|Woke"
  ]
 }

@@ -130,7 +130,7 @@ where
         let (_, unsent) = self.state.notify(end, || self.enqueue_terminal(outcome));
         // A refused terminal message (`done` and the outcome) may drop on
         // the deadline service thread: contained.
-        self.ctx.shared.sender.failures().discard(unsent);
+        self.ctx.shared.sender.failures().discard_some(unsent);
     }
 
     fn enqueue_terminal(&self, outcome: Contained<JobOutcome<T>>) -> Option<MailboxItem<A>> {
@@ -184,7 +184,7 @@ where
                 })
             },
         );
-        self.ctx.shared.sender.failures().discard(unsent);
+        self.ctx.shared.sender.failures().discard_some(unsent);
     }
 }
 
@@ -197,7 +197,7 @@ impl<A: Actor, T: 'static, M: 'static> Drop for Run<A, T, M> {
             .get_mut()
             .unwrap_or_else(|p| p.into_inner())
             .take();
-        self.ctx.shared.sender.failures().discard(done);
+        self.ctx.shared.sender.failures().discard_some(done);
     }
 }
 
@@ -323,7 +323,7 @@ impl<A: Actor> JobCtx<A> {
                 self.ctx.shared.sender.send(MailboxItem::Message(envelope))
             })
             .map_err(|(gone, unsent)| {
-                self.ctx.shared.sender.failures().discard(unsent);
+                self.ctx.shared.sender.failures().discard_some(unsent);
                 gone
             })
     }
