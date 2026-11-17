@@ -59,7 +59,7 @@ async fn main() {
                 .with_options(&pipeline.shard(index).unwrap())
                 .spawn()
                 .unwrap();
-            stage.ready().await.unwrap();
+            stage.ready().await.unwrap().started().expect("started");
             let location = stage.request(Location).await.unwrap();
             assert_eq!(location.1, Some(*cpu));
             println!("pinned stage {index}: {location:?}");

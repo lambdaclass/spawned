@@ -916,7 +916,7 @@ mod sim_leaks {
                         }
                     }))
                     .unwrap();
-                let supervisor = within!(tree.spawn()).await.unwrap();
+                let supervisor = within!(tree.start()).await.unwrap();
                 for generation in 1..=3 {
                     let current = within!(child.wait_for_generation(generation - 1))
                         .await

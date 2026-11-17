@@ -104,7 +104,7 @@ pub enum SpawnHow {
     Unmanaged,
     /// `.with_options(group).spawn()`: managed by an `ActorSystem` async group.
     Managed { group: u8 },
-    /// `.start_linked(parent)`.
+    /// `.start_link(parent)`, its wait abandoned (the 0.8 `start_linked`).
     Linked { parent: u8 },
 }
 

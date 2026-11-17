@@ -361,12 +361,25 @@ async fn pinned_shards_preserve_explicit_cpu_placement_and_cross_shard_requests(
     let group = system.pinned_group("pipeline", cpus.clone()).unwrap();
     assert!(group.shard(cpus.len()).is_err());
     let actors: Vec<_> = (0..cpus.len())
-        .map(|i| Probe.start_on(&group.shard(i).unwrap()).unwrap())
+        .map(|i| {
+            Probe
+                .with_options(&group.shard(i).unwrap())
+                .spawn()
+                .unwrap()
+        })
         .collect();
     for (i, actor) in actors.iter().enumerate() {
-        within!(actor.ready()).await.unwrap();
+        within!(actor.ready())
+            .await
+            .unwrap()
+            .started()
+            .expect("started");
         let peer_on_same_shard = actor.request(StartPeer).await.unwrap().unwrap();
-        within!(peer_on_same_shard.ready()).await.unwrap();
+        within!(peer_on_same_shard.ready())
+            .await
+            .unwrap()
+            .started()
+            .expect("started");
         assert_eq!(
             peer_on_same_shard.request(Audit).await.unwrap().1,
             Some(cpus[i])
@@ -431,7 +444,11 @@ mod tls_join {
         let cpu = spawned_rt::tasks::affinity::available_cpus().unwrap()[0];
         let group = system.pinned_group("tls-owner", vec![cpu]).unwrap();
         let actor = Probe.with_options(&group).spawn().unwrap();
-        within!(actor.ready()).await.unwrap();
+        within!(actor.ready())
+            .await
+            .unwrap()
+            .started()
+            .expect("started");
         let (entered_tx, entered) = tokio::sync::oneshot::channel();
         let (release, release_rx) = std::sync::mpsc::channel();
         actor
@@ -566,7 +583,11 @@ fn partial_pinned_construction_rolls_back_before_returning_error() {
     let runtime = spawned_rt::tasks::control_runtime().unwrap();
     runtime.block_on(async {
         let actor = Probe.with_options(&group).spawn().unwrap();
-        within!(actor.ready()).await.unwrap();
+        within!(actor.ready())
+            .await
+            .unwrap()
+            .started()
+            .expect("started");
         assert!(actor.request(Audit).await.is_ok());
         assert!(system.shutdown(LIMIT).await.complete);
     });

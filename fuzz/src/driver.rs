@@ -880,7 +880,13 @@ impl Driver {
                     let parent = self.actors[parent as usize % self.actors.len()]
                         .aref
                         .clone();
-                    let aref = worker.start_linked(&parent.context());
+                    // 0.9 start_link, its wait abandoned at once: the 0.8
+                    // non-waiting start_linked. A parent whose exit began
+                    // refuses it (ParentExited): nothing is created.
+                    let aref = match worker.start_link(&parent.context()).actor_ref() {
+                        Ok(aref) => aref,
+                        Err(_) => return,
+                    };
                     self.may_stop(parent.id());
                     self.may_stop(aref.id());
                     self.links.push(LinkRec {
@@ -999,7 +1005,7 @@ impl Driver {
         // A tree whose subtree restarts slower than its budget refills
         // retries forever (a legal configuration); cancelling the start
         // future rolls it back (V7) and keeps the run bounded.
-        let sup = match rt::timeout(START_LIMIT, builder.spawn()).await {
+        let sup = match rt::timeout(START_LIMIT, builder.start()).await {
             Ok(result) => result.ok(),
             Err(_) => None,
         };
@@ -1802,9 +1808,13 @@ impl Driver {
             .map(|a| (a.aref.id(), a.instance, a.aref.child_handle().exit_reason()))
             .collect();
         for (id, instance, exit) in standalone {
-            let (may_stop, panicked) = {
+            let (may_stop, panicked, started_panicked) = {
                 let s = self.world.lock();
-                (s.may_stop.contains(&id), s.insts[instance].panicked)
+                (
+                    s.may_stop.contains(&id),
+                    s.insts[instance].panicked,
+                    s.insts[instance].started_panicked,
+                )
             };
             let Some(exit) = exit else { continue };
             if !may_stop {
@@ -1820,7 +1830,12 @@ impl Driver {
             // non-abnormal reason a signal can carry is `Shutdown`.
             let trapping = self.traps.get(&id).is_some_and(|t| t.0);
             let late_shutdown = exit == ExitReason::Shutdown && !trapping;
-            if panicked && !exit.is_abnormal() && !late_shutdown {
+            // 0.9 (semantics L9): an administrative stop that arrived while
+            // started() ran outranks its panic (row 3 over row 4), so the
+            // start fails with the stop's reason.
+            let stop_outranks_init_panic =
+                started_panicked && self.requested.get(&id) == Some(&exit);
+            if panicked && !exit.is_abnormal() && !late_shutdown && !stop_outranks_init_panic {
                 self.violate(
                     "L4: an actor that panicked exited with a non-abnormal reason",
                     format!("w{instance} {exit:?}"),
