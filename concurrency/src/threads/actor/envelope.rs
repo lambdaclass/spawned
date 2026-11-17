@@ -322,6 +322,7 @@ pub(super) fn signal_target<A: Actor>(
     trap: TrapExitFlag,
     request: LinkedExitReason,
     token: CancellationToken,
+    startup: Arc<crate::start::StartupCell>,
 ) -> Arc<SignalTarget> {
     let exit_tx = sender.clone();
     let parent_tx = sender.clone();
@@ -353,6 +354,7 @@ pub(super) fn signal_target<A: Actor>(
         send_exit,
         send_parent_exit,
         send_held,
+        startup,
     })
 }
 

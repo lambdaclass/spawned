@@ -64,11 +64,13 @@ impl Drop for Probe {
 async fn managed_actor_stopped_before_first_poll_runs_no_hooks_but_drops_state() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("startup-gate", 1).unwrap();
-    let owner = Probe(Arc::default()).start_on(&group).unwrap();
+    let owner = Probe(Arc::default()).with_options(&group).spawn().unwrap();
     spawned_rt::tasks::timeout(LIMIT, owner.ready())
         .await
         .unwrap()
-        .unwrap();
+        .unwrap()
+        .started()
+        .expect("started");
     let (entered, arrival) = tokio::sync::oneshot::channel();
     let (release, gate) = std::sync::mpsc::channel();
     // Intentionally occupy the sole worker to force the next root to remain
@@ -86,7 +88,7 @@ async fn managed_actor_stopped_before_first_poll_runs_no_hooks_but_drops_state()
         .unwrap()
         .unwrap();
     let counts = Arc::new(Counts::default());
-    let actor = Probe(counts.clone()).start_on(&group).unwrap();
+    let actor = Probe(counts.clone()).with_options(&group).spawn().unwrap();
     let dropped = Arc::new(AtomicUsize::new(0));
     let replies: Vec<_> = (0..2)
         .map(|_| {
@@ -134,9 +136,12 @@ async fn managed_actor_stopped_before_first_poll_runs_no_hooks_but_drops_state()
 }
 
 #[spawned_macros::sim_test(flavor = "current_thread")]
-async fn legacy_actor_stopped_before_first_poll_keeps_both_hooks() {
+/// An unmanaged actor stopped before its first poll still runs `started()`;
+/// the administrative stop then fails the start (unified start 2.3 row 3),
+/// so `stopped()` does not run.
+async fn unmanaged_actor_stopped_before_first_poll_runs_started_not_stopped() {
     let counts = Arc::new(Counts::default());
-    let actor = Probe(counts.clone()).start(); // this runtime has not yielded
+    let actor = Probe(counts.clone()).spawn(); // this runtime has not yielded
     actor
         .child_handle()
         .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
@@ -147,6 +152,6 @@ async fn legacy_actor_stopped_before_first_poll_keeps_both_hooks() {
         ExitReason::Shutdown
     );
     assert_eq!(counts.started.load(Ordering::SeqCst), 1);
-    assert_eq!(counts.stopped.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.stopped.load(Ordering::SeqCst), 0);
     assert_eq!(counts.dropped.load(Ordering::SeqCst), 1);
 }

@@ -131,17 +131,21 @@ fn mailbox_drop_child() {
                     let handled = Arc::new(AtomicUsize::new(0));
                     let dropped = Arc::new(AtomicUsize::new(0));
                     let victim = match &group {
-                        Some(group) => Victim(handled.clone(), false).start_on(group).unwrap(),
-                        None => {
-                            Victim(handled.clone(), false).start_with_backend(match placement {
+                        Some(group) => Victim(handled.clone(), false)
+                            .with_options(group)
+                            .spawn()
+                            .unwrap(),
+                        None => Victim(handled.clone(), false)
+                            .with_options(match placement {
                                 0 => Backend::Async,
                                 1 => Backend::Blocking,
                                 _ => Backend::Thread,
                             })
-                        }
+                            .spawn()
+                            .unwrap(),
                     };
                     let (send, mut events) = mpsc::unbounded_channel();
-                    let observer = Observer(send).start();
+                    let observer = Observer(send).spawn();
                     let ctx = observer.context();
                     ctx.trap_exit(true);
                     ctx.link(&victim.child_handle());
@@ -257,7 +261,7 @@ fn abandoned_receiver_child() {
                     let runtime = builder.worker_threads(1).enable_all().build().unwrap();
                     {
                         let _entered = runtime.enter();
-                        let actor = Victim(Arc::default(), state_panics).start();
+                        let actor = Victim(Arc::default(), state_panics).spawn();
                         if polled {
                             actor.send(Hold(entered, gate, false)).unwrap();
                         }
@@ -310,7 +314,7 @@ fn abandoned_receiver_child() {
                 .unwrap();
             let actor = {
                 let _entered = owner.enter();
-                Victim(Arc::default(), true).start()
+                Victim(Arc::default(), true).spawn()
             };
             let dropped = Arc::new(AtomicUsize::new(0));
             for _ in 0..2 {
@@ -337,10 +341,11 @@ fn abandoned_receiver_child() {
                 let group = system.async_group("preserve-cause", 1).unwrap();
                 let actor = if managed {
                     Victim(Arc::default(), state_panics)
-                        .start_on(&group)
+                        .with_options(&group)
+                        .spawn()
                         .unwrap()
                 } else {
-                    Victim(Arc::default(), state_panics).start()
+                    Victim(Arc::default(), state_panics).spawn()
                 };
                 let (entered, arrival) = oneshot::channel();
                 let (release, gate) = oneshot::channel();
@@ -351,7 +356,7 @@ fn abandoned_receiver_child() {
                     actor.send(Bomb(dropped.clone())).unwrap();
                 }
                 if matches!(committed, ExitReason::Panic(_)) {
-                    let peer = Victim(Arc::default(), false).start();
+                    let peer = Victim(Arc::default(), false).spawn();
                     actor.context().link(&peer.child_handle());
                     peer.context().stop_with_reason(committed.clone());
                     tokio::time::timeout(LIMIT, peer.wait_exit()).await.unwrap();
@@ -375,7 +380,7 @@ fn abandoned_receiver_child() {
         }
         // An actor-state panic must not unwind through an unguarded mailbox.
         // After the death point it is a cleanup failure; the reason stays Normal.
-        let actor = Victim(Arc::default(), true).start();
+        let actor = Victim(Arc::default(), true).spawn();
         let (entered, arrival) = oneshot::channel();
         let (release, gate) = oneshot::channel();
         actor.send(Hold(entered, gate, false)).unwrap();
@@ -417,9 +422,9 @@ fn primary_panic_child() {
         .build()
         .unwrap();
     runtime.block_on(async {
-        let actor = Victim(Arc::default(), true).start();
+        let actor = Victim(Arc::default(), true).spawn();
         let (send, mut events) = mpsc::unbounded_channel();
-        let observer = Observer(send).start();
+        let observer = Observer(send).spawn();
         observer.context().trap_exit(true);
         observer.context().link(&actor.child_handle());
         let _monitor = observer.context().monitor(&actor.child_handle());

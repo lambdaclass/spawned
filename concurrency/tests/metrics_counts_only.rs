@@ -23,7 +23,7 @@ impl Handler<Ping> for Probe {
 #[test]
 fn zero_timing_rate_retains_counters_without_timing_samples() {
     metrics::configure(metrics::Config::default().timing_sample_every(0)).unwrap();
-    let actor = Probe.start();
+    let actor = Probe.spawn();
     for _ in 0..16 {
         actor.request(Ping).unwrap();
     }

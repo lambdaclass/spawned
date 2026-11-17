@@ -140,6 +140,41 @@ pub(crate) fn install(
     })
 }
 
+/// The parent's half of a `start_link` edge (unified start, stage 1):
+/// installed in the commit, together with the child's half, only if
+/// `admit` (the parent's exit has not begun, read under its exit-request
+/// lock, which ranks after the tables) holds. The child's table is still
+/// private. Returns whether the edge was installed.
+pub(crate) fn install_start_edge(
+    parent: &Arc<SignalTarget>,
+    parent_links: &LinkTable,
+    child: &Arc<SignalTarget>,
+    child_links: &LinkTable,
+    gen: u64,
+    admit: impl FnOnce() -> bool,
+) -> bool {
+    with_pair(parent.id, parent_links, child.id, child_links, |p, c| {
+        if p.exited.is_some() || !admit() {
+            return false;
+        }
+        p.entries.push(LinkEntry {
+            peer_id: child.id,
+            gen,
+            peer: child.clone(),
+            peer_links: Arc::downgrade(child_links),
+            late: false,
+        });
+        c.entries.push(LinkEntry {
+            peer_id: parent.id,
+            gen,
+            peer: parent.clone(),
+            peer_links: Arc::downgrade(parent_links),
+            late: false,
+        });
+        true
+    })
+}
+
 fn remove(table: &mut LinkState, id: ActorId) -> Option<LinkEntry> {
     table
         .entries
@@ -193,6 +228,18 @@ pub(crate) struct LinkNotices {
 }
 
 impl LinkNotices {
+    /// Take the notice to `peer` out of the set (the unified start's edge,
+    /// disposed of through its startup cell). `None` if this actor holds no
+    /// live record of `peer`.
+    pub(crate) fn take_peer(&mut self, peer: ActorId) -> Option<(ActorId, ExitReason, LinkEntry)> {
+        let (from, reason) = (self.from?, self.reason.clone()?);
+        let i = self
+            .entries
+            .iter()
+            .position(|e| e.peer_id == peer && !e.late)?;
+        Some((from, reason, self.entries.swap_remove(i)))
+    }
+
     /// Deliver every notice (publication) through `notice(receiver table,
     /// receiver, from, gen, reason)`, which applies it only if the receiver
     /// still holds the record (E6 fence). Late records carry no notice of

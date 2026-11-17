@@ -46,6 +46,13 @@ pub(crate) struct Bounds {
 
 #[cfg(feature = "async")]
 impl Bounds {
+    /// These bounds, each falling back to the given one when unset.
+    pub(crate) fn or(self, max_outstanding: Option<usize>, max_native_jobs: Option<usize>) -> Self {
+        Self {
+            max_outstanding: self.max_outstanding.or(max_outstanding),
+            max_native_jobs: self.max_native_jobs.or(max_native_jobs),
+        }
+    }
     /// The effective `(max_outstanding, max_native_jobs)` for an actor whose
     /// constants are `outstanding` and `native`.
     pub(crate) fn resolve(self, outstanding: usize, native: Option<usize>) -> (usize, usize) {

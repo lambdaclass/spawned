@@ -166,8 +166,8 @@ mod native {
         for reason in reasons() {
             for _ in 0..ROUNDS {
                 let (tx, rx) = mpsc::channel();
-                let observer = Observer(tx).start();
-                let source = Source.start();
+                let observer = Observer(tx).spawn();
+                let source = Source.spawn();
                 observer
                     .request_with_timeout(Watch(source.child_handle()), LIMIT)
                     .unwrap();
@@ -204,7 +204,7 @@ mod native {
 
     #[test]
     fn panicking_request_handler_gives_the_caller_actor_stopped() {
-        let actor = Panicker.start();
+        let actor = Panicker.spawn();
         let result = actor.request_with_timeout(Boom, LIMIT);
         assert!(
             matches!(result, Err(ActorError::ActorStopped(ExitReason::Panic(_)))),
@@ -212,7 +212,7 @@ mod native {
         );
         assert!(matches!(actor.wait_exit(), ExitReason::Panic(_)));
 
-        let erased = Panicker.start();
+        let erased = Panicker.spawn();
         let recipient: Recipient<Boom> = erased.recipient();
         let result = request(&*recipient, Boom, LIMIT);
         assert!(
@@ -220,7 +220,7 @@ mod native {
             "{result:?}"
         );
 
-        let raw = Panicker.start();
+        let raw = Panicker.spawn();
         let receiver = raw
             .send_request(Boom, spawned_concurrency::Deadline::after(LIMIT))
             .unwrap();
@@ -328,8 +328,8 @@ mod tasks {
             for reason in reasons() {
                 for _ in 0..ROUNDS {
                     let (tx, mut rx) = unbounded_channel();
-                    let observer = Observer(tx).start_with_backend(backend);
-                    let source = Source.start_with_backend(backend);
+                    let observer = Observer(tx).with_options(backend).spawn().unwrap();
+                    let source = Source.with_options(backend).spawn().unwrap();
                     observer
                         .request_with_timeout(Watch(source.child_handle()), LIMIT)
                         .await
@@ -378,7 +378,7 @@ mod tasks {
     #[tokio::test(start_paused = true)]
     async fn send_after_fires_once_no_earlier_than_its_delay() {
         let (tx, mut rx) = unbounded_channel();
-        let actor = Ticker(tx).start();
+        let actor = Ticker(tx).spawn();
         let start = Instant::now();
         let _timer = send_after(PERIOD, actor.context(), Tick);
         let fired = next(&mut rx).await;
@@ -397,7 +397,7 @@ mod tasks {
     #[tokio::test(start_paused = true)]
     async fn send_interval_is_fixed_delay_and_never_catches_up() {
         let (tx, mut rx) = unbounded_channel();
-        let actor = Ticker(tx).start();
+        let actor = Ticker(tx).spawn();
         let start = Instant::now();
         let _timer = send_interval(PERIOD, actor.context(), Tick);
         tokio::task::yield_now().await;
@@ -559,9 +559,9 @@ mod tasks {
         let group = system.async_group("panics", 1).unwrap();
         let mut actors = BACKENDS
             .iter()
-            .map(|backend| Panicker.start_with_backend(*backend))
+            .map(|backend| Panicker.with_options(*backend).spawn().unwrap())
             .collect::<Vec<_>>();
-        actors.push(Panicker.start_on(&group).unwrap());
+        actors.push(Panicker.with_options(&group).spawn().unwrap());
         for actor in actors {
             let result = actor.request_with_timeout(Boom, LIMIT).await;
             assert!(
@@ -572,7 +572,7 @@ mod tasks {
             assert!(matches!(reason, ExitReason::Panic(_)), "{reason:?}");
         }
 
-        let erased = Panicker.start();
+        let erased = Panicker.spawn();
         let recipient: Recipient<Boom> = erased.recipient();
         let result = request(&*recipient, Boom, LIMIT).await;
         assert!(
@@ -580,7 +580,7 @@ mod tasks {
             "{result:?}"
         );
 
-        let raw = Panicker.start();
+        let raw = Panicker.spawn();
         let receiver = raw
             .send_request(Boom, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
             .unwrap();
@@ -773,7 +773,7 @@ mod native_contract {
             drops: drops.clone(),
             send_in_stopped: send_in_stopped.clone(),
         }
-        .start();
+        .spawn();
         let (entered, entered_rx) = mpsc::channel();
         let (release, release_rx) = mpsc::channel();
         actor
@@ -875,7 +875,7 @@ mod native_contract {
                 counter: 0,
                 final_counter: final_counter.clone(),
             }
-            .start();
+            .spawn();
             let replied = Arc::new(AtomicUsize::new(0));
             let senders: Vec<_> = (0..4)
                 .map(|t| {
@@ -951,7 +951,7 @@ mod native_contract {
                 __reply.reply(__value);
             }
         }
-        let actor = Backlog(Vec::new()).start();
+        let actor = Backlog(Vec::new()).spawn();
         let (entered, entered_rx) = mpsc::channel();
         let (release, release_rx) = mpsc::channel();
         actor
@@ -1007,7 +1007,7 @@ mod native_contract {
     #[test]
     fn dropping_every_actor_ref_keeps_the_actor_running() {
         let (reports, rx) = mpsc::channel();
-        let actor = Looper { reports, count: 0 }.start();
+        let actor = Looper { reports, count: 0 }.spawn();
         let handle = actor.child_handle();
         actor.send(Loop).unwrap();
         drop(actor);
@@ -1026,7 +1026,7 @@ mod native_contract {
         impl Actor for Idle {}
         let mut ids = std::collections::HashSet::new();
         for _ in 0..4 {
-            let batch: Vec<_> = (0..25).map(|_| Idle.start()).collect();
+            let batch: Vec<_> = (0..25).map(|_| Idle.spawn()).collect();
             for actor in &batch {
                 assert!(ids.insert(actor.id()), "M4: id reused");
                 actor.child_handle().stop();
@@ -1087,11 +1087,11 @@ mod tasks_contract {
         }
         fn start<A: Actor>(&self, actor: A, place: Place) -> ActorRef<A> {
             match place {
-                Place::Async => actor.start_with_backend(Backend::Async),
-                Place::Blocking => actor.start_with_backend(Backend::Blocking),
-                Place::Thread => actor.start_with_backend(Backend::Thread),
-                Place::AsyncGroup => actor.start_on(&self.async_group).unwrap(),
-                Place::ThreadGroup => actor.start_on(&self.thread_group).unwrap(),
+                Place::Async => actor.with_options(Backend::Async).spawn().unwrap(),
+                Place::Blocking => actor.with_options(Backend::Blocking).spawn().unwrap(),
+                Place::Thread => actor.with_options(Backend::Thread).spawn().unwrap(),
+                Place::AsyncGroup => actor.with_options(&self.async_group).spawn().unwrap(),
+                Place::ThreadGroup => actor.with_options(&self.thread_group).spawn().unwrap(),
             }
         }
         async fn finish(self) {
@@ -1655,7 +1655,12 @@ mod tasks_contract {
             );
             assert_eq!(handled.load(Ordering::SeqCst), 0, "L2 {place:?}");
             release.send(()).unwrap();
-            timeout(LIMIT, actor.ready()).await.unwrap().unwrap();
+            timeout(LIMIT, actor.ready())
+                .await
+                .unwrap()
+                .unwrap()
+                .started()
+                .expect("started");
             for (i, reply) in replies.into_iter().enumerate() {
                 assert_eq!(timeout(LIMIT, reply).await.unwrap().unwrap(), i);
             }
@@ -1779,7 +1784,7 @@ mod tasks_contract {
     /// timer (and enqueues) only when first polled.
     #[tokio::test(start_paused = true)]
     async fn default_request_timeout_is_five_seconds_from_first_poll() {
-        let actor = Napper.start();
+        let actor = Napper.spawn();
         assert!(actor
             .request(Nap(Duration::from_millis(4_900)))
             .await
@@ -1844,7 +1849,7 @@ mod tasks_contract {
         }
         let system = ActorSystem::new().unwrap();
         let group = system.async_group("unowned", 1).unwrap();
-        let actor = Spawner.start_on(&group).unwrap();
+        let actor = Spawner.with_options(&group).spawn().unwrap();
         let task_drops = Arc::new(AtomicUsize::new(0));
         let thread_done = Arc::new(AtomicUsize::new(0));
         let (release, thread_release) = std::sync::mpsc::channel();
@@ -2300,7 +2305,8 @@ mod supervision_contract {
                     fired: self.fired.clone(),
                     downs: self.downs.clone(),
                 }
-                .start_on(&ctx.execution_group().unwrap())
+                .with_options(&ctx.execution_group().unwrap())
+                .spawn()
                 .is_ok();
                 (registered, started)
             }
@@ -2342,17 +2348,19 @@ mod supervision_contract {
             fired: fired.clone(),
             downs: downs.clone(),
         }
-        .start_on(&group)
+        .with_options(&group)
+        .spawn()
         .unwrap();
-        late.ready().await.unwrap();
+        late.ready().await.unwrap().started().expect("started");
         let result = Arc::new(Mutex::new(None));
         let prober = Prober {
             late: late.clone(),
             result: result.clone(),
         }
-        .start_on(&group)
+        .with_options(&group)
+        .spawn()
         .unwrap();
-        prober.ready().await.unwrap();
+        prober.ready().await.unwrap().started().expect("started");
         assert!(system.shutdown(LIMIT).await.complete);
         let (registered, started) = result.lock().unwrap().expect("probe ran");
         assert!(!registered, "S1: registration admitted during shutdown");
@@ -2403,18 +2411,20 @@ mod supervision_contract {
             stopping: None,
             release: None,
         }
-        .start_on(&group)
+        .with_options(&group)
+        .spawn()
         .unwrap();
-        earlier.ready().await.unwrap();
+        earlier.ready().await.unwrap().started().expect("started");
         let (stopping, stopping_rx) = oneshot::channel();
         let (release, release_rx) = oneshot::channel();
         let later = Gated {
             stopping: Some(stopping),
             release: Some(release_rx),
         }
-        .start_on(&group)
+        .with_options(&group)
+        .spawn()
         .unwrap();
-        later.ready().await.unwrap();
+        later.ready().await.unwrap().started().expect("started");
         drop(group);
         let began = Instant::now();
         drop(system);

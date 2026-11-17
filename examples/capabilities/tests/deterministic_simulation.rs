@@ -52,7 +52,7 @@ impl Log {
 /// arrive in the order it sent them: this must hold for every seed.
 #[spawned_concurrency::sim_test]
 async fn per_sender_order_holds_under_every_schedule() {
-    let log = Log::default().start();
+    let log = Log::default().spawn();
     let senders: Vec<_> = (0..2)
         .map(|sender| {
             let log = log.clone();
@@ -124,7 +124,7 @@ mod virtual_time {
         // virtual time too (determinism D1).
         let wall = spawned_rt::tasks::sim::wall_now();
         let virtual_start = spawned_rt::time::Instant::now();
-        let reminder = Reminder::default().start();
+        let reminder = Reminder::default().spawn();
 
         rt::sleep(HOUR - Duration::from_secs(1)).await;
         assert!(!reminder.rung().await.unwrap());

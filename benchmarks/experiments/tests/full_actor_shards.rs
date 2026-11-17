@@ -85,7 +85,7 @@ impl Handler<Nested> for Worker {
     ) {
         let __reply_value: u64 = {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let child = Worker(Default::default()).start();
+            let child = Worker(Default::default()).spawn();
             let _ = child.request(Thread).await.unwrap();
             child.child_handle().stop();
             within!(child.join()).await;
@@ -126,7 +126,7 @@ fn nested_spawn_helpers_timers_and_tcp_use_the_actor_reactor() {
     });
     runtime().block_on(async {
         let events = Arc::new(Mutex::new(Vec::new()));
-        let actor = Worker(events.clone()).start();
+        let actor = Worker(events.clone()).spawn();
         let _cleanup = Cleanup(vec![actor.child_handle()]);
         assert_eq!(
             actor
@@ -149,7 +149,7 @@ fn nested_spawn_helpers_timers_and_tcp_use_the_actor_reactor() {
 #[test]
 fn stop_finishes_in_flight_handler_and_rejects_queued_work() {
     runtime().block_on(async {
-        let actor = Worker(Default::default()).start();
+        let actor = Worker(Default::default()).spawn();
         let _cleanup = Cleanup(vec![actor.child_handle()]);
         let (started, rx) = tokio::sync::oneshot::channel();
         let (release, gate) = tokio::sync::oneshot::channel();
@@ -196,7 +196,7 @@ fn suspended_actor_does_not_block_another_actor_on_its_shard() {
         let mut actors = Vec::new();
         let mut names = Vec::new();
         for _ in 0..=count {
-            let actor = Worker(Default::default()).start();
+            let actor = Worker(Default::default()).spawn();
             cleanup.0.push(actor.child_handle());
             let name = actor.request_with_timeout(Thread, LIMIT).await.unwrap();
             assert!(name.starts_with("spawned-shard-"));
@@ -251,7 +251,7 @@ fn actors_outlive_their_caller_runtime() {
     }
     let rt = runtime();
     let actor = rt.block_on(async {
-        let actor = Worker(Default::default()).start();
+        let actor = Worker(Default::default()).spawn();
         actor.request(Thread).await.unwrap();
         actor
     });
@@ -298,7 +298,7 @@ fn blocking_handler_stalls_its_shard_while_another_shard_progresses() {
         let mut actors = Vec::new();
         let mut names = Vec::new();
         for _ in 0..=count {
-            let actor = Worker(Default::default()).start();
+            let actor = Worker(Default::default()).spawn();
             cleanup.0.push(actor.child_handle());
             names.push(actor.request_with_timeout(Thread, LIMIT).await.unwrap());
             actors.push(actor);
@@ -383,7 +383,7 @@ impl Handler<SpawnBlockingChild> for Worker {
     ) {
         reply.reply(
             Worker(Default::default())
-                .start_with_backend(spawned_concurrency::tasks::Backend::Blocking),
+                .with_options(spawned_concurrency::tasks::Backend::Blocking).spawn().unwrap(),
         );
     }
 }
@@ -408,7 +408,7 @@ impl Handler<Helper> for Worker {
 #[test]
 fn detached_helper_and_blocking_child_outlive_parent_stop() {
     runtime().block_on(async {
-        let actor = Worker(Default::default()).start();
+        let actor = Worker(Default::default()).spawn();
         let mut cleanup = Cleanup(vec![actor.child_handle()]);
         let child = actor
             .request_with_timeout(SpawnBlockingChild, LIMIT)
@@ -480,9 +480,9 @@ impl Handler<Events> for Worker {
 fn monitor_helper_survives_the_last_sharded_actor_stopping() {
     runtime().block_on(async {
         use spawned_concurrency::tasks::Backend;
-        let installer = Worker(Default::default()).start();
-        let observer = Worker(Default::default()).start_with_backend(Backend::Thread);
-        let target = Worker(Default::default()).start_with_backend(Backend::Thread);
+        let installer = Worker(Default::default()).spawn();
+        let observer = Worker(Default::default()).with_options(Backend::Thread).spawn().unwrap();
+        let target = Worker(Default::default()).with_options(Backend::Thread).spawn().unwrap();
         let _cleanup = Cleanup(vec![
             installer.child_handle(),
             observer.child_handle(),

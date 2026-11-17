@@ -87,7 +87,7 @@ pub fn test_send_interval_and_cancellation() {
     crate::test_wait::bounded(
         concat!(module_path!(), "::test_send_interval_and_cancellation"),
         move || {
-            let repeater = Repeater::new(0).start();
+            let repeater = Repeater::new(0).spawn();
 
             // The interval keeps firing.
             let count = wait_for(
@@ -183,7 +183,7 @@ pub fn test_send_after_and_cancellation() {
     crate::test_wait::bounded(
         concat!(module_path!(), "::test_send_after_and_cancellation"),
         move || {
-            let actor = Delayed::new(0).start();
+            let actor = Delayed::new(0).spawn();
 
             let ctx = actor.context();
             let _ = send_after(Duration::from_millis(100), ctx, Inc);
@@ -213,7 +213,7 @@ pub fn test_send_after_actor_shutdown() {
     crate::test_wait::bounded(
         concat!(module_path!(), "::test_send_after_actor_shutdown"),
         move || {
-            let actor = Delayed::new(0).start();
+            let actor = Delayed::new(0).spawn();
 
             let ctx = actor.context();
             let _ = send_after(Duration::from_millis(100), ctx, Inc);
@@ -300,7 +300,7 @@ pub fn threads_send_after_uses_the_monotonic_clock_over_long_delays() {
                 handled: handled.clone(),
                 stall: None,
             }
-            .start();
+            .spawn();
             let delay = Duration::from_millis(300);
             let long = Duration::from_millis(1_500);
             let armed = std::time::Instant::now();
@@ -356,7 +356,7 @@ pub fn threads_send_interval_is_fixed_delay_while_the_actor_stalls() {
                 handled: handled.clone(),
                 stall: Some(period * 7 / 2),
             }
-            .start();
+            .spawn();
             let timer = send_interval(period, actor.context(), Stamp(sends.clone()));
             assert!(
                 wait_for(|| handled.lock().unwrap().len(), |n| *n >= 10) >= 10,

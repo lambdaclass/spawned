@@ -255,10 +255,13 @@ impl GroupInner {
         lock(&self.state).closing = true;
         self.maybe_finish();
     }
-    pub(super) fn remove_scope(&self, id: u64) {
+    pub(super) fn remove_scope(&self, id: u64, _trace: u64) {
         let removed = {
             let mut state = lock(&self.state);
             let removed = state.scopes.remove(&id);
+            crate::lifecycle_trace::start_emit(_trace, || {
+                crate::lifecycle_trace::StartEvent::new("SReleaseSlot", _trace)
+            });
             if let Some(scope) = &removed {
                 if let Some(free) = &mut state.free {
                     free.insert(scope.target);

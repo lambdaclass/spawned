@@ -238,7 +238,7 @@ async fn kill_answers_queued_request_at_death() {
     let _serial = SERIAL.lock().await;
     lifecycle_trace::record_lifecycle();
     let log = Log::default();
-    let a1 = Node::new(&log).start();
+    let a1 = Node::new(&log).spawn();
     let (release, gate) = tokio::sync::oneshot::channel();
     let blocked = a1
         .send_request(Block(gate), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
@@ -280,7 +280,7 @@ async fn kill_during_stopped() {
     lifecycle_trace::record_lifecycle();
     let log = Log::default();
     let (release, gate) = tokio::sync::oneshot::channel();
-    let a1 = Node::holding_stopped(&log, gate).start();
+    let a1 = Node::holding_stopped(&log, gate).spawn();
     a1.request(Sync()).await.unwrap();
     a1.child_handle().stop();
     wait_for(&log, "stopped").await;
@@ -307,7 +307,7 @@ async fn untrapped_signal_skips_stopped() {
     let _serial = SERIAL.lock().await;
     lifecycle_trace::record_lifecycle();
     let log = Log::default();
-    let a1 = Node::new(&log).start();
+    let a1 = Node::new(&log).spawn();
     a1.request(Sync()).await.unwrap();
     a1.child_handle().exit(ExitReason::Normal);
     a1.request(Sync()).await.unwrap();
@@ -335,8 +335,8 @@ async fn trapped_exit_reaches_exit_received() {
     let _serial = SERIAL.lock().await;
     lifecycle_trace::record_lifecycle();
     let log = Log::default();
-    let a1 = Node::trapping(&log).start();
-    let a2 = Node::new(&log).start();
+    let a1 = Node::trapping(&log).spawn();
+    let a2 = Node::new(&log).spawn();
     a1.request(Sync()).await.unwrap();
     a2.request(Sync()).await.unwrap();
     a1.child_handle().exit(ExitReason::Shutdown);
@@ -369,7 +369,7 @@ async fn trapped_exit_then_stop() {
     let _serial = SERIAL.lock().await;
     lifecycle_trace::record_lifecycle();
     let log = Log::default();
-    let a1 = Node::trapping(&log).start();
+    let a1 = Node::trapping(&log).spawn();
     a1.request(Sync()).await.unwrap();
     a1.child_handle().exit(ExitReason::Shutdown);
     wait_for(&log, "exit:Shutdown").await;
@@ -399,8 +399,8 @@ async fn late_registrations_get_noproc() {
     let _serial = SERIAL.lock().await;
     lifecycle_trace::record_lifecycle();
     let log = Log::default();
-    let a1 = Node::trapping(&log).start();
-    let a2 = Node::new(&Log::default()).start();
+    let a1 = Node::trapping(&log).spawn();
+    let a2 = Node::new(&Log::default()).spawn();
     a2.child_handle().stop();
     assert_eq!(exit_of(&a2).await, ExitReason::Normal);
     a1.request(Link(a2.child_handle())).await.unwrap();
@@ -433,8 +433,8 @@ async fn late_link_ends_a_non_trapping_caller() {
     let _serial = SERIAL.lock().await;
     lifecycle_trace::record_lifecycle();
     let log = Log::default();
-    let a1 = Node::new(&log).start();
-    let a2 = Node::new(&Log::default()).start();
+    let a1 = Node::new(&log).spawn();
+    let a2 = Node::new(&Log::default()).spawn();
     a2.child_handle().stop();
     exit_of(&a2).await;
     a1.request(Link(a2.child_handle())).await.unwrap();
@@ -459,9 +459,12 @@ async fn unlink_fences_a_notice_taken_at_death() {
     let _serial = SERIAL.lock().await;
     lifecycle_trace::record_lifecycle();
     let log = Log::default();
-    let a1 = Node::trapping(&log).start();
+    let a1 = Node::trapping(&log).spawn();
     let (release, gate) = std::sync::mpsc::channel();
-    let a2 = Node::holding_drop(gate).start_with_backend(Backend::Thread);
+    let a2 = Node::holding_drop(gate)
+        .with_options(Backend::Thread)
+        .spawn()
+        .unwrap();
     a1.request(Link(a2.child_handle())).await.unwrap();
     a2.request(Sync()).await.unwrap();
     a2.context().stop_with_reason(ExitReason::Shutdown);
@@ -498,9 +501,12 @@ async fn demonitor_fences_a_down() {
     let _serial = SERIAL.lock().await;
     lifecycle_trace::record_lifecycle();
     let log = Log::default();
-    let a1 = Node::new(&log).start();
+    let a1 = Node::new(&log).spawn();
     let (release, gate) = std::sync::mpsc::channel();
-    let a2 = Node::holding_drop(gate).start_with_backend(Backend::Thread);
+    let a2 = Node::holding_drop(gate)
+        .with_options(Backend::Thread)
+        .spawn()
+        .unwrap();
     let monitor = a1.request(Monitor(a2.child_handle())).await.unwrap();
     a2.child_handle().stop();
     past_death(&a2).await;
@@ -547,8 +553,8 @@ async fn monitor_delivers_the_final_reason() {
     let _serial = SERIAL.lock().await;
     lifecycle_trace::record_lifecycle();
     let log = Log::default();
-    let a1 = Node::new(&log).start();
-    let a2 = Node::new(&Log::default()).start();
+    let a1 = Node::new(&log).spawn();
+    let a2 = Node::new(&Log::default()).spawn();
     a1.request(Monitor(a2.child_handle())).await.unwrap();
     a2.child_handle().stop_with_reason(ExitReason::Shutdown);
     wait_for(&log, "down:Shutdown").await;
@@ -577,9 +583,12 @@ async fn parent_exit_ends_a_trapping_child_through_stopped() {
     let _serial = SERIAL.lock().await;
     lifecycle_trace::record_lifecycle();
     let log = Log::default();
-    let a1 = Node::new(&Log::default()).start();
+    let a1 = Node::new(&Log::default()).spawn();
     a1.request(Sync()).await.unwrap();
-    let a2 = Node::trapping(&log).start_linked(&a1.context());
+    let a2 = Node::trapping(&log)
+        .start_link(&a1.context())
+        .actor_ref()
+        .unwrap();
     a2.request(Sync()).await.unwrap();
     a1.child_handle().stop_with_reason(ExitReason::Shutdown);
     assert_eq!(exit_of(&a2).await, ExitReason::Shutdown);
@@ -608,8 +617,8 @@ async fn link_notice_ends_a_non_trapping_peer() {
     let _serial = SERIAL.lock().await;
     lifecycle_trace::record_lifecycle();
     let log = Log::default();
-    let a1 = Node::new(&log).start();
-    let a2 = Node::new(&Log::default()).start();
+    let a1 = Node::new(&log).spawn();
+    let a2 = Node::new(&Log::default()).spawn();
     a1.request(Link(a2.child_handle())).await.unwrap();
     assert!(matches!(
         a2.request(Boom()).await,
@@ -645,7 +654,7 @@ fn runtime_drop_ends_killed() {
         .build()
         .unwrap();
     let a1 = runtime.block_on(async {
-        let a1 = Node::new(&log).start();
+        let a1 = Node::new(&log).spawn();
         a1.request(Sync()).await.unwrap();
         a1
     });
@@ -688,7 +697,7 @@ fn threads_trapped_exit_then_kill() {
     }
     use threads::ActorStart as _;
     let log = Log::default();
-    let a1 = Native(log.clone()).start();
+    let a1 = Native(log.clone()).spawn();
     a1.request(Ping).unwrap();
     a1.child_handle().exit(ExitReason::Shutdown);
     a1.request(Ping).unwrap();
@@ -720,8 +729,8 @@ async fn message_then_death_notice() {
     let _serial = SERIAL.lock().await;
     lifecycle_trace::record_lifecycle();
     let log = Log::default();
-    let a1 = Node::trapping(&log).start();
-    let a2 = Node::new(&Log::default()).start();
+    let a1 = Node::trapping(&log).spawn();
+    let a2 = Node::new(&Log::default()).spawn();
     a1.request(Sync()).await.unwrap();
     a2.request(Link(a1.child_handle())).await.unwrap();
     a2.request(NoteThenExit(a1.clone())).await.unwrap();
@@ -793,8 +802,8 @@ fn threads_actor_message() {
     }
     use threads::ActorStart as _;
     let log = Log::default();
-    let a1 = Native(log.clone()).start();
-    let a2 = Native(Log::default()).start();
+    let a1 = Native(log.clone()).spawn();
+    let a2 = Native(Log::default()).spawn();
     a2.request(Forward(a1.clone())).unwrap();
     a1.request(Ping).unwrap();
     assert_eq!(logged(&log), ["hello"]);
@@ -834,8 +843,8 @@ async fn direct_dispatch_preserves_causal_sender_and_lifecycle_trace() {
     let _serial = SERIAL.lock().await;
     lifecycle_trace::record_lifecycle();
     let log = Log::default();
-    let peer = Node::new(&log).start();
-    let sender = DirectForwarder(peer.clone()).start();
+    let peer = Node::new(&log).spawn();
+    let sender = DirectForwarder(peer.clone()).spawn();
     sender.request(ForwardNow).await.unwrap();
     peer.request(Sync()).await.unwrap();
     assert_eq!(exit_of(&sender).await, ExitReason::Shutdown);

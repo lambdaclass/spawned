@@ -106,7 +106,7 @@ fn descriptor_limit_child() {
         };
         let mut cleanup = Cleanup(Vec::new());
         if mode != "sharded-cold" {
-            let seed = Worker(None).start_with_backend(backend);
+            let seed = Worker(None).with_options(backend).spawn().unwrap();
             cleanup.0.push(seed.child_handle());
             seed.request(Ping).await.unwrap();
         }
@@ -127,7 +127,7 @@ fn descriptor_limit_child() {
             1
         };
         for _ in 0..count {
-            let actor = Worker(None).start_with_backend(backend);
+            let actor = Worker(None).with_options(backend).spawn().unwrap();
             cleanup.0.push(actor.child_handle());
             let outcome = actor.request_with_timeout(Ping, LIMIT).await;
             if mode == "sharded" || mode == "async" {
@@ -167,7 +167,7 @@ fn descriptor_limit_child() {
         drop(descriptors);
         if mode == "sharded-cold" {
             // An initialization error must not poison the registry or leave workers behind.
-            let recovered = Worker(None).start();
+            let recovered = Worker(None).spawn();
             cleanup.0.push(recovered.child_handle());
             recovered.request(Ping).await.unwrap();
             recovered.child_handle().stop();

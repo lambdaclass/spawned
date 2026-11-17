@@ -58,10 +58,18 @@ async fn owned_groups_communicate_and_close_with_stale_handles() {
     let system = ActorSystem::new().unwrap();
     let a = system.async_group("critical", 1).unwrap();
     let b = system.async_group("general", 2).unwrap();
-    let first = Worker.start_on(&a).unwrap();
-    let second = Worker.start_on(&b).unwrap();
-    within!(first.ready()).await.unwrap();
-    within!(second.ready()).await.unwrap();
+    let first = Worker.with_options(&a).spawn().unwrap();
+    let second = Worker.with_options(&b).spawn().unwrap();
+    within!(first.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
+    within!(second.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
     assert!(first
         .request(Ping)
         .await
@@ -99,7 +107,10 @@ async fn owned_groups_communicate_and_close_with_stale_handles() {
         first.child_handle().wait_exit_async().await,
         ExitReason::Shutdown
     );
-    assert!(matches!(Worker.start_on(&a), Err(SystemError::Closed)));
+    assert!(matches!(
+        Worker.with_options(&a).spawn(),
+        Err(spawned_concurrency::StartError::Closed)
+    ));
     assert!(first.request(Ping).await.is_err());
     assert!(first.context().spawn_helper(async {}).is_err());
     // Legacy infallible helper APIs remain inert from a plain thread after the
@@ -144,7 +155,8 @@ async fn expired_shutdown_retains_closed_runtime_until_startup_cleanup_finishes(
         release: Some(release_rx),
         stopped: stopped.clone(),
     }
-    .start_on(&group)
+    .with_options(&group)
+    .spawn()
     .unwrap();
     spawned_rt::tasks::timeout(LIMIT, entered)
         .await
@@ -154,7 +166,7 @@ async fn expired_shutdown_retains_closed_runtime_until_startup_cleanup_finishes(
     assert!(!report.complete);
     assert_eq!(report.unfinished_groups, ["slow-start"]);
     assert!(group.is_closed());
-    assert!(Worker.start_on(&group).is_err());
+    assert!(Worker.with_options(&group).spawn().is_err());
     // The system kills what remains at grace (E3); let the kill land before
     // started() returns, so the outcome does not race it.
     spawned_rt::tasks::sleep(Duration::from_millis(100)).await;
@@ -202,10 +214,15 @@ async fn shutdown_joins_helper_drops_and_generation_owned_registration() {
         dropped: dropped.clone(),
         registered: Some(tx),
     }
-    .start_on(&group)
+    .with_options(&group)
+    .spawn()
     .unwrap();
     rx.await.unwrap();
-    within!(actor.ready()).await.unwrap();
+    within!(actor.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
     assert!(spawned_concurrency::registry::whereis::<
         spawned_concurrency::tasks::ActorRef<WithHelper>,
     >("execution-group-owned-helper-test")
@@ -226,8 +243,12 @@ async fn dropping_system_requests_shutdown_without_an_ambient_runtime() {
     assert!(system.async_group("bad", 0).is_err());
     let group = system.async_group("drop", 1).unwrap();
     assert!(system.async_group("drop", 2).is_err());
-    let actor = Worker.start_on(&group).unwrap();
-    within!(actor.ready()).await.unwrap();
+    let actor = Worker.with_options(&group).spawn().unwrap();
+    within!(actor.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
     std::thread::spawn(move || drop(system)).join().unwrap();
     assert_eq!(
         spawned_rt::tasks::timeout(LIMIT, actor.child_handle().wait_exit_async())
@@ -243,8 +264,12 @@ async fn dropping_system_requests_shutdown_without_an_ambient_runtime() {
 async fn registered_blocking_work_keeps_runtime_owned_until_native_completion() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("blocking-helper", 1).unwrap();
-    let actor = Worker.start_on(&group).unwrap();
-    within!(actor.ready()).await.unwrap();
+    let actor = Worker.with_options(&group).spawn().unwrap();
+    within!(actor.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
     let (entered_tx, entered) = tokio::sync::oneshot::channel();
     let (release, release_rx) = std::sync::mpsc::channel();
     let dropped = Arc::new(AtomicUsize::new(0));
@@ -277,8 +302,12 @@ async fn registered_blocking_work_keeps_runtime_owned_until_native_completion() 
 async fn scoped_helpers_report_panics_and_framework_abort_drops_payload() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("helper-errors", 1).unwrap();
-    let actor = Worker.start_on(&group).unwrap();
-    within!(actor.ready()).await.unwrap();
+    let actor = Worker.with_options(&group).spawn().unwrap();
+    within!(actor.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
     let async_error = actor
         .context()
         .spawn_helper(async { panic!("async helper panic") })
@@ -318,11 +347,15 @@ async fn scoped_helpers_report_panics_and_framework_abort_drops_payload() {
 async fn ambient_actor_started_inside_group_is_unmanaged_and_aborted_at_teardown() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("ambient-child", 1).unwrap();
-    let managed = Worker.start_on(&group).unwrap();
-    within!(managed.ready()).await.unwrap();
+    let managed = Worker.with_options(&group).spawn().unwrap();
+    within!(managed.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
     let ambient = managed
         .context()
-        .spawn_helper(async { Worker.start() })
+        .spawn_helper(async { Worker.spawn() })
         .unwrap()
         .join()
         .await
@@ -330,7 +363,7 @@ async fn ambient_actor_started_inside_group_is_unmanaged_and_aborted_at_teardown
     assert!(ambient.context().execution_group().is_none());
     assert!(matches!(
         within!(ambient.ready()).await,
-        Err(SystemError::UnmanagedActor)
+        Ok(spawned_concurrency::StartOutcome::Started(()))
     ));
     assert!(ambient.context().spawn_helper(async {}).is_err());
     assert!(ambient
@@ -390,7 +423,8 @@ async fn failed_startup_discards_queued_payloads_and_reply_channels_without_disp
         handled: handled.clone(),
         stopped: stopped.clone(),
     }
-    .start_on(&group)
+    .with_options(&group)
+    .spawn()
     .unwrap();
     spawned_rt::tasks::timeout(LIMIT, entered)
         .await
@@ -409,7 +443,10 @@ async fn failed_startup_discards_queued_payloads_and_reply_channels_without_disp
         spawned_rt::tasks::timeout(LIMIT, actor.ready())
             .await
             .unwrap(),
-        Err(SystemError::StartupFailed(ExitReason::Panic(_)))
+        Err(spawned_concurrency::StartError::InitExited {
+            reason: ExitReason::Panic(_),
+            pending: None
+        })
     ));
     assert!(matches!(
         spawned_rt::tasks::timeout(LIMIT, actor.wait_exit())
@@ -428,8 +465,12 @@ async fn failed_startup_discards_queued_payloads_and_reply_channels_without_disp
 async fn old_scope_cleanup_cannot_remove_a_replacement_registration() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("registry-replacement", 1).unwrap();
-    let actor = Worker.start_on(&group).unwrap();
-    within!(actor.ready()).await.unwrap();
+    let actor = Worker.with_options(&group).spawn().unwrap();
+    within!(actor.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
     let name = "execution-groups-stale-registration";
     actor.context().register_name(name).unwrap();
     assert!(matches!(
@@ -472,8 +513,15 @@ impl ManagedProtocolActor {
 async fn generated_protocols_work_unchanged_with_explicit_group_placement() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("generated-protocol", 1).unwrap();
-    let actor = ManagedProtocolActor(42).start_on(&group).unwrap();
-    within!(actor.ready()).await.unwrap();
+    let actor = ManagedProtocolActor(42)
+        .with_options(&group)
+        .spawn()
+        .unwrap();
+    within!(actor.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
     assert_eq!(actor.value().await.unwrap(), 42);
     assert!(system.shutdown(LIMIT).await.complete);
     assert!(actor.value().await.is_err());
@@ -483,8 +531,12 @@ async fn generated_protocols_work_unchanged_with_explicit_group_placement() {
 async fn stuck_standalone_cleanup_does_not_leave_earlier_actor_running_forever() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("stuck-standalone-order", 1).unwrap();
-    let first = Worker.start_on(&group).unwrap();
-    within!(first.ready()).await.unwrap();
+    let first = Worker.with_options(&group).spawn().unwrap();
+    within!(first.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
     let (entered_tx, entered) = tokio::sync::oneshot::channel();
     let (release, release_rx) = tokio::sync::oneshot::channel();
     struct Stuck {
@@ -506,9 +558,14 @@ async fn stuck_standalone_cleanup_does_not_leave_earlier_actor_running_forever()
         entered: Some(entered_tx),
         release: Some(release_rx),
     }
-    .start_on(&group)
+    .with_options(&group)
+    .spawn()
     .unwrap();
-    within!(last.ready()).await.unwrap();
+    within!(last.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
     let report = system.shutdown(Duration::from_millis(20)).await;
     assert!(!report.complete);
     spawned_rt::tasks::timeout(LIMIT, entered)
@@ -549,19 +606,31 @@ async fn readiness_reports_actual_panic_after_startup_stop_instead_of_early_norm
     for in_stopped in [false, true] {
         for _ in 0..16 {
             let actor = StartupPanicAfterStop { in_stopped }
-                .start_on(&group)
+                .with_options(&group)
+                .spawn()
                 .unwrap();
             let ready = spawned_rt::tasks::timeout(LIMIT, actor.ready())
                 .await
                 .unwrap();
+            // A panic after ctx.stop() in started() wins (row 4 over row 5);
+            // without it the start fails Normal and stopped() never runs.
+            let expected_panic = !in_stopped;
+            assert!(
+                matches!(
+                    &ready,
+                    Err(spawned_concurrency::StartError::InitExited {
+                        reason: ExitReason::Panic(_),
+                        pending: None
+                    })
+                ) == expected_panic,
+                "{ready:?}"
+            );
             assert!(matches!(
                 ready,
-                Err(SystemError::StartupFailed(ExitReason::Panic(_)))
+                Err(spawned_concurrency::StartError::InitExited { pending: None, .. })
             ));
-            assert!(matches!(
-                within!(actor.wait_exit()).await,
-                ExitReason::Panic(_)
-            ));
+            let reason = within!(actor.wait_exit()).await;
+            assert_eq!(matches!(reason, ExitReason::Panic(_)), expected_panic);
         }
     }
     assert!(system.shutdown(LIMIT).await.complete);
@@ -599,9 +668,14 @@ async fn concurrent_zero_deadline_reports_include_scopes_during_shutdown_initial
     let actor = SnapshotHeld {
         release: Some(release_rx),
     }
-    .start_on(&group)
+    .with_options(&group)
+    .spawn()
     .unwrap();
-    within!(actor.ready()).await.unwrap();
+    within!(actor.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
     actor.send(Hold(entered)).unwrap();
     entered_rx.await.unwrap();
@@ -656,18 +730,25 @@ impl Actor for Dependent {
 async fn ordered_shutdown_preserves_ordinary_calls_but_closes_new_helper_admission() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("shutdown-admission", 1).unwrap();
-    let earlier = HelperAware.start_on(&group).unwrap();
-    within!(earlier.ready()).await.unwrap();
+    let earlier = HelperAware.with_options(&group).spawn().unwrap();
+    within!(earlier.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
     let observed = Arc::new(AtomicUsize::new(0));
     Dependent {
         earlier,
         observed: observed.clone(),
     }
-    .start_on(&group)
+    .with_options(&group)
+    .spawn()
     .unwrap()
     .ready()
     .await
-    .unwrap();
+    .unwrap()
+    .started()
+    .expect("started");
     let report = system.shutdown(LIMIT).await;
     assert!(report.complete);
     assert_eq!(observed.load(Ordering::SeqCst), 1);
@@ -685,8 +766,12 @@ async fn ordered_shutdown_preserves_ordinary_calls_but_closes_new_helper_admissi
 async fn aborted_scoped_helper_joins_as_cancelled() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("helper-abort", 1).unwrap();
-    let actor = Worker.start_on(&group).unwrap();
-    within!(actor.ready()).await.unwrap();
+    let actor = Worker.with_options(&group).spawn().unwrap();
+    within!(actor.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
     let helper = actor
         .context()
         .spawn_helper(std::future::pending::<()>())
@@ -748,7 +833,10 @@ async fn closed_system_rejects_new_groups_and_completed_reports_stay_complete() 
         Err(SystemError::Closed)
     ));
     assert!(group.is_closed());
-    assert!(matches!(Worker.start_on(&group), Err(SystemError::Closed)));
+    assert!(matches!(
+        Worker.with_options(&group).spawn(),
+        Err(spawned_concurrency::StartError::Closed)
+    ));
 }
 
 // Not simulated: shards belong to native thread groups.

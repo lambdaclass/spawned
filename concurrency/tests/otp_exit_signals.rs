@@ -207,10 +207,10 @@ mod tasks_mode {
             Seen::default(),
             Seen::default(),
         );
-        let target = Node::new(&target_seen, true).start();
-        let peer = Node::new(&peer_seen, false).start();
-        let trapper = Node::new(&trapper_seen, true).start();
-        let watcher = Node::new(&watcher_seen, false).start();
+        let target = Node::new(&target_seen, true).spawn();
+        let peer = Node::new(&peer_seen, false).spawn();
+        let trapper = Node::new(&trapper_seen, true).spawn();
+        let watcher = Node::new(&watcher_seen, false).spawn();
         settle(&target).await;
         settle(&trapper).await;
         let t = target.child_handle();
@@ -263,7 +263,7 @@ mod tasks_mode {
         let mut node = Node::new(&seen, false);
         node.in_stopped = Some((entered_tx, release_rx));
         node.panic_in_stopped = true;
-        let actor = node.start();
+        let actor = node.spawn();
         settle(&actor).await;
         let child = actor.child_handle();
         child.stop_with_reason(ExitReason::Shutdown);
@@ -279,7 +279,7 @@ mod tasks_mode {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn administrative_kill_reason_runs_stopped_and_ends_kill() {
         let seen = Seen::default();
-        let actor = Node::new(&seen, true).start();
+        let actor = Node::new(&seen, true).spawn();
         settle(&actor).await;
         actor.child_handle().stop_with_reason(ExitReason::Kill);
         assert_eq!(ended(&actor.child_handle()).await, ExitReason::Kill);
@@ -292,7 +292,7 @@ mod tasks_mode {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn exit_signals_follow_exit_signal_2() {
         let plain_seen = Seen::default();
-        let plain = Node::new(&plain_seen, false).start();
+        let plain = Node::new(&plain_seen, false).spawn();
         settle(&plain).await;
         plain.child_handle().exit(ExitReason::Normal);
         settle(&plain).await;
@@ -302,7 +302,7 @@ mod tasks_mode {
         );
 
         let trap_seen = Seen::default();
-        let trapper = Node::new(&trap_seen, true).start();
+        let trapper = Node::new(&trap_seen, true).spawn();
         settle(&trapper).await;
         trapper.child_handle().exit(ExitReason::Normal);
         trapper.child_handle().exit(ExitReason::Shutdown);
@@ -330,8 +330,8 @@ mod tasks_mode {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ctx_exit_sends_from_the_calling_actor() {
         let (a_seen, b_seen) = (Seen::default(), Seen::default());
-        let a = Node::new(&a_seen, false).start();
-        let b = Node::new(&b_seen, true).start();
+        let a = Node::new(&a_seen, false).spawn();
+        let b = Node::new(&b_seen, true).spawn();
         settle(&b).await;
         let bh = b.child_handle();
         let bh2 = bh.clone();
@@ -357,7 +357,7 @@ mod tasks_mode {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn registrations_after_death_report_noproc() {
         let dead_seen = Seen::default();
-        let dead = Node::new(&dead_seen, false).start();
+        let dead = Node::new(&dead_seen, false).spawn();
         dead.child_handle()
             .stop_with_reason(ExitReason::Panic("gone".into()));
         assert!(matches!(
@@ -367,7 +367,7 @@ mod tasks_mode {
         let d = dead.child_handle();
 
         let trap_seen = Seen::default();
-        let trapper = Node::new(&trap_seen, true).start();
+        let trapper = Node::new(&trap_seen, true).spawn();
         let (d1, d2) = (d.clone(), d.clone());
         on(&trapper, move |ctx| {
             ctx.link(&d1);
@@ -384,7 +384,7 @@ mod tasks_mode {
         assert_eq!(downs[0].reason, ExitReason::NoProc);
 
         let try_seen = Seen::default();
-        let trier = Node::new(&try_seen, false).start();
+        let trier = Node::new(&try_seen, false).spawn();
         let result = Arc::new(Mutex::new(None));
         let (d3, r) = (d.clone(), result.clone());
         on(&trier, move |ctx| {
@@ -396,7 +396,7 @@ mod tasks_mode {
         assert!(trier.child_handle().is_alive());
 
         let plain_seen = Seen::default();
-        let plain = Node::new(&plain_seen, false).start();
+        let plain = Node::new(&plain_seen, false).spawn();
         let d4 = d.clone();
         on(&plain, move |ctx| ctx.link(&d4)).await;
         assert_eq!(ended(&plain.child_handle()).await, ExitReason::NoProc);
@@ -413,8 +413,8 @@ mod tasks_mode {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn link_from_a_dead_actor_is_inert() {
         let (dead_seen, peer_seen) = (Seen::default(), Seen::default());
-        let dead = Node::new(&dead_seen, true).start();
-        let peer = Node::new(&peer_seen, true).start();
+        let dead = Node::new(&dead_seen, true).spawn();
+        let peer = Node::new(&peer_seen, true).spawn();
         settle(&peer).await;
         let kept = dead.context();
         dead.child_handle().stop();
@@ -422,7 +422,7 @@ mod tasks_mode {
         kept.link(&peer.child_handle());
         assert_eq!(kept.try_link(&peer.child_handle()), Ok(()));
         // The live peer gets no edge: its own exit notifies nobody.
-        let gone = Node::new(&Seen::default(), false).start();
+        let gone = Node::new(&Seen::default(), false).spawn();
         kept.link(&gone.child_handle());
         gone.child_handle().stop();
         ended(&gone.child_handle()).await;
@@ -523,7 +523,10 @@ mod tasks_mode {
             reply: spawned_concurrency::PendingReply<'_, ChildHandle>,
             ctx: &Context<Self>,
         ) {
-            let child = Node::new(&self.child_seen, true).start_linked(ctx);
+            let child = Node::new(&self.child_seen, true)
+                .start_link(ctx)
+                .actor_ref()
+                .unwrap();
             reply.reply(child.child_handle());
             self.child = Some(child);
         }
@@ -539,7 +542,7 @@ mod tasks_mode {
                 child: None,
                 child_seen: child_seen.clone(),
             }
-            .start();
+            .spawn();
             let child = parent.request(Spawn).await.unwrap();
             parent
                 .child_handle()
@@ -579,7 +582,7 @@ mod tasks_mode {
         }
         let seen = Seen::default();
         let (go, gate) = tokio::sync::oneshot::channel();
-        let actor = Slow(seen.clone(), Some(gate)).start();
+        let actor = Slow(seen.clone(), Some(gate)).spawn();
         actor.child_handle().exit(ExitReason::Shutdown);
         go.send(()).unwrap();
         assert_eq!(actor.request(Ping).await.unwrap(), 7);
@@ -600,7 +603,7 @@ mod tasks_mode {
         let (release, release_rx) = tokio::sync::oneshot::channel();
         let mut node = Node::new(&seen, false);
         node.in_stopped = Some((entered_tx, release_rx));
-        let actor = node.start();
+        let actor = node.spawn();
         settle(&actor).await;
         let child = actor.child_handle();
         child.stop();
@@ -721,7 +724,7 @@ mod tasks_mode {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn begun_exits_are_pending() {
             let seen = Seen::default();
-            let actor = Node::new(&seen, false).start();
+            let actor = Node::new(&seen, false).spawn();
             let pending = Arc::new(Mutex::new(Vec::new()));
             let p = pending.clone();
             on(&actor, move |ctx| {
@@ -732,7 +735,7 @@ mod tasks_mode {
             .await;
             assert_eq!(ended(&actor.child_handle()).await, ExitReason::Normal);
             assert_eq!(*pending.lock().unwrap(), vec![false, true]);
-            let actor = Node::new(&seen, false).start();
+            let actor = Node::new(&seen, false).spawn();
             let handle = actor.child_handle();
             let p = pending.clone();
             on(&actor, move |ctx| {
@@ -831,17 +834,17 @@ mod tasks_mode {
                 .unwrap();
             let (killed, signalled, trapping) = runtime.block_on(async {
                 let seen = Seen::default();
-                let killed = Node::new(&seen, true).start();
+                let killed = Node::new(&seen, true).spawn();
                 settle(&killed).await;
                 killed.child_handle().kill();
                 assert_eq!(ended(&killed.child_handle()).await, ExitReason::Killed);
-                let signalled = Node::new(&seen, false).start();
+                let signalled = Node::new(&seen, false).spawn();
                 settle(&signalled).await;
                 signalled.child_handle().exit(ExitReason::Shutdown);
                 assert_eq!(ended(&signalled.child_handle()).await, ExitReason::Shutdown);
                 assert!(!seen.stopped());
                 // stopped() runs: nothing logged.
-                let trapping = Node::new(&seen, true).start();
+                let trapping = Node::new(&seen, true).spawn();
                 settle(&trapping).await;
                 trapping.child_handle().stop();
                 assert_eq!(ended(&trapping.child_handle()).await, ExitReason::Normal);
@@ -859,7 +862,7 @@ mod tasks_mode {
             assert!(capture.skipped(trapping).is_empty());
             // Runtime drop before stopped() began.
             let dropped = runtime.block_on(async {
-                let actor = Node::new(&Seen::default(), true).start();
+                let actor = Node::new(&Seen::default(), true).spawn();
                 settle(&actor).await;
                 actor.id()
             });
@@ -907,7 +910,7 @@ mod tasks_mode {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn queued_and_stored_requests_get_killed_after_a_kill() {
             let seen = Seen::default();
-            let actor = Node::new(&seen, false).start();
+            let actor = Node::new(&seen, false).spawn();
             let stored = actor
                 .send_request(Hold, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
                 .unwrap();
@@ -928,7 +931,7 @@ mod tasks_mode {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn queued_request_gets_the_untrapped_signals_reason() {
             let seen = Seen::default();
-            let actor = Node::new(&seen, false).start();
+            let actor = Node::new(&seen, false).spawn();
             settle(&actor).await;
             let release = block(&actor).await;
             let queued = actor
@@ -953,7 +956,7 @@ mod tasks_mode {
                 let (release, release_rx) = tokio::sync::oneshot::channel();
                 let mut node = Node::new(&seen, false);
                 node.in_stopped = Some((entered_tx, release_rx));
-                let actor = node.start();
+                let actor = node.spawn();
                 settle(&actor).await;
                 let mut crashed = actor
                     .send_request(Boom, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
@@ -989,7 +992,7 @@ mod tasks_mode {
             let mut node = Node::new(&seen, false);
             node.in_stopped = Some((entered_tx, release_rx));
             node.drop_held_in_stopped = true;
-            let actor = node.start();
+            let actor = node.spawn();
             let mut stored = actor
                 .send_request(Hold, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
                 .unwrap();
@@ -1017,7 +1020,7 @@ mod tasks_mode {
             let (release, release_rx) = tokio::sync::oneshot::channel();
             let mut node = Node::new(&seen, true);
             node.in_stopped = Some((entered_tx, release_rx));
-            let actor = node.start();
+            let actor = node.spawn();
             settle(&actor).await;
             let child = actor.child_handle();
             child.stop_with_reason(ExitReason::Shutdown);
@@ -1290,8 +1293,8 @@ mod threads_mode {
     fn kill_exit_and_noproc_in_threads_mode() {
         // Kill: untrappable, Killed, no stopped(); the trapping peer gets Killed.
         let (target_seen, peer_seen) = (Seen::default(), Seen::default());
-        let target = Node(target_seen.clone(), true).start();
-        let peer = Node(peer_seen.clone(), true).start();
+        let target = Node(target_seen.clone(), true).spawn();
+        let peer = Node(peer_seen.clone(), true).spawn();
         assert_eq!(target.request(Ping).unwrap(), 7);
         assert_eq!(peer.request(Ping).unwrap(), 7);
         peer.context().link(&target.child_handle());
@@ -1311,7 +1314,7 @@ mod threads_mode {
         // exit(Normal) ignored by a non-trapping actor; exit(Shutdown) ends it
         // without stopped().
         let plain_seen = Seen::default();
-        let plain = Node(plain_seen.clone(), false).start();
+        let plain = Node(plain_seen.clone(), false).spawn();
         plain.child_handle().exit(ExitReason::Normal);
         assert_eq!(plain.request(Ping).unwrap(), 7);
         plain.child_handle().exit(ExitReason::Shutdown);
@@ -1397,7 +1400,7 @@ mod threads_mode {
 
         #[test]
         fn queued_and_stored_requests_get_killed_after_a_kill() {
-            let actor = Server::default().start();
+            let actor = Server::default().spawn();
             let stored = actor
                 .send_request(Hold, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
                 .unwrap();
@@ -1417,7 +1420,7 @@ mod threads_mode {
         #[test]
         fn panicked_request_and_dropped_token_wait_for_death() {
             let (server, entered, release) = gated();
-            let actor = server.start();
+            let actor = server.spawn();
             let mut stored = actor
                 .send_request(Hold, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
                 .unwrap();
@@ -1444,7 +1447,7 @@ mod threads_mode {
         #[test]
         fn admitted_while_exiting_noproc_after_death() {
             let (server, entered, release) = gated();
-            let actor = server.start();
+            let actor = server.spawn();
             assert_eq!(actor.request(Ping).unwrap(), 7);
             actor.child_handle().stop_with_reason(ExitReason::Shutdown);
             entered.recv_timeout(LIMIT).unwrap();
@@ -1526,14 +1529,20 @@ mod threads_mode {
                 reply: spawned_concurrency::PendingReply<'_, ActorRef<Late>>,
                 ctx: &Context<Self>,
             ) {
-                reply.reply(Late(self.0.clone()).start_linked(ctx));
+                reply.reply(
+                    Late(self.0.clone())
+                        .start_link(ctx)
+                        .expect("start_link")
+                        .started()
+                        .expect("ready"),
+                );
             }
         }
 
         #[test]
         fn queued_work_sees_the_parents_pending_exit() {
             let log: Log = Arc::default();
-            let parent = Parent(log.clone()).start();
+            let parent = Parent(log.clone()).spawn();
             let child = parent.request(Spawn).unwrap();
             child.request(Probe).unwrap();
             let (release, gate) = mpsc::channel();

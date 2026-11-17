@@ -36,7 +36,7 @@ impl Handler<Fence> for Worker {
 }
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
-    let worker = Worker(0).start();
+    let worker = Worker(0).spawn();
     let mut producers = Vec::new();
     for _ in 0..4 {
         let actor = worker.clone();

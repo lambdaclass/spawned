@@ -100,7 +100,7 @@ fn run_async(name: &str, n: u64) -> Duration {
     let rt = runtime(current_thread);
     let name = name.replacen("async_ct_", "async_", 1);
     let name = name.as_str();
-    let actor = rt.block_on(async { a::Sink(0).start() });
+    let actor = rt.block_on(async { a::Sink(0).spawn() });
     let fence = |actor: &spawned_concurrency::tasks::ActorRef<a::Sink>| {
         rt.block_on(actor.request(Q(0))).unwrap();
     };
@@ -192,7 +192,7 @@ fn run_async(name: &str, n: u64) -> Duration {
 
 fn run_threads(name: &str, n: u64) -> Duration {
     use spawned_concurrency::threads::ActorStart;
-    let actor = t::Sink(0).start();
+    let actor = t::Sink(0).spawn();
     for i in 0..WARMUP {
         actor.request(Q(i)).unwrap();
     }

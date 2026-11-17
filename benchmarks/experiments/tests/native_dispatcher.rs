@@ -47,8 +47,8 @@ fn drop_panic_isolated_and_terminal_shutdown_rejects_new_actors() {
         .build()
         .unwrap();
     runtime.block_on(async {
-        let bad = DropPanic.start();
-        let healthy = Healthy.start();
+        let bad = DropPanic.spawn();
+        let healthy = Healthy.spawn();
         assert_eq!(healthy.request_with_timeout(Ping, LIMIT).await.unwrap(), 42);
         bad.child_handle().stop();
         assert_eq!(
@@ -68,7 +68,7 @@ fn drop_panic_isolated_and_terminal_shutdown_rejects_new_actors() {
     spawned_rt::tasks::experimental::dispatcher::shutdown().unwrap();
     spawned_rt::tasks::experimental::dispatcher::shutdown().unwrap();
     runtime.block_on(async {
-        let refused = Healthy.start();
+        let refused = Healthy.spawn();
         assert_eq!(
             tokio::time::timeout(LIMIT, refused.wait_exit())
                 .await

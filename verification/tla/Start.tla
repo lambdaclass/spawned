@@ -91,7 +91,10 @@ vars == <<pV, oV, sV, eV, xV, cV, nV, mV, rV, dV>>
 
 Waiting(k) == k \in {"start", "link", "monitor"}
 LiveP == {"starting", "ready", "exiting", "dead"}     \* holds name and slot
-PSlot == IF pplace = "G" /\ pst # "published" /\ ~(Fault = "ParentSlotAtD" /\ pst = "dead")
+\* P's slot is held until its scope completes: P published and its owned
+\* work joined (WorkDoneP), as a child's (ReleaseSlot).
+PSlot == IF pplace = "G" /\ ~(pst = "published" /\ pwork)
+            /\ ~(Fault = "ParentSlotAtD" /\ pst \in {"dead", "published"})
          THEN 1 ELSE 0
 Used == Cardinality(slots) + PSlot
 
@@ -462,8 +465,12 @@ Die(c) ==
                    linkEver, monEver, xV, cV, pubAlive, div, divEver, handed, lost, mV,
                    seen, blamed, dV>>
 
-\* After destruction: the name is released (registry lock), then the slot
-\* (group lock); two atomic points, two trace events (design 5.2, 16.2).
+\* After destruction the name is released (registry lock), before
+\* publication. The slot (group lock) is released when the instance's scope
+\* completes: after publication and its owned work (the job join, helpers),
+\* because a thread group's slot is the native worker that still runs that
+\* join. Two atomic points, two trace events (design 5.2, 16.2; the slot's
+\* point moved after publication with the implementation).
 ReleaseName(c) ==
     /\ phase[c] = "dead"
     /\ phase' = [phase EXCEPT ![c] = "namerel"]
@@ -471,16 +478,14 @@ ReleaseName(c) ==
     /\ UNCHANGED <<pV, oV, place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun,
                    eV, xV, cV, nV, mV, seen, blamed, slots, dV>>
 ReleaseSlot(c) ==
-    /\ phase[c] = "namerel"
-    /\ phase' = [phase EXCEPT ![c] = "released"]
+    /\ c \in slots /\ phase[c] = "published" /\ cwork[c]
     /\ slots' = slots \ {c}
-    /\ UNCHANGED <<pV, oV, place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun,
-                   eV, xV, cV, nV, mV, reg, seen, blamed, dV>>
+    /\ UNCHANGED <<pV, oV, sV, eV, xV, cV, nV, mV, reg, seen, blamed, dV>>
 
 \* Publication: each taken notice is disposed of by the commitment and the
 \* waiter (design 5.2); answers become final.
 Publish(c) ==
-    /\ phase[c] = "released"
+    /\ phase[c] = "namerel"
     /\ phase' = [phase EXCEPT ![c] = "published"]
     /\ pubAlive' = [pubAlive EXCEPT ![c] = Alive(pst)]
     /\ LET r == why[c]

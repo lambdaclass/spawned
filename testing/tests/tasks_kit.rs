@@ -64,13 +64,13 @@ async fn mock_answers_protocol_calls_and_probe_records_sends() {
     let inventory = Mock::new()
         .on::<inventory_protocol::Reserve>(|msg| msg.item == "apple")
         .on::<inventory_protocol::Restock>(|_| ())
-        .start();
+        .spawn();
     let sales = Probe::<Sold>::new();
     let checkout = Checkout {
         inventory: inventory.to_inventory_ref(),
         sales: sales.recipient(),
     }
-    .start();
+    .spawn();
 
     assert!(checkout.buy("apple".into()).await.unwrap());
     assert!(!checkout.buy("pear".into()).await.unwrap());
@@ -99,7 +99,7 @@ async fn protocol_methods_run_directly_on_the_mock() {
     let mock = Mock::new()
         .on::<inventory_protocol::Reserve>(|_| true)
         .allow_sends()
-        .start();
+        .spawn();
     assert!(mock.reserve("x".into()).await.unwrap());
     mock.restock("x".into(), 1).unwrap();
     mock.audit().unwrap();
@@ -110,7 +110,7 @@ async fn protocol_methods_run_directly_on_the_mock() {
 
 #[tokio::test]
 async fn unconfigured_request_fails_loudly() {
-    let mock = Mock::new().allow_sends().start();
+    let mock = Mock::new().allow_sends().spawn();
     let error = mock.reserve("x".into()).await.unwrap_err();
     assert!(matches!(
         error,
@@ -135,7 +135,7 @@ async fn unconfigured_request_fails_loudly() {
 
 #[tokio::test]
 async fn unconfigured_send_names_allow_sends() {
-    let mock = Mock::new().start();
+    let mock = Mock::new().spawn();
     mock.audit().unwrap();
     let ExitReason::Panic(reason) = join_within(&mock, WAIT).await else {
         panic!("strict mock should panic on an unconfigured send");
@@ -148,7 +148,7 @@ async fn delay_forces_a_request_timeout() {
     let mock = Mock::new()
         .on::<inventory_protocol::Reserve>(|_| true)
         .delay::<inventory_protocol::Reserve>(Duration::from_millis(300))
-        .start();
+        .spawn();
     let error = mock
         .with_request_timeout(Duration::from_millis(20))
         .reserve("x".into())
@@ -164,7 +164,7 @@ async fn discard_and_crash_on_inject_message_faults() {
     let mock = Mock::new()
         .discard::<inventory_protocol::Restock>()
         .crash_on::<inventory_protocol::Audit>("audit backend down")
-        .start();
+        .spawn();
     mock.restock("x".into(), 1).unwrap();
     mock.audit().unwrap();
     assert_eq!(
@@ -256,7 +256,7 @@ impl Handler<Get> for Counter {
 #[tokio::test]
 async fn settle_waits_for_earlier_sends() {
     let seen = Arc::new(AtomicUsize::new(0));
-    let counter = Counter(seen.clone()).start();
+    let counter = Counter(seen.clone()).spawn();
     for _ in 0..100 {
         counter.send(Bump).unwrap();
     }
@@ -279,12 +279,12 @@ async fn exit_injects_every_reason() {
         ),
         (ExitReason::Kill, ExitReason::Killed),
     ] {
-        let actor = Counter(Arc::default()).start();
+        let actor = Counter(Arc::default()).spawn();
         faults::exit(&actor.child_handle(), reason);
         assert_eq!(join_within(&actor, WAIT).await, expected);
     }
     // Normal is ignored by a non-trapping target.
-    let actor = Counter(Arc::default()).start();
+    let actor = Counter(Arc::default()).spawn();
     faults::exit(&actor.child_handle(), ExitReason::Normal);
     assert_eq!(settle(&actor, Get, WAIT).await, 0);
     assert_eq!(actor.child_handle().exit_reason(), None);
@@ -295,7 +295,7 @@ async fn exit_injects_every_reason() {
 #[tokio::test]
 #[should_panic(expected = "did not exit within")]
 async fn exit_within_fails_instead_of_hanging() {
-    let actor = Counter(Arc::default()).start();
+    let actor = Counter(Arc::default()).spawn();
     exit_within(&actor.child_handle(), Duration::from_millis(20)).await;
 }
 
@@ -337,7 +337,7 @@ async fn supervised_child_restarts_after_injected_crash() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mock_starts_on_a_test_group() {
     let test = TestSystem::new();
-    let mock = test.start_mock(Mock::new().on::<inventory_protocol::Reserve>(|_| true));
+    let mock = test.spawn_mock(Mock::new().on::<inventory_protocol::Reserve>(|_| true));
     assert!(mock.reserve("x".into()).await.unwrap());
     test.shutdown(WAIT).await;
 }
@@ -367,7 +367,7 @@ impl Handler<Hang> for Stuck {
 async fn bounded_shutdown_reports_unfinished_actors() {
     let test = TestSystem::new();
     let entered = Arc::new(AtomicBool::new(false));
-    let stuck = test.start(Stuck(entered.clone()));
+    let stuck = test.spawn(Stuck(entered.clone()));
     stuck.send(Hang).unwrap();
     // Shut down only once the handler is inside its blocking sleep, so the
     // report is deterministic. Dropping the system during the unwind starts a
@@ -389,13 +389,13 @@ pub trait LedgerProtocol: Send + Sync {
 async fn allow_sends_also_answers_unit_requests_but_allow_send_is_per_type() {
     // A handler cannot tell a send from a request, so `allow_sends` also
     // acknowledges a request whose reply is `()`.
-    let lenient = Mock::new().allow_sends().start();
+    let lenient = Mock::new().allow_sends().spawn();
     lenient.note(1).unwrap();
     lenient.flush().await.unwrap();
     lenient.assert_no_unexpected();
 
     // `allow_send::<M>()` acknowledges only the chosen type.
-    let strict = Mock::new().allow_send::<ledger_protocol::Note>().start();
+    let strict = Mock::new().allow_send::<ledger_protocol::Note>().spawn();
     strict.note(1).unwrap();
     assert!(strict.flush().await.is_err());
     let ExitReason::Panic(reason) = join_within(&strict, WAIT).await else {
@@ -416,7 +416,7 @@ async fn settle_within_uses_the_given_bound() {
     let mock = Mock::new()
         .on::<inventory_protocol::Reserve>(|_| true)
         .delay::<inventory_protocol::Reserve>(Duration::from_millis(500))
-        .start();
+        .spawn();
     // Occupy the mock; the fence queues behind the slow reply.
     let _pending = mock.actor_ref().send_request(
         inventory_protocol::Reserve { item: "x".into() },
@@ -452,7 +452,7 @@ async fn helpers_follow_paused_tokio_time() {
     .await;
 
     // exit_within: an actor stopped after a virtual delay.
-    let mock = Mock::new().start();
+    let mock = Mock::new().spawn();
     let handle = mock.child_handle();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(600)).await;
@@ -475,7 +475,7 @@ async fn delayed_reply_is_handled_only_after_the_delay() {
     let mock = Mock::new()
         .on::<inventory_protocol::Reserve>(|_| true)
         .delay::<inventory_protocol::Reserve>(delay)
-        .start();
+        .spawn();
     let caller = {
         let mock = mock.clone();
         tokio::spawn(async move {
@@ -546,7 +546,7 @@ async fn restart_child_waits_out_a_restart_in_progress() {
 #[tokio::test]
 async fn exit_injection_never_blocks_a_current_thread_runtime() {
     for reason in [ExitReason::Panic("injected".into()), ExitReason::Kill] {
-        let actor = Counter(Arc::default()).start();
+        let actor = Counter(Arc::default()).spawn();
         faults::exit(&actor.child_handle(), reason.clone());
         let observed = join_within(&actor, WAIT).await;
         assert!(matches!(
@@ -604,8 +604,8 @@ async fn async_expect_names_its_caller() {
 async fn kill_stops_a_trapping_target_and_other_signals_are_trapped() {
     // A kill is untrappable: the trapping target ends Killed and its trapping
     // peer receives the (trappable) Killed notice and survives.
-    let target = Counter(Arc::default()).start();
-    let observer = Counter(Arc::default()).start();
+    let target = Counter(Arc::default()).spawn();
+    let observer = Counter(Arc::default()).spawn();
     target.context().trap_exit(true);
     observer.context().trap_exit(true);
     observer.context().link(&target.child_handle());
@@ -616,7 +616,7 @@ async fn kill_stops_a_trapping_target_and_other_signals_are_trapped() {
     observer.context().stop();
     assert_eq!(join_within(&observer, WAIT).await, ExitReason::Normal);
     // Any other signal to a trapping target is queued as an Exit.
-    let target = Counter(Arc::default()).start();
+    let target = Counter(Arc::default()).spawn();
     target.context().trap_exit(true);
     faults::exit(&target.child_handle(), ExitReason::Shutdown);
     assert_eq!(settle(&target, Get, WAIT).await, 0);
@@ -643,7 +643,7 @@ async fn in_actor_runs_a_closure_in_a_turn() {
     impl Message for AddOne {
         type Result = ();
     }
-    let tally = Tally(0).start();
+    let tally = Tally(0).spawn();
     tally.send(AddOne(2)).unwrap();
     let (seen, own) = spawned_test::tasks::in_actor(&tally, |state, ctx| {
         state.0 += 1;

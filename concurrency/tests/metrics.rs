@@ -97,7 +97,7 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
     metrics::configure(metrics::Config::default().timing_sample_every(1)).unwrap();
     runtime().block_on(async {
         let (release, gate) = oneshot::channel();
-        let actor = Probe { gate: Some(gate) }.start();
+        let actor = Probe { gate: Some(gate) }.spawn();
         let replies: Vec<_> = (0..10)
             .map(|_| {
                 actor
@@ -162,7 +162,7 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
         ));
 
         let (release, gate) = oneshot::channel();
-        let actor = Probe { gate: Some(gate) }.start();
+        let actor = Probe { gate: Some(gate) }.spawn();
         let raw = actor
             .send_request(Ping, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
             .unwrap();
@@ -179,7 +179,7 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
         within!(actor.join()).await;
         assert_eq!(actor.mailbox_depth(), 0);
 
-        let actor = Probe { gate: None }.start();
+        let actor = Probe { gate: None }.spawn();
         assert!(matches!(
             actor.request(Crash).await,
             Err(ActorError::ActorStopped(ExitReason::Panic(_)))
@@ -221,7 +221,7 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
         let owner = runtime();
         let actor = {
             let _entered = owner.enter();
-            Probe { gate: None }.start()
+            Probe { gate: None }.spawn()
         };
         let (entered_tx, entered) = oneshot::channel();
         let (_release, release) = oneshot::channel();
@@ -246,7 +246,7 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
         .unwrap();
     rt.block_on(async {
         for backend in [Backend::Blocking, Backend::Thread] {
-            let actor = Probe { gate: None }.start_with_backend(backend);
+            let actor = Probe { gate: None }.with_options(backend).spawn().unwrap();
             actor.request(Ping).await.unwrap();
             actor.context().stop();
             within!(actor.join()).await;
@@ -290,7 +290,7 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
             panic!("native metric panic");
         }
     }
-    let actor = Native.start();
+    let actor = Native.spawn();
     actor.request(Ping).unwrap();
     let before = metrics::snapshot().requests_started_total;
     assert_eq!(actor.query().unwrap(), 9);

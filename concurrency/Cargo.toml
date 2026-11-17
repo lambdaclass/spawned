@@ -64,6 +64,8 @@ failpoints = []
 loom = { version = "0.7", features = ["futures"] }
 
 [lints.rust]
+# `started()` impls refine the trait's `impl Into<Init<Self>>` on purpose.
+refining_impl_trait = { level = "allow", priority = -1 }
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_scheduler_loom)', 'cfg(spawned_sim)', 'cfg(kani)', 'cfg(kani_slow)'] }
 
 # clippy.toml bans direct std/parking_lot synchronization in the Loom-checked

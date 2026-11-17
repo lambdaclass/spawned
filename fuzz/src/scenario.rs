@@ -100,9 +100,9 @@ pub enum Cmd {
 
 #[derive(Arbitrary, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpawnHow {
-    /// `.start()`: unmanaged async actor.
+    /// `.spawn()`: unmanaged async actor.
     Unmanaged,
-    /// `.start_on(group)`: managed by an `ActorSystem` async group.
+    /// `.with_options(group).spawn()`: managed by an `ActorSystem` async group.
     Managed { group: u8 },
     /// `.start_linked(parent)`.
     Linked { parent: u8 },

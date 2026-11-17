@@ -72,7 +72,7 @@ fn deadline_service_child() {
         .build()
         .unwrap();
     runtime.block_on(async {
-        let owner = Owner::default().start();
+        let owner = Owner::default().spawn();
         spawned_concurrency::__private::in_turn(&owner, |_, ctx| {
             let opts = JobOptions::new().deadline(Duration::from_millis(20));
             ctx.pipe_blocking(
@@ -94,7 +94,7 @@ fn deadline_service_child() {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Another actor's deadlines, serviced by the same thread.
-        let other = Owner::default().start();
+        let other = Owner::default().spawn();
         let parked = other
             .send_request(Park, Deadline::after(Duration::from_millis(50)))
             .unwrap();

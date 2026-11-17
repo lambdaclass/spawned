@@ -190,7 +190,7 @@ mod linux {
                     counts: counts.clone(),
                     handled: 0,
                 }
-                .start()
+                .spawn()
             })
             .collect();
         actor_runtime.block_on(async {

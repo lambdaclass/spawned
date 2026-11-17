@@ -144,7 +144,7 @@ async fn main() {
     // 1. exit(reason) follows OTP's exit_signal/2: Normal is ignored by a
     //    non-trapping actor, any other reason ends it without stopped().
     let seen = Seen::default();
-    let plain = Worker::new(false, &seen).start();
+    let plain = Worker::new(false, &seen).spawn();
     plain.request(Sync).await.unwrap();
     plain.child_handle().exit(ExitReason::Normal);
     plain.request(Sync).await.unwrap();
@@ -161,8 +161,8 @@ async fn main() {
     //    kill is untrappable and ends it `Killed`, also without stopped().
     //    An administrative stop (`stop`, `shutdown`) always runs stopped().
     let (observer_seen, target_seen) = (Seen::default(), Seen::default());
-    let observer = Worker::new(true, &observer_seen).start();
-    let target = Worker::new(true, &target_seen).start();
+    let observer = Worker::new(true, &observer_seen).spawn();
+    let target = Worker::new(true, &target_seen).spawn();
     observer
         .request(Watch(target.child_handle()))
         .await
@@ -201,7 +201,7 @@ async fn main() {
         Some(ExitReason::Killed)
     );
     // A non-trapping actor that links to a dead one exits NoProc itself.
-    let linker = Worker::new(false, &Seen::default()).start();
+    let linker = Worker::new(false, &Seen::default()).spawn();
     linker.request(Watch(target.child_handle())).await.unwrap();
     assert_eq!(ended(&linker.child_handle()).await, ExitReason::NoProc);
     observer.child_handle().stop();

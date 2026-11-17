@@ -69,7 +69,7 @@ fn basic_send_and_request() {
     crate::test_wait::bounded(
         concat!(module_path!(), "::basic_send_and_request"),
         move || {
-            let actor = Counter { count: 0 }.start();
+            let actor = Counter { count: 0 }.spawn();
             assert_eq!(actor.request(GetCount).unwrap(), 0);
             assert_eq!(actor.request(Increment).unwrap(), 1);
             // Same mailbox: the request is handled after the send.
@@ -107,7 +107,7 @@ fn join_waits_for_completion() {
                 }
             }
 
-            let actor = SlowStop.start();
+            let actor = SlowStop.spawn();
             actor.send(StopSlow).unwrap();
             actor.join();
             // If join() returned, stopped() has completed
@@ -142,7 +142,7 @@ fn join_multiple_callers() {
                 }
             }
 
-            let actor = SlowStop2.start();
+            let actor = SlowStop2.spawn();
             let a1 = actor.clone();
             let a2 = actor.clone();
             let t1 = thread::spawn(move || {
@@ -186,7 +186,7 @@ fn panic_in_started_stops_actor() {
                 }
             }
 
-            let actor = PanicOnStart.start();
+            let actor = PanicOnStart.spawn();
             actor.join();
             let result = actor.send(PingThread);
             assert!(result.is_err());
@@ -232,7 +232,7 @@ fn panic_in_handler_stops_actor() {
                 }
             }
 
-            let actor = PanicOnMsg.start();
+            let actor = PanicOnMsg.spawn();
             actor.send(ExplodeThread).unwrap();
             actor.join();
             let result = actor.request(CheckThread);
@@ -268,7 +268,7 @@ fn panic_in_stopped_still_completes() {
                 }
             }
 
-            let actor = PanicOnStop.start();
+            let actor = PanicOnStop.spawn();
             actor.send(StopMeThread).unwrap();
             actor.join();
         },
@@ -280,7 +280,7 @@ fn recipient_type_erasure() {
     crate::test_wait::bounded(
         concat!(module_path!(), "::recipient_type_erasure"),
         move || {
-            let actor = Counter { count: 42 }.start();
+            let actor = Counter { count: 42 }.spawn();
             let recipient: Recipient<GetCount> = actor.recipient();
             let result = request(&*recipient, GetCount, Duration::from_secs(5)).unwrap();
             assert_eq!(result, 42);
@@ -293,7 +293,7 @@ fn send_message_on_delivers() {
     crate::test_wait::bounded(
         concat!(module_path!(), "::send_message_on_delivers"),
         move || {
-            let actor = Counter { count: 0 }.start();
+            let actor = Counter { count: 0 }.spawn();
             let ctx = actor.context();
             send_message_on(ctx, || rt::sleep(Duration::from_millis(10)), Increment);
             let count =
@@ -311,7 +311,7 @@ fn exit_reason_normal_on_clean_stop() {
     crate::test_wait::bounded(
         concat!(module_path!(), "::exit_reason_normal_on_clean_stop"),
         move || {
-            let actor = Counter { count: 0 }.start();
+            let actor = Counter { count: 0 }.spawn();
             actor.request(StopCounter).unwrap();
             let reason = actor.wait_exit();
             assert!(matches!(reason, ExitReason::Normal));
@@ -345,7 +345,7 @@ fn exit_reason_panic_in_started() {
                 }
             }
 
-            let actor = PanicStartThread.start();
+            let actor = PanicStartThread.spawn();
             let reason = actor.wait_exit();
             assert!(
                 matches!(reason, ExitReason::Panic(ref msg) if msg.contains("boom in started"))
@@ -378,7 +378,7 @@ fn exit_reason_panic_in_handler() {
                 }
             }
 
-            let actor = PanicHandlerThread.start();
+            let actor = PanicHandlerThread.spawn();
             let _ = actor.send(ExplodeThread2);
             let reason = actor.wait_exit();
             assert!(
@@ -396,7 +396,7 @@ fn exit_reason_poll_returns_none_while_running() {
             "::exit_reason_poll_returns_none_while_running"
         ),
         move || {
-            let actor = Counter { count: 0 }.start();
+            let actor = Counter { count: 0 }.spawn();
             assert!(actor.exit_reason().is_none());
             actor.request(StopCounter).unwrap();
             actor.join();
@@ -495,7 +495,7 @@ fn make_watcher() -> ActorRef<Watcher> {
     Watcher {
         downs: Arc::new(Mutex::new(Vec::new())),
     }
-    .start()
+    .spawn()
 }
 
 #[test]
@@ -506,7 +506,7 @@ fn monitor_running_actor_delivers_down_on_exit() {
             "::monitor_running_actor_delivers_down_on_exit"
         ),
         move || {
-            let target = Counter { count: 0 }.start();
+            let target = Counter { count: 0 }.spawn();
             let target_handle = target.child_handle();
             let watcher = make_watcher();
 
@@ -534,7 +534,7 @@ fn demonitor_flushes_a_queued_down() {
     crate::test_wait::bounded(
         concat!(module_path!(), "::demonitor_flushes_a_queued_down"),
         move || {
-            let target = Counter { count: 0 }.start();
+            let target = Counter { count: 0 }.spawn();
             target.request(StopCounter).unwrap();
             target.join();
             let watcher = make_watcher();
@@ -556,7 +556,7 @@ fn monitor_already_dead_actor_delivers_down_immediately() {
             "::monitor_already_dead_actor_delivers_down_immediately"
         ),
         move || {
-            let target = Counter { count: 0 }.start();
+            let target = Counter { count: 0 }.spawn();
             target.request(StopCounter).unwrap();
             target.join();
             let target_handle = target.child_handle();
@@ -581,7 +581,7 @@ fn demonitor_before_target_dies_suppresses_down() {
             "::demonitor_before_target_dies_suppresses_down"
         ),
         move || {
-            let target = Counter { count: 0 }.start();
+            let target = Counter { count: 0 }.spawn();
             let target_handle = target.child_handle();
             let watcher = make_watcher();
 
@@ -606,7 +606,7 @@ fn multiple_monitors_each_get_own_ref_and_down() {
             "::multiple_monitors_each_get_own_ref_and_down"
         ),
         move || {
-            let target = Counter { count: 0 }.start();
+            let target = Counter { count: 0 }.spawn();
             let target_handle = target.child_handle();
             let watcher = make_watcher();
 
@@ -655,7 +655,7 @@ fn monitor_observes_panic_reason() {
                 }
             }
 
-            let target = PanicMe.start();
+            let target = PanicMe.spawn();
             let target_handle = target.child_handle();
             let watcher = make_watcher();
 
@@ -726,7 +726,7 @@ fn make_trapper(trap: bool) -> ActorRef<TrapActor> {
         exits: Arc::new(Mutex::new(Vec::new())),
         trap,
     }
-    .start()
+    .spawn()
 }
 
 #[test]
@@ -842,8 +842,12 @@ fn start_linked_threads() {
             struct Child;
             impl Actor for Child {}
 
-            let parent = Parent.start();
-            let child = Child.start_linked(&parent.context());
+            let parent = Parent.spawn();
+            let child = Child
+                .start_link(&parent.context())
+                .expect("start_link")
+                .started()
+                .expect("ready");
 
             let _ = parent.send(PanicParent);
             parent.wait_exit();

@@ -185,8 +185,8 @@ async fn kill_vs_stopped(seed: u64) {
     let (log, watched) = (Log::default(), Log::default());
     let mut node = Node::new(&log, false);
     node.slow_stop = 2;
-    let target = node.start();
-    let watcher = Node::new(&watched, false).start();
+    let target = node.spawn();
+    let watcher = Node::new(&watched, false).spawn();
     let handle = target.child_handle();
     let h = handle.clone();
     on(&watcher, move |ctx| {
@@ -251,8 +251,8 @@ async fn late_signal_vs_death(seed: u64) {
     let (log, observed) = (Log::default(), Log::default());
     let mut node = Node::new(&log, false);
     node.slow_stop = 2;
-    let target = node.start();
-    let observer = Node::new(&observed, true).start();
+    let target = node.spawn();
+    let observer = Node::new(&observed, true).spawn();
     let handle = target.child_handle();
     let h = handle.clone();
     on(&observer, move |ctx| {
@@ -294,8 +294,8 @@ async fn late_signal_vs_death(seed: u64) {
 /// agree; `try_link` after D gets `Err(NoProc)` and no notice.
 async fn link_vs_death(seed: u64) {
     let observed = Log::default();
-    let target = Node::new(&Log::default(), false).start();
-    let observer = Node::new(&observed, true).start();
+    let target = Node::new(&Log::default(), false).spawn();
+    let observer = Node::new(&observed, true).spawn();
     let handle = target.child_handle();
     let stopper = handle.clone();
     let stop_at = seed % 3;
@@ -363,8 +363,8 @@ async fn unlink_demonitor_fence(seed: u64) {
         }
     }
     let observed = Log::default();
-    let target = Node::new(&Log::default(), false).start();
-    let observer = Node::new(&observed, true).start();
+    let target = Node::new(&Log::default(), false).spawn();
+    let observer = Node::new(&observed, true).spawn();
     let handle = target.child_handle();
     let monitor: Arc<Mutex<Option<MonitorRef>>> = Arc::default();
     let (h, m) = (handle.clone(), monitor.clone());

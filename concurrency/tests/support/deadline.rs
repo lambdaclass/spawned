@@ -9,7 +9,7 @@
 //! #[macro_use]
 //! #[path = "support/deadline.rs"]
 //! mod deadline;
-//! let tree = within!(tree.start()).await.unwrap();
+//! let tree = within!(tree.spawn()).await.unwrap();
 //! ```
 #![allow(dead_code, unused_macros)]
 use std::time::Duration;

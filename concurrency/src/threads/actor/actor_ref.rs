@@ -166,6 +166,13 @@ impl<A: Actor> ActorRef<A> {
     pub fn child_handle(&self) -> ChildHandle {
         ChildHandle::from(self.clone())
     }
+
+    /// This instance's committed startup result (blocks until `started()`
+    /// returned; a failure until the instance is published, or its cleanup
+    /// deadline): the same answer the waiting starts give.
+    pub fn ready(&self) -> Result<crate::StartOutcome<()>, crate::StartError> {
+        start::wait(self, false)
+    }
 }
 
 impl<A: Actor> From<ActorRef<A>> for ChildHandle {

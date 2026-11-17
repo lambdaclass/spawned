@@ -1,0 +1,937 @@
+//! Records unified-start traces (stage 1, the startup decision, the cell,
+//! notices, names, the init timer, continuations) from real starts for TLA+
+//! trace validation against `verification/tla/Start.tla` (mapping in
+//! `TraceStart.tla`). Each scenario writes `start_<name>.json` to
+//! `$LIFECYCLE_TRACE_DIR` (default `target/lifecycle-traces`);
+//! `verification/tla/trace_check.py` checks them (schema `start-v1`).
+//!
+//! Recording is process-wide, so the scenarios run one at a time. Every
+//! scenario waits for the events it needs explicitly (the children's
+//! publication and owned-work join, the parent's notices) before taking
+//! the trace: nothing races the end of the recording.
+#![cfg(feature = "lifecycle-trace")]
+
+use spawned_concurrency::{
+    lifecycle_trace,
+    message::Message,
+    tasks::{Actor, ActorStart, Context, Handler, Init, Name, StartOptions},
+    ChildHandle, Down, Exit, ExitReason, PendingReply, StartError, StartOutcome,
+};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+const LIMIT: Duration = Duration::from_secs(10);
+
+/// Held for a whole scenario (also across awaits, so an async mutex).
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn trace_dir() -> PathBuf {
+    std::env::var_os("LIFECYCLE_TRACE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/lifecycle-traces")
+        })
+}
+
+/// Wait until `cond` holds (the trace has the events a scenario needs).
+async fn until(what: &str, cond: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + LIMIT;
+    while !cond() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+fn count(action: &str) -> usize {
+    lifecycle_trace::start_count(action, "")
+}
+
+/// Stop recording and write the trace; returns `action[:x]` per event.
+fn write(name: &str, pplace: &str, ptrap: bool, cap: usize) -> Vec<String> {
+    let events = lifecycle_trace::take_start();
+    let json = format!(
+        "{{\"name\":\"start_{name}\",\"schema\":\"start-v1\",\"pplace\":\"{pplace}\",\"ptrap\":{ptrap},\"cap\":{cap},\"events\":[\n{}\n]}}\n",
+        events
+            .iter()
+            .map(|e| e.to_json())
+            .collect::<Vec<_>>()
+            .join(",\n")
+    );
+    let dir = trace_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(format!("start_{name}.json")), json).unwrap();
+    events
+        .iter()
+        .map(|e| {
+            if e.x.is_empty() {
+                e.action.to_string()
+            } else {
+                format!("{}:{}", e.action, e.x)
+            }
+        })
+        .collect()
+}
+
+fn has(events: &[String], wanted: &[&str]) {
+    // `wanted` must appear in this order (other events may interleave).
+    let mut at = 0;
+    for w in wanted {
+        match events[at..].iter().position(|e| e == w) {
+            Some(i) => at += i + 1,
+            None => panic!("{w} missing (in order) from {events:#?}"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Actors
+// ---------------------------------------------------------------------------
+
+#[derive(Default, Clone)]
+struct Seen {
+    exits: Arc<Mutex<Vec<Exit>>>,
+    downs: Arc<Mutex<Vec<Down>>>,
+}
+
+/// The model's P.
+struct Parent {
+    trap: bool,
+    seen: Seen,
+}
+
+impl Actor for Parent {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        if self.trap {
+            ctx.trap_exit(true);
+        }
+    }
+    async fn exit_received(&mut self, exit: Exit, _: &Context<Self>) {
+        self.seen.exits.lock().unwrap().push(exit);
+    }
+}
+
+impl Handler<Down> for Parent {
+    async fn handle(&mut self, down: Down, reply: PendingReply<'_, ()>, _: &Context<Self>) {
+        self.seen.downs.lock().unwrap().push(down);
+        reply.reply(());
+    }
+}
+
+struct Panic;
+impl Message for Panic {
+    type Result = ();
+}
+impl Handler<Panic> for Parent {
+    async fn handle(&mut self, _: Panic, _: PendingReply<'_, ()>, _: &Context<Self>) {
+        panic!("parent fails");
+    }
+}
+
+struct Stop;
+impl Message for Stop {
+    type Result = ();
+}
+impl Handler<Stop> for Parent {
+    async fn handle(&mut self, _: Stop, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
+        ctx.stop();
+        reply.reply(());
+    }
+}
+
+async fn parent(trap: bool) -> (spawned_concurrency::tasks::ActorRef<Parent>, Seen) {
+    let seen = Seen::default();
+    let p = Parent {
+        trap,
+        seen: seen.clone(),
+    }
+    .start()
+    .await
+    .unwrap()
+    .started()
+    .unwrap();
+    (p, seen)
+}
+
+#[derive(Clone, Copy)]
+enum Outcome {
+    Ready,
+    Continue,
+    Error,
+    Ignore,
+    Panic,
+    StopShutdown,
+}
+
+/// A child whose `started()` may wait on a gate, then returns `outcome`.
+struct Child {
+    outcome: Outcome,
+    gate: Option<tokio::sync::oneshot::Receiver<()>>,
+    log: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl Child {
+    fn new(outcome: Outcome) -> Self {
+        Self {
+            outcome,
+            gate: None,
+            log: Arc::default(),
+        }
+    }
+    fn gated(outcome: Outcome) -> (Self, tokio::sync::oneshot::Sender<()>) {
+        let (release, gate) = tokio::sync::oneshot::channel();
+        let mut child = Self::new(outcome);
+        child.gate = Some(gate);
+        (child, release)
+    }
+}
+
+impl Actor for Child {
+    async fn started(&mut self, _: &Context<Self>) -> Init<Self> {
+        if let Some(gate) = self.gate.take() {
+            let _ = gate.await;
+        }
+        match self.outcome {
+            Outcome::Ready => Init::ready(),
+            Outcome::Continue => Init::continue_with(Cont),
+            Outcome::Error => Init::error("no config"),
+            Outcome::Ignore => Init::ignore(),
+            Outcome::Panic => panic!("child fails in started()"),
+            Outcome::StopShutdown => Init::stop(ExitReason::Shutdown),
+        }
+    }
+}
+
+struct Cont;
+impl Message for Cont {
+    type Result = ();
+}
+impl Handler<Cont> for Child {
+    async fn handle(&mut self, _: Cont, _: PendingReply<'_, ()>, _: &Context<Self>) {
+        self.log.lock().unwrap().push("continue");
+    }
+}
+
+struct Work;
+impl Message for Work {
+    type Result = ();
+}
+impl Handler<Work> for Child {
+    async fn handle(&mut self, _: Work, reply: PendingReply<'_, ()>, _: &Context<Self>) {
+        self.log.lock().unwrap().push("work");
+        reply.reply(());
+    }
+}
+
+impl Handler<Stop> for Child {
+    async fn handle(&mut self, _: Stop, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
+        ctx.stop();
+        reply.reply(());
+    }
+}
+
+struct Unlink(ChildHandle);
+impl Message for Unlink {
+    type Result = ();
+}
+impl Handler<Unlink> for Child {
+    async fn handle(&mut self, msg: Unlink, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
+        ctx.unlink(&msg.0);
+        reply.reply(());
+    }
+}
+
+/// Wait until `n` children have finished their owned work (published, jobs
+/// joined): the last events of a child.
+async fn children_done(n: usize) {
+    until("children's owned work", || count("SWorkDone") >= n).await;
+}
+
+// ---------------------------------------------------------------------------
+// Scenarios
+// ---------------------------------------------------------------------------
+
+/// start_link of a ready child; a message; an administrative stop (the
+/// child's ordinary exit); its Normal notice reaches the non-trapping P.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn link_ready_then_stop() {
+    let _serial = SERIAL.lock().await;
+    let (p, _) = parent(false).await;
+    lifecycle_trace::record_start_parent(&p.child_handle());
+    let child = Child::new(Outcome::Ready)
+        .start_link(&p.context())
+        .await
+        .unwrap()
+        .started()
+        .unwrap();
+    child.request(Work).await.unwrap();
+    child.request(Stop).await.unwrap();
+    assert_eq!(child.wait_exit().await, ExitReason::Normal);
+    children_done(1).await;
+    until("P's notice", || count("PNotice") >= 1).await;
+    let events = write("link_ready_then_stop", "U", false, 1000);
+    has(
+        &events,
+        &[
+            "SBegin:link",
+            "SCommit:U",
+            "SStartedBegin",
+            "SResolve:ready",
+            "SAnswer:ok",
+            "SSend",
+            "SHandle",
+            "SExit:Normal",
+            "SDie:Normal",
+            "SPublish:deliver",
+            "PNotice:link",
+            "SWorkDone",
+        ],
+    );
+    p.request(Stop).await.unwrap();
+    p.wait_exit().await;
+}
+
+/// A failed start_monitor (Init::error) consumes its Down; ready()
+/// reports the same result.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn monitor_error_consumes_down() {
+    let _serial = SERIAL.lock().await;
+    let (p, seen) = parent(false).await;
+    lifecycle_trace::record_start_parent(&p.child_handle());
+    let starting = Child::new(Outcome::Error).start_monitor(&p.context());
+    let child = starting.actor_ref().unwrap();
+    let result = starting.await;
+    assert!(
+        matches!(&result, Err(StartError::InitFailed { cause, pending: None }) if cause == "no config"),
+        "{result:?}"
+    );
+    assert!(matches!(
+        child.ready().await,
+        Err(StartError::InitFailed { pending: None, .. })
+    ));
+    children_done(1).await;
+    let events = write("monitor_error_consumes_down", "U", false, 1000);
+    has(
+        &events,
+        &[
+            "SBegin:monitor",
+            "SCommit:U",
+            "SStartedBegin",
+            "SResolve:error",
+            "SDie:Normal",
+            "SPublish:divert",
+            "SAnswer:failed",
+            "SReady:failed",
+        ],
+    );
+    assert!(seen.downs.lock().unwrap().is_empty());
+    p.request(Stop).await.unwrap();
+    p.wait_exit().await;
+}
+
+/// A trapping parent: a child panicking in started() fails start_link with
+/// the final reason, and the Exit is consumed (OTP's flush).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn link_panic_in_started_trapping_parent() {
+    let _serial = SERIAL.lock().await;
+    let (p, seen) = parent(true).await;
+    lifecycle_trace::record_start_parent(&p.child_handle());
+    let result = Child::new(Outcome::Panic).start_link(&p.context()).await;
+    assert!(matches!(
+        result,
+        Err(StartError::InitExited {
+            reason: ExitReason::Panic(_),
+            pending: None
+        })
+    ));
+    children_done(1).await;
+    let events = write("link_panic_in_started_trapping_parent", "U", true, 1000);
+    has(
+        &events,
+        &[
+            "SBegin:link",
+            "SResolve:panic",
+            "SDie:Panic",
+            "SPublish:divert",
+            "SAnswer:failed",
+        ],
+    );
+    assert!(seen.exits.lock().unwrap().is_empty());
+    p.request(Stop).await.unwrap();
+    p.wait_exit().await;
+}
+
+/// A non-trapping parent: a child stopping with Shutdown in started()
+/// fails start_link, and the notice still ends the parent (OTP: the link
+/// kills the caller).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn link_stop_in_started_ends_nontrapping_parent() {
+    let _serial = SERIAL.lock().await;
+    let (p, _) = parent(false).await;
+    lifecycle_trace::record_start_parent(&p.child_handle());
+    let result = Child::new(Outcome::StopShutdown)
+        .start_link(&p.context())
+        .await;
+    assert!(matches!(
+        result,
+        Err(StartError::InitExited {
+            reason: ExitReason::Shutdown,
+            pending: None
+        })
+    ));
+    assert_eq!(p.wait_exit().await, ExitReason::Shutdown);
+    children_done(1).await;
+    until("P's publication", || count("PPublish") >= 1).await;
+    let events = write(
+        "link_stop_in_started_ends_nontrapping_parent",
+        "U",
+        false,
+        1000,
+    );
+    has(
+        &events,
+        &[
+            "SResolve:stopS",
+            "SDie:Shutdown",
+            "SPublish:deliver",
+            "PNotice:link",
+            "PDie",
+            "PPublish",
+        ],
+    );
+}
+
+/// Names: committed with the start, found by a typed lookup, refused to a
+/// competitor, released before publication, free again after.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn named_start_clash_and_release() {
+    let _serial = SERIAL.lock().await;
+    let (p, _) = parent(false).await;
+    lifecycle_trace::record_start_parent(&p.child_handle());
+    static NAME: Name<Child> = Name::new("start-trace-name");
+    let first = Child::new(Outcome::Ready)
+        .with_options(StartOptions::new().name(NAME.clone()))
+        .start()
+        .await
+        .unwrap()
+        .started()
+        .unwrap();
+    assert_eq!(NAME.whereis().map(|a| a.id()), Some(first.id()));
+    let clash = Child::new(Outcome::Ready)
+        .with_options(StartOptions::new().name(NAME.clone()))
+        .start()
+        .await;
+    match clash {
+        Err(StartError::AlreadyStarted { existing, .. }) => {
+            assert_eq!(existing.map(|h| h.id()), Some(first.id()))
+        }
+        other => panic!("{other:?}"),
+    }
+    first.request(Stop).await.unwrap();
+    first.wait_exit().await;
+    assert!(NAME.whereis().is_none());
+    let again = Child::new(Outcome::Ready)
+        .with_options(StartOptions::new().name(NAME.clone()))
+        .start()
+        .await
+        .unwrap()
+        .started()
+        .unwrap();
+    again.request(Stop).await.unwrap();
+    again.wait_exit().await;
+    children_done(2).await;
+    let events = write("named_start_clash_and_release", "U", false, 1000);
+    has(
+        &events,
+        &[
+            "SCommit:U",
+            "SLookup:hit",
+            "SRefuse:already",
+            "SReleaseName",
+            "SPublish:none",
+            "SLookup:miss",
+            "SCommit:U",
+        ],
+    );
+    p.request(Stop).await.unwrap();
+    p.wait_exit().await;
+}
+
+/// spawn + ready() for an ignoring child, and a waiting start that is
+/// ignored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ignore_answers_ignored() {
+    let _serial = SERIAL.lock().await;
+    let (p, _) = parent(false).await;
+    lifecycle_trace::record_start_parent(&p.child_handle());
+    let spawned = Child::new(Outcome::Ignore).spawn();
+    assert!(matches!(
+        spawned.ready().await,
+        Ok(StartOutcome::Ignored { pending: None })
+    ));
+    assert_eq!(spawned.wait_exit().await, ExitReason::Normal);
+    let waited = Child::new(Outcome::Ignore).start().await.unwrap();
+    assert!(waited.is_ignored());
+    // Invalid options: refused before anything exists.
+    assert!(matches!(
+        Child::new(Outcome::Ready)
+            .with_options(StartOptions::new().init_timeout(Duration::ZERO))
+            .spawn(),
+        Err(StartError::InvalidOptions(_))
+    ));
+    children_done(2).await;
+    let events = write("ignore_answers_ignored", "U", false, 1000);
+    has(
+        &events,
+        &[
+            "SBegin:spawn",
+            "SResolve:ignore",
+            "SReady:ignored",
+            "SBegin:start",
+            "SResolve:ignore",
+            "SAnswer:ignored",
+        ],
+    );
+    p.request(Stop).await.unwrap();
+    p.wait_exit().await;
+}
+
+/// The continuation runs before the messages sent while started() ran.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn continuation_precedes_queued_messages() {
+    let _serial = SERIAL.lock().await;
+    let (p, _) = parent(false).await;
+    lifecycle_trace::record_start_parent(&p.child_handle());
+    let (child, release) = Child::gated(Outcome::Continue);
+    let log = child.log.clone();
+    let child = child.spawn();
+    until("started() began", || count("SStartedBegin") >= 1).await;
+    child.send(Work).unwrap();
+    child.send(Work).unwrap();
+    release.send(()).unwrap();
+    child.request(Stop).await.unwrap();
+    child.wait_exit().await;
+    children_done(1).await;
+    assert_eq!(*log.lock().unwrap(), ["continue", "work", "work"]);
+    let events = write("continuation_precedes_queued_messages", "U", false, 1000);
+    has(
+        &events,
+        &[
+            "SStartedBegin",
+            "SSend",
+            "SSend",
+            "SResolve:continue",
+            "SContinue",
+            "SHandle",
+            "SHandle",
+        ],
+    );
+    p.request(Stop).await.unwrap();
+    p.wait_exit().await;
+}
+
+/// The init timer wins over a stuck started(): the waiting start answers
+/// InitTimeout after publication; the trapping parent's Exit is consumed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn init_timeout_waiting() {
+    let _serial = SERIAL.lock().await;
+    let (p, seen) = parent(true).await;
+    lifecycle_trace::record_start_parent(&p.child_handle());
+    let (child, release) = Child::gated(Outcome::Ready);
+    let starting = child
+        .with_options(StartOptions::new().init_timeout(Duration::from_millis(20)))
+        .start_link(&p.context());
+    until("the timer", || count("STimer") >= 1).await;
+    release.send(()).unwrap();
+    let result = starting.await;
+    assert!(
+        matches!(result, Err(StartError::InitTimeout { pending: None })),
+        "{result:?}"
+    );
+    children_done(1).await;
+    let events = write("init_timeout_waiting", "U", true, 1000);
+    has(
+        &events,
+        &[
+            "SStartedBegin",
+            "STimer:won",
+            "SResolve:ready",
+            "SDie:Killed",
+            "SPublish:divert",
+            "SAnswer:timeout",
+        ],
+    );
+    assert!(seen.exits.lock().unwrap().is_empty());
+    p.request(Stop).await.unwrap();
+    p.wait_exit().await;
+}
+
+/// An abandoned start_link whose child then times out: the diverted
+/// notice is handed on, and the trapping parent gets the Exit (Killed).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn abandoned_timeout_delivers_killed() {
+    let _serial = SERIAL.lock().await;
+    let (p, seen) = parent(true).await;
+    lifecycle_trace::record_start_parent(&p.child_handle());
+    let (child, release) = Child::gated(Outcome::Ready);
+    let starting = child
+        .with_options(StartOptions::new().init_timeout(Duration::from_millis(20)))
+        .start_link(&p.context());
+    let child = starting.actor_ref().unwrap();
+    drop(starting);
+    until("the timer", || count("STimer") >= 1).await;
+    release.send(()).unwrap();
+    assert_eq!(child.wait_exit().await, ExitReason::Killed);
+    children_done(1).await;
+    until("P's notice", || count("PNotice") >= 1).await;
+    until("the Exit", || !seen.exits.lock().unwrap().is_empty()).await;
+    let events = write("abandoned_timeout_delivers_killed", "U", true, 1000);
+    has(
+        &events,
+        &[
+            "SAbandon",
+            "STimer:won",
+            "SResolve:ready",
+            "SPublish:deliver",
+            "PNotice:link",
+        ],
+    );
+    assert_eq!(seen.exits.lock().unwrap()[0].reason, ExitReason::Killed);
+    p.request(Stop).await.unwrap();
+    p.wait_exit().await;
+}
+
+/// A kill and an administrative stop while started() runs decide the
+/// start (rows 2 and 3); no stopped().
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kill_and_admin_stop_during_started() {
+    let _serial = SERIAL.lock().await;
+    let (p, _) = parent(false).await;
+    lifecycle_trace::record_start_parent(&p.child_handle());
+    let (child, release) = Child::gated(Outcome::Ready);
+    let starting = child.start();
+    let handle = starting.actor_ref().unwrap().child_handle();
+    until("started() began", || count("SStartedBegin") >= 1).await;
+    handle.kill();
+    release.send(()).unwrap();
+    assert!(matches!(
+        starting.await,
+        Err(StartError::InitExited {
+            reason: ExitReason::Killed,
+            pending: None
+        })
+    ));
+    let (child, release) = Child::gated(Outcome::Ready);
+    let starting = child.start();
+    let handle = starting.actor_ref().unwrap().child_handle();
+    until("started() began", || count("SStartedBegin") >= 2).await;
+    handle.stop_with_reason(ExitReason::Shutdown);
+    release.send(()).unwrap();
+    assert!(matches!(
+        starting.await,
+        Err(StartError::InitExited {
+            reason: ExitReason::Shutdown,
+            pending: None
+        })
+    ));
+    children_done(2).await;
+    let events = write("kill_and_admin_stop_during_started", "U", false, 1000);
+    has(
+        &events,
+        &[
+            "SStartedBegin",
+            "SKill",
+            "SResolve:ready",
+            "SDie:Killed",
+            "SAnswer:failed",
+            "SStartedBegin",
+            "SAdminStop",
+            "SResolve:ready",
+            "SDie:Shutdown",
+            "SAnswer:failed",
+        ],
+    );
+    p.request(Stop).await.unwrap();
+    p.wait_exit().await;
+}
+
+/// The parent's abnormal exit reaches a linked child still in started():
+/// held, it fails the start (row 3). The waiter here is outside P.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn parent_exit_during_child_started() {
+    let _serial = SERIAL.lock().await;
+    let (p, _) = parent(false).await;
+    lifecycle_trace::record_start_parent(&p.child_handle());
+    let (child, release) = Child::gated(Outcome::Ready);
+    let starting = child.start_link(&p.context());
+    until("started() began", || count("SStartedBegin") >= 1).await;
+    let _ = p.send(Panic);
+    assert!(matches!(p.wait_exit().await, ExitReason::Panic(_)));
+    until("P's publication", || count("PPublish") >= 1).await;
+    // A start through the dead parent's context is refused.
+    assert!(matches!(
+        Child::new(Outcome::Ready).start_link(&p.context()).await,
+        Err(StartError::ParentExited)
+    ));
+    release.send(()).unwrap();
+    assert!(matches!(
+        starting.await,
+        Err(StartError::InitExited {
+            reason: ExitReason::Panic(_),
+            pending: None
+        })
+    ));
+    children_done(1).await;
+    let events = write("parent_exit_during_child_started", "U", false, 1000);
+    has(
+        &events,
+        &[
+            "SStartedBegin",
+            "PExitBegin:Panic",
+            "PDie",
+            "PPublish",
+            "SResolve:ready",
+            "SDie:Panic",
+            "SAnswer:failed",
+        ],
+    );
+}
+
+/// A ready child unlinks from P, then dies: no notice reaches P.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unlinked_child_sends_no_notice() {
+    let _serial = SERIAL.lock().await;
+    let (p, seen) = parent(true).await;
+    lifecycle_trace::record_start_parent(&p.child_handle());
+    let child = Child::new(Outcome::Ready)
+        .start_link(&p.context())
+        .await
+        .unwrap()
+        .started()
+        .unwrap();
+    child.request(Unlink(p.child_handle())).await.unwrap();
+    child.request(Stop).await.unwrap();
+    child.wait_exit().await;
+    children_done(1).await;
+    let events = write("unlinked_child_sends_no_notice", "U", true, 1000);
+    has(
+        &events,
+        &["SAnswer:ok", "SUnlink", "SExit:Normal", "SPublish:deliver"],
+    );
+    assert!(!events.iter().any(|e| e.starts_with("PNotice")));
+    assert!(seen.exits.lock().unwrap().is_empty());
+    p.request(Stop).await.unwrap();
+    p.wait_exit().await;
+}
+
+/// A managed parent in a thread group: link and monitor children inherit
+/// its group; a full group refuses (Capacity); the slot is released at the
+/// scope's completion, after publication.
+#[cfg(not(spawned_sim))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inherited_thread_group_capacity() {
+    let _serial = SERIAL.lock().await;
+    let system = spawned_concurrency::system::ActorSystem::new().unwrap();
+    let group = system.thread_group("start-trace", 2).unwrap();
+    let seen = Seen::default();
+    let p = Parent {
+        trap: false,
+        seen: seen.clone(),
+    }
+    .with_options(&group)
+    .start()
+    .await
+    .unwrap()
+    .started()
+    .unwrap();
+    lifecycle_trace::record_start_parent(&p.child_handle());
+    let first = Child::new(Outcome::Ready)
+        .start_link(&p.context())
+        .await
+        .unwrap()
+        .started()
+        .unwrap();
+    let full = Child::new(Outcome::Ready).start_monitor(&p.context()).await;
+    assert!(matches!(full, Err(StartError::Capacity)), "{full:?}");
+    first.request(Stop).await.unwrap();
+    first.wait_exit().await;
+    until("the slot's release", || count("SReleaseSlot") >= 1).await;
+    let (second, _monitor) = Child::new(Outcome::Ready)
+        .start_monitor(&p.context())
+        .await
+        .unwrap()
+        .started()
+        .unwrap();
+    second.request(Stop).await.unwrap();
+    second.wait_exit().await;
+    until("both slots", || count("SReleaseSlot") >= 2).await;
+    until("the Down", || !seen.downs.lock().unwrap().is_empty()).await;
+    let events = write("inherited_thread_group_capacity", "G", false, 2);
+    has(
+        &events,
+        &[
+            "SBegin:link",
+            "SCommit:G",
+            "SAnswer:ok",
+            "SBegin:monitor",
+            "SRefuse:capacity",
+            "SPublish:deliver",
+            "SWorkDone",
+            "SReleaseSlot",
+            "SBegin:monitor",
+            "SCommit:G",
+            "SPublish:deliver",
+            "PNotice:monitor",
+        ],
+    );
+    p.request(Stop).await.unwrap();
+    p.wait_exit().await;
+    assert!(system.shutdown(LIMIT).await.complete);
+}
+
+/// A failed start_link whose wait is abandoned after publication: the Exit
+/// diverted to the waiter is handed on to the trapping parent, exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn abandon_after_publication_hands_on_exit() {
+    let _serial = SERIAL.lock().await;
+    let (p, seen) = parent(true).await;
+    lifecycle_trace::record_start_parent(&p.child_handle());
+    let starting = Child::new(Outcome::Panic).start_link(&p.context());
+    let child = starting.actor_ref().unwrap();
+    assert!(matches!(child.wait_exit().await, ExitReason::Panic(_)));
+    until("the diversion", || count("SPublish") >= 1).await;
+    drop(starting);
+    until("the Exit", || !seen.exits.lock().unwrap().is_empty()).await;
+    children_done(1).await;
+    let events = write("abandon_after_publication_hands_on_exit", "U", true, 1000);
+    has(
+        &events,
+        &[
+            "SResolve:panic",
+            "SPublish:divert",
+            "SAbandon",
+            "PNotice:link",
+        ],
+    );
+    assert_eq!(seen.exits.lock().unwrap().len(), 1);
+    p.request(Stop).await.unwrap();
+    p.wait_exit().await;
+}
+
+/// The ignoring child's destructor hangs: the waiter answers `Ignored`
+/// with `pending` at the cleanup deadline (5 s), before publication.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stuck_ignore_answers_pending() {
+    struct HangsInDrop(std::sync::mpsc::Receiver<()>);
+    impl Drop for HangsInDrop {
+        fn drop(&mut self) {
+            let _ = self.0.recv();
+        }
+    }
+    struct Stuck(#[allow(dead_code)] Option<HangsInDrop>);
+    impl Actor for Stuck {
+        async fn started(&mut self, _: &Context<Self>) -> Init<Self> {
+            Init::ignore()
+        }
+    }
+    let _serial = SERIAL.lock().await;
+    let (p, _) = parent(false).await;
+    lifecycle_trace::record_start_parent(&p.child_handle());
+    let (release, hang) = std::sync::mpsc::channel();
+    let outcome = Stuck(Some(HangsInDrop(hang))).start().await.unwrap();
+    let pending = match outcome {
+        StartOutcome::Ignored {
+            pending: Some(pending),
+        } => pending,
+        other => panic!("{other:?}"),
+    };
+    release.send(()).unwrap();
+    assert_eq!(pending.wait_exit_async().await, ExitReason::Normal);
+    children_done(1).await;
+    let events = write("stuck_ignore_answers_pending", "U", false, 1000);
+    has(
+        &events,
+        &[
+            "SResolve:ignore",
+            "SDie:Normal",
+            "SDeadline",
+            "SAnswer:ignored",
+            "SPublish:none",
+        ],
+    );
+    p.request(Stop).await.unwrap();
+    p.wait_exit().await;
+}
+
+/// Threads mode: a blocking start_link that fails, and a ready child with a
+/// continuation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn threads_mode_link_and_continuation() {
+    use spawned_concurrency::threads;
+    let _serial = SERIAL.lock().await;
+    struct TParent;
+    impl threads::Actor for TParent {}
+    struct TChild(bool, Arc<Mutex<Vec<&'static str>>>);
+    impl threads::Actor for TChild {
+        fn started(&mut self, _: &threads::Context<Self>) -> threads::Init<Self> {
+            if self.0 {
+                threads::Init::error("bad")
+            } else {
+                threads::Init::continue_with(Cont)
+            }
+        }
+    }
+    impl threads::Handler<Cont> for TChild {
+        fn handle(&mut self, _: Cont, _: PendingReply<'_, ()>, _: &threads::Context<Self>) {
+            self.1.lock().unwrap().push("continue");
+        }
+    }
+    impl threads::Handler<Stop> for TChild {
+        fn handle(&mut self, _: Stop, reply: PendingReply<'_, ()>, ctx: &threads::Context<Self>) {
+            ctx.stop();
+            reply.reply(());
+        }
+    }
+    let p = threads::ActorStart::spawn(TParent);
+    lifecycle_trace::record_start_parent(&p.child_handle());
+    let ctx = p.context();
+    let log: Arc<Mutex<Vec<&'static str>>> = Arc::default();
+    let (failed, ready) = tokio::task::spawn_blocking({
+        let log = log.clone();
+        move || {
+            let failed = threads::ActorStart::start_link(TChild(true, log.clone()), &ctx);
+            let ready = threads::ActorStart::start_link(TChild(false, log), &ctx)
+                .unwrap()
+                .started()
+                .unwrap();
+            ready.request(Stop).unwrap();
+            ready.wait_exit();
+            (failed, ready)
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(failed, Err(StartError::InitFailed { .. })));
+    assert_eq!(*log.lock().unwrap(), ["continue"]);
+    drop(ready);
+    children_done(2).await;
+    let events = write("threads_mode_link_and_continuation", "U", false, 1000);
+    has(
+        &events,
+        &[
+            "SResolve:error",
+            "SPublish:drop",
+            "SAnswer:failed",
+            "SResolve:continue",
+            "SContinue",
+            "SExit:Normal",
+        ],
+    );
+    p.context().stop();
+    p.wait_exit();
+}

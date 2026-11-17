@@ -62,15 +62,17 @@ async fn shutdown_waits_for_the_blocking_job(borrowed: bool) {
     } else {
         system.async_group("owned-jobs", 1).unwrap()
     };
+    use spawned_concurrency::tasks::ActorStart as _;
     let (release, gate) = mpsc::channel();
     let running = Arc::new(AtomicBool::new(false));
-    let actor = group
-        .start(Gated {
-            gate: Mutex::new(Some(gate)),
-            running: running.clone(),
-        })
-        .unwrap();
-    actor.ready().await.unwrap();
+    let actor = Gated {
+        gate: Mutex::new(Some(gate)),
+        running: running.clone(),
+    }
+    .with_options(&group)
+    .spawn()
+    .unwrap();
+    actor.ready().await.unwrap().started().expect("started");
     for _ in 0..500 {
         if running.load(Ordering::SeqCst) {
             break;
@@ -205,7 +207,7 @@ async fn a_job_admitted_after_its_owner_exited_never_runs() {
     impl Handler<Done> for Owner {
         async fn handle(&mut self, _: Done, _: PendingReply<'_, ()>, _: &Context<Self>) {}
     }
-    let actor = Owner.start();
+    let actor = Owner.spawn();
     let ctx = actor.context();
     let owner = actor.clone();
     let ran = Arc::new(AtomicBool::new(false));
@@ -260,8 +262,8 @@ async fn an_unused_permit_does_not_hold_the_scope(borrowed: bool) {
     } else {
         system.async_group("unused-permit-owned", 1).unwrap()
     };
-    let actor = Owner.start_on(&group).unwrap();
-    actor.ready().await.unwrap();
+    let actor = Owner.with_options(&group).spawn().unwrap();
+    actor.ready().await.unwrap().started().expect("started");
     // Reserved through a cloned context and kept outside the actor, unused.
     let permit: BlockingJobPermit<Owner> = actor
         .context()
@@ -330,7 +332,10 @@ fn job_thread_spawn_failure_child() {
     }
     let (started, ready) = mpsc::channel();
     // The actor runs on its own thread; this thread has no Tokio runtime.
-    let actor = ReadyOwner(started).start_with_backend(Backend::Thread);
+    let actor = ReadyOwner(started)
+        .with_options(Backend::Thread)
+        .spawn()
+        .unwrap();
     ready
         .recv_timeout(Duration::from_secs(30))
         .expect("actor runtime did not finish starting before thread fault injection");

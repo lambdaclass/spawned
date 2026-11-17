@@ -853,14 +853,14 @@ impl Driver {
         let worker = Worker::new(&self.world, None, hooks);
         let instance = worker.instance();
         let (aref, sys) = match how {
-            SpawnHow::Unmanaged => (worker.start(), None),
+            SpawnHow::Unmanaged => (worker.spawn(), None),
             SpawnHow::Managed { group } => {
                 let groups = self.all_groups();
                 if groups.is_empty() {
                     return;
                 }
                 let (sys, group) = &groups[group as usize % groups.len()];
-                match worker.start_on(group) {
+                match worker.with_options(group).spawn() {
                     Ok(aref) => {
                         if self.systems[*sys].shut {
                             self.violate(
@@ -875,7 +875,7 @@ impl Driver {
             }
             SpawnHow::Linked { parent } => {
                 if self.actors.is_empty() {
-                    (worker.start(), None)
+                    (worker.spawn(), None)
                 } else {
                     let parent = self.actors[parent as usize % self.actors.len()]
                         .aref
@@ -999,7 +999,7 @@ impl Driver {
         // A tree whose subtree restarts slower than its budget refills
         // retries forever (a legal configuration); cancelling the start
         // future rolls it back (V7) and keeps the run bounded.
-        let sup = match rt::timeout(START_LIMIT, builder.start()).await {
+        let sup = match rt::timeout(START_LIMIT, builder.spawn()).await {
             Ok(result) => result.ok(),
             Err(_) => None,
         };

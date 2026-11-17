@@ -62,7 +62,7 @@ fn experiment_contracts() {
         .build()
         .unwrap();
     rt.block_on(async {
-        let actor = Worker.start_with_backend(Backend::Thread);
+        let actor = Worker.with_options(Backend::Thread).spawn().unwrap();
         assert_eq!(actor.request(Probe).await.unwrap(), 42);
         let helper_progress = actor.request(Nested).await.unwrap();
         let current = std::env::var("SPAWNED_EXPERIMENT_RUNTIME").as_deref() == Ok("current");
@@ -120,7 +120,7 @@ fn experiment_io_reactor() {
         .build()
         .unwrap();
     rt.block_on(async {
-        let actor = Worker.start_with_backend(Backend::Thread);
+        let actor = Worker.with_options(Backend::Thread).spawn().unwrap();
         assert_eq!(actor.request(Network).await.unwrap(), 42);
         actor.child_handle().stop();
         within!(actor.join()).await;
@@ -135,7 +135,7 @@ fn characterize_caller_runtime_lifetime() {
         .build()
         .unwrap();
     let actor = rt.block_on(async {
-        let actor = Worker.start_with_backend(Backend::Thread);
+        let actor = Worker.with_options(Backend::Thread).spawn().unwrap();
         assert_eq!(actor.request(Probe).await.unwrap(), 42);
         actor
     });

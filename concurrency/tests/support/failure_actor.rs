@@ -312,17 +312,23 @@ impl Response {
 impl Handle {
     pub fn start(backend: Backend, worker: Worker) -> Self {
         #[cfg(feature = "async")]
-        use spawned_concurrency::tasks::ActorStart as _;
         use spawned_concurrency::threads::ActorStart as _;
         match backend {
-            Backend::Native => Self::Native(NativeWorker(worker).start()),
+            Backend::Native => Self::Native(NativeWorker(worker).spawn()),
             #[cfg(feature = "async")]
-            other => Self::Async(AsyncWorker(worker).start_with_backend(match other {
-                Backend::Async => spawned_concurrency::tasks::Backend::Async,
-                Backend::Blocking => spawned_concurrency::tasks::Backend::Blocking,
-                Backend::Thread => spawned_concurrency::tasks::Backend::Thread,
-                Backend::Native => unreachable!(),
-            })),
+            other => Self::Async(
+                spawned_concurrency::tasks::ActorStart::with_options(
+                    AsyncWorker(worker),
+                    match other {
+                        Backend::Async => spawned_concurrency::tasks::Backend::Async,
+                        Backend::Blocking => spawned_concurrency::tasks::Backend::Blocking,
+                        Backend::Thread => spawned_concurrency::tasks::Backend::Thread,
+                        Backend::Native => unreachable!(),
+                    },
+                )
+                .spawn()
+                .expect("spawn"),
+            ),
         }
     }
     pub fn child(&self) -> ChildHandle {

@@ -53,7 +53,7 @@ mod native {
         }
     }
     pub fn handler_panic() {
-        let actor = Victim.start();
+        let actor = Victim.spawn();
         println!("request sent");
         let result = actor.request_with_timeout(Boom, LIMIT);
         println!("caller observed {result:?}");
@@ -82,7 +82,7 @@ mod tasks {
     }
     pub fn handler_panic() {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let actor = Victim.start();
+            let actor = Victim.spawn();
             println!("request sent");
             let result = actor.request_with_timeout(Boom, LIMIT).await;
             println!("caller observed {result:?}");

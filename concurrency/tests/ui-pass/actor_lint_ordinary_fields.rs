@@ -48,7 +48,7 @@ impl Owned {
 fn main() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let actor = Owned::new(Arc::new("cfg".into()), Arc::new(vec![1, 2])).start();
+        let actor = Owned::new(Arc::new("cfg".into()), Arc::new(vec![1, 2])).spawn();
         assert_eq!(actor.request(Get).await.unwrap(), 10);
     });
 }

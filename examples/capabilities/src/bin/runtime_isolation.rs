@@ -52,11 +52,11 @@ fn main() {
         .unwrap();
     let worker = {
         let _entered = critical.enter();
-        Critical.start()
+        Critical.spawn()
     };
     let router = {
         let _entered = background.enter();
-        Router(worker.clone()).start()
+        Router(worker.clone()).spawn()
     };
     critical.block_on(async {
         let thread = router.request(Ping).await.unwrap();

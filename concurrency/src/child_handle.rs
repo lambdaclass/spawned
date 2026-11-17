@@ -170,7 +170,7 @@ impl ChildHandle {
     /// runs. `stop_with_reason(Kill)` ends `Kill`; use [`kill`](Self::kill)
     /// for the untrappable kill signal that ends `Killed`.
     pub fn stop_with_reason(&self, reason: ExitReason) {
-        crate::link::stop_with_reason(self.target.id, &self.target.request, reason, || {
+        crate::link::admin_stop_with_reason(self.target.id, &self.target.request, reason, || {
             (self.target.wake)()
         });
     }
@@ -391,6 +391,7 @@ pub(crate) mod tests {
             send_exit: Arc::new(|_| Ok(())),
             send_parent_exit: Arc::new(|_| Ok(())),
             send_held: Arc::new(|_, _| Ok(())),
+            startup: crate::start::StartupCell::new(),
         })
     }
 
@@ -503,7 +504,7 @@ pub(crate) mod tests {
                     }
                 }
 
-                let actor = Worker.start();
+                let actor = Worker.spawn();
                 let handle = actor.child_handle();
 
                 assert!(handle.is_alive());
@@ -547,7 +548,7 @@ pub(crate) mod tests {
 
                 let runtime = spawned_rt::tasks::Runtime::new().unwrap();
                 runtime.block_on(async {
-                    let actor = Worker.start();
+                    let actor = Worker.spawn();
                     let handle = actor.child_handle();
 
                     assert!(handle.is_alive());
@@ -574,7 +575,7 @@ pub(crate) mod tests {
 
                 let runtime = spawned_rt::tasks::Runtime::new().unwrap();
                 runtime.block_on(async {
-                    let actor = Idler.start();
+                    let actor = Idler.spawn();
                     let handle = actor.child_handle();
 
                     assert!(handle.is_alive());
@@ -601,7 +602,7 @@ pub(crate) mod tests {
                 // Multi-thread runtime — wait_exit_blocking should work via block_in_place
                 let runtime = spawned_rt::tasks::Runtime::new().unwrap();
                 runtime.block_on(async {
-                    let actor = Idler.start();
+                    let actor = Idler.spawn();
                     let handle = actor.child_handle();
                     handle.stop();
 
@@ -631,7 +632,7 @@ pub(crate) mod tests {
                     .unwrap();
 
                 runtime.block_on(async {
-                    let actor = Idler.start();
+                    let actor = Idler.spawn();
                     let handle = actor.child_handle();
                     // Calling wait_exit_blocking from within a current-thread runtime
                     // would deadlock the actor task — we panic with a clear message instead.
@@ -661,7 +662,7 @@ pub(crate) mod tests {
                 // Fast path: if the actor has already exited, wait_exit_blocking is safe
                 // even on a current-thread runtime (no actual blocking happens).
                 runtime.block_on(async {
-                    let actor = Idler.start();
+                    let actor = Idler.spawn();
                     let handle = actor.child_handle();
                     handle.stop();
                     // Wait async first so the actor actually exits
@@ -706,7 +707,7 @@ pub(crate) mod tests {
                     }
                 }
 
-                let actor = Boomer.start();
+                let actor = Boomer.spawn();
                 let handle = actor.child_handle();
                 let _ = actor.send(Boom);
 
@@ -755,7 +756,7 @@ pub(crate) mod tests {
 
                 let runtime = spawned_rt::tasks::Runtime::new().unwrap();
                 runtime.block_on(async {
-                    let actor = Boomer.start();
+                    let actor = Boomer.spawn();
                     let handle = actor.child_handle();
                     let _ = actor.send(Boom);
 
@@ -792,7 +793,7 @@ pub(crate) mod tests {
 
                 let runtime = spawned_rt::tasks::Runtime::new().unwrap();
                 runtime.block_on(async {
-                    let actor = PanicStart.start();
+                    let actor = PanicStart.spawn();
                     let handle = actor.child_handle();
 
                     let reason = handle.wait_exit_async().await;
