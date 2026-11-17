@@ -1,7 +1,7 @@
 Planted bug 14 (exit-shutdown-reports-normal): An administrative Shutdown stop (ChildHandle::stop_with_reason(Shutdown); `shutdown()` before 0.8) commits Normal
 
 diff --git a/concurrency/src/child_handle.rs b/concurrency/src/child_handle.rs
-index 3b94d213..541fee9c 100644
+index 6ab2bc7f..107c69c9 100644
 --- a/concurrency/src/child_handle.rs
 +++ b/concurrency/src/child_handle.rs
 @@ -170,6 +170,11 @@ impl ChildHandle {
@@ -13,6 +13,6 @@ index 3b94d213..541fee9c 100644
 +        } else {
 +            reason
 +        };
-         crate::link::stop_with_reason(self.target.id, &self.target.request, reason, || {
+         crate::link::admin_stop_with_reason(self.target.id, &self.target.request, reason, || {
              (self.target.wake)()
          });
