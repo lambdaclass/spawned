@@ -1,15 +1,23 @@
+use std::sync::Arc;
+
 /// Reason an actor stopped. Used by supervision to decide whether to restart.
 ///
 /// Non-exhaustive, as OTP exit reasons are open terms: match with a wildcard
 /// arm.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ExitReason {
     /// Clean stop via `ctx.stop()` or `ChildHandle::stop()`. The run loop holds
     /// a sender to its own mailbox, so the mailbox never closes while it runs.
     Normal,
-    /// Ordered shutdown from a supervisor or linked actor.
-    Shutdown,
+    /// Ordered, clean shutdown: OTP `shutdown` (`Shutdown(None)`, from a
+    /// supervisor, a system or a linked actor) or `{shutdown, Term}`
+    /// (`Shutdown(Some(why))`, see [`shutdown_with`](Self::shutdown_with)).
+    /// The payload only explains the stop: every policy (restarts, crash
+    /// logging, link propagation, metrics) treats both forms alike, and links
+    /// and monitors receive the full reason. Match the class with
+    /// `ExitReason::Shutdown(_)` or [`is_shutdown`](Self::is_shutdown).
+    Shutdown(Option<Arc<str>>),
     /// Actor panicked in `started()`, a handler, or `stopped()`.
     Panic(String),
     /// A self-exit with `Kill` (`ctx.stop_with_reason(Kill)`, OTP `exit(kill)`),
@@ -28,6 +36,28 @@ pub enum ExitReason {
 }
 
 impl ExitReason {
+    /// A clean shutdown that carries why the actor stopped (OTP
+    /// `{shutdown, Term}`): `ctx.stop_with_reason(ExitReason::shutdown_with("peer
+    /// disconnected"))`. Treated exactly like `Shutdown(None)`; cloning it into
+    /// `Down` and `Exit` messages copies a reference count.
+    pub fn shutdown_with(why: impl Into<Arc<str>>) -> Self {
+        ExitReason::Shutdown(Some(why.into()))
+    }
+
+    /// `true` for `Shutdown` with or without a payload.
+    pub fn is_shutdown(&self) -> bool {
+        matches!(self, ExitReason::Shutdown(_))
+    }
+
+    /// The payload of `Shutdown(Some(why))`; `None` for every other reason,
+    /// including a bare `Shutdown(None)`.
+    pub fn shutdown_payload(&self) -> Option<&str> {
+        match self {
+            ExitReason::Shutdown(why) => why.as_deref(),
+            _ => None,
+        }
+    }
+
     /// Returns `true` for exit reasons that should trigger a restart
     /// of `Transient` children (`Permanent` children restart for every reason).
     /// This classification is separate from link-signal handling: only
@@ -36,14 +66,14 @@ impl ExitReason {
     /// | Reason | `is_abnormal()` |
     /// |---|---|
     /// | `Normal` | `false` |
-    /// | `Shutdown` | `false` (an ordered stop, as in Erlang) |
+    /// | `Shutdown(_)` | `false` (an ordered stop, as in Erlang; with or without a payload) |
     /// | `Panic(_)` | `true` |
     /// | `Kill` | `true` |
     /// | `Killed` | `true` (OTP `killed`: a kill, a supervisor's kill escalation or a runtime drop) |
     /// | `NoProc` | `true` (OTP `noproc`: the target was already gone) |
     pub fn is_abnormal(&self) -> bool {
         match self {
-            ExitReason::Normal | ExitReason::Shutdown => false,
+            ExitReason::Normal | ExitReason::Shutdown(_) => false,
             ExitReason::Panic(_) | ExitReason::Kill | ExitReason::Killed | ExitReason::NoProc => {
                 true
             }
@@ -55,7 +85,8 @@ impl std::fmt::Display for ExitReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ExitReason::Normal => write!(f, "normal"),
-            ExitReason::Shutdown => write!(f, "shutdown"),
+            ExitReason::Shutdown(None) => write!(f, "shutdown"),
+            ExitReason::Shutdown(Some(why)) => write!(f, "shutdown: {why}"),
             ExitReason::Panic(msg) => write!(f, "panic: {msg}"),
             ExitReason::Kill => write!(f, "kill"),
             ExitReason::Killed => write!(f, "killed"),
@@ -200,7 +231,8 @@ mod tests {
     fn all_exit_reasons() -> Vec<ExitReason> {
         let all = vec![
             ExitReason::Normal,
-            ExitReason::Shutdown,
+            ExitReason::Shutdown(None),
+            ExitReason::shutdown_with("drained"),
             ExitReason::Panic("boom".into()),
             ExitReason::Kill,
             ExitReason::Killed,
@@ -209,7 +241,7 @@ mod tests {
         for reason in &all {
             match reason {
                 ExitReason::Normal
-                | ExitReason::Shutdown
+                | ExitReason::Shutdown(_)
                 | ExitReason::Panic(_)
                 | ExitReason::Kill
                 | ExitReason::Killed
@@ -244,7 +276,7 @@ mod tests {
     fn exit_reason_is_abnormal_classification() {
         for reason in all_exit_reasons() {
             let expected = match reason {
-                ExitReason::Normal | ExitReason::Shutdown => false,
+                ExitReason::Normal | ExitReason::Shutdown(_) => false,
                 ExitReason::Panic(_)
                 | ExitReason::Kill
                 | ExitReason::Killed
@@ -287,7 +319,11 @@ mod tests {
     #[test]
     fn exit_reason_display() {
         assert_eq!(ExitReason::Normal.to_string(), "normal");
-        assert_eq!(ExitReason::Shutdown.to_string(), "shutdown");
+        assert_eq!(ExitReason::Shutdown(None).to_string(), "shutdown");
+        assert_eq!(
+            ExitReason::shutdown_with("peer gone").to_string(),
+            "shutdown: peer gone"
+        );
         assert_eq!(ExitReason::Panic("oops".into()).to_string(), "panic: oops");
         assert_eq!(ExitReason::Kill.to_string(), "kill");
         assert_eq!(ExitReason::Killed.to_string(), "killed");
@@ -299,5 +335,39 @@ mod tests {
         assert_eq!(ExitReason::Normal, ExitReason::Normal);
         assert_ne!(ExitReason::Normal, ExitReason::Kill);
         assert_eq!(ExitReason::Panic("x".into()), ExitReason::Panic("x".into()));
+        assert_eq!(
+            ExitReason::shutdown_with("x"),
+            ExitReason::shutdown_with("x")
+        );
+        assert_ne!(ExitReason::shutdown_with("x"), ExitReason::Shutdown(None));
+        assert_ne!(
+            ExitReason::shutdown_with("x"),
+            ExitReason::shutdown_with("y")
+        );
+    }
+
+    #[test]
+    fn shutdown_payload_helpers() {
+        let why = ExitReason::shutdown_with(String::from("too many peers"));
+        assert!(why.is_shutdown() && !why.is_abnormal());
+        assert_eq!(why.shutdown_payload(), Some("too many peers"));
+        assert!(ExitReason::Shutdown(None).is_shutdown());
+        assert_eq!(ExitReason::Shutdown(None).shutdown_payload(), None);
+        for reason in all_exit_reasons() {
+            assert_eq!(
+                reason.is_shutdown(),
+                matches!(reason, ExitReason::Shutdown(_)),
+                "{reason}"
+            );
+        }
+    }
+
+    /// The payload must not grow the reason copied into every `Down`, `Exit`
+    /// and completion slot: it shares `Panic(String)`'s footprint.
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn exit_reason_size_is_unchanged() {
+        assert_eq!(std::mem::size_of::<ExitReason>(), 24);
+        assert_eq!(std::mem::size_of::<Option<ExitReason>>(), 24);
     }
 }

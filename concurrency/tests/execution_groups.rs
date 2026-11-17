@@ -97,7 +97,7 @@ async fn owned_groups_communicate_and_close_with_stale_handles() {
     assert!(report.complete, "{:?}", report.unfinished_groups);
     assert_eq!(
         first.child_handle().wait_exit_async().await,
-        ExitReason::Shutdown
+        ExitReason::Shutdown(None)
     );
     assert!(matches!(Worker.start_on(&a), Err(SystemError::Closed)));
     assert!(first.request(Ping).await.is_err());
@@ -233,7 +233,7 @@ async fn dropping_system_requests_shutdown_without_an_ambient_runtime() {
         spawned_rt::tasks::timeout(LIMIT, actor.child_handle().wait_exit_async())
             .await
             .unwrap(),
-        ExitReason::Shutdown
+        ExitReason::Shutdown(None)
     );
 }
 
@@ -340,7 +340,10 @@ async fn ambient_actor_started_inside_group_is_unmanaged_and_aborted_at_teardown
         .starts_with("spawned-ambient-child"));
     assert!(system.shutdown(LIMIT).await.complete);
     assert_eq!(within!(ambient.wait_exit()).await, ExitReason::Killed);
-    assert_eq!(within!(managed.wait_exit()).await, ExitReason::Shutdown);
+    assert_eq!(
+        within!(managed.wait_exit()).await,
+        ExitReason::Shutdown(None)
+    );
 }
 
 struct Queued(Probe);
@@ -520,7 +523,7 @@ async fn stuck_standalone_cleanup_does_not_leave_earlier_actor_running_forever()
         .await
         .unwrap();
     assert!(
-        matches!(reason, ExitReason::Shutdown | ExitReason::Killed),
+        matches!(reason, ExitReason::Shutdown(_) | ExitReason::Killed),
         "{reason:?}"
     );
     release.send(()).unwrap();
@@ -674,7 +677,7 @@ async fn ordered_shutdown_preserves_ordinary_calls_but_closes_new_helper_admissi
     assert!(report
         .exits
         .iter()
-        .all(|e| e.reason == ExitReason::Shutdown));
+        .all(|e| e.reason == ExitReason::Shutdown(None)));
 }
 
 // Gaps found by mutation testing (cargo-mutants on system.rs).

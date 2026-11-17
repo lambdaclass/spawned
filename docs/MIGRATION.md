@@ -14,6 +14,25 @@ account for when upgrading.
   `async`, the default, if you need it explicitly). The research experiments
   live in the unpublished `benchmarks/experiments` crate.
 
+- `ExitReason::Shutdown` carries an optional payload, OTP's
+  `{shutdown, Term}`: it is now `Shutdown(Option<Arc<str>>)`. Every policy
+  treats `Shutdown(Some(why))` exactly like the bare form (no restart of a
+  Transient child, not a crash, same link and trap rules); `Down`, `Exit` and
+  `join()` carry the full reason. `ExitReason` also derives `Eq` now.
+
+  | 0.8 | 0.9 |
+  |---|---|
+  | `ExitReason::Shutdown` (constructing) | `ExitReason::Shutdown(None)` |
+  | `stop_with_reason(ExitReason::Shutdown)` | `stop_with_reason(ExitReason::Shutdown(None))`, or `ExitReason::shutdown_with("why")` to say why |
+  | `ExitReason::Shutdown =>` / `matches!(r, ExitReason::Shutdown)` (class check) | `ExitReason::Shutdown(_) =>` / `r.is_shutdown()`, so a payload exit takes the same branch |
+  | `r == ExitReason::Shutdown` | `r.is_shutdown()` (any shutdown) or `r == ExitReason::Shutdown(None)` (only the bare form) |
+  | (none) | `r.shutdown_payload() -> Option<&str>` |
+
+  Prefer `Shutdown(_)` or `is_shutdown()` wherever the code decides what a
+  shutdown means; `Shutdown(None)` in a pattern silently sends payload exits
+  to the wildcard arm. `Display` prints `shutdown: <why>` for the payload
+  form. `size_of::<ExitReason>()` is unchanged (24 bytes on 64-bit).
+
 ## 0.8.0
 
 ### 0.7 to 0.8: API call-site table

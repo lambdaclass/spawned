@@ -475,7 +475,7 @@ async fn self_exit_with_stuck_cleanup_is_not_killed() {
             // turn signalled it first; never the escalation's Killed.
             let reason = rt::timeout(LIMIT, actor.wait_exit_async()).await.unwrap();
             assert!(
-                matches!(reason, ExitReason::Normal | ExitReason::Shutdown),
+                matches!(reason, ExitReason::Normal | ExitReason::Shutdown(_)),
                 "supervisor killed a self-exiting child: {reason:?}"
             );
             rt::timeout(LIMIT, tree.join()).await.unwrap();

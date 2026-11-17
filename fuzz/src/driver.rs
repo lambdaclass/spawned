@@ -317,7 +317,7 @@ async fn monitor_release_probe(world: &World) {
 fn reason(r: Reason) -> ExitReason {
     match r {
         Reason::Normal => ExitReason::Normal,
-        Reason::Shutdown => ExitReason::Shutdown,
+        Reason::Shutdown => ExitReason::Shutdown(None),
         Reason::Kill => ExitReason::Kill,
         Reason::Panic => ExitReason::Panic("fuzz: injected stop".into()),
     }
@@ -801,7 +801,7 @@ impl Driver {
                 }
                 match r {
                     Reason::Normal => handle.stop(),
-                    Reason::Shutdown => handle.stop_with_reason(ExitReason::Shutdown),
+                    Reason::Shutdown => handle.stop_with_reason(ExitReason::Shutdown(None)),
                     r => handle.stop_with_reason(reason(r)),
                 }
             }
@@ -1883,7 +1883,7 @@ impl Driver {
             // during `terminate` kills with its own reason). The only
             // non-abnormal reason a signal can carry is `Shutdown`.
             let trapping = self.traps.get(&id).is_some_and(|t| t.0);
-            let late_shutdown = exit == ExitReason::Shutdown && !trapping;
+            let late_shutdown = exit == ExitReason::Shutdown(None) && !trapping;
             if panicked && !exit.is_abnormal() && !late_shutdown {
                 self.violate(
                     "L4: an actor that panicked exited with a non-abnormal reason",

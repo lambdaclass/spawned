@@ -266,7 +266,7 @@ mod tasks_mode {
         let actor = node.start();
         settle(&actor).await;
         let child = actor.child_handle();
-        child.stop_with_reason(ExitReason::Shutdown);
+        child.stop_with_reason(ExitReason::Shutdown(None));
         entered.await.unwrap();
         child.kill();
         release.send(()).unwrap();
@@ -305,19 +305,22 @@ mod tasks_mode {
         let trapper = Node::new(&trap_seen, true).start();
         settle(&trapper).await;
         trapper.child_handle().exit(ExitReason::Normal);
-        trapper.child_handle().exit(ExitReason::Shutdown);
+        trapper.child_handle().exit(ExitReason::Shutdown(None));
         settle(&trapper).await;
         assert_eq!(
             trap_seen.exits(),
             vec![
                 Exit::new(ActorId::EXTERNAL, ExitReason::Normal),
-                Exit::new(ActorId::EXTERNAL, ExitReason::Shutdown),
+                Exit::new(ActorId::EXTERNAL, ExitReason::Shutdown(None)),
             ]
         );
         assert!(trapper.child_handle().is_alive());
 
-        plain.child_handle().exit(ExitReason::Shutdown);
-        assert_eq!(ended(&plain.child_handle()).await, ExitReason::Shutdown);
+        plain.child_handle().exit(ExitReason::Shutdown(None));
+        assert_eq!(
+            ended(&plain.child_handle()).await,
+            ExitReason::Shutdown(None)
+        );
         assert!(
             !plain_seen.stopped(),
             "stopped() ran after an untrapped signal"
@@ -494,9 +497,9 @@ mod tasks_mode {
         tokio::time::sleep(Duration::from_millis(300)).await;
         drop(hold);
         assert!(shutdown.await.unwrap());
-        assert_eq!(ended(&plain).await, ExitReason::Shutdown);
+        assert_eq!(ended(&plain).await, ExitReason::Shutdown(None));
         assert!(!plain_seen.stopped(), "a non-trapping child ran stopped()");
-        assert_eq!(ended(&trapping).await, ExitReason::Shutdown);
+        assert_eq!(ended(&trapping).await, ExitReason::Shutdown(None));
         assert!(trap_seen.stopped());
         assert!(
             trap_seen.exits().is_empty(),
@@ -533,7 +536,7 @@ mod tasks_mode {
     // child through stopped(); exit_received never sees it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn parent_exit_ends_a_trapping_child_normally() {
-        for parent_reason in [ExitReason::Normal, ExitReason::Shutdown] {
+        for parent_reason in [ExitReason::Normal, ExitReason::Shutdown(None)] {
             let child_seen = Seen::default();
             let parent = Parent {
                 child: None,
@@ -580,12 +583,12 @@ mod tasks_mode {
         let seen = Seen::default();
         let (go, gate) = tokio::sync::oneshot::channel();
         let actor = Slow(seen.clone(), Some(gate)).start();
-        actor.child_handle().exit(ExitReason::Shutdown);
+        actor.child_handle().exit(ExitReason::Shutdown(None));
         go.send(()).unwrap();
         assert_eq!(actor.request(Ping).await.unwrap(), 7);
         assert_eq!(
             seen.exits(),
-            vec![Exit::new(ActorId::EXTERNAL, ExitReason::Shutdown)]
+            vec![Exit::new(ActorId::EXTERNAL, ExitReason::Shutdown(None))]
         );
         actor.child_handle().stop();
         ended(&actor.child_handle()).await;
@@ -605,9 +608,9 @@ mod tasks_mode {
         let child = actor.child_handle();
         child.stop();
         entered.await.unwrap();
-        child.exit(ExitReason::Shutdown);
+        child.exit(ExitReason::Shutdown(None));
         release.send(()).unwrap();
-        assert_eq!(ended(&child).await, ExitReason::Shutdown);
+        assert_eq!(ended(&child).await, ExitReason::Shutdown(None));
         assert!(seen.stopped());
     }
 
@@ -690,7 +693,7 @@ mod tasks_mode {
             let child = child.current().unwrap();
             // Normal operation, and a trapped Exit from outside: not pending.
             child.request(Probe).await.unwrap();
-            child.child_handle().exit(ExitReason::Shutdown);
+            child.child_handle().exit(ExitReason::Shutdown(None));
             child.request(Probe).await.unwrap();
             // Work queued before the supervisor's shutdown.
             child.send(AwaitShutdown).unwrap();
@@ -698,7 +701,7 @@ mod tasks_mode {
             child.send(Probe).unwrap();
             let handle = child.child_handle();
             assert!(supervisor.shutdown(LIMIT).await.complete);
-            assert_eq!(ended(&handle).await, ExitReason::Shutdown);
+            assert_eq!(ended(&handle).await, ExitReason::Shutdown(None));
             assert_eq!(
                 *log.lock().unwrap(),
                 vec![
@@ -736,11 +739,14 @@ mod tasks_mode {
             let handle = actor.child_handle();
             let p = pending.clone();
             on(&actor, move |ctx| {
-                handle.exit(ExitReason::Shutdown);
+                handle.exit(ExitReason::Shutdown(None));
                 p.lock().unwrap().push(ctx.exit_pending());
             })
             .await;
-            assert_eq!(ended(&actor.child_handle()).await, ExitReason::Shutdown);
+            assert_eq!(
+                ended(&actor.child_handle()).await,
+                ExitReason::Shutdown(None)
+            );
             assert_eq!(*pending.lock().unwrap(), vec![false, true, true]);
         }
     }
@@ -837,8 +843,11 @@ mod tasks_mode {
                 assert_eq!(ended(&killed.child_handle()).await, ExitReason::Killed);
                 let signalled = Node::new(&seen, false).start();
                 settle(&signalled).await;
-                signalled.child_handle().exit(ExitReason::Shutdown);
-                assert_eq!(ended(&signalled.child_handle()).await, ExitReason::Shutdown);
+                signalled.child_handle().exit(ExitReason::Shutdown(None));
+                assert_eq!(
+                    ended(&signalled.child_handle()).await,
+                    ExitReason::Shutdown(None)
+                );
                 assert!(!seen.stopped());
                 // stopped() runs: nothing logged.
                 let trapping = Node::new(&seen, true).start();
@@ -995,7 +1004,7 @@ mod tasks_mode {
                 .unwrap();
             settle(&actor).await;
             let child = actor.child_handle();
-            child.stop_with_reason(ExitReason::Shutdown);
+            child.stop_with_reason(ExitReason::Shutdown(None));
             entered.await.unwrap();
             tokio::time::sleep(Duration::from_millis(50)).await;
             assert!(
@@ -1003,8 +1012,8 @@ mod tasks_mode {
                 "a token dropped in stopped() was answered before D"
             );
             release.send(()).unwrap();
-            assert_eq!(ended(&child).await, ExitReason::Shutdown);
-            stopped_with(answered(stored).await, &ExitReason::Shutdown);
+            assert_eq!(ended(&child).await, ExitReason::Shutdown(None));
+            stopped_with(answered(stored).await, &ExitReason::Shutdown(None));
         }
 
         // A request sent while the actor exits (a slow stopped() of a
@@ -1020,15 +1029,15 @@ mod tasks_mode {
             let actor = node.start();
             settle(&actor).await;
             let child = actor.child_handle();
-            child.stop_with_reason(ExitReason::Shutdown);
+            child.stop_with_reason(ExitReason::Shutdown(None));
             entered.await.unwrap();
             let admitted = actor
                 .send_request(Ping, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
                 .expect("admitted while exiting");
             actor.send(Ping).expect("a send while exiting is admitted");
             release.send(()).unwrap();
-            assert_eq!(ended(&child).await, ExitReason::Shutdown);
-            stopped_with(answered(admitted).await, &ExitReason::Shutdown);
+            assert_eq!(ended(&child).await, ExitReason::Shutdown(None));
+            stopped_with(answered(admitted).await, &ExitReason::Shutdown(None));
             assert!(matches!(actor.send(Ping), Err(ActorError::NoProc)));
             assert!(matches!(actor.request(Ping).await, Err(ActorError::NoProc)));
             assert!(matches!(
@@ -1314,8 +1323,8 @@ mod threads_mode {
         let plain = Node(plain_seen.clone(), false).start();
         plain.child_handle().exit(ExitReason::Normal);
         assert_eq!(plain.request(Ping).unwrap(), 7);
-        plain.child_handle().exit(ExitReason::Shutdown);
-        assert_eq!(ended(&plain.child_handle()), ExitReason::Shutdown);
+        plain.child_handle().exit(ExitReason::Shutdown(None));
+        assert_eq!(ended(&plain.child_handle()), ExitReason::Shutdown(None));
         assert!(!plain_seen.stopped());
         peer.child_handle().stop();
         assert_eq!(ended(&peer.child_handle()), ExitReason::Normal);
@@ -1446,15 +1455,17 @@ mod threads_mode {
             let (server, entered, release) = gated();
             let actor = server.start();
             assert_eq!(actor.request(Ping).unwrap(), 7);
-            actor.child_handle().stop_with_reason(ExitReason::Shutdown);
+            actor
+                .child_handle()
+                .stop_with_reason(ExitReason::Shutdown(None));
             entered.recv_timeout(LIMIT).unwrap();
             let admitted = actor
                 .send_request(Ping, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
                 .expect("admitted while exiting");
             actor.send(Ping).expect("a send while exiting is admitted");
             release.send(()).unwrap();
-            assert_eq!(ended(&actor.child_handle()), ExitReason::Shutdown);
-            stopped_with(admitted, &ExitReason::Shutdown);
+            assert_eq!(ended(&actor.child_handle()), ExitReason::Shutdown(None));
+            stopped_with(admitted, &ExitReason::Shutdown(None));
             assert!(matches!(actor.send(Ping), Err(ActorError::NoProc)));
             assert!(matches!(actor.request(Ping), Err(ActorError::NoProc)));
             assert!(matches!(
@@ -1540,12 +1551,14 @@ mod threads_mode {
             child.send(Block(gate)).unwrap();
             child.send(Probe).unwrap();
             child.send(Probe).unwrap();
-            parent.child_handle().stop_with_reason(ExitReason::Shutdown);
+            parent
+                .child_handle()
+                .stop_with_reason(ExitReason::Shutdown(None));
             // Link notices are delivered before the parent's exit is
             // published: the child's parent exit is queued now.
-            assert_eq!(ended(&parent.child_handle()), ExitReason::Shutdown);
+            assert_eq!(ended(&parent.child_handle()), ExitReason::Shutdown(None));
             release.send(()).unwrap();
-            assert_eq!(ended(&child.child_handle()), ExitReason::Shutdown);
+            assert_eq!(ended(&child.child_handle()), ExitReason::Shutdown(None));
             assert_eq!(
                 *log.lock().unwrap(),
                 vec![

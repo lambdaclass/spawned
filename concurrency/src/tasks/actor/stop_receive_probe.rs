@@ -108,8 +108,8 @@ fn receive_rejected_by_stop_keeps_its_caller_until_the_death_point() {
             for (park, requested) in [
                 (false, ExitReason::Normal),
                 (true, ExitReason::Normal),
-                (false, ExitReason::Shutdown),
-                (true, ExitReason::Shutdown),
+                (false, ExitReason::Shutdown(None)),
+                (true, ExitReason::Shutdown(None)),
                 (false, ExitReason::Panic("requested".into())),
                 (true, ExitReason::Panic("requested".into())),
                 (false, ExitReason::Kill),

@@ -198,7 +198,7 @@ async fn kill_vs_stopped(seed: u64) {
     let kill_at = (seed / 3) % 5;
     let stopping = spawn(async move {
         sleep(ms(stop_at)).await;
-        stopper.stop_with_reason(ExitReason::Shutdown);
+        stopper.stop_with_reason(ExitReason::Shutdown(None));
     });
     let l = log.clone();
     let killing = spawn(async move {
@@ -229,7 +229,7 @@ async fn kill_vs_stopped(seed: u64) {
     });
     match reason {
         ExitReason::Killed => {}
-        ExitReason::Shutdown => {
+        ExitReason::Shutdown(_) => {
             assert!(
                 end.is_some_and(|e| e < kill),
                 "the kill came before D but did not win: {log:?}"
@@ -266,7 +266,7 @@ async fn late_signal_vs_death(seed: u64) {
     let signalling = spawn(async move {
         sleep(ms(at)).await;
         push(&l, "signal");
-        signaller.exit(ExitReason::Shutdown);
+        signaller.exit(ExitReason::Shutdown(None));
     });
     let reason = handle.wait_exit_async().await;
     signalling.await.unwrap();
@@ -275,7 +275,7 @@ async fn late_signal_vs_death(seed: u64) {
     let end = position(&log, "stopped:end").expect("a self-exit runs stopped()");
     outcome(format!("late signal: {reason:?}"));
     match reason {
-        ExitReason::Shutdown => {}
+        ExitReason::Shutdown(_) => {}
         ExitReason::Normal => assert!(end < signal, "a signal before D was lost: {log:?}"),
         other => panic!("unexpected reason {other:?}: {log:?}"),
     }
@@ -301,7 +301,7 @@ async fn link_vs_death(seed: u64) {
     let stop_at = seed % 3;
     let stopping = spawn(async move {
         sleep(ms(stop_at)).await;
-        stopper.stop_with_reason(ExitReason::Shutdown);
+        stopper.stop_with_reason(ExitReason::Shutdown(None));
     });
     sleep(ms((seed / 3) % 3)).await;
     let use_try = seed % 2 == 1;
@@ -317,7 +317,7 @@ async fn link_vs_death(seed: u64) {
     })
     .await;
     stopping.await.unwrap();
-    assert_eq!(handle.wait_exit_async().await, ExitReason::Shutdown);
+    assert_eq!(handle.wait_exit_async().await, ExitReason::Shutdown(None));
     let downs = if use_try {
         settle(&observer).await;
         Vec::new()
@@ -333,14 +333,14 @@ async fn link_vs_death(seed: u64) {
     if use_try {
         let linked = result.lock().unwrap().unwrap();
         let expected = if linked {
-            vec!["exit:Shutdown".to_string()]
+            vec!["exit:Shutdown(None)".to_string()]
         } else {
             vec![]
         };
         assert_eq!(exits, expected, "try_link linked={linked}");
     } else {
         assert_eq!(exits.len(), 1, "{observed:?}");
-        assert!(["exit:Shutdown", "exit:NoProc"].contains(&exits[0].as_str()));
+        assert!(["exit:Shutdown(None)", "exit:NoProc"].contains(&exits[0].as_str()));
         let down = exits[0].replace("exit:", "down:");
         assert_eq!(downs, vec![down], "link and monitor in one turn disagree");
     }
@@ -437,7 +437,7 @@ async fn supervisor_shutdown_vs_queue(seed: u64) {
     sleep(ms((seed / 2) % 4)).await;
     assert!(supervisor.shutdown(Duration::from_secs(10)).await.complete);
     sending.await.unwrap();
-    assert_eq!(handle.wait_exit_async().await, ExitReason::Shutdown);
+    assert_eq!(handle.wait_exit_async().await, ExitReason::Shutdown(None));
     let log = entries(&log);
     assert!(
         notices(&log, "exit:").is_empty(),

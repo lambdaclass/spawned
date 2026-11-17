@@ -339,7 +339,7 @@ giving collateral children their own backoff fails
 | L1 | `sim_ordering::turns_*`; `*_contract::hooks_and_turns_*`; Fz | A B T N G TG, Sim (PCT, DFS) | covered (A only) → covered | |
 | L2 | `startup_admission`; `execution_groups::failed_startup_*`; `tasks_contract::managed_readiness_*` (historical `ready()`) | G TG, Sim (G) | partial → covered | |
 | L3 | `context_exit` (first reason wins); `sim_ordering::turns_*` (stop never splits a turn); `*_partial::stop_reason_precedence_through_cleanup` (every requested reason x second request, `stopped()` panic, kill then `stopped()` panic, destructor panic after D) | A B T N G TG, Sim | partial → covered | |
-| L4 | `exit_signal_matrix`, `context_exit`, `panic_safety` | A B T N G TG | covered | owned by #240 |
+| L4 | `exit_signal_matrix`, `context_exit`, `panic_safety`; `shutdown_payload` (`{shutdown, Term}`: `join`, `Down`, trapped `Exit`, untrapped linked peer, exit signals, metrics class) | A B T N G TG | covered | owned by #240 |
 | L5 | `foreign_panics` (strict); `tasks_contract::panics_in_hooks_*` | A B T N G TG | covered (B, T unchecked) → covered | |
 | L6 | `mailbox_drop_panic` (5 placements x 1/2/256), `native_mailbox_drop`, lifecycle traces | A B T N G TG | covered | not simulated (subprocesses) |
 | L7 | `shutdown_publication`; `*_contract::stop_window_*`; `sim_ordering::stop_discards_*`; `src/tasks/actor/monitor_cleanup_regressions.rs::observer_cancels_its_monitors_before_publishing_its_exit` (wake order on a current-thread runtime) | A B T N G TG, Sim | partial → covered | monitor ordering only on A (the cleanup is shared with threads mode) |
@@ -350,7 +350,7 @@ giving collateral children their own backoff fails
 | X5 | unit link tests; `link_regression_tests` | A N | covered | owned by #240 |
 | X6 | `link_regression_tests` | A | covered | owned by #240 |
 | X7 | `semantics_gaps::*::exit_and_down_follow_*`; `sim_ordering::exit_and_down_follow_the_last_message_*`; `*_partial::linked_stop_waits_for_the_running_handler_*`; Fz | A B T N G TG, Sim (PCT, DFS) | partial → covered | |
-| V1 | `supervisor_policies` oracle; `supervision::restart_modes_*` (real `Normal`, `Shutdown` and panic exits); `Supervision!RestartFollowsPolicy`, `TemporaryStartsOnce` (`MCSupervisionTemporary`) | G, Sim, Model | covered | |
+| V1 | `supervisor_policies` oracle; `supervision::restart_modes_*` (real `Normal`, `Shutdown`, `Shutdown` with a payload and panic exits); `shutdown_payload::*_restart_table_*` (payload on G and TG); `Supervision!RestartFollowsPolicy`, `TemporaryStartsOnce` (`MCSupervisionTemporary`) | G, Sim, Model | covered | |
 | V2 | Cohorts invariants; `supervision_strategies`; `cohort_trace`; `supervision_contract::concurrent_failures_coalesce_*` | G, Sim, Model | covered | reverse stop order only via trace conformance |
 | V3 | `*!AtMostOneGeneration`; factory asserts no live generation; Fz | G TG, Sim, Model | covered | |
 | V4 | `*!PublishedIsLive`; `supervision_contract::queued_messages_are_not_replayed_*`; Fz | G, Sim, Model | partial → covered | |
@@ -1584,7 +1584,9 @@ lives: 04 (`supervision.rs`), 10, 12, 13 (`link.rs`), 11 (`link/table.rs`),
 the *caller's* record (the receiver-side fence makes dropping only the peer's
 record harmless); 12 delivers `Normal` instead of `NoProc` (0.8 linking to a
 dead peer reports `NoProc`, OTP's `noproc`); 14 plants the fault in
-`ChildHandle::stop_with_reason(Shutdown)` (`shutdown()` was removed in 0.8).
+`ChildHandle::stop_with_reason(Shutdown)` (`shutdown()` was removed in 0.8;
+since 0.9 it rewrites any `Shutdown(_)`, payload included, and
+`shutdown_payload::*::exit_signal_with_payload_ends_or_is_trapped` catches it).
 A spot check with each applied (unit and integration tests only) caught 04,
 10, 11, 12, 13, 15, 16 and 19; 15, a miss in every layer below, is now caught
 by `demonitor_before_target_dies_suppresses_down` and
