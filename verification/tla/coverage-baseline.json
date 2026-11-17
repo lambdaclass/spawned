@@ -138,5 +138,16 @@
   "A|Send",
   "A|Shorten",
   "A|Stuck"
+ ],
+ "Coordinator": [
+  "A|Advance",
+  "A|Begin",
+  "A|Crash",
+  "A|Emergency",
+  "A|Finish",
+  "A|GraceExpired",
+  "A|Join",
+  "A|Ordered",
+  "A|StopNext"
  ]
 }

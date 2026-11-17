@@ -583,6 +583,55 @@ def lifecycle_trace_controls(traces, tlc):
                      "actor-to-actor message dispatched as an outside request", tlc)
 
 
+def coordinator_trace_controls(traces, tlc):
+    """Edits of recorded ActorSystem shutdown traces that Coordinator.tla
+    must reject: each erases or reorders what begin_shutdown enforces."""
+    by_name = {t["name"]: t for t in traces if t.get("schema") == "coordinator-v1"}
+
+    def at(events, action, start=0):
+        return next(i for i, e in enumerate(events) if i >= start and e["a"] == action)
+
+    def signal_before_join(events):
+        # The next root signalled while the previous one is still stopping.
+        second = at(events, "StopNext", at(events, "StopNext") + 1)
+        events.insert(at(events, "Finish"), events.pop(second))
+    require_rejected(by_name["coordinator_ordered"], signal_before_join,
+                     "root signalled before the previous one joined", tlc)
+
+    def admission_order(events):
+        # Stop the first-admitted root first (forward instead of reverse order).
+        stop = at(events, "StopNext")
+        events[stop]["c"] = events[0]["n"]
+        events[stop + 1]["c"] = events[0]["n"]
+    require_rejected(by_name["coordinator_ordered"], admission_order,
+                     "roots stopped in admission order", tlc)
+
+    def release_before_join(events):
+        events.insert(at(events, "Emergency") + 1, events.pop(at(events, "Join")))
+    require_rejected(by_name["coordinator_crash"], release_before_join,
+                     "runtime released before every root joined", tlc)
+
+    def no_kill_at_grace(events):
+        events[at(events, "Emergency")]["x"] = "shutdown"
+    require_rejected(by_name["coordinator_grace"], no_kill_at_grace,
+                     "remaining roots not killed when the grace expired", tlc)
+
+    def kill_without_expiry(events):
+        events.pop(at(events, "GraceExpired"))
+    require_rejected(by_name["coordinator_grace"], kill_without_expiry,
+                     "kill pass before the grace expired", tlc)
+
+    def failure_lost(events):
+        events[at(events, "Crash")]["x"] = "lost"
+    require_rejected(by_name["coordinator_crash"], failure_lost,
+                     "coordinator panic not reported", tlc)
+
+    def kill_after_panic(events):
+        events[at(events, "Emergency")]["x"] = "kill"
+    require_rejected(by_name["coordinator_crash"], kill_after_panic,
+                     "panic fallback kills instead of stopping with Shutdown", tlc)
+
+
 def job_trace_controls(traces, tlc):
     """Edits of recorded pipe-to-self job traces that DeferredJobs.tla must
     reject: each erases or reorders what the job core enforces."""
@@ -748,6 +797,7 @@ def main():
     for module, fault, invariant in DEFERRED_CONTROLS:
         named_fault(module, fault, invariant, args.tlc)
     job_trace_controls(traces, args.tlc)
+    coordinator_trace_controls(traces, args.tlc)
     reply_trace_controls(traces, args.tlc)
     lifecycle_trace_controls(traces, args.tlc)
     for module, fault, invariant in LIFECYCLE_CONTROLS:

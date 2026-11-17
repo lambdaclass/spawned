@@ -296,6 +296,8 @@ struct SystemState {
 pub(crate) struct SystemInner {
     state: Mutex<SystemState>,
     pub(crate) control: Control,
+    /// Coordinator trace id (`lifecycle-trace`; zero-sized otherwise).
+    trace: crate::lifecycle_trace::TraceId,
 }
 
 /// Owns runtime groups and managed lifecycle trees. Drop requests shutdown;
@@ -315,8 +317,17 @@ impl ActorSystem {
                     coordinator_failures: Vec::new(),
                 }),
                 control: Control::new()?,
+                trace: crate::lifecycle_trace::TraceId::next(),
             }),
         })
+    }
+
+    /// Lifecycle trace id of this system's shutdown coordinator
+    /// (`lifecycle_trace::take`).
+    #[cfg(feature = "lifecycle-trace")]
+    #[doc(hidden)]
+    pub fn trace_id(&self) -> u64 {
+        self.inner.trace.0
     }
 
     /// Construct a parked pool with an explicit async worker budget. Construction
@@ -512,6 +523,10 @@ impl SystemInner {
                 .map(ShutdownTarget::Scope),
         );
         targets.sort_by_key(ShutdownTarget::id);
+        let trace = crate::lifecycle_trace::Coordinator::begin(
+            self.trace,
+            targets.iter().rev().map(ShutdownTarget::id),
+        );
         self.control.handle.spawn(async move {
             let ordered = std::panic::AssertUnwindSafe(async {
                 // Keep reverse admission order across standalone actors and trees.
@@ -523,7 +538,10 @@ impl SystemInner {
                     match target {
                         ShutdownTarget::Unit(entry) => {
                             entry.unit.stop();
-                            if rt::timeout(remaining, entry.unit.joined()).await.is_err() {
+                            trace.stop_next(entry.id);
+                            let joined = rt::timeout(remaining, entry.unit.joined()).await.is_ok();
+                            trace.joined(entry.id, joined);
+                            if !joined {
                                 entry.unit.stop_remaining();
                             }
                         }
@@ -532,7 +550,9 @@ impl SystemInner {
                             // Shutdown is a parent exit signal (E3).
                             scope.set_cleanup_timeout(remaining);
                             scope.signal_parent(ExitReason::Shutdown);
-                            let _ = rt::timeout(remaining, scope.joined()).await;
+                            trace.stop_next(scope.id);
+                            let joined = rt::timeout(remaining, scope.joined()).await.is_ok();
+                            trace.joined(scope.id, joined);
                         }
                     }
                 }
@@ -550,13 +570,16 @@ impl SystemInner {
                         scope.signal_parent(ExitReason::Shutdown);
                     }
                 }
+                trace.ordered_end(expired);
                 // Runtime teardown still requires actual completion, independently
                 // of the ordering grace and the caller's report timeout.
                 for entry in &units {
                     entry.unit.joined().await;
+                    trace.finish(entry.id);
                 }
                 for scope in &scopes {
                     scope.joined().await;
+                    trace.finish(scope.id);
                 }
                 for group in groups.iter().rev() {
                     wait_true(group.done.clone()).await;
@@ -570,8 +593,12 @@ impl SystemInner {
                 owner.record_coordinator_failure(format!(
                     "system shutdown coordinator panicked: {message}"
                 ));
-                owner.emergency_shutdown(&groups, &units, &scopes).await;
+                trace.crash(|| !lock(&owner.state).coordinator_failures.is_empty());
+                owner
+                    .emergency_shutdown(&groups, &units, &scopes, &trace)
+                    .await;
             }
+            trace.join();
             drop(owner);
             control_close.cancel();
         });
@@ -587,6 +614,7 @@ impl SystemInner {
         groups: &[Arc<GroupInner>],
         units: &[ShutdownUnitEntry],
         scopes: &[Arc<Scope>],
+        trace: &crate::lifecycle_trace::Coordinator,
     ) {
         loop {
             let result = std::panic::AssertUnwindSafe(async {
@@ -622,12 +650,15 @@ impl SystemInner {
                         signalled = false;
                     }
                 }
+                trace.emergency_signalled(signalled);
                 for entry in units {
                     if rt::timeout(Duration::from_millis(10), entry.unit.joined())
                         .await
                         .is_err()
                     {
                         signalled = false;
+                    } else {
+                        trace.finish(entry.id);
                     }
                 }
                 for scope in scopes {
@@ -636,6 +667,8 @@ impl SystemInner {
                         .is_err()
                     {
                         signalled = false;
+                    } else {
+                        trace.finish(scope.id);
                     }
                 }
                 if !signalled {

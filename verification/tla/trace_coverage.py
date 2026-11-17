@@ -32,10 +32,11 @@ Usage:
                     [--model-keys CACHE] [--json OUT] [--baseline FILE] [--write-baseline FILE]
                     [--top N]
 
-Lifecycle.tla, DeferredJobs.tla and DeferredReplies.tla are covered by
-action keys only ("static" models): the model side is the set of log
-event arms of their trace spec (TraceLifecycle.tla, TraceJobs.tla,
-TraceReplies.tla; each arm is one model action or a named group of them),
+Lifecycle.tla, DeferredJobs.tla, DeferredReplies.tla and Coordinator.tla
+are covered by action keys only ("static" models): the model side is the set
+of log event arms of their trace spec (TraceLifecycle.tla, TraceJobs.tla,
+TraceReplies.tla, TraceCoordinator.tla; each arm is one model action or a
+named group of them),
 and a trace covers the arms its accepted replay takes. No state space is
 explored for them, so they add no TLC run to the model side.
 
@@ -97,6 +98,7 @@ STATIC = {
     "Lifecycle": ("TraceLifecycle.tla", {"lifecycle-v1"}),
     "DeferredJobs": ("TraceJobs.tla", {"jobs-v1"}),
     "DeferredReplies": ("TraceReplies.tla", {"replies-v1"}),
+    "Coordinator": ("TraceCoordinator.tla", {"coordinator-v1"}),
 }
 ALL = list(MODELS) + list(STATIC)
 
