@@ -15,6 +15,18 @@ pub const SERIES: &[&str] = &[
     "mailbox_depth",
     "handlers_active",
     "requests_active",
+    "reply_slots_alive",
+    "reply_tokens_alive",
+    "pending_replies_entries",
+    "reply_registries_alive",
+    "deadline_heap_entries",
+    "deadline_service_entries",
+    "deadline_service_actors",
+    "jobs_alive",
+    "monitors_alive",
+    "link_records_alive",
+    "registered_names",
+    "timers_alive",
 ];
 
 /// Flat `key = number` lines (valid TOML with dotted keys); `#` comments.
@@ -69,7 +81,7 @@ impl Phase {
 pub struct Sample {
     pub elapsed: f64,
     pub phase: Phase,
-    pub values: [f64; 11],
+    pub values: [f64; 23],
     pub started: u64,
     pub scenarios: u64,
     pub errors: u64,

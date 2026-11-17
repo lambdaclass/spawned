@@ -2029,6 +2029,7 @@ times.
 | `registry` | `registry::registered().len()` |
 | `actors_live` | harness actor states constructed and not yet dropped (started minus fully stopped) |
 | `actors_active`, `mailbox_depth`, `handlers_active`, `requests_active` | spawned's own `metrics` gauges |
+| `reply_slots_alive` … `timers_alive` | spawned's retained-structure gauges (GUIDE, "Retained internal structures"): reply slots, tokens, `PendingReplies` entries, reply registries, deadline heap and service entries, service owners, jobs, monitors, link records, names, timers |
 | `actors_started`, `scenarios`, `errors` | progress counters (not judged) |
 
 Framework-internal `ActorRef` and `Context` clones are not countable through
