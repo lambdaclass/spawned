@@ -6,7 +6,10 @@
   (a 20 ms startup deadline raced the fast starts on a loaded host, which also
   made cargo-mutants report surviving mutants as caught): the replacement's
   `started()` is now held until the test sees its deadline fire, and the test
-  also checks that the retry waits for that attempt's cleanup.
+  also checks that the retry waits for that attempt's cleanup. The trace
+  scenarios `trace_first_start_timeout_fails_start` and
+  `trace_startup_timeout_retries` (same 20 ms / 200 ms race) hold their slow
+  start the same way; their recorded traces are unchanged event for event.
   `tasks::actor::monitor_cleanup_regressions` no longer hangs when built with
   `--cfg spawned_sim`: it polled with a blocking sleep without driving the
   simulated runtime, on a thread whose clock is virtual.

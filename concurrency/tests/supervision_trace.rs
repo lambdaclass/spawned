@@ -687,15 +687,41 @@ async fn trace_replacement_exiting_before_readiness_is_retried() {
     }
 }
 
-struct SlowInit {
-    first: bool,
+/// Startup deadline of the timeout scenarios: far above any healthy start,
+/// so on a loaded machine only the held start can miss it.
+const STARTUP: Duration = Duration::from_secs(2);
+
+/// Holds `started()` until the test releases it, so the startup deadline is
+/// the only way the attempt can end (no wall-clock race with a sleep).
+struct HeldInit {
+    release: Option<tokio::sync::oneshot::Receiver<()>>,
 }
-impl Actor for SlowInit {
+impl Actor for HeldInit {
     async fn started(&mut self, _: &Context<Self>) {
-        if self.first {
-            spawned_rt::tasks::sleep(Duration::from_millis(200)).await;
+        if let Some(release) = self.release.take() {
+            let _ = release.await;
         }
     }
+}
+type Held = Arc<Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>;
+fn held() -> (tokio::sync::oneshot::Sender<()>, Held) {
+    let (release, held) = tokio::sync::oneshot::channel();
+    (release, Arc::new(Mutex::new(Some(held))))
+}
+/// Wait until `child`'s held attempt has missed its startup deadline, then
+/// let its `started()` return so the attempt's cleanup can finish.
+async fn release_after_timeout<A: Actor>(
+    child: &SupervisedChild<A>,
+    release: tokio::sync::oneshot::Sender<()>,
+) {
+    spawned_rt::tasks::timeout(STARTUP + LIMIT, async {
+        while child.snapshot().last_error.as_deref() != Some("startup deadline exceeded") {
+            spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    release.send(()).unwrap();
 }
 /// S1: a first start that misses startup_timeout aborts the start, whatever
 /// the restart type (v0.7 retried a Transient child).
@@ -704,20 +730,30 @@ async fn trace_first_start_timeout_fails_start() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("trace-timeout-first", 1).unwrap();
     let modes = [RestartMode::Transient];
+    let (release, held) = held();
     let mut tree = system.supervisor(config(3)).unwrap();
-    tree.add(
-        ChildSpec::new("slow-init", &group, |_| async move {
-            Ok::<_, String>(SlowInit { first: true })
-        })
-        .restart(modes[0])
-        .startup_timeout(Duration::from_millis(20)),
-    )
-    .unwrap();
+    let child = tree
+        .add(
+            ChildSpec::new("slow-init", &group, move |_| {
+                let release = held.lock().unwrap().take();
+                async move { Ok::<_, String>(HeldInit { release }) }
+            })
+            .restart(modes[0])
+            .startup_timeout(STARTUP),
+        )
+        .unwrap();
     let trace_id = tree.trace_id();
-    assert!(spawned_rt::tasks::timeout(LIMIT, tree.start())
-        .await
-        .unwrap()
-        .is_err());
+    // start() returns only after the timed-out attempt's cleanup, which
+    // waits for the held started(): release it from alongside.
+    let (started, ()) = tokio::join!(
+        spawned_rt::tasks::timeout(STARTUP + LIMIT, tree.start()),
+        release_after_timeout(&child, release),
+    );
+    let failure = started.unwrap().err().expect("the first start must fail");
+    assert!(
+        format!("{failure:?}").contains("startup deadline exceeded"),
+        "{failure:?}"
+    );
     assert!(system.shutdown(LIMIT).await.complete);
     write_trace("first_start_timeout", trace_id, &modes, 3);
 }
@@ -728,16 +764,22 @@ async fn trace_startup_timeout_retries() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("trace-timeout", 1).unwrap();
     let modes = [RestartMode::Transient];
+    let (release, held) = held();
     let mut tree = system.supervisor(config(3)).unwrap();
     let child = tree
         .add(
-            ChildSpec::new("slow-init", &group, |ctx| async move {
-                Ok::<_, String>(SlowInit {
-                    first: ctx.generation() == 2,
-                })
+            ChildSpec::new("slow-init", &group, move |ctx| {
+                // The first start is never retried (S1): hold the first
+                // replacement's.
+                let release = if ctx.generation() == 2 {
+                    held.lock().unwrap().take()
+                } else {
+                    None
+                };
+                async move { Ok::<_, String>(HeldInit { release }) }
             })
             .restart(modes[0])
-            .startup_timeout(Duration::from_millis(20)),
+            .startup_timeout(STARTUP),
         )
         .unwrap();
     let supervisor = spawned_rt::tasks::timeout(LIMIT, tree.start())
@@ -745,6 +787,7 @@ async fn trace_startup_timeout_retries() {
         .unwrap()
         .unwrap();
     child.current().unwrap().child_handle().kill();
+    release_after_timeout(&child, release).await;
     spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(2))
         .await
         .unwrap()
