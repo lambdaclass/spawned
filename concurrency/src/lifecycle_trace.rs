@@ -554,11 +554,20 @@ mod imp {
     /// keyed by the actor whose locks it takes first, and nested sections use
     /// the same key, so the section is always the outermost lock.
     pub(crate) fn life_section<R>(id: u64, f: impl FnOnce() -> R) -> R {
-        if life_traced(id) {
+        // Also for the start trace's actors: a message's admission (`SSend`)
+        // and its dispatch (`SHandle`) are then one step each of the same
+        // linearization (the item is receivable only after `SSend`).
+        if life_traced(id) || start_member(id) {
             atomic(f)
         } else {
             f()
         }
+    }
+
+    /// Whether `id` is the start trace's parent or one of its children.
+    fn start_member(id: u64) -> bool {
+        start_on()
+            && (START_PARENT.load(Ordering::Acquire) == id || lock(&START_KIDS).contains(&id))
     }
 
     /// Record an event of actor `t` (inside its section).
