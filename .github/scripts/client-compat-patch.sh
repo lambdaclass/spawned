@@ -129,7 +129,14 @@ while read -r name version src; do
   if [ "$(echo "$version" | cut -d. -f1,2)" = "$local_minor" ]; then
     die "$name $version from $src has the same 0.MINOR as the local checkout but was not patched"
   fi
-  echo "::notice title=client-compat::unrelated $name $version from $src stays unpatched (a dependency's own spawned)"
+  # A second spawned in the client's graph runs at runtime too (ethlambda's
+  # discovery actors ran on 0.5.0 through ethrex-p2p while the client was on
+  # 0.8.0). Not a failure here, since it is the client's dependency and not
+  # this checkout, but make it impossible to miss.
+  echo "::warning title=client-compat: second spawned version::$name $version from $src is in the client's graph next to the local checkout (a dependency's own spawned); the client runs two actor runtimes"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    echo "- :warning: second spawned in the client's graph: \`$name $version\` from \`$src\`" >>"$GITHUB_STEP_SUMMARY"
+  fi
 done <"$tmp/spawned-packages.txt"
 cargo tree -i "spawned-concurrency@$local_version" --workspace --depth 1 -e normal,dev 2>/dev/null \
   || cargo tree -i "spawned-concurrency@${local_version%%-*}" --workspace --depth 1 -e normal,dev
