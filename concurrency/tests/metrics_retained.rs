@@ -50,6 +50,23 @@ fn read() -> Vec<u64> {
     GAUGES.iter().map(|(_, g)| g(&s)).collect()
 }
 
+/// The gauges once nothing has changed for a while: the previous work's
+/// asynchronous tail (timer threads ending, deadlines coming due) is over.
+fn quiet() -> Vec<u64> {
+    let limit = Instant::now() + Duration::from_secs(10);
+    let mut last = read();
+    let mut since = Instant::now();
+    while since.elapsed() < PARK_DEADLINE * 2 && Instant::now() < limit {
+        std::thread::sleep(Duration::from_millis(10));
+        let now = read();
+        if now != last {
+            last = now;
+            since = Instant::now();
+        }
+    }
+    last
+}
+
 /// Wait until every gauge is back at `baseline`; fail naming the drifted ones.
 fn settles_to(baseline: &[u64], what: &str) {
     let limit = Instant::now() + Duration::from_secs(10);
@@ -390,8 +407,7 @@ fn runtime() -> tokio::runtime::Runtime {
 /// gauge must settle back to the baseline.
 fn churn_returns_to_baseline(what: &str, mut round: impl FnMut(usize)) {
     round(0);
-    std::thread::sleep(PARK_DEADLINE * 2);
-    let baseline = read();
+    let baseline = quiet();
     // Sample the peak from a watcher while the round runs.
     let peak = Mutex::new(vec![0u64; GAUGES.len()]);
     let done = std::sync::atomic::AtomicBool::new(false);
@@ -441,8 +457,7 @@ fn long_churn_does_not_drift() {
     let rt = runtime();
     async_round(&rt, 0);
     native_round(0);
-    std::thread::sleep(PARK_DEADLINE * 2);
-    let baseline = read();
+    let baseline = quiet();
     let end = Instant::now() + Duration::from_secs(secs);
     let mut round = 1;
     while Instant::now() < end {
@@ -454,6 +469,43 @@ fn long_churn_does_not_drift() {
         settles_to(&baseline, &format!("after {round} rounds"));
     }
     assert!(round > 4, "the churn ran at least one batch");
+}
+
+/// A long-lived threads actor arming timers: `timers_alive` returns to its
+/// baseline while the actor keeps running (each timer's registration on the
+/// actor's stop token used to stay until the actor stopped).
+#[test]
+fn threads_timers_do_not_accumulate_on_a_running_actor() {
+    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    use threads::ActorStart;
+    // The worker arms a short `send_after` (fires) and a long
+    // `send_interval` (lives until it stops) itself.
+    let before = quiet()[11];
+    let baseline = before + 1;
+    let actor = NativeWorker::new("retained-timer-host".into()).start();
+    for _ in 0..100 {
+        threads::send_after(Duration::from_millis(1), actor.context(), Tick);
+    }
+    let cancelled: Vec<_> = (0..50)
+        .map(|_| threads::send_interval(Duration::from_secs(3600), actor.context(), Tick))
+        .collect();
+    for timer in &cancelled {
+        timer.cancellation_token.cancel();
+    }
+    let limit = Instant::now() + Duration::from_secs(10);
+    while metrics::snapshot().timers_alive != baseline && Instant::now() < limit {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(metrics::snapshot().timers_alive, baseline);
+    actor.request(Ask).unwrap();
+    actor.context().stop();
+    actor.join();
+    // Leave nothing behind for the next test's baseline.
+    let limit = Instant::now() + Duration::from_secs(10);
+    while metrics::snapshot().timers_alive != before && Instant::now() < limit {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(metrics::snapshot().timers_alive, before);
 }
 
 /// The gauges are exported as Prometheus gauges.
