@@ -144,7 +144,7 @@ section maps each one to what spawned does and lists where it is still behind.
 | Fault injection | Failpoints at named sites in the lifecycle code; suites that panic in every user callback and drop every public future at every await point |
 | Formal specifications | TLA+ models of every lifecycle protocol, each invariant with a negative control that must fail; Apalache proofs of the safety invariants |
 | Specs tied to the code | Trace validation of real runs against the models, trace coverage, and the required `model-sync` check: code that changes modelled behaviour without its model fails CI |
-| Proving the tests work | The [planted-bug matrix](#planted-bug-sensitivity) (23 of 24 realistic bugs caught, each by two or more layers), `cargo-mutants`, and the [semantics coverage](#semantics-coverage) matrix (a check that fails for all 50 guarantees) |
+| Proving the tests work | The [planted-bug matrix](#planted-bug-sensitivity) (all 24 realistic bugs caught, each by two or more layers), `cargo-mutants`, and the [semantics coverage](#semantics-coverage) matrix (a check that fails for all 50 guarantees) |
 | Fuzzing, metamorphic testing | The coverage-guided [scenario fuzzer](#scenario-fuzzing-fuzz) with contract oracles; one workload on every backend must give the same result |
 | Linearizability checking | A Porcupine-style checker over concurrent request histories |
 | Memory-model checking | Loom, ThreadSanitizer, LeakSanitizer and Kani proofs |
@@ -938,12 +938,15 @@ oracle's name, so shrinking can match it):
 | D1, D2 | Per-sender FIFO on the driver's lane; no message handled twice |
 | R1-R3 | Every request resolves; `Ok` carries its own nonce and the handler ran; `RequestTimeout` never before the timeout |
 | X1 | `Down` only for the watcher's own monitor, at most once, with the target's published reason; after quiescing, a live watcher has a `Down` for every exited, non-demonitored target |
+| X2 (flush) | No `Down` of a monitor is handled after the driver's `demonitor` of it returned (dispatch and the handler's record are one poll, so a `Down` whose dispatch began earlier is already recorded) |
 | X3, X5 | `Exit` carries the peer's published reason; a trapping, still-linked actor gets it (no more often than links were made); a non-trapping one does not survive a peer's abnormal exit |
 | X7 | No `Note` from a source after its `Down`/`Exit` at the same receiver |
 | X8 | An actor whose only possible stop cause was one driver `stop`, `shutdown` or `stop_with_reason` on it while alive publishes exactly that reason (skipped if a hook or the state destructor panicked) |
 | X3 (reason) | A standalone, non-trapping actor whose only possible stop cause was its link to a peer survives the peer's `Normal` exit, and after `Shutdown`, `Panic` or `Kill` publishes the peer's reason, so the crash keeps propagating |
 | X5 (unlink) | After the driver unlinks two running actors (and does not link them again), neither receives an `Exit` from the other, and a standalone actor whose only stop causes were links to that peer outlives it |
 | T1 (cancel) | A timer cancelled at time `c` delivers at most the ticks due by `c` (`send_after`: at most one, none if cancelled before its period; `send_interval`: one per elapsed period) |
+| T2 (stop) | A `send_interval` task starts no round after its actor's exit is published: the message is cloned at the top of each round, every clone after the first follows a send in the same poll, and that send found the actor's token (cancelled before publication) not cancelled |
+| L7 (monitor waiters) | After the leak checks, in the emptied world: an observer that monitors a live target and exits takes the simulator's task count back to what it was before the observer started (its waiter does not outlive it) |
 | L4, M | An actor that panicked exits abnormally; a published reason never changes; an actor nothing could have stopped is still alive |
 | V1, V3, V5 | A Temporary child is built at most once per supervisor instance; no factory runs while an earlier generation of its slot (or subtree) is alive; retries per rolling window never exceed `max_restarts` |
 | V1, V2 (restart decisions) | In a flat root tree, every replacement follows either the slot's own attempt ending in a way its mode restarts (failed or unpublished attempt, any exit for Permanent, an abnormal one for Transient), or an upstream sibling's attempt ending after the previous attempt began (any sibling for OneForAll, an earlier one for RestForOne). An instance nothing but its supervisor could have stopped needs the second |
@@ -1586,7 +1589,8 @@ A spot check with each applied (unit and integration tests only) caught 04,
 10, 11, 12, 13, 15, 16 and 19; 15, a miss in every layer below, is now caught
 by `demonitor_before_target_dies_suppresses_down` and
 `demonitor_releases_waiter` in both modes. The table predates the
-regeneration; rerun the matrix before citing rows 04, 10-17, 19 and 20.
+regeneration except rows 15 and 17 (rerun below); rerun the matrix before
+citing rows 04, 10-14, 16, 19 and 20.
 
 **Results** (2026-11-12, after the follow-ups below, `53c0995d`, the 30-core
 shared server at `nice 19`, one patch at a time). Times are seconds for the
@@ -1596,6 +1600,11 @@ that fired. A dash is a miss. The unpatched control missed in every layer,
 including 900 s (440,000 executions) of fuzzing; a second 900 s control (770,000 executions) after
 the last oracle change (X3 for `Normal` peers) also missed. Row 10's C and F
 cells are from that rerun; the first matrix (without that oracle) missed both.
+Rows 15, 17 and 22 are from a rerun on 2026-11-17 with the regenerated
+patches and the X2, L7 and T2 oracles (layers T, S, C and F, F for 300 s, the
+same server under heavy load at `nice 10`, so T and S times are about three
+times the other rows'); its unpatched control missed in C and in F (300 s,
+240,669 executions).
 
 | # | Bug | T | S | C | F | V | K |
 |---|---|---|---|---|---|---|---|
@@ -1613,33 +1622,32 @@ cells are from that rerun; the first matrix (without that oracle) missed both.
 | 12 | Linking to a dead peer reports `Normal`, not `NoProc` | 54 | - | 8 | <1 (X3) | - | - |
 | 13 | Actor killed through a link exits `Normal` (no transitive propagation) | 43 | 17 | 9 | <1 (X3) | - | - |
 | 14 | An administrative `Shutdown` stop commits `Normal` | 44 | 17 | 9 | <1 (X8) | - | - |
-| 15 | Monitor waiter delivers `Down` after `demonitor` removed it | - | - | - | - | - | - |
+| 15 | Monitor waiter delivers `Down` after `demonitor` removed it | 187 (7 tests) | 77 (1 test) | 31 | 45 (X2) | - | - |
 | 16 | Monitoring an already-dead actor gives no `Down` | 137 | - | 9 | 5 (X1) | - | - |
-| 17 | Exiting observer does not cancel its monitor waiters | 59 | 14 | - | - | - | - |
+| 17 | Exiting observer does not cancel its monitor waiters | 155 (4 tests) | 60 (1 test) | 37 | <1 (L7) | - | - |
 | 18 | Managed actor's registered name never removed | 64 | 12 | 11 | <1 (S5) | - | - |
 | 19 | Run loop keeps handling queued messages after stop (D4) | 47 | 13 | - | 244 (X3) | - | - |
 | 20 | `ActorRef::send` enqueues from a spawned task (breaks D1) | hang (1 unit test) | 13 | 8 | <1 (D1) | - | - |
 | 21 | `send_after` ignores its own cancellation token | 41 (1 unit test) | - | 8 | <1 (T1) | - | - |
-| 22 | `send_interval` keeps ticking after its actor stops | 55 (2 tests) | 13 | - | - | - | - |
+| 22 | `send_interval` keeps ticking after its actor stops | 149 (2 tests) | 66 (1 test) | 30 | 52 (T2) | - | - |
 | 23 | System shutdown stops targets in admission order | 65 | 12 | 8 | <1 (S2) | - | - |
 | 24 | System shutdown ignores admission order between actors and trees | 40 | 13 | - | 11 (S2) | - | - |
-| | **Caught** | **23** | **17** | **11** | **19** | **4** | **2** |
+| | **Caught** | **24** | **18** | **14** | **22** | **4** | **2** |
 
 Before the follow-ups (2026-11-11, `cc60801d`, five layers, no K): caught
 T 22, S 15, C 6, F 9, V 4; bugs 08 and 20 hung T; F missed every
 restart-decision, budget, backoff and exit-reason bug (01-04, 06, 08, 13, 14).
-Now 23 of 24 are caught by at least one layer and every caught bug by at least
-two; 15 still escapes everything (below).
+Now all 24 are caught by at least one layer and every bug by at least two
+(15, which used to escape everything, by T, S, C and F; see below).
 
-- **F now catches 19 of 24** (was 9), all but one within 40 s. The new oracles
+- **F now catches 22 of 24** (was 9), all but one within 60 s. The new oracles
   (see "Scenario fuzzing") check which children a restart rebuilds (03, 04:
   V1/V2), that every required restart happens or the supervisor fails (08: V5),
   backoff delays in virtual time (06: V6), linked exit reasons (13, and 10
-  after the `Normal` case was added: X3), `unlink` (11: X5) and cancelled
-  timers (21: T1). 19 fell to X3 after 244 s. Still missed: 01 and 02 (see
-  below), 15, 17 (an exiting observer's lingering monitor waiters) and 22 (an interval
-  that outlives its actor): no fuzzer oracle observes either yet; T and S catch
-  both.
+  after the `Normal` case was added: X3), `unlink` (11: X5), cancelled
+  timers (21: T1), the `demonitor` flush (15: X2), an exiting observer's
+  monitor waiters (17: L7) and intervals that outlive their actor (22: T2).
+  19 fell to X3 after 244 s. Still missed: 01 and 02 (see below).
 - **01 and 02 are not observable through the public API.** `admit_in_window`
   is only reached after `reserve_retry` has pruned the same window with `>=`
   and checked `RetryBudget::available` with `<`, so the invariant
@@ -1663,8 +1671,8 @@ two; 15 still escapes everything (below).
   `tasks::actor::tests` link tests, `child_handle::tests`): they await without
   a deadline and should use one when those files next change.
 - **S, C, V** are unchanged in kind; C now also runs the new oracles over the
-  seeds and regression inputs, which catches 08, 10, 13, 14 and 21 from committed
-  inputs.
+  seeds and regression inputs, which catches 08, 10, 13, 14, 15, 17, 21 and 22 from committed
+  and generated inputs.
 
 **Oracles added for the gaps** (each fails with its bug planted and passes on
 `main`; checked with `run.sh`):
@@ -1681,18 +1689,19 @@ two; 15 still escapes everything (below).
 | 13 | Fuzzer **X3** (reason): an actor stopped through a link publishes its peer's reason | F, C, T, S (was T, S) |
 | 14 | Fuzzer **X8**: an actor whose only possible stop cause was the driver's `stop`, `shutdown` or `stop_with_reason` on a live actor publishes exactly that reason (instances whose hooks or state destructor panicked are skipped) | F, C, T, S (was T, S) |
 | 21 | Fuzzer **T1** (cancel): a cancelled timer delivers no tick due after the cancel | F, C, T (was T only) |
-| 15 | None possible through the public API: see below | - |
+| 15 | Fuzzer **X2** (flush): no `Down` is handled after the driver's `demonitor` of it returned; the minimized input is the regression `down_after_demonitor` | F, C, T (was none in the matrix; see below) |
+| 17 | Fuzzer **L7** (monitor waiters): after the leak checks, an observer that exits while monitoring a live target leaves the task count where it was before the observer started. A fixed end-of-run probe, so every input catches it | F, C, T, S (was T, S) |
+| 22 | Fuzzer **T2** (stop): a `send_interval` task starts no round after its actor's exit is published (the harness counts clones of the timer message) | F, C, T, S (was T, S) |
 
-Bug 15 is not observable. `demonitor` is documented best-effort ("the message
-may still arrive"), and the window is between the waiter observing the exit and
-taking the table lock, in one poll: on the simulator a poll is atomic and the
-waiter's `select` polls the cancellation first, so the bug is unreachable; on
-Tokio it needs another thread to `demonitor` inside a few instructions. A
-`Down` after `demonitor` returned is allowed by the contract, so no test can
-tell the bug from correct behaviour. This differs from OTP, where
-`demonitor(Ref, [flush])` guarantees no `'DOWN'` after it returns. Catching
-it needs either that guarantee in the contract or a failpoint between the
-waiter's wake-up and its table lookup in `tasks/actor.rs`.
+Bug 15 used to be unobservable: before 0.8 `demonitor` was best-effort ("the
+message may still arrive"), so a `Down` after it returned was allowed. Since
+0.8 it flushes like OTP's `demonitor(Ref, [flush])` (semantics.md X2,
+`monitor/fence.rs`): once it returns, no `Down` of the monitor is enqueued or
+handled. The regenerated patch plants the fault in that fence (the waiter is
+not woken, and a removed entry is delivered anyway), so the `Down` arrives
+whenever the target dies after the `demonitor`, with no race to win. The
+fuzzer's X2 (flush) oracle reports it, and its minimized input is kept as the
+regression `fuzz/tests/down_after_demonitor.rs` (layer C).
 
 **cargo-mutants** on `link.rs`, `monitor.rs`, `registry.rs` and
 `supervision/nested.rs` (60 mutants, full test suite with `failpoints`): 24

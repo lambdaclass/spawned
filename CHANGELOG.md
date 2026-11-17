@@ -54,6 +54,13 @@
   non-trapping linked stop waits for the running handler and discards the
   queue). Each check was shown to fail under local mutations of the code.
 
+- Three new scenario-fuzzer oracles, so the fuzzer now catches planted bugs
+  15, 17 and 22, which it used to miss: X2 (no `Down` handled after
+  `demonitor` returned), T2 (a `send_interval` starts no round after its
+  actor's exit is published) and L7 (an exited observer's monitor waiter does
+  not outlive it, checked by an end-of-run probe). The minimized bug-15 input
+  is kept as the regression `fuzz/tests/down_after_demonitor.rs`. Test-only:
+  no library change.
 - Fix the flaky `tla-traces` coverage gate (`LOST coverage: Cohorts
   A|OneForAll|CEnd/complete`): the cohort trace tests now wait for the restart
   round to record `CEnd complete` before shutting down, instead of racing it
