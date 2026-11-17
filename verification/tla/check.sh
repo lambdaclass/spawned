@@ -11,7 +11,14 @@
 #   check.sh --traces DIR        also check every DIR/*.json trace
 #   check.sh --traces-only DIR   only check traces (skip model checking)
 #   TLC_WORKERS=N check.sh ...   TLC workers per configuration (default auto)
+#   TLC_HEAP=PCT check.sh ...    JVM heap as a percentage of RAM (default 75.0)
 set -euo pipefail
+
+# The JVM's default heap is a quarter of RAM, which liveness checking of the
+# larger configurations can exhaust on a CI runner ("Java ran out of memory
+# during liveness checking"). nixpkgs' tlc wrapper takes no JVM options, but
+# every JVM reads JAVA_TOOL_OPTIONS; an explicit setting is left alone.
+export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=${TLC_HEAP:-75.0}}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

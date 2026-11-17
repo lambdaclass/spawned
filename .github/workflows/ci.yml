@@ -218,7 +218,6 @@ jobs:
         with:
           fetch-depth: 0
       - uses: DeterminateSystems/nix-installer-action@v16
-      - uses: DeterminateSystems/magic-nix-cache-action@v8
       - name: Compare default, metrics and migrated APIs; audit declared feature-split breaks
         # Pin the rustdoc JSON producer together with semver-checks.
         run: >

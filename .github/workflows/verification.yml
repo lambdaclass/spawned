@@ -43,7 +43,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v16
-      - uses: DeterminateSystems/magic-nix-cache-action@v8
       - name: Model-check
         run: nix run .#check-tla -- ${{ matrix.select }}
 
@@ -56,7 +55,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v16
-      - uses: DeterminateSystems/magic-nix-cache-action@v8
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: Swatinem/rust-cache@v2
       - name: Stop and receive race without the trace serialization lock
@@ -140,7 +138,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v16
-      - uses: DeterminateSystems/magic-nix-cache-action@v8
       - name: Model-check ${{ matrix.config }}
         run: nix run .#check-tla -- --deep --only ${{ matrix.config }}
 
@@ -173,7 +170,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v16
-      - uses: DeterminateSystems/magic-nix-cache-action@v8
       - name: Inductive invariants and negative controls
         run: nix run .#check-apalache -- --negative-controls
       - name: Supervision with 10 children and max_restarts 10
