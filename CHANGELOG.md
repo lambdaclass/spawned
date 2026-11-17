@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fix the flaky `supervision::transient_startup_timeout_retries_after_actual_cleanup`
+  (a 20 ms startup deadline raced the fast starts on a loaded host, which also
+  made cargo-mutants report surviving mutants as caught): the replacement's
+  `started()` is now held until the test sees its deadline fire, and the test
+  also checks that the retry waits for that attempt's cleanup.
+  `tasks::actor::monitor_cleanup_regressions` no longer hangs when built with
+  `--cfg spawned_sim`: it polled with a blocking sleep without driving the
+  simulated runtime, on a thread whose clock is virtual.
 - ROADMAP: 0.9 is now soundness and introspection; the unified start API
   (G1, G2, G8) and `{shutdown, Term}` exits (G7) move into 0.9, and the
   admission package is designed during 0.9.
