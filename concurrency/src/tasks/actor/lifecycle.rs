@@ -886,14 +886,14 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
             }
         }};
     }
-    'run: {
-        if let Some(envelope) = continuation {
-            if turn!(envelope) {
-                break 'run;
-            }
-        }
+    {
+        // The continuation is the first turn, before any mailbox entry; one
+        // copy of the turn body keeps the message loop as compact as 0.8's.
+        let mut continuation = continuation;
         loop {
-            let msg = {
+            let msg = if let Some(envelope) = continuation.take() {
+                Some(envelope)
+            } else {
                 let recv = pin!(future::poll_fn(|cx| {
                     // Stop and closed-mailbox both take the normal lifecycle exit,
                     // just like the cancellation arm below. Check after the
