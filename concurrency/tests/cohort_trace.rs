@@ -27,6 +27,19 @@ impl Handler<Crash> for Worker {
         panic!("trace cohort failure");
     }
 }
+/// The round task records `CEnd complete` after the last affected child is
+/// ready, which can be after `wait_for_generation` returns. Shutting down
+/// first would end the trace without it, so the trace coverage gate would
+/// depend on scheduling.
+async fn round_completed(id: u64) {
+    spawned_rt::tasks::timeout(LIMIT, async {
+        while !lifecycle_trace::recorded_with(id, "CEnd", "complete") {
+            spawned_rt::tasks::yield_now().await;
+        }
+    })
+    .await
+    .expect("the restart round must complete before shutdown");
+}
 fn write_trace(name: &str, id: u64, strategy: SupervisorStrategy, modes: &[&str]) {
     let trace = lifecycle_trace::take(id);
     for child in 1..=modes.len() {
@@ -125,6 +138,7 @@ async fn trace_cohort_selection_and_temporary_retirement() {
                 .unwrap()
                 .is_err()
         );
+        round_completed(id).await;
         assert!(supervisor.shutdown(LIMIT).await.complete);
         write_trace(
             &format!("selection-{strategy:?}"),
@@ -253,6 +267,7 @@ async fn trace_normally_retired_transient_is_skipped_by_later_cohorts() {
             .unwrap()
             .unwrap();
         assert_eq!(children[2].snapshot().generation, 1);
+        round_completed(supervisor.trace_id()).await;
         assert!(supervisor.shutdown(LIMIT).await.complete);
         assert!(system.shutdown(LIMIT).await.complete);
         write_trace(
@@ -326,6 +341,7 @@ async fn trace_failed_replacement_starts_a_new_round() {
             .await
             .unwrap()
             .unwrap();
+        round_completed(id).await;
         assert!(supervisor.shutdown(LIMIT).await.complete);
         write_trace(
             &format!("failed-replacement-{strategy:?}"),
