@@ -654,10 +654,11 @@ async fn kill_and_admin_stop_during_started() {
             "SAdminStop",
             "SResolve:ready",
             "SExit:Shutdown",
-            "SAnswer:ok",
             "SDie:Shutdown",
         ],
     );
+    // The ready answer races the stop's death; it follows the ready resolve.
+    has(&events, &["SAdminStop", "SResolve:ready", "SAnswer:ok"]);
     p.request(Stop).await.unwrap();
     p.wait_exit().await;
 }

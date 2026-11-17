@@ -128,6 +128,7 @@ impl<A: Actor> ActorRef<A> {
             }
         };
         let committed = trace::start_section(|| {
+            trace::commit_begin(c, "U");
             let result = (|| -> Result<_, StartError> {
                 match &verb {
                     Verb::Link(p) => {
@@ -136,9 +137,13 @@ impl<A: Actor> ActorRef<A> {
                             link::install_start_edge(&p.signal, &p.links, &signal, &links, || {
                                 let request = link::lock_request(&p.request);
                                 if request.reason().is_some() || request.is_dead() {
+                                    trace::commit_point(Some("parentexited"));
                                     return false;
                                 }
                                 inner = register();
+                                if inner.is_ok() {
+                                    trace::commit_point(None);
+                                }
                                 inner.is_ok()
                             });
                         match (installed, inner) {
@@ -161,9 +166,13 @@ impl<A: Actor> ActorRef<A> {
                                     || request.is_dead()
                                     || p.token.is_cancelled()
                                 {
+                                    trace::commit_point(Some("parentexited"));
                                     return true;
                                 }
                                 inner = register();
+                                if inner.is_ok() {
+                                    trace::commit_point(None);
+                                }
                                 inner.is_err()
                             },
                             || false,
@@ -181,16 +190,7 @@ impl<A: Actor> ActorRef<A> {
                     Verb::Spawn | Verb::Start => Ok((register()?, None)),
                 }
             })();
-            match &result {
-                Ok(_) => trace::start_emit(c, || trace::StartEvent::new("SCommit", c).x("U")),
-                Err(error) => trace::start_emit(c, || {
-                    trace::StartEvent::new("SRefuse", c).x(match error {
-                        StartError::AlreadyStarted { .. } => "already",
-                        StartError::ParentExited => "parentexited",
-                        _ => "system",
-                    })
-                }),
-            }
+            trace::commit_end(result.as_ref().err().map(StartError::trace_refusal));
             result
         });
         let (name, monitor) = committed?;

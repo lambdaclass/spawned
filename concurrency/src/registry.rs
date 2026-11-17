@@ -114,6 +114,7 @@ pub fn register_owned<T: Clone + Send + Sync + 'static>(
     name: &str,
     owner: crate::ActorId,
     value: T,
+    handle: Option<crate::ChildHandle>,
 ) -> Result<RegistrationGuard, RegistryError> {
     use std::collections::hash_map::Entry as MapEntry;
     let mut store = global_store().write().unwrap_or_else(|p| p.into_inner());
@@ -124,7 +125,8 @@ pub fn register_owned<T: Clone + Send + Sync + 'static>(
             slot.insert(Entry {
                 value: Box::new(value),
                 owner: Some(owner),
-                handle: None,
+                // The holder, for a start's `AlreadyStarted { existing }`.
+                handle,
             });
             Ok(RegistrationGuard {
                 name: name.into(),
@@ -150,10 +152,16 @@ pub(crate) fn register_start<T: Clone + Send + Sync + 'static, E>(
 ) -> Result<Result<RegistrationGuard, Option<crate::ChildHandle>>, E> {
     use std::collections::hash_map::Entry as MapEntry;
     let mut store = global_store().write().unwrap_or_else(|p| p.into_inner());
+    // The registry is a start's innermost lock: its commit is decided (and
+    // recorded) here, ordered with `SReleaseName` and `SLookup`.
     match store.entry(name.to_string()) {
-        MapEntry::Occupied(e) => Ok(Err(e.get().handle.clone())),
+        MapEntry::Occupied(e) => {
+            crate::lifecycle_trace::commit_point(Some("already"));
+            Ok(Err(e.get().handle.clone()))
+        }
         MapEntry::Vacant(slot) => {
             admit()?;
+            crate::lifecycle_trace::commit_point(None);
             let owner = (owner, NEXT_REGISTRATION.fetch_add(1, Ordering::Relaxed));
             slot.insert(Entry {
                 value: Box::new(value),
@@ -275,9 +283,9 @@ mod tests {
     #[test]
     fn old_guard_preserves_new_registration_even_with_same_actor_identity() {
         let actor = crate::ActorId::next();
-        let old = register_owned("owned_generation_guard_test", actor, 1u64).unwrap();
+        let old = register_owned("owned_generation_guard_test", actor, 1u64, None).unwrap();
         unregister("owned_generation_guard_test");
-        let new = register_owned("owned_generation_guard_test", actor, 2u64).unwrap();
+        let new = register_owned("owned_generation_guard_test", actor, 2u64, None).unwrap();
         drop(old);
         assert_eq!(whereis::<u64>("owned_generation_guard_test"), Some(2));
         drop(new);

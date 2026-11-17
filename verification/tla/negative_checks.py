@@ -442,6 +442,27 @@ def start_trace_controls(traces, tlc):
                      admin_stop_fails_start,
                      "an administrative stop during started() fails the start", tlc)
 
+    def resolve_ignores_return(events):
+        # Review #291 item 2a: started() returned ready, yet the start
+        # resolved as an error (the decision must follow the return).
+        events[at(events, "SResolve", "error")]["x"] = "ready"
+    require_rejected(by_name["start_monitor_error_consumes_down"],
+                     resolve_ignores_return,
+                     "a ready return resolved as an error", tlc)
+
+    def deliver_as_drop(events):
+        # Review #291 item 2b/2c: the Normal notice owed to P is dropped.
+        events[at(events, "SPublish", "deliver")]["x"] = "drop"
+        del events[at(events, "PNotice")]
+    require_rejected(by_name["start_link_ready_then_stop"], deliver_as_drop,
+                     "a delivered notice recorded as dropped (and never delivered)", tlc)
+
+    def notice_never_delivered(events):
+        # Item 2c: the log ends with the notice disposed but not delivered.
+        del events[at(events, "PNotice")]
+    require_rejected(by_name["start_link_ready_then_stop"], notice_never_delivered,
+                     "a disposed notice never delivered to the live P", tlc)
+
     def dispatch_failure_answered_ready(events):
         # Review #291 item 1: the committed child the dispatch lost must
         # resolve killed; a waiter answered `ok` with no ready child is wrong.

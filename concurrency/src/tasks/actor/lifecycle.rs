@@ -32,19 +32,6 @@ fn same_placement(a: &start::Placement, b: &start::Placement) -> bool {
     }
 }
 
-/// The model's name of a stage-1 refusal (`Start.tla` `Results`).
-#[allow(dead_code)] // trace only
-fn refusal_name(error: &crate::start::StartError) -> &'static str {
-    use crate::start::StartError;
-    match error {
-        StartError::Closed => "closed",
-        StartError::Capacity => "capacity",
-        StartError::AlreadyStarted { .. } => "already",
-        StartError::ParentExited => "parentexited",
-        _ => "system",
-    }
-}
-
 impl<A: Actor> ActorRef<A> {
     /// A supervised generation, admitted to `scope` by its supervisor.
     pub(crate) fn spawn_managed(
@@ -253,10 +240,14 @@ impl<A: Actor> ActorRef<A> {
                         || {
                             let request = link::lock_request(&p.request);
                             if request.reason().is_some() || request.is_dead() {
+                                trace::commit_point(Some("parentexited"));
                                 return false;
                             }
                             // The registry is the innermost lock.
                             inner = register();
+                            if inner.is_ok() {
+                                trace::commit_point(None);
+                            }
                             inner.is_ok()
                         },
                     );
@@ -270,7 +261,9 @@ impl<A: Actor> ActorRef<A> {
                     let monitor_ref = MonitorRef::next();
                     let active = spawned_rt::tasks::CancellationToken::new();
                     let mut inner = Ok(None);
-                    let mut exiting = false;
+                    // The parent's monitor table is checked open first (the
+                    // fence), so a name is never registered for a start the
+                    // closed table then refuses.
                     let registered = crate::monitor::fence::register(
                         &p.monitors,
                         monitor_ref,
@@ -281,10 +274,13 @@ impl<A: Actor> ActorRef<A> {
                                 || request.is_dead()
                                 || p.token.is_cancelled()
                             {
-                                exiting = true;
+                                trace::commit_point(Some("parentexited"));
                                 return true;
                             }
                             inner = register();
+                            if inner.is_ok() {
+                                trace::commit_point(None);
+                            }
                             inner.is_err()
                         },
                         || false,
@@ -297,10 +293,8 @@ impl<A: Actor> ActorRef<A> {
                             committed.name = name;
                             committed.monitor = Some((monitor_ref, active));
                         }
-                        _ => {
-                            debug_assert!(exiting);
-                            return Err(StartError::ParentExited);
-                        }
+                        // The parent is exiting, or its monitor table closed.
+                        _ => return Err(StartError::ParentExited),
                     }
                 }
                 _ => committed.name = register()?,
@@ -308,6 +302,7 @@ impl<A: Actor> ActorRef<A> {
             Ok(committed)
         };
         let committed = trace::start_section(|| {
+            trace::commit_begin(c, placement.trace_name());
             let result = match &group {
                 Some(group) => group
                     .reserve_with(cancellation_token.clone(), linked_reason.clone(), || {
@@ -319,14 +314,7 @@ impl<A: Actor> ActorRef<A> {
                     }),
                 None => edge_commit(),
             };
-            match &result {
-                Ok(_) => trace::start_emit(c, || {
-                    trace::StartEvent::new("SCommit", c).x(placement.trace_name())
-                }),
-                Err(error) => trace::start_emit(c, || {
-                    trace::StartEvent::new("SRefuse", c).x(refusal_name(error))
-                }),
-            }
+            trace::commit_end(result.as_ref().err().map(StartError::trace_refusal));
             result
         });
         // A refusal applied nothing: the prepared state is dropped (no hook
@@ -451,6 +439,9 @@ impl<A: Actor> ActorRef<A> {
                 let mut builder = std::thread::Builder::new();
                 if let Some(bytes) = options.stack_size {
                     builder = builder.stack_size(bytes);
+                }
+                if let Some(label) = &options.label {
+                    builder = builder.name(label.to_string());
                 }
                 crate::start::spawn_thread_or_kill(
                     builder,

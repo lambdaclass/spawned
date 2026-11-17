@@ -849,13 +849,28 @@ impl ExecutionGroup {
         fail_point!("system.reserve" => return Err(StartError::Capacity));
         let group = self.inner.upgrade().ok_or(StartError::Closed)?;
         let mut state = lock(&group.state);
+        // A refusal here is decided under the group lock (also its trace
+        // event: ordered with `SReleaseSlot`).
+        let refuse = |error: StartError| {
+            crate::lifecycle_trace::commit_point(Some(error.trace_refusal()));
+            Err(error)
+        };
         if state.closing {
-            return Err(StartError::Closed);
+            return refuse(StartError::Closed);
         }
-        let id = next_admission()?;
-        let target = group.choose(&mut state, self.selection)?;
+        let id = match next_admission() {
+            Ok(id) => id,
+            Err(error) => return refuse(error.into()),
+        };
+        let target = match group.choose(&mut state, self.selection) {
+            Ok(target) => target,
+            Err(error) => return refuse(error.into()),
+        };
         let committed = match commit() {
-            Ok(committed) => committed,
+            Ok(committed) => {
+                crate::lifecycle_trace::commit_point(None);
+                committed
+            }
             Err(error) => {
                 // Undo the slot choice under the same lock: invisible.
                 if let Some(free) = &mut state.free {
@@ -1103,6 +1118,7 @@ impl Scope {
         name: &str,
         id: crate::ActorId,
         actor: impl Clone + Send + Sync + 'static,
+        handle: crate::ChildHandle,
     ) -> Result<(), crate::registry::ManagedRegistrationError> {
         fail_point!("registry.before_register" => {
             return Err(crate::registry::ManagedRegistrationError::OwnerClosed)
@@ -1120,9 +1136,12 @@ impl Scope {
         {
             return Err(crate::registry::ManagedRegistrationError::OwnerClosed);
         }
-        state
-            .registrations
-            .push(crate::registry::register_owned(name, id, actor)?);
+        state.registrations.push(crate::registry::register_owned(
+            name,
+            id,
+            actor,
+            Some(handle),
+        )?);
         if state.name.is_none() {
             state.name = Some(name.to_owned());
         }

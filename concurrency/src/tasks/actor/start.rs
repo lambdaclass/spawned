@@ -293,8 +293,10 @@ impl<A: Actor> StartOptions<A> {
         self.name = Some(name.into());
         self
     }
-    /// A label for diagnostics (a managed actor's diagnostic name when it
-    /// has no registered name).
+    /// A label for diagnostics: a managed actor's diagnostic name when it
+    /// has no registered name, and the OS thread name of a
+    /// `Backend::Thread` actor. An unmanaged `Async` or `Blocking` actor has
+    /// no place to show it, and ignores it.
     pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
         self.label = Some(label.into());
         self
@@ -462,6 +464,11 @@ impl<A: Actor> Starter<A> {
         )
     }
     /// Start monitored by `parent`'s actor and wait for `started()`.
+    ///
+    /// If the returned `Starting` is dropped unanswered, the monitor stays:
+    /// the child's `Down` is still delivered to `parent`, carrying a
+    /// [`MonitorRef`](crate::MonitorRef) the caller never received. Match it
+    /// by `down.actor` (`Starting::actor_ref` gives the id before awaiting).
     pub fn start_monitor<P: Actor + Handler<Down>>(
         self,
         parent: &Context<P>,

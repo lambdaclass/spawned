@@ -90,10 +90,18 @@ LookupAs(e) ==
 \* started() resolves as "ready".
 Outcome(e) == IF e.x = "none" THEN "ready" ELSE e.x
 
+\* What started() returned, as the model's outcomes: the recorded code
+\* (`e.x`) pins it. A `ctx.stop*` called inside a started() that returned
+\* ready is the model's stop outcome (row 5), whose reason `e.z` pins.
+Returns(e) ==
+    IF e.y = "stop" /\ e.x \in {"ready", "continue"}
+    THEN {"stopN", "stopS"}
+    ELSE {Outcome(e)}
+
 ResolveAs(e) ==
     IF e.x = "none" /\ e.y \in {"kill", "timer"}
     THEN KilledEarly(e.c)
-    ELSE /\ StartedEnd(e.c)
+    ELSE /\ StartedEndOf(e.c, Returns(e))
          /\ ctrap'[e.c] = e.f
          /\ IF e.y = "ready"
             THEN /\ phase'[e.c] = "ready"
@@ -117,10 +125,16 @@ DieAs(e) ==
     IF e.f THEN phase[e.c] = "dead" /\ why[e.c] = e.x /\ UNCHANGED vars
     ELSE Die(e.c) /\ why[e.c] = e.x
 
+\* The recorded disposition must be the model's: a diverted notice is
+\* "divert", a notice the model hands to P is "deliver", and "drop" neither
+\* diverts nor delivers. (For a dead P the code still records its decision;
+\* the model has nothing to deliver, so only the implications below apply.)
 PublishAs(e) ==
     /\ Publish(e.c)
     /\ (div'[e.c] # None) => e.x = "divert"
     /\ (e.x = "divert" /\ Alive(pst) /\ (lnote[e.c] \/ mnote[e.c])) => div'[e.c] # None
+    /\ (obN'[e.c] > obN[e.c]) => e.x = "deliver"
+    /\ e.x = "drop" => (obN'[e.c] = obN[e.c] /\ div'[e.c] = None)
 
 AnswerAs(e) ==
     IF e.x = "ok" THEN AckOk(e.c)
@@ -205,7 +219,11 @@ Safety ==
     /\ SlotHeldUntilReleased /\ NoticeOnce /\ NoLostNotice /\ AbandonedNoticeDelivered
     /\ ContinueFirst /\ OwnerRefusalOnlyOnShutdown
 
-\* Violated exactly when the whole log has been matched: TLC reporting this
-\* invariant as violated means the trace is ACCEPTED.
-TraceIncomplete == i < Len(Trace)
+\* Violated exactly when the whole log has been matched and nothing the
+\* model owes a live P is still undelivered: TLC reporting this invariant
+\* as violated means the trace is ACCEPTED. (A recording ends after the
+\* notices it waits for, so a disposed notice never delivered is a lost one.)
+TraceIncomplete ==
+    \/ i < Len(Trace)
+    \/ \E c \in Kids : obN[c] > 0 /\ Alive(pst)
 =============================================================================

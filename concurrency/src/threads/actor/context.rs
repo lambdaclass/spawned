@@ -295,6 +295,7 @@ impl<A: Actor> Context<A> {
         let monitors = self.monitors.clone();
         let registration = crate::monitor::MonitorRegistration(monitors.clone(), monitor_ref);
 
+        let mut watch = crate::start::DownWatch(cell);
         rt::spawn(move || {
             let reason = futures::executor::block_on(async {
                 match futures::future::select(
@@ -347,7 +348,7 @@ impl<A: Actor> Context<A> {
                     });
                 });
             };
-            match cell {
+            match watch.take() {
                 None => deliver(true),
                 Some(cell) => {
                     if let Some(deliver) = cell.dispose_down(Box::new(deliver)) {

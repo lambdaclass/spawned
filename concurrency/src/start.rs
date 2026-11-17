@@ -47,6 +47,10 @@ pub enum StartOutcome<T> {
 
 impl<T> StartOutcome<T> {
     /// The started value, or `None` for an ignored start.
+    ///
+    /// `x.start().await?.started().unwrap()` panics if the actor's
+    /// `started()` can return `Init::ignore()`; for such actors `match` the
+    /// outcome (or use [`is_ignored`](Self::is_ignored)) instead.
     pub fn started(self) -> Option<T> {
         match self {
             Self::Started(value) => Some(value),
@@ -122,6 +126,20 @@ pub enum StartError {
 }
 
 #[cfg(feature = "async")]
+impl StartError {
+    /// A stage-1 refusal's name in the start trace (`SRefuse`).
+    #[allow(dead_code)] // trace only
+    pub(crate) fn trace_refusal(&self) -> &'static str {
+        match self {
+            Self::Closed => "closed",
+            Self::Capacity => "capacity",
+            Self::AlreadyStarted { .. } => "already",
+            Self::ParentExited => "parentexited",
+            _ => "system",
+        }
+    }
+}
+
 impl From<crate::system::SystemError> for StartError {
     fn from(error: crate::system::SystemError) -> Self {
         use crate::system::SystemError;
@@ -764,6 +782,12 @@ impl StartupCell {
         }
     }
 
+    /// The start_monitor's waiter ended without a `Down` to dispose (its
+    /// monitor cancelled, or it never ran): an abandonment hands on nothing.
+    pub(crate) fn down_gone(&self) {
+        self.lock().down_pending = false;
+    }
+
     /// The change counter, read before an observation.
     pub(crate) fn version(&self) -> u64 {
         self.lock().version
@@ -841,6 +865,23 @@ fn dispose(
             } else {
                 Disposition::Drop
             }
+        }
+    }
+}
+
+/// Held by a start_monitor's waiter: unless it disposes a `Down`
+/// ([`take`](Self::take)), its drop tells the cell no `Down` is coming, so
+/// an abandonment records only the hand-on that happens.
+pub(crate) struct DownWatch(pub(crate) Option<Arc<StartupCell>>);
+impl DownWatch {
+    pub(crate) fn take(&mut self) -> Option<Arc<StartupCell>> {
+        self.0.take()
+    }
+}
+impl Drop for DownWatch {
+    fn drop(&mut self) {
+        if let Some(cell) = self.0.take() {
+            cell.down_gone();
         }
     }
 }

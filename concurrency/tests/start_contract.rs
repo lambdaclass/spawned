@@ -487,6 +487,40 @@ mod tasks_mode {
         spawned_concurrency::registry::unregister("start-contract-plain");
     }
 
+    /// Review #291 item 6: a name held through `ctx.register_name` reports
+    /// its holder in `AlreadyStarted { existing }`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn already_started_reports_a_ctx_registered_holder() {
+        struct Registrar;
+        impl Actor for Registrar {
+            async fn started(&mut self, ctx: &Context<Self>) {
+                ctx.register_name("start-contract-ctx").unwrap();
+            }
+        }
+        let system = spawned_concurrency::system::ActorSystem::new().unwrap();
+        let group = system.async_group("start-contract-ctx", 2).unwrap();
+        let holder = Registrar
+            .with_options(&group)
+            .start()
+            .await
+            .unwrap()
+            .started()
+            .unwrap();
+        match Child::new(Then::Ready)
+            .with_options(StartOptions::new().name("start-contract-ctx"))
+            .start()
+            .await
+        {
+            Err(StartError::AlreadyStarted { existing, .. }) => {
+                assert_eq!(existing.map(|h: ChildHandle| h.id()), Some(holder.id()));
+            }
+            other => panic!("{other:?}"),
+        }
+        holder.child_handle().stop();
+        holder.wait_exit().await;
+        assert!(system.shutdown(Duration::from_secs(5)).await.complete);
+    }
+
     /// Options are validated before anything exists.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn invalid_options_are_refused() {

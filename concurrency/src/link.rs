@@ -219,7 +219,8 @@ impl ExitRequest {
     /// The runtime dropped the actor before D (G1): `Killed` unless a
     /// non-`Normal` reason was already requested; then D.
     pub(crate) fn runtime_drop(&mut self) -> ExitReason {
-        if !self.dead {
+        // A non-ready startup decision fixed the reason for good (L9).
+        if !self.dead && !self.frozen {
             self.reason = match self.reason.take() {
                 None | Some(ExitReason::Normal) => Some(ExitReason::Killed),
                 Some(reason) => Some(reason),
@@ -1147,6 +1148,18 @@ mod tests {
                 let mut r = ExitRequest::default();
                 r.request(ExitReason::Shutdown);
                 assert_eq!(r.runtime_drop(), ExitReason::Shutdown);
+                // Review #291 item 8: a non-ready startup decision froze the
+                // reason (Init::error: Normal); a runtime drop before D keeps it.
+                let mut r = ExitRequest::default();
+                r.begin_starting();
+                let row = r.resolve_start(
+                    false,
+                    false,
+                    &crate::start::Returned::Error("no config".into()),
+                    true,
+                );
+                assert_eq!(row, crate::start::Row::Error);
+                assert_eq!(r.runtime_drop(), ExitReason::Normal);
             },
         );
     }

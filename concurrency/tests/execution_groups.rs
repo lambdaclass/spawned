@@ -483,7 +483,7 @@ async fn old_scope_cleanup_cannot_remove_a_replacement_registration() {
     ));
     spawned_concurrency::registry::unregister(name);
     let replacement =
-        spawned_concurrency::registry::register_owned(name, actor.id(), 42u64).unwrap();
+        spawned_concurrency::registry::register_owned(name, actor.id(), 42u64, None).unwrap();
     assert!(system.shutdown(LIMIT).await.complete);
     assert!(matches!(
         actor.context().register_name(name),

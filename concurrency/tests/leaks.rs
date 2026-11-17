@@ -164,7 +164,7 @@ fn owned_registration_removed_with_its_guard_after_native_stop() {
         thread: None,
     });
     let name = "leaks-native-owned";
-    let guard = registry::register_owned(name, actor.id(), actor.clone()).unwrap();
+    let guard = registry::register_owned(name, actor.id(), actor.clone(), None).unwrap();
     actor.context().stop();
     actor.join();
     drop(guard);

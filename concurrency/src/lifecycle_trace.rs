@@ -647,6 +647,44 @@ mod imp {
         id
     }
 
+    thread_local! {
+        /// The stage-1 commit in progress on this thread: (child, placement,
+        /// already recorded).
+        static COMMIT: std::cell::Cell<(u64, &'static str, bool)> =
+            const { std::cell::Cell::new((0, "", false)) };
+    }
+
+    /// A start's stage-1 commit begins on this thread. Its `SCommit` or
+    /// `SRefuse` is recorded at the decision point ([`commit_point`]),
+    /// under the innermost lock held there (the registry for a named start,
+    /// else the parent's exit request or the group), so it is ordered with
+    /// `SReleaseName`, `SLookup` and `SReleaseSlot`, recorded under the same
+    /// locks.
+    pub(crate) fn commit_begin(c: u64, placement: &'static str) {
+        COMMIT.set((c, placement, false));
+    }
+
+    /// The commit is decided here: `None` committed, `Some(refusal)` refused.
+    /// Only the first decision of a commit is recorded.
+    pub(crate) fn commit_point(refusal: Option<&'static str>) {
+        let (c, placement, done) = COMMIT.get();
+        if c == 0 || done {
+            return;
+        }
+        COMMIT.set((c, placement, true));
+        start_emit(c, || match refusal {
+            None => super::StartEvent::new("SCommit", c).x(placement),
+            Some(refusal) => super::StartEvent::new("SRefuse", c).x(refusal),
+        });
+    }
+
+    /// The commit returned: records its decision if no lock holder did (a
+    /// start with no shared lock to order against), and ends it.
+    pub(crate) fn commit_end(refusal: Option<&'static str>) {
+        commit_point(refusal);
+        COMMIT.set((0, "", false));
+    }
+
     /// `id` if it is a recorded child, else 0.
     pub(crate) fn start_child_of(id: u64) -> u64 {
         if start_on() && lock(&START_KIDS).contains(&id) {
@@ -1188,6 +1226,15 @@ mod imp {
     pub(crate) fn start_child(_: u64) -> u64 {
         0
     }
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn commit_begin(_: u64, _: &'static str) {}
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn commit_point(_: Option<&'static str>) {}
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn commit_end(_: Option<&'static str>) {}
     #[allow(dead_code)]
     #[inline(always)]
     pub(crate) fn start_child_of(_: u64) -> u64 {

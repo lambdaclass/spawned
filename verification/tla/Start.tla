@@ -362,9 +362,10 @@ KilledEarly(c) ==
                    pubAlive, div, divEver, handed, lost, mV, seen, blamed, dV>>
 
 \* started() returns; design 2.3 precedence. No failed row runs stopped().
-StartedEnd(c) ==
+\* started() returns one of `os` (trace validation pins the recorded one).
+StartedEndOf(c, os) ==
     /\ phase[c] = "starting" /\ began[c]
-    /\ \E o \in Outcomes, t \in (IF ChildCanTrap THEN BOOLEAN ELSE {FALSE}):
+    /\ \E o \in os, t \in (IF ChildCanTrap THEN BOOLEAN ELSE {FALSE}):
        \* Row 3 is a held untrapped non-Normal signal. An administrative stop
        \* (astop) does not decide the start: as OTP's gen_server:stop it is
        \* applied after a ready commitment (AdminStopApply) and stopped()
@@ -412,6 +413,8 @@ StartedEnd(c) ==
                    began, killed, skill, xkill, astop, pexAbn,
                    wait, res, resR, pend, dl, closedBy, pubAlive, div, divEver, handed, lost,
                    msgs, early, seen, blamed, dV>>
+
+StartedEnd(c) == StartedEndOf(c, Outcomes)
 
 Send(c) ==
     /\ phase[c] \in {"starting", "ready"} /\ msgs[c] < MaxMsgs

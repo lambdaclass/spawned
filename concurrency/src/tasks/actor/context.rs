@@ -304,6 +304,7 @@ impl<A: Actor> Context<A> {
         let monitors = self.shared.monitors.clone();
         let registration = crate::monitor::MonitorRegistration(monitors.clone(), monitor_ref);
 
+        let mut watch = crate::start::DownWatch(cell);
         self.spawn_framework(async move {
             let reason = match futures::future::select(
                 Box::pin(active.cancelled()),
@@ -353,7 +354,7 @@ impl<A: Actor> Context<A> {
                     });
                 });
             };
-            match cell {
+            match watch.take() {
                 None => deliver(true),
                 Some(cell) => {
                     if let Some(deliver) = cell.dispose_down(Box::new(deliver)) {
@@ -585,7 +586,12 @@ impl<A: Actor> Context<A> {
         self.shared
             .managed()
             .ok_or(crate::registry::ManagedRegistrationError::OwnerClosed)?
-            .register(name, self.shared.id, self.actor_ref())
+            .register(
+                name,
+                self.shared.id,
+                self.actor_ref(),
+                self.actor_ref().child_handle(),
+            )
     }
 
     pub(crate) fn managed_scope(&self) -> Option<&Arc<crate::system::Scope>> {
