@@ -193,6 +193,11 @@ impl<C: Fn()> ActorCleanup<C> {
         if skipped {
             self.skip_log = Some(reason.clone());
         }
+        // A start never decided (a runtime drop, an unwound lifecycle) fails
+        // with the final reason.
+        if let Some((cell, _)) = &self.startup {
+            cell.fail_at_death(&reason);
+        }
         fail_point!("actor.at_death");
         // Every open deferred reply (and every exit-pending one) is answered
         // with the final reason, before any destructor runs. Their wake-ups

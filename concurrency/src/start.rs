@@ -508,6 +508,26 @@ impl StartupCell {
         row
     }
 
+    /// The death point of an instance whose start was never decided: its
+    /// runtime dropped it before (or while) `started()` ran, or its lifecycle
+    /// unwound. The start fails with the final reason, answered at
+    /// publication like any failed start. Not a step of `Start.tla` (runtime
+    /// drops are `Lifecycle.tla`'s).
+    pub(crate) fn fail_at_death(&self, reason: &ExitReason) {
+        let mut inner = self.lock();
+        if self.commit() != Commit::Pending {
+            return;
+        }
+        self.state.store(Commit::Failed as u8, Ordering::Release);
+        inner.committed_at = Some(Instant::now());
+        inner.requested = Some(reason.clone());
+        if let Some(timer) = inner.timer.take() {
+            timer.cancel();
+        }
+        drop(inner);
+        self.notify();
+    }
+
     /// Arm the init timer (stage 1, after the commit).
     pub(crate) fn arm_timer(&self) -> Option<Arc<TimerCancel>> {
         let mut inner = self.lock();

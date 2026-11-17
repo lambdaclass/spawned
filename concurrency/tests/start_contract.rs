@@ -552,6 +552,37 @@ mod tasks_mode {
         assert_eq!(*log.lock().unwrap(), ["continue", "stopped"]);
     }
 
+    /// A runtime dropped before the child ran: the start is decided at its
+    /// death point (`Killed`) and answered, never left pending forever.
+    #[test]
+    fn runtime_drop_before_started_answers_init_exited_killed() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let child = Child::new(Then::Ready);
+        let hooks = child.hooks.clone();
+        let starting = {
+            let _entered = rt.enter();
+            child.start()
+        };
+        drop(rt);
+        let other = tokio::runtime::Runtime::new().unwrap();
+        let result = other.block_on(async { tokio::time::timeout(LIMIT, starting).await });
+        assert!(
+            matches!(
+                result,
+                Ok(Err(StartError::InitExited {
+                    reason: ExitReason::Killed,
+                    pending: None
+                }))
+            ),
+            "{result:?}"
+        );
+        assert_eq!(hooks.started.load(Ordering::SeqCst), 0);
+        assert_eq!(hooks.dropped.load(Ordering::SeqCst), 1);
+    }
+
     /// The init timer's pending answer: a started() that never returns
     /// keeps the instance, answered with its handle at the cleanup
     /// deadline (stuck policy).
