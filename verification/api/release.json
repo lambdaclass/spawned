@@ -1,5 +1,5 @@
 {
   "baseline": "v0.8.0",
-  "release_type": "minor",
-  "reason": "0.9 is a breaking release (0.x minor). First declared break: the no-op backend-experiments, io-experiments and profiling-experiments features are removed from spawned-rt and spawned-concurrency. Every break must be listed in docs/MIGRATION.md under 0.8 to 0.9."
+  "release_type": "major",
+  "reason": "0.9 is a breaking release (a 0.x minor bump, which cargo-semver-checks audits as 'major'). First declared break: the no-op backend-experiments, io-experiments and profiling-experiments features are removed from spawned-rt and spawned-concurrency. Every break must be listed in docs/MIGRATION.md under 0.8 to 0.9."
 }
