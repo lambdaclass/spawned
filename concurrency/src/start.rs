@@ -275,6 +275,7 @@ pub(crate) enum Waiter {
     /// The waiter took its answer.
     Consumed,
     /// The `Starting` was dropped unanswered.
+    #[cfg_attr(not(feature = "async"), allow(dead_code))] // tasks mode only
     Abandoned,
 }
 
@@ -460,6 +461,7 @@ impl StartupCell {
     }
 
     /// The cleanup interval may be set after the commit (a managed scope's).
+    #[cfg_attr(not(feature = "async"), allow(dead_code))]
     pub(crate) fn set_cleanup(&self, cleanup: Duration) {
         self.lock().cleanup = cleanup;
     }
@@ -709,6 +711,7 @@ impl StartupCell {
 
     /// The waiter was dropped unanswered (design 5.4): a diverted notice is
     /// handed on as an ordinary one, exactly once, after the lock is released.
+    #[cfg_attr(not(feature = "async"), allow(dead_code))]
     pub(crate) fn abandon(&self) {
         let mut inner = self.lock();
         if inner.waiter != Waiter::Waiting {
@@ -761,6 +764,7 @@ impl StartupCell {
     }
 
     /// A receiver bumped at every change (async observers).
+    #[cfg_attr(not(feature = "async"), allow(dead_code))]
     pub(crate) fn subscribe(&self) -> spawned_rt::sync::watch::Receiver<u64> {
         self.version.subscribe()
     }
