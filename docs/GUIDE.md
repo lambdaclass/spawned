@@ -928,7 +928,7 @@ Wraps standard library primitives:
 | `spawn(f)` | Spawn an OS thread |
 | `sleep(duration)` | Block the current thread |
 | `JoinHandle` | Handle to a spawned thread |
-| `CancellationToken` | Cooperative cancellation with callback support via `on_cancel()` |
+| `CancellationToken` | Cooperative cancellation with callback support: `on_cancel()` keeps a callback until cancellation; `register_on_cancel()` returns a `CancelRegistration` whose drop removes it (for waiters that finish first, such as timers) |
 | `mpsc` | Multi-producer, single-consumer channel (wraps `std::sync::mpsc`) |
 | `oneshot` | Single-use channel (wraps `std::sync::mpsc`) |
 | `ctrl_c()` | Returns a closure that blocks until Ctrl+C. Supports multiple subscribers. |

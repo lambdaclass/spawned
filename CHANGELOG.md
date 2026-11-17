@@ -14,6 +14,15 @@
   instructions per `send` (+3.6% over 0.8.0 on `async_ct_send_*`, +0.4% to
   +1.2% on the async request benchmarks). With the hint every gated async
   benchmark is below 0.8.0 (send -3.4%, requests -0.6% to -0.9%).
+- Fixed: in `threads` mode every `send_after` / `send_interval` left a
+  callback (and its wake-up channel) on the actor's stop token until the actor
+  stopped, so a long-lived threads actor that kept arming timers grew without
+  bound. `spawned_rt::threads::CancellationToken` gains
+  `register_on_cancel`, whose `CancelRegistration` removes the callback in
+  O(1) when dropped (callbacks still fire in registration order), and
+  `callbacks_registered`; the timer thread now holds its registrations and
+  drops them when it fires or is cancelled. Tasks-mode timers were not
+  affected (Tokio removes a cancellation waiter when its future is dropped).
 - Fix the flaky `supervision::transient_startup_timeout_retries_after_actual_cleanup`
   (a 20 ms startup deadline raced the fast starts on a loaded host, which also
   made cargo-mutants report surviving mutants as caught): the replacement's

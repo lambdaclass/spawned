@@ -1,7 +1,7 @@
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
-use spawned_rt::threads::{self as rt, CancellationToken, JoinHandle};
+use spawned_rt::threads::{self as rt, CancelRegistration, CancellationToken, JoinHandle};
 
 use super::actor::{Actor, Context, Handler};
 use crate::message::Message;
@@ -16,6 +16,27 @@ pub struct TimerHandle {
     pub cancellation_token: CancellationToken,
 }
 
+/// A timer thread's wake-up: either token's cancellation sends on the
+/// channel. The thread holds both registrations and drops them when it ends,
+/// so the actor's long-lived token does not keep a callback per timer that
+/// has already fired or been cancelled.
+fn wake_on_cancel(
+    timer: &CancellationToken,
+    actor: &CancellationToken,
+) -> (mpsc::Receiver<()>, [CancelRegistration; 2]) {
+    let (wake_tx, wake_rx) = mpsc::channel::<()>();
+    let timer_tx = wake_tx.clone();
+    let registrations = [
+        timer.register_on_cancel(Box::new(move || {
+            let _ = timer_tx.send(());
+        })),
+        actor.register_on_cancel(Box::new(move || {
+            let _ = wake_tx.send(());
+        })),
+    ];
+    (wake_rx, registrations)
+}
+
 /// Send a single message to an actor after a delay.
 pub fn send_after<A, M>(period: Duration, ctx: Context<A>, msg: M) -> TimerHandle
 where
@@ -26,24 +47,18 @@ where
     let timer_token = cancellation_token.clone();
     let actor_token = ctx.cancellation_token();
 
-    let (wake_tx, wake_rx) = mpsc::channel::<()>();
+    let (wake_rx, registrations) = wake_on_cancel(&timer_token, &actor_token);
 
-    let wake_tx1 = wake_tx.clone();
-    timer_token.on_cancel(Box::new(move || {
-        let _ = wake_tx1.send(());
-    }));
-
-    actor_token.on_cancel(Box::new(move || {
-        let _ = wake_tx.send(());
-    }));
-
-    let join_handle = rt::spawn(move || match wake_rx.recv_timeout(period) {
-        Err(RecvTimeoutError::Timeout) => {
-            if !timer_token.is_cancelled() && !actor_token.is_cancelled() {
-                let _ = ctx.send(msg);
+    let join_handle = rt::spawn(move || {
+        let _registrations = registrations;
+        match wake_rx.recv_timeout(period) {
+            Err(RecvTimeoutError::Timeout) => {
+                if !timer_token.is_cancelled() && !actor_token.is_cancelled() {
+                    let _ = ctx.send(msg);
+                }
             }
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => {}
         }
-        Ok(()) | Err(RecvTimeoutError::Disconnected) => {}
     });
 
     TimerHandle {
@@ -67,18 +82,10 @@ where
     let timer_token = cancellation_token.clone();
     let actor_token = ctx.cancellation_token();
 
-    let (wake_tx, wake_rx) = mpsc::channel::<()>();
-
-    let wake_tx1 = wake_tx.clone();
-    timer_token.on_cancel(Box::new(move || {
-        let _ = wake_tx1.send(());
-    }));
-
-    actor_token.on_cancel(Box::new(move || {
-        let _ = wake_tx.send(());
-    }));
+    let (wake_rx, registrations) = wake_on_cancel(&timer_token, &actor_token);
 
     let join_handle = rt::spawn(move || {
+        let _registrations = registrations;
         while let Err(RecvTimeoutError::Timeout) = wake_rx.recv_timeout(period) {
             if timer_token.is_cancelled() || actor_token.is_cancelled() {
                 break;

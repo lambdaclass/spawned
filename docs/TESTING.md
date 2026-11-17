@@ -1074,7 +1074,8 @@ RUSTFLAGS="--cfg spawned_loom" cargo test -p spawned-rt --test cancellation_loom
 ```
 
 The custom cfg isolates instrumentation from Tokio's own Loom configuration.
-These models cover registration/cancellation races and reentrant callbacks,
+These models cover registration/cancellation races, unregistration (a
+`CancelRegistration` dropped) racing a cancel, and reentrant callbacks,
 not the entire actor runtime. Do not run ordinary actor tests with this cfg.
 
 The reply and job cores of deferred replies share their source with Loom
