@@ -90,10 +90,15 @@
   on requests that do not expire. New regression tests (tasks and threads),
   a Loom case for the handed-off wake-up, an `InlineDisposal` negative
   control in `DeferredReplies.tla`, and a new trace-validated model,
-  `Disposal.tla` (expiry and hand-off, per-item queueing, worker wake-ups
-  after the transition, payload drops held until the death point), with the
-  `disposal_trace` scenarios, a `disposal.item` failpoint and four negative
-  controls including the shared-batch bug.
+  `Disposal.tla` (expiry and hand-off, per-item queueing, the pool's start
+  rule, idle count and cap, worker wake-ups after the transition, two-step
+  payload drops held until the death point), validated against traces that
+  record every hand-off and worker step (`disposal_trace`, with
+  `disposal.item`, `disposal.keep_alive` and `disposal.batch_serial`
+  failpoints; the last records a control trace from code with the
+  shared-batch bug, which must be rejected) and five negative controls.
+  Empty payloads are no longer handed off, and a due entry is dropped in
+  place unless it may hold an unread reply.
 - Regenerate the 11 planted-bug patches (04, 10-17, 19, 20) that no longer
   applied, each planting the same fault where the code now lives, and check in
   the required `model-sync` job that every planted patch still applies.

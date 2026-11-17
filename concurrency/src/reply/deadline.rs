@@ -12,9 +12,9 @@
 //! due entries even when no caller polls, so credits return on time:
 //!
 //! - real time: one process-wide service thread with its own timer, so
-//!   per-test Tokio runtimes cannot break it. It runs no user code: what an
-//!   expiry releases (wakers, payload destructors) goes to a disposal worker
-//!   (`super::disposal`);
+//!   per-test Tokio runtimes cannot break it. What an expiry releases
+//!   (wakers, payload destructors) goes to a disposal worker
+//!   (`super::disposal`, which lists what still runs inline);
 //! - under `spawned_sim`: a task of the simulated runtime per actor heap, so
 //!   clock domains never mix and virtual time drives it.
 
