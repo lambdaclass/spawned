@@ -136,6 +136,11 @@ pub struct TimerRec {
     pub cancelled: Option<Duration>,
     /// Timer messages a handler ran.
     pub handled: u64,
+    /// The actor whose `Context` created it (T2: its ticks end at its stop).
+    pub target: ChildHandle,
+    /// Copies of the message the timer task made: `send_interval` clones it
+    /// at the top of every round, so each after the first follows a send.
+    pub clones: u64,
 }
 
 #[derive(Default)]
@@ -232,9 +237,44 @@ pub enum Act {
 pub struct Do {
     pub nonce: u64,
     pub lane: u64,
-    /// `1 + index` into [`State::timers`] for timer messages, else 0.
-    pub timer: usize,
+    /// Set for timer messages.
+    pub timer: Option<TimerTag>,
     pub act: Act,
+}
+
+/// Marks a timer message with its index in [`State::timers`]. Cloning it is
+/// a tick round of a `send_interval` task, checked against T2 there.
+pub struct TimerTag {
+    pub world: Arc<World>,
+    pub index: usize,
+}
+
+impl Clone for TimerTag {
+    /// T2: an interval stops when its actor stops. The timer task clones the
+    /// message at the top of every round; every clone after the first comes
+    /// in the same poll as a send that found the actor's token not cancelled
+    /// (the cancel arm is polled first), and that token is cancelled before
+    /// the exit is published. So no second clone follows the publication.
+    fn clone(&self) -> Self {
+        let mut s = self.world.lock();
+        let t = &mut s.timers[self.index];
+        t.clones += 1;
+        if t.clones > 1 && t.target.exit_reason().is_some() {
+            let detail = format!(
+                "timer {} (every {:?}): round {} after its actor exited",
+                self.index, t.period, t.clones
+            );
+            s.violate(
+                "T2: an interval timer ticked after its actor's exit was published",
+                detail,
+            );
+        }
+        drop(s);
+        Self {
+            world: self.world.clone(),
+            index: self.index,
+        }
+    }
 }
 impl Message for Do {
     type Result = u64;
@@ -411,8 +451,8 @@ impl Handler<Do> for Worker {
             {
                 let mut s = self.world.lock();
                 self.turn(&mut s, "Do");
-                if msg.timer != 0 {
-                    s.timers[msg.timer - 1].handled += 1;
+                if let Some(t) = &msg.timer {
+                    s.timers[t.index].handled += 1;
                 }
                 if msg.nonce != 0 {
                     if let Some(other) = s.handled.insert(msg.nonce, self.instance) {
@@ -516,6 +556,19 @@ impl Handler<Down> for Worker {
                 .iter()
                 .find(|m| m.mref == down.monitor_ref)
                 .map(|m| (m.watcher, m.target.id()));
+            // X2: `demonitor` flushes (OTP `[flush]`): once it returned, no
+            // Down of the monitor is handled. A Down whose dispatch began
+            // before it returned is handled in that same poll, before the
+            // driver marks the record.
+            if s.monitors
+                .iter()
+                .any(|m| m.mref == down.monitor_ref && m.demonitored)
+            {
+                s.violate(
+                    "X2: a Down was handled after demonitor returned",
+                    format!("w{}", self.instance),
+                );
+            }
             match target {
                 Some((watcher, target)) if watcher == me => {
                     s.insts[self.instance].ended.insert(target);
