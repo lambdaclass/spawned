@@ -709,6 +709,7 @@ exactly the property it targets:
 | `DeferredReplies` | `EarlyStopped` (rank 11 before 5e: a token dropped while exiting or unwound answers `Stopped` at once) | `StoppedAtDeath` |
 | `DeferredReplies` | `NoReplyFence` (a stored token's reply is admitted after the death point) | `NoReplyAfterDeath` |
 | `DeferredReplies` | `CallbackBeforeDischarge` (an answer's wake-up runs before the last answer of the death batch) | `WokenAfterDischarge` |
+| `DeferredReplies` | `InlineDisposal` (0.8.0: the shared deadline thread runs an expiry's waker or destructor inline, and one never returns) | `TimelyExpiry` |
 | `DeferredJobs` | `NoInstanceCheck` | `NoLateResult` |
 | `DeferredJobs` | `NoCancelFence` | `NoStaleAfterCancel` |
 | `DeferredJobs` | `DoubleTerminal` | `AtMostOneTerminal` |

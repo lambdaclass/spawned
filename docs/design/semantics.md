@@ -160,7 +160,11 @@ the expiry runs is delivered (`Delivery::Delivered`, and the caller gets
 the value), as an OTP reply already in the caller's mailbox when its
 `after` clause would fire is received. Timer resolution and when the runtime
 or deadline service can process expiry determine that window; this is not a
-hard real-time bound.
+hard real-time bound. The deadline service runs no user code: the wakers and
+payload destructors an expiry releases run on disposal workers, so another
+actor's blocking destructor or waker does not delay an expiry, its credit
+return or its caller's wake-up
+([`deadline_service`][deadline_service]).
 Which clock expires a waiting caller is part of the contract: `request`,
 `request_with_timeout` and `Response::from(rx)` arm the runtime's timer, so
 they follow paused Tokio time; a `ReplyReceiver` awaited directly
@@ -763,16 +767,12 @@ stopped after `Shutdown`),
 - **Preemption.** A running handler, a blocking call or a non-returning hook is
   never interrupted; stop, shutdown deadlines and cleanup timeouts only signal
   and report. Rust cannot kill a thread.
-- **Deadline-service callback isolation.** Outside simulation, managed and
-  unmanaged actors share one deadline-service thread. Expiry can invoke user
-  wakers and destroy job payloads or completion captures there. A callback
-  that blocks delays heap-driven expiry, credit return and scheduled job
-  emits for other actors too. These callbacks must return promptly. Ordinary
-  `request`/`request_with_timeout`/`Response` waits use their runtime timer;
-  `send_after` and `send_interval` use separate tasks or threads. No callback
-  is preempted. Separating disposal from deadline bookkeeping is follow-up
-  work; expiry authority, terminal outcomes and R6 caller-before-payload
-  ordering are unchanged.
+- **Deadline-service isolation past 64 blocked callbacks.** The shared
+  deadline-service thread runs no user code (section 3): wakers and
+  payload destructors an expiry releases go to a pool of at most 64 disposal
+  workers. With that many callbacks blocked at once, later disposals (and so
+  their callers' wake-ups) queue behind them; expiry and credit return do
+  not. No callback is preempted.
 - **Bounded memory.** Mailboxes are unbounded (D5); there are no per-actor
   memory limits (rank 18a).
 - **Deadlock detection.** A request cycle, or a handler requesting its own
@@ -855,6 +855,7 @@ remaining differences of the exit-signal design are listed in
 See the [ranked backlog](../../ROADMAP.md#ranked-backlog).
 
 [deferred_replies]: ../../concurrency/tests/deferred_replies.rs
+[deadline_service]: ../../concurrency/tests/deadline_service.rs
 [deferred_jobs]: ../../concurrency/tests/deferred_jobs.rs
 [actor_scenarios]: ../../concurrency/tests/actor_scenarios.rs
 [cancellation_safety]: ../../concurrency/tests/cancellation_safety.rs

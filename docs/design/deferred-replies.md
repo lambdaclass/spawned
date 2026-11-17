@@ -288,10 +288,39 @@ handles a call even after the caller timed out, and the late reply is dropped.
   Shortening or a new earliest entry re-registers and wakes it. A dead owner
   is forgotten at registry close. It is independent of individual Tokio
   runtime lifetimes.
-- **Callback progress.** Expiry may run user wakers and destroy job payloads
-  or completion captures on that thread. A blocking callback delays other
-  actors' heap-driven deadlines and credit return. Callbacks must return
-  promptly; the service provides no isolation from non-returning callbacks.
+- **Callback progress (disposal off the service thread).** The service
+  thread only decides expiry: it pops due entries, makes the terminal
+  transition (`OPEN -> TIMED_OUT`, a job's `JobDeadline` notification or a
+  scheduled emit's fire) and returns the credit, all under framework locks.
+  It also unparks a parked blocking receiver and enqueues a job's message on
+  its owner's mailbox (the runtime wake of the owner's own task). Anything an
+  expiry releases that can run user code is collected during the visit and
+  handed to a disposal worker (`reply/disposal.rs`): the caller's waker and
+  the token's watchers, payloads routed to the owner's failure sink (a held
+  or refused job result, a discarded emit, `done` and its captures), and the
+  last references to entries, jobs and the registry. Disposal workers form an
+  elastic pool: a batch that finds no idle worker starts one (up to 64,
+  idle ones exit after 10 s), so a destructor or waker that blocks holds
+  only its own worker, and no other actor's expiry, credit return or
+  wake-up waits for it.
+  - *Why a pool and not the owner.* Deferring disposal to the owning actor
+    would tie a caller's wake-up to the owner's next turn (a wedged owner
+    would hang its callers past their deadline), and deferring it to the
+    caller has no thread to run on for an unpolled token. A single disposal
+    thread would only move the stall: a caller's waker queued behind
+    another actor's blocking destructor still waits.
+  - *Order kept.* The death point's rules hold: the transition precedes the
+    wake-up as before (a caller that polls in between sees the terminal
+    state); a payload handed off is discarded again on the worker, where the
+    owner's hold is re-checked, so a drop deferred before the owner's exit
+    still waits for its death point (R6, callers before payloads).
+  - *Cost.* None on a request or reply that does not expire: the hand-off is
+    in the service's own path, and the shared helpers test a thread-local
+    only when they already have a waker or a payload to dispose of. The
+    perf-gate driver measures within noise.
+  - *Remaining assumption.* The owner's own executor wake (a runtime waker or
+    condvar) still runs on the service thread; it is framework code. With
+    more than 64 callbacks blocked at once, later batches queue behind them.
   Ordinary request/Response runtime timers and send_after/send_interval
   drivers are separate (see semantics.md, section 10).
 - **Simulation.** Under `spawned_sim` the service is a task of the simulated
@@ -1123,7 +1152,8 @@ semantics above.
   service thread (not a task on the `ActorSystem` control runtime); a dead
   owner is forgotten at its registry close. Under `spawned_sim` each owner's
   heap is served by a task of the simulated runtime, so clock domains never
-  mix.
+  mix. The thread runs no user code: wakers and payload destructors an expiry
+  releases go to an elastic disposal pool (§2, "Callback progress").
 - **Cleanup deadline.** Armed when exit begins: the supervisor's
   `shutdown_timeout` for a supervised child, the remaining system grace
   during `ActorSystem::shutdown`, otherwise `DEFAULT_STOP_DEADLINE` (5 s).

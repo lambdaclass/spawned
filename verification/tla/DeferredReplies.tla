@@ -75,6 +75,9 @@
 (*   NoReplyFence    (NoReplyAfterDeath)   a reply is admitted after D      *)
 (*   CallbackBeforeDischarge (WokenAfterDischarge) an answer's wake-up    *)
 (*                                         runs before the last answer      *)
+(*   InlineDisposal  (TimelyExpiry)        the shared deadline thread runs  *)
+(*                                         an expiry's user callback inline *)
+(*                                         (0.8.0), which never returns     *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 CONSTANTS N, BoundA, BoundB, MaxTime, MaxWait, Fault
@@ -82,7 +85,8 @@ ASSUME Fault \in {"None", "NoAutoReply", "NoAtomicExpiry", "LateSuccess",
                   "LoopDeadline", "Lengthen", "Unbounded", "NoDestAdmission",
                   "ExitStateOnly", "UnwindDropped", "ShareRunning",
                   "AttachClosed", "LeakDownstream", "EarlyClose",
-                  "EarlyStopped", "NoReplyFence", "CallbackBeforeDischarge"}
+                  "EarlyStopped", "NoReplyFence", "CallbackBeforeDischarge",
+                  "InlineDisposal"}
 
 Req == 1..N
 \* qA queued; turnA PendingReply in a turn; localA ReplyTo in a turn;
@@ -394,8 +398,21 @@ BReply(r) ==
 ------------------------------------------------------------------------------
 \* Deadlines
 
-Blocked(r) == Fault = "LoopDeadline" /\ turnA # 0
-              /\ holder[r] \in {"qA", "turnA", "localA", "dropA", "stateA", "doneA"}
+\* One process-wide thread services every owner's deadline heap (the
+\* tokens A holds). It only decides expiry; what an expiry releases that can
+\* run user code (the caller's waker, a payload or completion destructor) is
+\* handed to a disposal worker, so Expire(r) never waits for another
+\* request's callback. InlineDisposal is the 0.8.0 behaviour: the thread ran
+\* those callbacks itself, and one that never returns (here: the one an
+\* earlier expiry released) stops it from expiring any other token.
+ServiceStuck(r) ==
+    /\ Fault = "InlineDisposal"
+    /\ holder[r] \in {"localA", "dropA", "stateA", "doneA"}
+    /\ \E q \in Req \ {r} : slot[q] = "timeout"
+
+Blocked(r) == \/ /\ Fault = "LoopDeadline" /\ turnA # 0
+                 /\ holder[r] \in {"qA", "turnA", "localA", "dropA", "stateA", "doneA"}
+              \/ ServiceStuck(r)
 
 Shorten(r) ==
     /\ Open(r) /\ holder[r] \in {"localA", "stateA", "doneA"}

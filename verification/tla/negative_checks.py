@@ -282,6 +282,7 @@ DEFERRED_CONTROLS = [
     ("MCDeferredReplies", "EarlyStopped", "StoppedAtDeath"),
     ("MCDeferredReplies", "NoReplyFence", "NoReplyAfterDeath"),
     ("MCDeferredReplies", "CallbackBeforeDischarge", "WokenAfterDischarge"),
+    ("MCDeferredReplies", "InlineDisposal", "TimelyExpiry"),
     ("MCDeferredJobs", "NoInstanceCheck", "NoLateResult"),
     ("MCDeferredJobs", "NoCancelFence", "NoStaleAfterCancel"),
     ("MCDeferredJobs", "DoubleTerminal", "AtMostOneTerminal"),
