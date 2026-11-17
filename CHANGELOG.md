@@ -8,6 +8,11 @@
   (the selection trace missed it in 24 of 30 runs). New
   `lifecycle_trace::recorded_with` test helper.
 
+- **Breaking:** remove the no-op `backend-experiments`, `io-experiments` and
+  `profiling-experiments` features from `spawned-rt` and
+  `spawned-concurrency` (they only enabled `async` since 0.8.0). The
+  experiments patch in `benchmarks/experiments` re-adds what it needs. The API
+  policy now declares 0.9 a breaking release against v0.8.0.
 - Regenerate the 11 planted-bug patches (04, 10-17, 19, 20) that no longer
   applied, each planting the same fault where the code now lives, and check in
   the required `model-sync` job that every planted patch still applies.

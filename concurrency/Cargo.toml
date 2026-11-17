@@ -59,12 +59,6 @@ lifecycle-trace = ["async"]
 # Named fault-injection sites in lifecycle code (`failpoints` module). Test-only;
 # disabled by default, and the sites compile to nothing without it.
 failpoints = []
-# No-ops (beyond enabling `async`, as before) kept for 0.8 patch
-# compatibility: removing a feature is a breaking change. The experiments
-# live in benchmarks/experiments; drop these at 0.9.
-backend-experiments = ["async", "spawned-rt/backend-experiments"]
-io-experiments = ["async"]
-profiling-experiments = ["async"]
 
 [target.'cfg(spawned_scheduler_loom)'.dev-dependencies]
 loom = { version = "0.7", features = ["futures"] }
