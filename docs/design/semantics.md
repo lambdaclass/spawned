@@ -266,7 +266,11 @@ Checked by: `Lifecycle!KilledFromKill`, `Lifecycle!LateSignalWins` (TLC);
 [`context_exit`][context_exit] (both modes), `src/link.rs::tests::reason_precedence_until_death`,
 `src/link_regression_tests.rs::late_link_failure_relabels_an_already_requested_normal_stop`,
 [`otp_exit_signals`][otp_exit_signals]`::tasks_mode::{late_signal_replaces_the_requested_reason, kill_during_stopped_supersedes_and_panic_does_not_replace_it}`;
-[`exit_signals_sim`][exit_signals_sim]`::{kill_races_stopped, late_signal_races_the_death_point}`.
+[`exit_signals_sim`][exit_signals_sim]`::{kill_races_stopped, late_signal_races_the_death_point}`;
+[`semantics_gaps`][semantics_gaps]`::{native,tasks}_partial::stop_reason_precedence_through_cleanup`
+(every requested reason, from `ctx` and from a `ChildHandle`, on every
+placement: a second request, a panic in `stopped()`, a kill then a panic in
+`stopped()`, a state destructor panic after D).
 
 **L4. Exit reasons.** Every actor publishes exactly one `ExitReason`
 (`#[non_exhaustive]`):
@@ -325,8 +329,10 @@ Checked by: [`shutdown_publication`][shutdown_publication],
 `src/link_regression_tests.rs::never_polled_completion_waits_for_actor_payload_destruction`,
 [`actor_scenarios`][actor_scenarios] (post-exit requests),
 [`semantics_gaps`][semantics_gaps]`::{native,tasks}_contract::stop_window_accepts_then_discards_and_releases_before_join`,
-[`sim_ordering::stop_discards_queue_before_publishing_exit_{pct,dfs}`][sim_ordering]. Not yet checked:
-outgoing monitors cancelled before publication.
+[`sim_ordering::stop_discards_queue_before_publishing_exit_{pct,dfs}`][sim_ordering];
+outgoing monitors cancelled before publication:
+`src/tasks/actor/monitor_cleanup_regressions.rs::observer_cancels_its_monitors_before_publishing_its_exit`
+(the cleanup is shared with threads mode).
 
 ## 5. Links, monitors and trapped exits
 
@@ -457,7 +463,10 @@ Checked by: [`semantics_gaps`][semantics_gaps]`::{native,tasks}::exit_and_down_f
 (every reason including a real panic, all three tasks backends),
 [`sim_ordering::exit_and_down_follow_the_last_message_{pct,dfs}`][sim_ordering] (a stop racing the
 source's sends, noise at the observer, PCT and bounded DFS), the fuzz X7 oracle,
-[`exit_signal_matrix`][exit_signal_matrix] (delivery).
+[`exit_signal_matrix`][exit_signal_matrix] (delivery);
+the non-trapping linked stop:
+[`semantics_gaps`][semantics_gaps]`::{native,tasks}_partial::linked_stop_waits_for_the_running_handler_and_discards_the_queue`
+(every non-`Normal` peer reason, on every placement).
 
 ## 6. Supervision
 

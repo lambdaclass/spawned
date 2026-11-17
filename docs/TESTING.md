@@ -144,7 +144,7 @@ section maps each one to what spawned does and lists where it is still behind.
 | Fault injection | Failpoints at named sites in the lifecycle code; suites that panic in every user callback and drop every public future at every await point |
 | Formal specifications | TLA+ models of every lifecycle protocol, each invariant with a negative control that must fail; Apalache proofs of the safety invariants |
 | Specs tied to the code | Trace validation of real runs against the models, trace coverage, and the required `model-sync` check: code that changes modelled behaviour without its model fails CI |
-| Proving the tests work | The [planted-bug matrix](#planted-bug-sensitivity) (23 of 24 realistic bugs caught, each by two or more layers), `cargo-mutants`, and the [semantics coverage](#semantics-coverage) matrix (a check that fails for 47 of 50 guarantees) |
+| Proving the tests work | The [planted-bug matrix](#planted-bug-sensitivity) (23 of 24 realistic bugs caught, each by two or more layers), `cargo-mutants`, and the [semantics coverage](#semantics-coverage) matrix (a check that fails for all 50 guarantees) |
 | Fuzzing, metamorphic testing | The coverage-guided [scenario fuzzer](#scenario-fuzzing-fuzz) with contract oracles; one workload on every backend must give the same result |
 | Linearizability checking | A Porcupine-style checker over concurrent request histories |
 | Memory-model checking | Loom, ThreadSanitizer, LeakSanitizer and Kani proofs |
@@ -312,7 +312,8 @@ Model TLA+/Apalache/Kani.
 
 Totals: 50 guarantees. Before this audit 31 covered, 18 partial, 1 unchecked
 (D5, only a nightly `#[ignore]` stress test). After: 46 covered, 4 partial;
-with the follow-up PR #255 (T4 threads clocks), 47 covered, 3 partial.
+with the follow-up PR #255 (T4 threads clocks), 47 covered, 3 partial; with
+the 0.9 gap checks (L3, L7, X7, below), 50 covered.
 Mutation checks on the new tests: removing the run loop's stop-before-receive
 check fails `sim_ordering::stop_discards_*` and `tasks_contract::stop_window_*`;
 giving collateral children their own backoff fails
@@ -337,18 +338,18 @@ giving collateral children their own backoff fails
 | R5 | `semantics_gaps::*::panicking_request_handler_*`; `cross_backend` | A B T N G TG P | covered | |
 | L1 | `sim_ordering::turns_*`; `*_contract::hooks_and_turns_*`; Fz | A B T N G TG, Sim (PCT, DFS) | covered (A only) → covered | |
 | L2 | `startup_admission`; `execution_groups::failed_startup_*`; `tasks_contract::managed_readiness_*` (historical `ready()`) | G TG, Sim (G) | partial → covered | |
-| L3 | `context_exit` (first reason wins); `sim_ordering::turns_*` (stop never splits a turn) | A N, Sim | partial | cleanup panic after a committed reason; owned by #240 (rank 5e) |
+| L3 | `context_exit` (first reason wins); `sim_ordering::turns_*` (stop never splits a turn); `*_partial::stop_reason_precedence_through_cleanup` (every requested reason x second request, `stopped()` panic, kill then `stopped()` panic, destructor panic after D) | A B T N G TG, Sim | partial → covered | |
 | L4 | `exit_signal_matrix`, `context_exit`, `panic_safety` | A B T N G TG | covered | owned by #240 |
 | L5 | `foreign_panics` (strict); `tasks_contract::panics_in_hooks_*` | A B T N G TG | covered (B, T unchecked) → covered | |
 | L6 | `mailbox_drop_panic` (5 placements x 1/2/256), `native_mailbox_drop`, lifecycle traces | A B T N G TG | covered | not simulated (subprocesses) |
-| L7 | `shutdown_publication`; `*_contract::stop_window_*`; `sim_ordering::stop_discards_*` | A B T N G TG, Sim | partial | outgoing monitors cancelled before publication (after #240) |
+| L7 | `shutdown_publication`; `*_contract::stop_window_*`; `sim_ordering::stop_discards_*`; `src/tasks/actor/monitor_cleanup_regressions.rs::observer_cancels_its_monitors_before_publishing_its_exit` (wake order on a current-thread runtime) | A B T N G TG, Sim | partial → covered | monitor ordering only on A (the cleanup is shared with threads mode) |
 | X1 | `actor_scenarios` monitor races; `exit_signal_matrix`; Fz | A B T N, Sim | covered | owned by #240 |
 | X2 | unit `demonitor_*`, `closed_monitor_table_*`; `leaks` | A N | covered | demonitor checks use a bounded window |
 | X3 | unit link tests; `exit_signal_matrix`; Fz | A N, Sim | covered | owned by #240; threads lacks the Normal and chain variants (after #240) |
 | X4 | `kill_links` | A N | covered | owned by #240 |
 | X5 | unit link tests; `link_regression_tests` | A N | covered | owned by #240 |
 | X6 | `link_regression_tests` | A | covered | owned by #240 |
-| X7 | `semantics_gaps::*::exit_and_down_follow_*`; `sim_ordering::exit_and_down_follow_the_last_message_*`; Fz | A B T N, Sim (PCT, DFS) | partial | a non-trapping linked stop after the current handler (exit signals, #240) |
+| X7 | `semantics_gaps::*::exit_and_down_follow_*`; `sim_ordering::exit_and_down_follow_the_last_message_*`; `*_partial::linked_stop_waits_for_the_running_handler_*`; Fz | A B T N G TG, Sim (PCT, DFS) | partial → covered | |
 | V1 | `supervisor_policies` oracle; `supervision::restart_modes_*` (real `Normal`, `Shutdown` and panic exits); `Supervision!RestartFollowsPolicy`, `TemporaryStartsOnce` (`MCSupervisionTemporary`) | G, Sim, Model | covered | |
 | V2 | Cohorts invariants; `supervision_strategies`; `cohort_trace`; `supervision_contract::concurrent_failures_coalesce_*` | G, Sim, Model | covered | reverse stop order only via trace conformance |
 | V3 | `*!AtMostOneGeneration`; factory asserts no live generation; Fz | G TG, Sim, Model | covered | |
@@ -375,6 +376,23 @@ Bugs found: none. Every gap test passed on the first correct run in both
 builds; the two initial `sim_ordering` failures were test errors (a stop
 before the burst was dequeued, which D4 discards, and a busy-wait that PCT
 starved), fixed in the tests.
+
+**0.9 gap checks** (the three partial rows, whose clauses were waiting on the
+0.8 exit-signal work). Each was shown to fail with the code broken on
+purpose (local mutations, not committed):
+
+| Id | Check | Mutation it fails under |
+|---|---|---|
+| L3 | `semantics_gaps::{native,tasks}_partial::stop_reason_precedence_through_cleanup` | a later request replaces the first (`ExitRequest::request` overwrites); a `stopped()` panic keeps the requested reason (`panic` only when none); a `stopped()` panic replaces `Killed` (`panic` ignores the kill); a state destructor panic after D republishes `Panic` (the 0.7 escalation) |
+| L7 | `src/tasks/actor/monitor_cleanup_regressions.rs::observer_cancels_its_monitors_before_publishing_its_exit` | the observer's monitors cancelled after `send_replace` (the run loop's guard removed and `ActorCleanup`'s moved last); the existing `stopped_observer_releases_waiter` still passes under it |
+| X7 | `semantics_gaps::{native,tasks}_partial::linked_stop_waits_for_the_running_handler_and_discards_the_queue` | an untrapped link notice that does not wake the run loop (also fails `exit_signal_matrix`); queued messages handled after the stop (planted bug 19 in tasks, the same check removed in threads); a pending async turn dropped when the stop arrives |
+
+The L7 check relies on a current-thread runtime running woken tasks in wake
+order: the monitor waiter, woken by the cancellation, releases its handle of
+the still-running target before the task woken by the publication runs.
+Threads mode shares the cleanup (`actor_cleanup.rs`), but its waiters are
+threads, so its ordering is checked only through the shared code. Each new
+test passed 30 runs in a row (50 for L7); no bug was found.
 
 Citation fixes made by the audit: L2 cited `ready_gate_loom`, which checks the
 benchmark scheduler's gate rather than readiness; L1 cited `cross_backend`,

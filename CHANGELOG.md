@@ -46,6 +46,13 @@
   runtime release; compiled out otherwise). New `coordinator_trace` test,
   `TraceCoordinator.tla`, seven trace negative controls and a coverage floor
   of 9 of 9 action keys; `Coordinator` is no longer TLC-only.
+- Check the last three partially checked guarantees of the semantics
+  contract, so every one of the 50 now has a check that fails if it breaks:
+  L3 (reason precedence through `stopped()` and destructor panics, every
+  requested reason, both modes and every placement), L7 (an exiting
+  observer's monitors are cancelled before its exit is published) and X7 (a
+  non-trapping linked stop waits for the running handler and discards the
+  queue). Each check was shown to fail under local mutations of the code.
 
 - Fix the flaky `tla-traces` coverage gate (`LOST coverage: Cohorts
   A|OneForAll|CEnd/complete`): the cohort trace tests now wait for the restart
