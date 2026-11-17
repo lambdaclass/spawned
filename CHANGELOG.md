@@ -8,6 +8,12 @@
   out of the JVM's default heap. Client-compat now warns, in the job summary,
   when a client's graph holds a second spawned version. The PR template asks
   for an independent review of concurrency changes and trace-validated models.
+- `#[actor]` marks the generated await-free dispatch
+  (`__spawned_handle_immediate`) `#[inline]`. Since the module split (#278)
+  the compiler had stopped inlining it into the envelope, adding 22
+  instructions per `send` (+3.6% over 0.8.0 on `async_ct_send_*`, +0.4% to
+  +1.2% on the async request benchmarks). With the hint every gated async
+  benchmark is below 0.8.0 (send -3.4%, requests -0.6% to -0.9%).
 - Fix the flaky `supervision::transient_startup_timeout_retries_after_actual_cleanup`
   (a 20 ms startup deadline raced the fast starts on a loaded host, which also
   made cargo-mutants report surviving mutants as caught): the replacement's
