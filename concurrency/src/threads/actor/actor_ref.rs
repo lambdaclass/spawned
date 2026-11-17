@@ -16,9 +16,9 @@ impl<A: Actor> ActorRef<A> {
         M: Message,
     {
         enqueue(
-            &self.sender,
-            &self.mailbox,
-            &self.replies,
+            &self.shared.sender,
+            &self.shared.mailbox,
+            &self.shared.replies,
             msg,
             SlotHandle::detached(),
         )
@@ -55,8 +55,14 @@ impl<A: Actor> ActorRef<A> {
         A: Handler<M>,
         M: Message,
     {
-        let (slot, rx) = reply_slot(deadline, Some(&self.replies), raw);
-        enqueue(&self.sender, &self.mailbox, &self.replies, msg, slot)?;
+        let (slot, rx) = reply_slot(deadline, Some(&self.shared.replies), raw);
+        enqueue(
+            &self.shared.sender,
+            &self.shared.mailbox,
+            &self.shared.replies,
+            msg,
+            slot,
+        )?;
         Ok(rx)
     }
 
@@ -77,16 +83,17 @@ impl<A: Actor> ActorRef<A> {
         R: Send + 'static,
         F: FnOnce(&mut A, &Context<A>) -> R + Send + 'static,
     {
-        let (slot, rx) = reply_slot(crate::reply::NEVER_TICKS, Some(&self.replies), false);
+        let (slot, rx) = reply_slot(crate::reply::NEVER_TICKS, Some(&self.shared.replies), false);
         let envelope: Box<dyn Envelope<A> + Send> = Box::new(InTurnEnvelope {
             f: Box::new(f),
             slot,
         });
         // Past the death point the actor is gone (E4), as for `enqueue`.
-        if self.replies.refuses_admission() {
+        if self.shared.replies.refuses_admission() {
             return Err(ActorError::NoProc);
         }
-        self.sender
+        self.shared
+            .sender
             .send(MailboxItem::Message(envelope))
             .map_err(|_| ActorError::NoProc)?;
         Ok(rx)
@@ -134,19 +141,19 @@ impl<A: Actor> ActorRef<A> {
     /// [`wait_exit`](Self::wait_exit) to observe death alone.
     pub fn join(&self) {
         let _ = self.wait_exit();
-        self.cleaned.wait();
+        self.shared.cleaned.wait();
     }
 
     /// Poll the exit reason. Returns `None` until the exit is published.
     /// A completion channel closed without a reason reports
     /// [`ExitReason::Killed`], matching the wait methods.
     pub fn exit_reason(&self) -> Option<ExitReason> {
-        crate::child_handle::poll_exit_reason(&self.completion)
+        crate::child_handle::poll_exit_reason(&self.shared.completion)
     }
 
     /// Block until the actor stops and return the exit reason.
     pub fn wait_exit(&self) -> ExitReason {
-        crate::child_handle::wait_for_thread_exit_blocking(self.completion.clone())
+        crate::child_handle::wait_for_thread_exit_blocking(self.shared.completion.clone())
     }
 
     /// Waiting messages, including in-flight enqueue reservations, excluding
@@ -154,29 +161,34 @@ impl<A: Actor> ActorRef<A> {
     /// Concurrent observations are approximate; no registry or actor labels.
     #[cfg(feature = "metrics")]
     pub fn mailbox_depth(&self) -> u64 {
-        self.mailbox.depth()
+        self.shared.mailbox.depth()
     }
 
     /// The actor's unique identity.
     pub fn id(&self) -> ActorId {
-        self.id
+        self.shared.id
     }
 
     /// Get a type-erased `ChildHandle` for this actor.
     pub fn child_handle(&self) -> ChildHandle {
-        ChildHandle::from(self.clone())
+        self.shared.child_handle()
+    }
+}
+
+impl<A: Actor> ActorShared<A> {
+    pub(super) fn child_handle(&self) -> ChildHandle {
+        ChildHandle::new(
+            self.signal.clone(),
+            Completion::Threads(self.completion.clone()),
+            self.links.clone(),
+        )
+        .with_mailbox_failures(self.sender.failures())
     }
 }
 
 impl<A: Actor> From<ActorRef<A>> for ChildHandle {
     fn from(actor_ref: ActorRef<A>) -> Self {
-        let failures = actor_ref.sender.failures();
-        ChildHandle::new(
-            actor_ref.signal,
-            Completion::Threads(actor_ref.completion),
-            actor_ref.links,
-        )
-        .with_mailbox_failures(failures)
+        actor_ref.shared.child_handle()
     }
 }
 

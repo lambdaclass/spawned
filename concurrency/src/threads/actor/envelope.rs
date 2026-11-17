@@ -53,7 +53,7 @@ pub(super) type StartupPayload<A> = (
     CancellationToken,
 );
 pub(super) fn discharge_startup<A: Actor>(payload: &mut StartupPayload<A>) -> Vec<Box<dyn Send>> {
-    let replies = payload.1.replies.clone();
+    let replies = payload.1.shared.replies.clone();
     erase(answer_mailbox(&mut payload.2, None, Some(&replies)))
 }
 pub(super) fn erase<T: Send + 'static>(items: Vec<T>) -> Vec<Box<dyn Send>> {
@@ -105,7 +105,7 @@ where
     }
     fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>) {
         let mut this = *self;
-        let reply = PendingReply::new(this.slot.take(), &ctx.replies);
+        let reply = PendingReply::new(this.slot.take(), &ctx.shared.replies);
         actor.handle(this.msg, reply, ctx);
     }
 }
@@ -127,8 +127,8 @@ impl<A: Actor + Handler<Down>> Envelope<A> for DownEnvelope {
     }
     fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>) {
         fail_point!("monitor.down_before_dispatch");
-        if crate::monitor::fence::take_queued(&ctx.monitors, &self.down.monitor_ref) {
-            let reply = PendingReply::new(None, &ctx.replies);
+        if crate::monitor::fence::take_queued(&ctx.shared.monitors, &self.down.monitor_ref) {
+            let reply = PendingReply::new(None, &ctx.shared.replies);
             actor.handle(self.down, reply, ctx);
         }
     }
@@ -248,7 +248,7 @@ impl<A: Actor, R: Send + 'static> Envelope<A> for InTurnEnvelope<A, R> {
     }
     fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>) {
         let InTurnEnvelope { f, mut slot } = *self;
-        let reply = PendingReply::new(slot.take(), &ctx.replies);
+        let reply = PendingReply::new(slot.take(), &ctx.shared.replies);
         let value = f(actor, ctx);
         let _ = reply.reply(value);
     }
@@ -303,7 +303,7 @@ impl<A: Actor> Envelope<A> for HeldEnvelope {
         "held"
     }
     fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>) {
-        if !link::lock_request(&ctx.linked_reason).held_trapped() {
+        if !link::lock_request(&ctx.shared.linked_reason).held_trapped() {
             return;
         }
         if self.parent {
