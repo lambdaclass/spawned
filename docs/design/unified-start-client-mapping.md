@@ -135,12 +135,17 @@ findings change the mapping:
    relying on `stopped()` (`:644`) to remove the peer from the peer table and
    the tx broadcaster and to run `established_state.teardown()`. In 0.9 a
    `ctx.stop()` in `started()` is a failed start and `stopped()` does not run
-   (as OTP's `terminate/2` after a failed `init/1`), so that cleanup would be
-   skipped. **Edit:** move the body of `stopped()` into a helper (say
-   `async fn release(&mut self)`), call it in that failure branch before
-   returning, and return the error (`-> Result<(), PeerConnectionError>`, or
-   keep `ctx.stop()`). The two other `ctx.stop()` calls in `started()` leave
-   `HandshakeFailed`, for which `stopped()` does nothing: unaffected.
+   (as OTP's `terminate/2` after a failed `init/1`): `ctx.stop()` inside
+   `started()` is now the same as returning `Init::stop(Normal)`, so that
+   cleanup would be skipped. **Edit:** move the body of `stopped()` into a
+   helper (say `async fn release(&mut self)`), call it in that failure
+   branch, and return the failure from `started()` instead of calling
+   `ctx.stop()`: `-> Result<(), PeerConnectionError>` (or
+   `Init::error(reason)` / `Init::stop(..)`). The two other `ctx.stop()`
+   calls in `started()` leave `HandshakeFailed`, for which `stopped()` does
+   nothing: unaffected, but they read better as `return Init::stop(..)`.
+   (An administrative `ChildHandle::stop` that arrives during the handshake
+   still waits for `started()` and runs `stopped()`, as in 0.8 and OTP.)
 2. **A site the mapping missed (ethrex).** `crates/l2/sequencer/proof_coordinator.rs:98`:
    `AssignmentTracker::new(..).start()` inside `ProofCoordinator::new` →
    `.spawn()`.

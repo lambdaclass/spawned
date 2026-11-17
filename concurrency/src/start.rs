@@ -503,6 +503,15 @@ impl StartupCell {
                 .z(reason.as_ref().map_or("", trace::life_reason))
                 .f(trapping)
         });
+        // A held administrative stop begins the ready child's exit
+        // (`AdminStopApply`).
+        if row == Row::Ready {
+            if let Some(reason) = &reason {
+                trace::start_emit(id, || {
+                    trace::StartEvent::new("SExit", id).x(trace::life_reason(reason))
+                });
+            }
+        }
         drop(inner);
         self.notify();
         row

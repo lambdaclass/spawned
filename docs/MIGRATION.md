@@ -43,7 +43,7 @@ account for when upgrading.
 | `TestSystem::start_mock(m)` | `TestSystem::spawn_mock(m)` | same |
 | `async fn started(..) {}` | unchanged | `#[started]` methods are unchanged |
 | manual `impl Actor` with `async fn started` | unchanged, but add `#[allow(refining_impl_trait)]` (or allow the lint crate-wide) | `started()` now returns `impl Into<Init<Self>>`; returning `()` refines it, which rustc's warn-by-default `refining_impl_trait` reports. `#[actor]`/`#[started]` add the allow |
-| `stopped()` ran after a `ctx.stop*()` called in `started()` (and after an administrative stop or held exit signal resolved there) | it no longer runs after any failed start | **changes**: as OTP skips `terminate/2` when `init/1` fails. Release resources acquired in `started()` before returning, or hold them in RAII guards |
+| `stopped()` ran after a `ctx.stop*()` called in `started()` (and after a held exit signal resolved there) | it no longer runs after any failed start; `ctx.stop*()` in `started()` is `Init::stop` | **changes**: as OTP skips `terminate/2` when `init/1` fails. Do the cleanup in `started()` and return `Init::stop(r)`/`Init::error(e)`, or hold resources in RAII guards. An administrative stop (`ChildHandle::stop*`) during `started()` still waits for it and runs `stopped()` |
 
 New, no migration needed: `started()` may return `Result<(), E>`,
 `Result<Init<Self>, E>` or `Init<Self>` (`Init::ready`, `continue_with(msg)`,
@@ -61,9 +61,20 @@ Behaviour changes to check at call sites:
   handler waits for the child's `started()`; a request from that `started()`
   back to its parent waits for its timeout (as OTP's `gen_server:call` from
   `init/1`). Move slow initialisation into a continuation.
-- **An administrative stop during `started()`** (`ChildHandle::stop*`, a
-  supervisor's or system's shutdown) fails the start (`InitExited`) and skips
-  `stopped()`.
+- **An administrative stop during `started()`** (`ChildHandle::stop*`)
+  waits for it, as OTP's `gen_server:stop`: the start answers `Started`,
+  then the actor exits with the stop's reason through `stopped()` (0.8 did
+  the same). A supervisor's or system's shutdown is an exit signal to its
+  child: a non-trapping child in `started()` fails its start without
+  `stopped()`, as before.
+- **`ctx.stop()` inside `started()`** is the same as returning
+  `Init::stop(Normal)` (OTP's `{stop, R}`; a process cannot otherwise stop
+  itself during `init`): the start answers `InitExited { Normal }`, the
+  actor ends `Normal`, and **`stopped()` does not run** (0.8 ran it). Code
+  that called `ctx.stop()` after a failed initialisation and relied on
+  `stopped()` for cleanup must do that cleanup in `started()` and return
+  `Init::stop(reason)` or `Init::error(e)` (or `Err(e)`) instead; RAII guards
+  are dropped with the state either way.
 - **`#[must_use]`.** `Starting` and `StartOutcome` are `#[must_use]`:
   `a.start();` without `.await` still starts the actor (stage 1 is eager) and
   warns. `actor.ready().await.unwrap()` now yields a `StartOutcome<()>`:

@@ -663,10 +663,6 @@ mod threads_mode {
             })
             .spawn();
             let victim = ThreadVictim(Victim::new(Some(fault), &gate)).spawn();
-            if fault != Fault::Started {
-                // A stop during started() would fail the start (unified start 2.3).
-                let _ = victim.ready();
-            }
             let h = ThreadsHarness {
                 victim,
                 observer,
@@ -856,11 +852,9 @@ mod tasks_mode {
                     victim.name = Some(name.clone());
                 }
                 let victim = env.start(TaskVictim(victim));
-                if managed || fault != Fault::Started {
-                    // A stop that arrives before started() returned fails the
-                    // start without stopped() (unified start 2.3; a managed
-                    // actor stopped before its first poll skips both hooks),
-                    // so wait for startup on every placement.
+                if managed {
+                    // A managed actor stopped before its first poll skips started()
+                    // and stopped() entirely (see cross_backend), so wait for startup.
                     let _ = env.bounded(victim.ready());
                 }
                 let h = TasksHarness {

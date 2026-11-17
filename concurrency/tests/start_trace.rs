@@ -606,8 +606,9 @@ async fn abandoned_timeout_delivers_killed() {
     p.wait_exit().await;
 }
 
-/// A kill and an administrative stop while started() runs decide the
-/// start (rows 2 and 3); no stopped().
+/// A kill while started() runs fails the start (row 2, no stopped()); an
+/// administrative stop waits for started(): the start succeeds, then the
+/// actor exits through stopped() (OTP gen_server:stop).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn kill_and_admin_stop_during_started() {
     let _serial = SERIAL.lock().await;
@@ -632,13 +633,13 @@ async fn kill_and_admin_stop_during_started() {
     until("started() began", || count("SStartedBegin") >= 2).await;
     handle.stop_with_reason(ExitReason::Shutdown);
     release.send(()).unwrap();
-    assert!(matches!(
-        starting.await,
-        Err(StartError::InitExited {
-            reason: ExitReason::Shutdown,
-            pending: None
-        })
-    ));
+    // OTP gen_server:stop: the stop waits for started(); the start succeeds,
+    // then the actor exits with the stop's reason through stopped().
+    let child = match starting.await {
+        Ok(StartOutcome::Started(child)) => child,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(child.wait_exit().await, ExitReason::Shutdown);
     children_done(2).await;
     let events = write("kill_and_admin_stop_during_started", "U", false, 1000);
     has(
@@ -652,8 +653,9 @@ async fn kill_and_admin_stop_during_started() {
             "SStartedBegin",
             "SAdminStop",
             "SResolve:ready",
+            "SExit:Shutdown",
+            "SAnswer:ok",
             "SDie:Shutdown",
-            "SAnswer:failed",
         ],
     );
     p.request(Stop).await.unwrap();

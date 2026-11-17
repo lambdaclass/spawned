@@ -26,7 +26,9 @@
 (*   SSend, SHandle, SContinue  admission of a message, its dispatch, the *)
 (*                continuation's turn (Send, Handle, RunContinue)          *)
 (*   SExit        a ready child's exit begins (ReadyExit, KillReady,      *)
-(*                ApplyParentExit or HandleQueuedExit)                     *)
+(*                ApplyParentExit, HandleQueuedExit; or AdminStopApply:   *)
+(*                an administrative stop held during started(), recorded *)
+(*                right after the ready SResolve)                          *)
 (*   SUnlink      the child unlinks from P (ChildUnlink)                  *)
 (*   SDie         D (Die); f = TRUE: the D of a non-ready decision, which *)
 (*                StartedEnd already took (a stuttering step whose reason  *)
@@ -95,7 +97,7 @@ ResolveAs(e) ==
          /\ ctrap'[e.c] = e.f
          /\ IF e.y = "ready"
             THEN /\ phase'[e.c] = "ready"
-                 /\ cont'[e.c] = (Outcome(e) = "continue")
+                 /\ cont'[e.c] = (Outcome(e) = "continue" /\ ~astop[e.c])
             ELSE /\ phase'[e.c] = "dead"
                  /\ (e.z # "" => why'[e.c] = e.z)
                  /\ commit0'[e.c] = CASE e.y = "ignore" -> "ignored"
@@ -108,6 +110,7 @@ TimerAs(e) ==
 
 ExitAs(e) ==
     /\ \/ ReadyExit(e.c) \/ KillReady(e.c) \/ ApplyParentExit(e.c) \/ HandleQueuedExit(e.c)
+       \/ AdminStopApply(e.c)
     /\ phase'[e.c] = "exiting" /\ why'[e.c] = e.x
 
 DieAs(e) ==
@@ -194,7 +197,7 @@ Safety ==
     /\ TypeOK /\ InheritedPlacement /\ LinkBeforeStarted /\ EdgeOnlyToRunningParent
     /\ NoEdgeToDeadParent /\ NameUnique /\ NameHeldUntilReleased /\ NameKeptWhileLive
     /\ NoOverlapOnReuse /\ NameFreeBeforeObservation /\ AbortInvisible /\ CommitImmutable
-    /\ ResultMatchesCommit /\ ReadyIsFinal /\ TimeoutNeverKillsReady /\ ReadyOnlyWhileOpen
+    /\ ResultMatchesCommit /\ ReadyIsFinal /\ ReadyReturnCommitsReady /\ TimeoutNeverKillsReady /\ ReadyOnlyWhileOpen
     /\ FailureAfterPublication /\ ReportedReasonFinal /\ PendingOnlyAfterDeadline
     /\ KillBeforeDIsKilled /\ IgnoredExitsNormal /\ FailureFlushed
     /\ FailureEndsNonTrappingParent /\ NormalFailureSparesParent /\ TimeoutContained

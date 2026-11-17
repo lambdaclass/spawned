@@ -257,8 +257,8 @@ returned ready, `Ok(StartOutcome::Ignored { .. })` for `Init::ignore()`, or a
 `Capacity`, `AlreadyStarted { name, existing }`, `ParentExited`,
 `InvalidOptions`, `System`. After the child existed: `InitFailed { cause }`
 (`Err(e)` or `Init::error(e)`, the child ended `Normal`), `InitExited {
-reason }` (a kill, an administrative stop, an untrapped exit signal, a panic,
-`ctx.stop*` or `Init::stop` during `started()`; `reason` is the final one),
+reason }` (a kill, an untrapped exit signal, a panic, `ctx.stop*` or
+`Init::stop` during `started()`; `reason` is the final one),
 `InitTimeout`. An error is answered only after the child's publication: its
 state is dropped, its notices are sent and its name is free, so a retry never
 overlaps it. If its destructor hangs past the cleanup deadline (5 s
@@ -279,7 +279,10 @@ async fn started(&mut self, ctx: &Context<Self>) -> Result<Init<Self>, std::io::
 
 No failed start runs `stopped()` (OTP skips `terminate/2` when `init/1`
 fails): release what `started()` acquired before returning an error, or hold
-it in RAII guards. `Init::continue_with(msg)` (OTP `handle_continue`) handles
+it in RAII guards. `ctx.stop()` inside `started()` is the same as returning
+`Init::stop(Normal)`. An administrative stop (`ChildHandle::stop`) that
+arrives while `started()` runs waits for it, as OTP's `gen_server:stop`: the
+start succeeds, then the actor stops through `stopped()`. `Init::continue_with(msg)` (OTP `handle_continue`) handles
 `msg` before any mailbox entry, including messages sent while `started()`
 ran; readiness is committed before it, so it is not a barrier against
 termination.

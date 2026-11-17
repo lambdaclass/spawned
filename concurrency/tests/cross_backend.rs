@@ -1392,13 +1392,12 @@ mod early_stop {
     }
 }
 
-/// The intended contract for an actor stopped before its first poll (GUIDE.md,
-/// "Startup"): a managed actor whose admission closes before `started()` begins
-/// skips both hooks and drops its state; unmanaged tasks actors and threads
-/// actors run `started()`, then the administrative stop fails the start
-/// (unified start 2.3 row 3), so `stopped()` does not run. All report Normal
-/// and every actor's state is dropped exactly once. Listed as an allowed
-/// difference in TESTING.md.
+/// The contract for an actor stopped (`ChildHandle::stop`) before its first
+/// poll, on every placement: as OTP's `gen_server:stop`, the stop waits for
+/// `started()`; the start commits ready, then the actor exits `Normal`
+/// through `stopped()` (v0.9, unified start 2.3). Only an admission that
+/// closes before `started()` begins (group or system shutdown) skips both
+/// hooks (`startup_admission`). Every state is dropped exactly once.
 // Not simulated: compares Tokio, Thread, Blocking and native placements.
 #[cfg(not(spawned_sim))]
 #[test]
@@ -1418,7 +1417,7 @@ fn stop_before_first_poll_follows_managed_and_legacy_contract() {
     let reason = rt.block_on(async { tokio::time::timeout(LIMIT, actor.wait_exit()).await });
     assert_eq!(reason.unwrap(), ExitReason::Normal);
     let done = |e: &[&str]| e.contains(&"dropped");
-    let legacy = ["started", "dropped"];
+    let legacy = ["started", "stopped", "dropped"];
     assert_eq!(hooks.wait_until(LIMIT, "legacy tasks drop", done), legacy);
 
     // Legacy threads mode: no admission check either.
@@ -1429,7 +1428,7 @@ fn stop_before_first_poll_follows_managed_and_legacy_contract() {
     assert_eq!(hooks.wait_until(LIMIT, "threads drop", done), legacy);
 
     // Managed: the group's single worker is blocked, so the actor is admitted
-    // but not yet polled when it is stopped. Neither hook runs; state drops.
+    // but not yet polled when it is stopped. The stop waits for started().
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
@@ -1461,7 +1460,7 @@ fn stop_before_first_poll_follows_managed_and_legacy_contract() {
     release.send(()).unwrap();
     let reason = rt.block_on(async { tokio::time::timeout(LIMIT, actor.wait_exit()).await });
     assert_eq!(reason.unwrap(), ExitReason::Normal);
-    assert_eq!(hooks.wait_until(LIMIT, "managed drop", done), ["dropped"]);
+    assert_eq!(hooks.wait_until(LIMIT, "managed drop", done), legacy);
     let report = rt.block_on(system.shutdown(LIMIT));
     assert!(report.complete);
 }

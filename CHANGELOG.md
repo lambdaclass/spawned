@@ -13,7 +13,9 @@
   it returns `()`, `Result<(), E>`, `Result<Init<Self>, E>` or `Init<Self>`
   (`ready`, `continue_with`, `error`, `stop`, `ignore`), resolved by the
   design's precedence table; no failed start runs `stopped()` (also not
-  after `ctx.stop()` in `started()`, a behaviour change). Stage 1 is one
+  after `ctx.stop()` in `started()`, now `Init::stop`; a behaviour change);
+  an administrative stop during `started()` waits for it and runs
+  `stopped()`, as OTP's `gen_server:stop`. Stage 1 is one
   atomic commit (group admission, the parent's link or monitor, the typed
   `Name<A>`); a refusal is never observable. `start_link`/`start_monitor`
   inherit the parent's placement. A failed start consumes a trapping

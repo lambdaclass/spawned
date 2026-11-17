@@ -118,22 +118,21 @@ fn controlled_failures_reach_every_required_window_on_every_backend() {
             reached.insert(REQUIRED[3]);
         }
         {
-            // Ready first (one turn): a stop during started() is a failed
-            // start and skips stopped() (unified start 2.3).
+            // The stop arrives while started() runs: it is applied once the
+            // start commits ready, and stopped() runs (OTP gen_server:stop).
+            let (started, mut control) = gate();
             let actor = Handle::start(
                 backend,
                 Worker {
+                    started: Some(started),
                     panic_stopped: true,
                     ..Worker::default()
                 },
             );
             cleanup.track(&actor);
-            actor
-                .raw(Command::append(1))
-                .unwrap()
-                .wait(&rt, LIMIT)
-                .unwrap();
+            control.entered();
             actor.stop();
+            control.release();
             assert!(matches!(actor.wait(&rt), ExitReason::Panic(_)));
             reached.insert(REQUIRED[4]);
         }
@@ -149,12 +148,6 @@ fn controlled_failures_reach_every_required_window_on_every_backend() {
             let target = Handle::start(backend, Worker::default());
             cleanup.track(&peer);
             cleanup.track(&target);
-            // Ready first (one turn): a stop during started() would fail the
-            // start and skip stopped() (unified start 2.3 row 3).
-            peer.raw(Command::append(1))
-                .unwrap()
-                .wait(&rt, LIMIT)
-                .unwrap();
             peer.link(&target.child());
             peer.stop();
             control.entered(); // Normal stop is requested while stopped() runs.

@@ -1173,6 +1173,21 @@ impl Scope {
         let scope = lock(&self.state);
         !group.closing && scope.open && !self.token.is_cancelled()
     }
+    /// Whether the scope still admits its actor (its owner's gate, the group
+    /// and the scope), not counting a stop request: an administrative stop
+    /// before `started()` waits for the start (OTP), it does not close it.
+    pub(crate) fn admission_open(&self) -> bool {
+        let _parent = self.parent.as_ref().map(|p| lock(&p.0));
+        if _parent.as_deref() == Some(&false) {
+            return false;
+        }
+        let Some(g) = self.group.upgrade() else {
+            return false;
+        };
+        let group = lock(&g.state);
+        let scope = lock(&self.state);
+        !group.closing && scope.open
+    }
     /// The readiness commit of a unified start (design 5.1): under this
     /// scope's admission (its owner's gate, the group, the scope), `decide`
     /// gets whether admission is open and returns its result and whether the

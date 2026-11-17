@@ -343,7 +343,7 @@ giving collateral children their own backoff fails
 | L6 | `mailbox_drop_panic` (5 placements x 1/2/256), `native_mailbox_drop`, lifecycle traces | A B T N G TG | covered | not simulated (subprocesses) |
 | L7 | `shutdown_publication`; `*_contract::stop_window_*`; `sim_ordering::stop_discards_*` | A B T N G TG, Sim | partial | outgoing monitors cancelled before publication (after #240) |
 | L8 (v0.9) | `Start.tla` (8 configurations, 40 controls); start traces (16 scenarios, 15 recorded-trace controls); `start_contract::*::{init_outcomes_*, names_*}`, `tasks_mode::{start_link_through_dead_context_is_refused, stuck_started_reports_pending_*}`; `link_fence_loom::start_edge_commit_races_parent_exit_begin` | A T N G TG, Model, Loom | new: covered | the sim and fuzz layers of design 16.3-16.4 |
-| L9 (v0.9) | `Start!KillBeforeDIsKilled`, `Start!IgnoredExitsNormal`; traces `kill_and_admin_stop_during_started`, `parent_exit_during_child_started`; `start_contract::*::init_outcomes_*` (every row but 1-3 per mode), `trapping_child_with_parent_exit_*` | A N, Model | new: covered | rows 2-3 not in threads mode tests |
+| L9 (v0.9) | `Start!KillBeforeDIsKilled`, `Start!IgnoredExitsNormal`, `Start!ReadyReturnCommitsReady` (control `AdminStopFailsInit`: a held administrative stop waits for the start); traces `kill_and_admin_stop_during_started`, `parent_exit_during_child_started`; `start_contract::*::init_outcomes_*` (every row but 1-3 per mode), `trapping_child_with_parent_exit_*` | A N, Model | new: covered | rows 2-3 not in threads mode tests |
 | L10 (v0.9) | `Start!ContinueFirst`; trace `continuation_precedes_queued_messages` and its control; `start_contract::*::continuation_*` | A N, Model | new: covered | |
 | X1 | `actor_scenarios` monitor races; `exit_signal_matrix`; Fz | A B T N, Sim | covered | owned by #240 |
 | X2 | unit `demonitor_*`, `closed_monitor_table_*`; `leaks` | A N | covered | demonitor checks use a bounded window |
@@ -1238,9 +1238,10 @@ restart generations and factory calls, supervisor and system shutdown order.
 (mapped to logical indices), cross-sender interleaving at one actor, and
 arrival order between distinct timer deadlines. One lifecycle difference is
 the intended contract, asserted by
-`stop_before_first_poll_follows_managed_and_legacy_contract`: a managed actor
-canceled before startup skips both hooks and drops its state; legacy unmanaged
-tasks and threads actors retain their existing behavior of running both hooks.
+`stop_before_first_poll_follows_managed_and_legacy_contract`: since 0.9 every
+placement runs both hooks when stopped (`ChildHandle::stop`) before startup
+(the stop waits for `started()`, OTP); a managed actor whose admission closes
+before startup skips both and drops its state (`startup_admission`).
 
 **Cancellation contract observed:** `request`-family futures are `async fn`
 and enqueue nothing until first polled; after that, dropping the caller never

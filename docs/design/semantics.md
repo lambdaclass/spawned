@@ -252,9 +252,11 @@ of `started()` while its admission is open, before any continuation or
 handler. It is final: a later death is an ordinary death. `ready()` and the
 waiting starts read the same committed value; it is a historical barrier,
 not current liveness. If a managed actor's admission closes before
-`started()` begins, neither hook runs and the state is dropped. Unmanaged and
-threads actors stopped that early run `started()`, and the stop then fails
-the start (L9 row 3), so `stopped()` does not run (v0.9).
+`started()` begins (group or system shutdown), neither hook runs and the
+state is dropped. An administrative stop that arrives before or during
+`started()` waits for it, on every placement (OTP `gen_server:stop`, a
+system message handled after `init/1`): the start commits ready, then the
+actor exits with the stop's reason through `stopped()` (v0.9, L9).
 Checked by: [`startup_admission`][startup_admission],
 [`cross_backend::stop_before_first_poll_follows_managed_and_legacy_contract`][cross_backend],
 [`execution_groups::failed_startup_discards_queued_payloads_and_reply_channels_without_dispatch`][execution_groups],
@@ -360,7 +362,7 @@ controls); [`start_contract`][start_contract]`::{tasks,threads}_mode::{init_outc
 **L9. Init resolution (v0.9).** When `started()` returns, the first
 matching row decides the start and the requested reason, under the child's
 exit-request and cell locks: (1) the init timer committed: `Killed`,
-`InitTimeout`; (2) a kill arrived: `Killed`; (3) an administrative stop, or a
+`InitTimeout`; (2) a kill arrived: `Killed`; (3) a
 held non-`Normal` signal to a non-trapping child, the first in arrival order;
 (4) `started()` panicked; (5) `ctx.stop*` in `started()`; (6) `Init::stop(r)`;
 (7) `Err(e)`/`Init::error(e)`: `Normal`, `InitFailed`; (8) `Init::ignore()`:
@@ -368,7 +370,7 @@ held non-`Normal` signal to a non-trapping child, the first in arrival order;
 A non-ready decision fixes the reason for good: a later kill does nothing.
 Held signals of a ready child resolve as in phase 0 (E2, E3). No failed row
 runs `stopped()`.
-Checked by: `Start!KillBeforeDIsKilled`, `Start!IgnoredExitsNormal` (TLC);
+Checked by: `Start!KillBeforeDIsKilled`, `Start!IgnoredExitsNormal`, `Start!ReadyReturnCommitsReady` (control `AdminStopFailsInit`; TLC);
 start traces `kill_and_admin_stop_during_started`,
 `parent_exit_during_child_started`, `link_stop_in_started_ends_nontrapping_parent`;
 [`start_contract`][start_contract]`::{tasks,threads}_mode::init_outcomes_answer_after_publication_without_stopped`,

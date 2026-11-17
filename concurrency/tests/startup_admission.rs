@@ -61,7 +61,10 @@ impl Drop for Probe {
 // Not simulated: blocks the group's OS worker on purpose.
 #[cfg(not(spawned_sim))]
 #[spawned_macros::sim_test(flavor = "current_thread")]
-async fn managed_actor_stopped_before_first_poll_runs_no_hooks_but_drops_state() {
+/// A managed actor stopped (`ChildHandle::stop`) before its first poll: the
+/// stop waits for `started()` (OTP `gen_server:stop`), the start succeeds,
+/// then the actor exits through `stopped()` without handling its queue.
+async fn managed_actor_stopped_before_first_poll_starts_then_stops() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("startup-gate", 1).unwrap();
     let owner = Probe(Arc::default()).with_options(&group).spawn().unwrap();
@@ -114,12 +117,14 @@ async fn managed_actor_stopped_before_first_poll_runs_no_hooks_but_drops_state()
             .unwrap(),
         ExitReason::Shutdown
     );
-    assert!(spawned_rt::tasks::timeout(LIMIT, actor.ready())
-        .await
-        .unwrap()
-        .is_err());
-    assert_eq!(counts.started.load(Ordering::SeqCst), 0);
-    assert_eq!(counts.stopped.load(Ordering::SeqCst), 0);
+    assert!(matches!(
+        spawned_rt::tasks::timeout(LIMIT, actor.ready())
+            .await
+            .unwrap(),
+        Ok(spawned_concurrency::StartOutcome::Started(()))
+    ));
+    assert_eq!(counts.started.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.stopped.load(Ordering::SeqCst), 1);
     assert_eq!(counts.dropped.load(Ordering::SeqCst), 1);
     assert_eq!(dropped.load(Ordering::SeqCst), 2);
     assert_eq!(
@@ -136,10 +141,9 @@ async fn managed_actor_stopped_before_first_poll_runs_no_hooks_but_drops_state()
 }
 
 #[spawned_macros::sim_test(flavor = "current_thread")]
-/// An unmanaged actor stopped before its first poll still runs `started()`;
-/// the administrative stop then fails the start (unified start 2.3 row 3),
-/// so `stopped()` does not run.
-async fn unmanaged_actor_stopped_before_first_poll_runs_started_not_stopped() {
+/// An actor stopped before its first poll runs both hooks: the stop waits
+/// for `started()` (OTP `gen_server:stop`; unified start 2.3).
+async fn actor_stopped_before_first_poll_keeps_both_hooks() {
     let counts = Arc::new(Counts::default());
     let actor = Probe(counts.clone()).spawn(); // this runtime has not yielded
     actor
@@ -152,6 +156,6 @@ async fn unmanaged_actor_stopped_before_first_poll_runs_started_not_stopped() {
         ExitReason::Shutdown
     );
     assert_eq!(counts.started.load(Ordering::SeqCst), 1);
-    assert_eq!(counts.stopped.load(Ordering::SeqCst), 0);
+    assert_eq!(counts.stopped.load(Ordering::SeqCst), 1);
     assert_eq!(counts.dropped.load(Ordering::SeqCst), 1);
 }

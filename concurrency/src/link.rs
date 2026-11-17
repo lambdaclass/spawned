@@ -76,10 +76,11 @@ pub(crate) struct ExitRequest {
     /// A parent exit is queued behind earlier messages of a trapping actor
     /// (E3): when dispatched it ends the actor whatever its reason.
     parent_exit_queued: bool,
-    /// The first administrative stop during `started()`, with the number of
-    /// signals held before it (row 3 of the unified start's 2.3 table: the
-    /// first in arrival order wins).
-    admin: Option<(ExitReason, usize)>,
+    /// The first administrative stop that arrived during `started()`: as
+    /// OTP's `gen_server:stop` (a system message handled after `init/1`
+    /// returns), it is applied after a ready start commits, and `stopped()`
+    /// runs (unified start 2.3).
+    admin: Option<ExitReason>,
     /// A non-ready startup decision fixed the reason (unified start 2.3):
     /// the resolution and D are one step, so nothing changes it any more.
     frozen: bool,
@@ -127,20 +128,20 @@ impl ExitRequest {
         }
         true
     }
-    /// An administrative stop (`ChildHandle::stop*`, a scope's stop). While
-    /// `started()` runs it outranks a `ctx.stop*` of `started()` (row 3).
+    /// An administrative stop (`ChildHandle::stop*`, a scope's stop). One
+    /// that arrives while `started()` runs is held: it decides nothing about
+    /// the start, and is applied once the start commits ready (OTP: a
+    /// `gen_server:stop` waits for `init/1` to return); a failed start
+    /// discards it. Returns whether the run loop must be woken.
     pub(crate) fn admin_stop(&mut self, reason: ExitReason) -> bool {
         if self.dead || self.frozen {
             return false;
         }
         if self.starting {
-            if self.admin.is_none() {
+            if self.admin.is_none() && self.reason.is_none() {
                 #[cfg(feature = "lifecycle-trace")]
                 crate::lifecycle_trace::start_admin(self.trace);
-                self.admin = Some((reason.clone(), self.held.len()));
-            }
-            if self.reason.is_none() {
-                self.reason = Some(reason);
+                self.admin = Some(reason);
             }
             return true;
         }
@@ -272,19 +273,15 @@ impl ExitRequest {
         use crate::start::{Returned, Row};
         self.starting = false;
         let held = std::mem::take(&mut self.held);
-        // Row 3: the first, in arrival order, of an administrative stop and
-        // a held non-Normal signal to a non-trapping child.
-        let signal = if trapping {
+        // Row 3: the first held non-Normal signal to a non-trapping child.
+        // (An administrative stop is not a row: it is applied after a ready
+        // commitment, below.)
+        let row3 = if trapping {
             None
         } else {
-            held.iter().position(|r| *r != ExitReason::Normal)
+            held.iter().find(|r| **r != ExitReason::Normal).cloned()
         };
-        let row3 = match (&self.admin, signal) {
-            (Some((_, at)), Some(i)) if *at > i => Some(held[i].clone()),
-            (Some((admin, _)), _) => Some(admin.clone()),
-            (None, Some(i)) => Some(held[i].clone()),
-            (None, None) => None,
-        };
+        let admin = self.admin.take();
         let row = if timed_out {
             self.reason = Some(ExitReason::Killed);
             Row::Timer
@@ -325,12 +322,17 @@ impl ExitRequest {
             if trapping && std::mem::take(&mut self.held_parent) {
                 self.parent_exit_queued = true;
             }
+            // A held administrative stop now begins an ordinary exit: the
+            // run loop (already woken) dispatches nothing and runs stopped().
+            // (Its `SExit` is recorded right after the ready `SResolve`.)
+            if let Some(reason) = admin {
+                self.reason = Some(reason);
+            }
         } else {
             self.frozen = true;
             self.skip_hook = true;
             self.hook_begun = true;
         }
-        self.admin = None;
         row
     }
 }

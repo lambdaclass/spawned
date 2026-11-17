@@ -669,7 +669,10 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
     let (killed, closed) = crate::lifecycle_trace::start_section(|| {
         let killed = link::lock_request(&request).killed_early()
             || cell.commit() == crate::start::Commit::TimedOut;
-        let closed = ctx.shared.managed().is_some_and(|scope| !scope.can_start());
+        let closed = ctx
+            .shared
+            .managed()
+            .is_some_and(|scope| !scope.admission_open());
         if !killed {
             // A closed admission skips started() but resolves as if it
             // returned ready (row 9, or row 3 for a scope's stop): the

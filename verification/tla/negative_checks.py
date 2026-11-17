@@ -327,6 +327,7 @@ START_CONTROLS = [
     ("MCStartTimeout", "ReadyAfterClose", "ReadyOnlyWhileOpen"),
     ("MCStartTimeout", "SkipEscalation", "KillBeforeDIsKilled"),
     ("MCStartTimeout", "SplitResolutionD", "IgnoredExitsNormal"),
+    ("MCStartTimeout", "AdminStopFailsInit", "ReadyReturnCommitsReady"),
     ("MCStartCap", "AdmitClosed", "AdmittedOnlyOpen"),
     ("MCStartCap", "IgnoreCap", "CapacityRespected"),
     ("MCStartCap", "EarlySlotRelease", "SlotHeldUntilReleased"),
@@ -431,6 +432,15 @@ def start_trace_controls(traces, tlc):
     require_rejected(by_name["start_kill_and_admin_stop_during_started"],
                      requested_reason_reported,
                      "answer reports a reason other than the final Killed", tlc)
+
+    def admin_stop_fails_start(events):
+        # Revision 3's row 3: a stop during started() failed the start.
+        stop = at(events, "SAdminStop")
+        answer = events[at(events, "SAnswer", "ok", after=stop)]
+        answer["x"], answer["z"] = "failed", "Shutdown"
+    require_rejected(by_name["start_kill_and_admin_stop_during_started"],
+                     admin_stop_fails_start,
+                     "an administrative stop during started() fails the start", tlc)
 
     def abandon_drops_diverted(events):
         events[at(events, "SAbandon")]["f"] = False

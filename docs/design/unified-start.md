@@ -67,11 +67,22 @@ recorded-trace controls).
   dropped at publication (the model's legitimate drop) rather than delivered
   as a no-op; found by trace validation, which rejected the first recording.
 
-**Observation for a maintainer decision** (not a deviation): row 3 makes an
-administrative stop (`ChildHandle::stop`) that arrives during `started()` a
-failed start without `stopped()`. In OTP a `gen_server:stop/1` sent during
-`init/1` is a system message handled after `init` returns, so `terminate/2`
-runs. The implementation follows the approved table.
+**Revision 4 (maintainer decision, after implementation): an administrative
+stop during `started()` waits for it, as OTP.** Revision 3's row 3 made a
+`ChildHandle::stop*` that arrives while `started()` runs a failed start
+without `stopped()`. In OTP, `gen_server:stop/1` is a system message: it is
+handled after `init/1` returns, so the start succeeds and `terminate/2` runs.
+No Rust constraint forces a difference, so (project rule) Spawned now does
+the same: the stop is held, the start commits ready (`Started`), then the
+actor exits with the stop's reason through `stopped()`; a start that fails
+for another reason discards it. Exit signals during `started()` (a kill, a
+held non-trapping parent exit or link notice) keep their rows: they fail the
+start without `stopped()`, as in OTP they kill the starting process. A
+`ctx.stop*` inside `started()` stays row 5: a process cannot stop itself
+mid-`init` in OTP except by returning `{stop, R}`, so it is the same as
+`Init::stop(r)` (no `stopped()`). Model: `AdminStopApply`, invariant
+`ReadyReturnCommitsReady` (control `AdminStopFailsInit`, revision 3's row 3);
+trace control "an administrative stop during started() fails the start".
 
 Revision 2 answered both round-one reviews. Revision 3 answers both round-two
 reviews (Codex and agy, both "approve after the listed changes", no P0). What
@@ -285,7 +296,7 @@ which reopens the window) and `KillBeforeDIsKilled` (control
 |---|---|---|---|---|
 | 1 | the init timer committed `timedout` (section 6) | `Killed` | no | `timedout` → `InitTimeout` |
 | 2 | a kill arrived (`kill()`, `exit(Kill)`, the S8 scope deadline) | `Killed` | no | failed → `InitExited` |
-| 3 | an administrative stop (`ChildHandle::stop*`, `shutdown`) arrived, or the child does not trap and a held non-`Normal` signal (parent exit, link notice, exit signal) arrived; the first of these in arrival order wins | its reason | no | failed → `InitExited` |
+| 3 | the child does not trap and a held non-`Normal` signal (parent exit, link notice, exit signal) arrived; the first in arrival order wins | its reason | no | failed → `InitExited` |
 | 4 | `started()` panicked | `Panic("panic in started(): ..")` | no | failed → `InitExited` |
 | 5 | `ctx.stop*(r)` was called in `started()` | `r` | **no** (as `{stop, r}`) | failed → `InitExited` |
 | 6 | `Init::stop(r)` | `r` | no | failed → `InitExited` |
@@ -300,15 +311,22 @@ which reopens the window) and `KillBeforeDIsKilled` (control
   even a `Normal` one (E3: it ends the child when handled). The child
   commits ready, runs its continuation first, then handles the queued
   entries. This is OTP's behaviour for an `init/1` that sets `trap_exit` and
-  returns `{continue, C}`. Administrative stops and kills are untrappable
-  (rows 2-3).
+  returns `{continue, C}`. Kills are untrappable (row 2).
+- **An administrative stop** (`ChildHandle::stop*`, a scope's stop) that
+  arrives during `started()` decides nothing (revision 4): it is held, and
+  applied once the start commits ready (row 10), which answers `Started`;
+  the actor then exits with the stop's reason through `stopped()`, without
+  dispatching its continuation or messages. A failed start discards it. This
+  is OTP's `gen_server:stop/1`, a system message handled after `init/1`.
 - **A superseded diagnostic.** When a higher row wins over a returned
   `Init::error(e)`, `e` is logged at debug level with the actor id.
 - **Cooperative deviation.** OTP applies a signal when it arrives; Spawned
   reads the trap flag when `started()` returns. This is 0.8's documented
   phase-0 deviation (R: no preemption).
 - **Behaviour change from 0.8.** A `ctx.stop()` inside `started()` no longer
-  runs `stopped()`.
+  runs `stopped()`: it is the same as returning `Init::stop(r)` (OTP's
+  `{stop, R}`; a process cannot otherwise stop itself mid-`init`). Clean up
+  in `started()` before returning, or hold resources in RAII guards.
 
 ### 2.4 `StartOptions<A>`
 
