@@ -346,7 +346,7 @@ impl<A: Actor> ActorRef<A> {
         // Recorded from here: the start_link link is the model's initial one.
         crate::lifecycle_trace::life_spawn(id.raw(), link_parent.map_or(0, |p| p.raw()));
         if let start::Timeout::After(after) = options.init_timeout {
-            crate::start::spawn_init_timer(&cell, child_handle.clone(), after);
+            crate::start::spawn_init_timer_async(&cell, child_handle.clone(), after);
         }
 
         let cleanup_token = cancellation_token.clone();

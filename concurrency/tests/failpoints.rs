@@ -1714,7 +1714,7 @@ mod native {
         let actor = Target.spawn();
         // A ctx.stop() inside started() is Init::stop (no stopped()): stop
         // the running actor.
-        actor.ready().unwrap();
+        actor.ready().unwrap().started().expect("started");
         let began = Instant::now();
         actor.context().stop();
         actor.join();

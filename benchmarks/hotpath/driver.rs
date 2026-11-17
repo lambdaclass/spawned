@@ -17,6 +17,11 @@ pub struct Hit(pub u64);
 impl Message for Hit {
     type Result = ();
 }
+/// Stops the actor (the spawn benchmarks' full lifecycle).
+pub struct Quit;
+impl Message for Quit {
+    type Result = ();
+}
 
 mod a {
     use super::*;
@@ -32,6 +37,10 @@ mod a {
         #[send_handler]
         async fn hit(&mut self, msg: Hit, _ctx: &Context<Self>) {
             self.0 = self.0.wrapping_add(msg.0);
+        }
+        #[request_handler]
+        async fn quit(&mut self, _msg: Quit, ctx: &Context<Self>) {
+            ctx.stop();
         }
     }
 }
@@ -51,6 +60,10 @@ mod t {
         fn hit(&mut self, msg: Hit, _ctx: &Context<Self>) {
             self.0 = self.0.wrapping_add(msg.0);
         }
+        #[request_handler]
+        fn quit(&mut self, _msg: Quit, ctx: &Context<Self>) {
+            ctx.stop();
+        }
     }
 }
 
@@ -67,6 +80,9 @@ const BENCHMARKS: &[(&str, bool)] = &[
     ("async_ct_request_conc16", true),
     ("async_ct_send_p1", true),
     ("async_ct_send_p2", true),
+    // One actor's whole life per op: spawn, one request, a stop.
+    ("async_ct_spawn", true),
+    ("threads_spawn", false),
     ("threads_request_seq", true),
     ("threads_burst4", false),
     ("threads_send_p1", false),
@@ -116,6 +132,27 @@ fn run_async(name: &str, n: u64) -> Duration {
     let rt = runtime(current_thread);
     let name = name.replacen("async_ct_", "async_", 1);
     let name = name.as_str();
+    if name == "async_spawn" {
+        return rt.block_on(async {
+            let life = |i: u64| async move {
+                let actor = spawn_actor!(a::Sink(i));
+                std::hint::black_box(actor.request(Q(i)).await.unwrap());
+                actor.request(Quit).await.unwrap();
+                // Let it reach its death point and publish.
+                for _ in 0..4 {
+                    tokio::task::yield_now().await;
+                }
+            };
+            for i in 0..WARMUP {
+                life(i).await;
+            }
+            let start = Instant::now();
+            for i in 0..n {
+                life(i).await;
+            }
+            start.elapsed()
+        });
+    }
     let actor = rt.block_on(async { spawn_actor!(a::Sink(0)) });
     let fence = |actor: &spawned_concurrency::tasks::ActorRef<a::Sink>| {
         rt.block_on(actor.request(Q(0))).unwrap();
@@ -208,6 +245,15 @@ fn run_async(name: &str, n: u64) -> Duration {
 
 fn run_threads(name: &str, n: u64) -> Duration {
     use spawned_concurrency::threads::ActorStart;
+    if name == "threads_spawn" {
+        let start = Instant::now();
+        for i in 0..n {
+            let actor = spawn_actor!(t::Sink(i));
+            std::hint::black_box(actor.request(Q(i)).unwrap());
+            actor.request(Quit).unwrap();
+        }
+        return start.elapsed();
+    }
     let actor = spawn_actor!(t::Sink(0));
     for i in 0..WARMUP {
         actor.request(Q(i)).unwrap();

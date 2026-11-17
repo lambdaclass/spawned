@@ -5,6 +5,9 @@
 //! state was dropped, a consumed notice that still arrived, a lost one, a
 //! continuation behind a message, a child outside its parent's group.
 
+#![cfg_attr(not(feature = "async"), allow(unused_imports))]
+#![cfg_attr(spawned_sim, allow(dead_code, unused_imports))]
+
 use spawned_concurrency::{
     message::Message, ChildHandle, Down, Exit, ExitReason, PendingReply, StartError, StartOutcome,
 };
@@ -46,6 +49,7 @@ enum Then {
     PanicLater,
 }
 
+#[cfg(feature = "async")]
 mod tasks_mode {
     use super::*;
     use spawned_concurrency::system::ActorSystem;
@@ -163,6 +167,7 @@ mod tasks_mode {
     /// L9: every row of the 2.3 table, waiting and through spawn + ready();
     /// no failed start runs stopped(), and its state is dropped before the
     /// error is answered (L8, failure after publication).
+    #[cfg(not(spawned_sim))] // real Tokio
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn init_outcomes_answer_after_publication_without_stopped() {
         for then in [
@@ -230,6 +235,7 @@ mod tasks_mode {
     /// L2/L8: readiness is final. A child that fails right after readiness,
     /// with its waiter not yet polled, still answers Started, and the Down
     /// of its later death reaches the monitoring parent.
+    #[cfg(not(spawned_sim))] // real Tokio
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ready_then_immediate_crash_with_unpolled_waiter_returns_started_and_delivers_down() {
         let (p, seen) = parent(false).await;
@@ -252,6 +258,7 @@ mod tasks_mode {
     /// X8: a failed start's notice is consumed for a trapping parent (Exit)
     /// and a monitor (Down); a non-trapping parent still exits on a
     /// non-Normal failure, and a Normal one spares it.
+    #[cfg(not(spawned_sim))] // real Tokio
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn failed_start_notices_follow_the_disposition_table() {
         let (p, seen) = parent(true).await;
@@ -285,6 +292,7 @@ mod tasks_mode {
     }
 
     /// X8 abandonment: a dropped Starting hands its diverted notice on.
+    #[cfg(not(spawned_sim))] // real Tokio
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn abandoned_start_monitor_still_delivers_down() {
         let (p, seen) = parent(false).await;
@@ -304,6 +312,7 @@ mod tasks_mode {
 
     /// T5: the init timeout answers InitTimeout and never reaches a waiting
     /// parent (trapping or not).
+    #[cfg(not(spawned_sim))] // real Tokio
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn init_timeout_never_reaches_the_parent() {
         for trap in [true, false] {
@@ -332,6 +341,7 @@ mod tasks_mode {
     }
 
     /// L10: the continuation runs before messages sent during started().
+    #[cfg(not(spawned_sim))] // real Tokio
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn continuation_runs_before_messages_sent_during_started() {
         let (release, gate) = tokio::sync::oneshot::channel();
@@ -347,6 +357,7 @@ mod tasks_mode {
 
     /// X5/L8: a start through a parent whose exit began is refused; nothing
     /// ran and nothing remains.
+    #[cfg(not(spawned_sim))] // real Tokio
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn start_link_through_dead_context_is_refused() {
         let (p, _) = parent(false).await;
@@ -365,6 +376,7 @@ mod tasks_mode {
 
     /// S7: link and monitor children inherit the parent's group; plain
     /// starts never inherit; placement_of opts in.
+    #[cfg(not(spawned_sim))] // real Tokio
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn link_and_monitor_inherit_the_parents_group() {
         let system = ActorSystem::new().unwrap();
@@ -411,6 +423,7 @@ mod tasks_mode {
 
     /// S7: an inherited full thread group refuses with Capacity (no
     /// fallback), and nothing of the refused start is observable.
+    #[cfg(not(spawned_sim))] // real Tokio
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn inherited_start_into_full_thread_group_fails_capacity() {
         let system = ActorSystem::new().unwrap();
@@ -440,6 +453,7 @@ mod tasks_mode {
     /// S9: typed names: a clash reports the holder; a failed named start can
     /// be retried at once (the name is free when the error is answered); a
     /// non-actor holder reports no handle.
+    #[cfg(not(spawned_sim))] // real Tokio
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn names_are_committed_and_released_atomically() {
         static NAME: Name<Child> = Name::new("start-contract-tasks");
@@ -489,6 +503,7 @@ mod tasks_mode {
 
     /// Review #291 item 6: a name held through `ctx.register_name` reports
     /// its holder in `AlreadyStarted { existing }`.
+    #[cfg(not(spawned_sim))] // real Tokio
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn already_started_reports_a_ctx_registered_holder() {
         struct Registrar;
@@ -522,6 +537,7 @@ mod tasks_mode {
     }
 
     /// Options are validated before anything exists.
+    #[cfg(not(spawned_sim))] // real Tokio
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn invalid_options_are_refused() {
         for options in [
@@ -552,6 +568,7 @@ mod tasks_mode {
 
     /// L9: a trapping child whose parent exits while it initialises commits
     /// ready, runs its continuation, then ends from the queued parent exit.
+    #[cfg(not(spawned_sim))] // real Tokio
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn trapping_child_with_parent_exit_in_started_commits_ready_then_ends() {
         struct Trapping(
@@ -588,6 +605,7 @@ mod tasks_mode {
 
     /// A runtime dropped before the child ran: the start is decided at its
     /// death point (`Killed`) and answered, never left pending forever.
+    #[cfg(not(spawned_sim))] // real Tokio runtimes
     #[test]
     fn runtime_drop_before_started_answers_init_exited_killed() {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -620,8 +638,43 @@ mod tasks_mode {
     /// The init timer's pending answer: a started() that never returns
     /// keeps the instance, answered with its handle at the cleanup
     /// deadline (stuck policy).
+    #[cfg(not(spawned_sim))] // real Tokio
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stuck_started_reports_pending_after_the_timeout() {
+        stuck_started_reports_pending().await;
+    }
+
+    /// Review #291 item 3: the tasks-mode init timer runs on the runtime's
+    /// clock. Under the simulator an hour-long `init_timeout` expires in
+    /// virtual time, before a two-hour `started()` returns (a real-time
+    /// timer thread would let the start succeed).
+    #[cfg(spawned_sim)]
+    #[spawned_macros::sim_test]
+    async fn init_timer_uses_the_runtime_clock() {
+        struct Slow;
+        impl Actor for Slow {
+            async fn started(&mut self, _: &Context<Self>) {
+                spawned_rt::tasks::sleep(Duration::from_secs(7200)).await;
+            }
+        }
+        let began = spawned_rt::time::Instant::now();
+        let result = Slow
+            .with_options(StartOptions::new().init_timeout(Duration::from_secs(3600)))
+            .start()
+            .await;
+        assert!(
+            matches!(result, Err(StartError::InitTimeout { .. })),
+            "{result:?}"
+        );
+        // At the timeout plus the cleanup deadline, not at started()'s end.
+        assert!(
+            began.elapsed() < Duration::from_secs(3700),
+            "{:?}",
+            began.elapsed()
+        );
+    }
+
+    async fn stuck_started_reports_pending() {
         static STUCK: AtomicBool = AtomicBool::new(true);
         struct Stuck;
         impl Actor for Stuck {

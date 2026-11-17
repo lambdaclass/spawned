@@ -125,7 +125,6 @@ pub enum StartError {
     InitTimeout { pending: Option<ChildHandle> },
 }
 
-#[cfg(feature = "async")]
 impl StartError {
     /// A stage-1 refusal's name in the start trace (`SRefuse`).
     #[allow(dead_code)] // trace only
@@ -140,6 +139,7 @@ impl StartError {
     }
 }
 
+#[cfg(feature = "async")]
 impl From<crate::system::SystemError> for StartError {
     fn from(error: crate::system::SystemError) -> Self {
         use crate::system::SystemError;
@@ -372,17 +372,44 @@ struct CellInner {
     deadline_seen: bool,
 }
 
+type OnCancel = Box<dyn FnOnce() + Send>;
+
 /// Cancels a pending init timer at the commitment.
-#[derive(Default)]
 pub(crate) struct TimerCancel {
-    cancelled: Mutex<bool>,
-    wake: Condvar,
+    /// `None` once cancelled; else what cancelling does (if armed yet).
+    state: Mutex<Option<Option<OnCancel>>>,
+}
+
+impl Default for TimerCancel {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(Some(None)),
+        }
+    }
 }
 
 impl TimerCancel {
     fn cancel(&self) {
-        *self.cancelled.lock().unwrap_or_else(|p| p.into_inner()) = true;
-        self.wake.notify_all();
+        let action = self
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+            .flatten();
+        if let Some(action) = action {
+            action();
+        }
+    }
+    /// What cancelling does; run at once if already cancelled.
+    fn on_cancel(&self, action: Box<dyn FnOnce() + Send>) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        match state.as_mut() {
+            Some(slot) => *slot = Some(action),
+            None => {
+                drop(state);
+                action();
+            }
+        }
     }
 }
 
@@ -393,7 +420,9 @@ pub(crate) struct StartupCell {
     /// Blocking observers.
     changed: Condvar,
     /// Async observers: bumped at every change.
-    version: spawned_rt::sync::watch::Sender<u64>,
+    /// Created by the first async observer: a start nobody awaits (`spawn`)
+    /// allocates no channel.
+    version: std::sync::OnceLock<spawned_rt::sync::watch::Sender<u64>>,
 }
 
 impl std::fmt::Debug for StartupCell {
@@ -413,7 +442,6 @@ pub(crate) enum Observed {
 
 impl StartupCell {
     pub(crate) fn new() -> Arc<Self> {
-        let (version, _) = spawned_rt::sync::watch::channel(0);
         Arc::new(Self {
             state: AtomicU8::new(Commit::Pending as u8),
             inner: Mutex::new(CellInner {
@@ -435,7 +463,7 @@ impl StartupCell {
                 deadline_seen: false,
             }),
             changed: Condvar::new(),
-            version,
+            version: std::sync::OnceLock::new(),
         })
     }
 
@@ -449,8 +477,11 @@ impl StartupCell {
             inner.version = inner.version.wrapping_add(1);
         }
         self.changed.notify_all();
-        let next = self.version.borrow().wrapping_add(1);
-        self.version.send_replace(next);
+        // An observer subscribes before it observes: one that subscribes
+        // after this sees the change when it observes.
+        if let Some(version) = self.version.get() {
+            version.send_modify(|v| *v = v.wrapping_add(1));
+        }
     }
 
     pub(crate) fn commit(&self) -> Commit {
@@ -819,7 +850,9 @@ impl StartupCell {
     /// A receiver bumped at every change (async observers).
     #[cfg_attr(not(feature = "async"), allow(dead_code))]
     pub(crate) fn subscribe(&self) -> spawned_rt::sync::watch::Receiver<u64> {
-        self.version.subscribe()
+        self.version
+            .get_or_init(|| spawned_rt::sync::watch::channel(0).0)
+            .subscribe()
     }
 }
 
@@ -899,6 +932,7 @@ pub(crate) fn run_killed(child: &ChildHandle, run: impl FnOnce()) {
 
 /// Poll a future that never blocks (a killed lifecycle) to completion on
 /// this thread, without a runtime.
+#[cfg_attr(not(feature = "async"), allow(dead_code))] // tasks mode only
 pub(crate) fn run_inline<F: std::future::Future<Output = ()>>(future: F) {
     struct Unpark(std::thread::Thread);
     impl std::task::Wake for Unpark {
@@ -945,47 +979,129 @@ pub(crate) fn spawn_thread_or_kill<T: Send + 'static>(
     }
 }
 
-/// The init timer (design 6): a framework-owned thread that commits
-/// `TimedOut` at expiry unless the child committed first, then kills it.
-/// Only a start with `init_timeout` pays for it.
+/// What the init timer does at expiry: commit `TimedOut` unless the child
+/// committed first, then kill it (the kill is applied when started()
+/// returns; the timer's commitment already decided the start, row 1).
+fn fire_init_timer(cell: &std::sync::Weak<StartupCell>, handle: &ChildHandle) {
+    let Some(cell) = cell.upgrade() else {
+        return;
+    };
+    if cell.time_out() {
+        crate::link::lock_request(&handle.signal_target().request).kill();
+        (handle.signal_target().wake)();
+    }
+}
+
+/// The init timer of a tasks-mode start (design 6): a runtime sleep task
+/// (virtual time under the simulator), cancelled when the child commits.
+/// Only a start with `init_timeout` pays for it. Without a current runtime
+/// it falls back to the shared timer thread.
+#[cfg(feature = "async")]
+pub(crate) fn spawn_init_timer_async(
+    cell: &Arc<StartupCell>,
+    handle: ChildHandle,
+    after: Duration,
+) {
+    let Ok(runtime) = spawned_rt::tasks::Handle::try_current() else {
+        return spawn_init_timer(cell, handle, after);
+    };
+    let Some(cancel) = cell.arm_timer() else {
+        return;
+    };
+    let token = spawned_rt::tasks::CancellationToken::new();
+    let cell = Arc::downgrade(cell);
+    let theirs = token.clone();
+    drop(runtime.spawn(async move {
+        let sleep = std::pin::pin!(spawned_rt::tasks::sleep(after));
+        let cancelled = std::pin::pin!(theirs.cancelled());
+        if let futures::future::Either::Left(_) = futures::future::select(sleep, cancelled).await {
+            fire_init_timer(&cell, &handle);
+        }
+    }));
+    cancel.on_cancel(Box::new(move || token.cancel()));
+}
+
+/// The init timer of a threads-mode start (design 6): an entry on the one
+/// shared timer thread, removed when the child commits. Only a start with
+/// `init_timeout` pays for it.
 pub(crate) fn spawn_init_timer(cell: &Arc<StartupCell>, handle: ChildHandle, after: Duration) {
     let Some(cancel) = cell.arm_timer() else {
         return;
     };
-    let cell = Arc::downgrade(cell);
-    let run = move || {
-        let deadline = std::time::Instant::now() + after;
-        let mut cancelled = cancel.cancelled.lock().unwrap_or_else(|p| p.into_inner());
-        loop {
-            if *cancelled {
-                return;
-            }
-            let now = std::time::Instant::now();
-            if now >= deadline {
-                break;
-            }
-            cancelled = cancel
-                .wake
-                .wait_timeout(cancelled, deadline - now)
-                .unwrap_or_else(|p| p.into_inner())
-                .0;
-        }
-        drop(cancelled);
-        let Some(cell) = cell.upgrade() else {
-            return;
-        };
-        if cell.time_out() {
-            // The kill is applied when started() returns (row 1); the
-            // timer's commitment already decided the start.
-            crate::link::lock_request(&handle.signal_target().request).kill();
-            (handle.signal_target().wake)();
-        }
-    };
-    if std::thread::Builder::new()
-        .name("spawned-init-timer".into())
-        .spawn(run)
-        .is_err()
-    {
+    let Some(timers) = shared_timers() else {
         tracing::warn!("init timer thread could not be spawned; the start has no init timeout");
+        return;
+    };
+    let cell = Arc::downgrade(cell);
+    let key = (
+        std::time::Instant::now() + after,
+        TIMER_SEQ.fetch_add(1, Ordering::Relaxed),
+    );
+    timers
+        .queue
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(key, Box::new(move || fire_init_timer(&cell, &handle)));
+    timers.wake.notify_one();
+    cancel.on_cancel(Box::new(move || {
+        let removed = timers
+            .queue
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&key);
+        // Dropped outside the lock.
+        drop(removed);
+    }));
+}
+
+type TimerKey = (std::time::Instant, u64);
+static TIMER_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The shared init-timer thread's queue, by deadline.
+struct Timers {
+    queue: Mutex<std::collections::BTreeMap<TimerKey, Box<dyn FnOnce() + Send>>>,
+    wake: Condvar,
+}
+
+/// The one init-timer thread of the process, started on first use.
+fn shared_timers() -> Option<&'static Timers> {
+    static TIMERS: std::sync::OnceLock<Option<&'static Timers>> = std::sync::OnceLock::new();
+    *TIMERS.get_or_init(|| {
+        let timers: &'static Timers = Box::leak(Box::new(Timers {
+            queue: Mutex::new(std::collections::BTreeMap::new()),
+            wake: Condvar::new(),
+        }));
+        std::thread::Builder::new()
+            .name("spawned-init-timer".into())
+            .spawn(move || run_timers(timers))
+            .ok()
+            .map(|_| timers)
+    })
+}
+
+fn run_timers(timers: &'static Timers) {
+    let mut queue = timers.queue.lock().unwrap_or_else(|p| p.into_inner());
+    loop {
+        let now = std::time::Instant::now();
+        match queue.first_key_value().map(|(key, _)| *key) {
+            Some(key) if key.0 <= now => {
+                let fire = queue.remove(&key);
+                drop(queue);
+                if let Some(fire) = fire {
+                    fire();
+                }
+                queue = timers.queue.lock().unwrap_or_else(|p| p.into_inner());
+            }
+            Some(key) => {
+                queue = timers
+                    .wake
+                    .wait_timeout(queue, key.0 - now)
+                    .unwrap_or_else(|p| p.into_inner())
+                    .0;
+            }
+            None => {
+                queue = timers.wake.wait(queue).unwrap_or_else(|p| p.into_inner());
+            }
+        }
     }
 }

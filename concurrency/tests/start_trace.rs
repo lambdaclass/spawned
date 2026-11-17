@@ -9,7 +9,7 @@
 //! scenario waits for the events it needs explicitly (the children's
 //! publication and owned-work join, the parent's notices) before taking
 //! the trace: nothing races the end of the recording.
-#![cfg(feature = "lifecycle-trace")]
+#![cfg(all(feature = "lifecycle-trace", not(spawned_sim)))]
 
 use spawned_concurrency::{
     lifecycle_trace,

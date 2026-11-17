@@ -311,7 +311,6 @@ impl Response {
 }
 impl Handle {
     pub fn start(backend: Backend, worker: Worker) -> Self {
-        #[cfg(feature = "async")]
         use spawned_concurrency::threads::ActorStart as _;
         match backend {
             Backend::Native => Self::Native(NativeWorker(worker).spawn()),

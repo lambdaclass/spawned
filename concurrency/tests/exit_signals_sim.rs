@@ -272,12 +272,25 @@ async fn late_signal_vs_death(seed: u64) {
     signalling.await.unwrap();
     let log = entries(&log);
     let signal = position(&log, "signal").unwrap();
-    let end = position(&log, "stopped:end").expect("a self-exit runs stopped()");
-    outcome(format!("late signal: {reason:?}"));
-    match reason {
-        ExitReason::Shutdown => {}
-        ExitReason::Normal => assert!(end < signal, "a signal before D was lost: {log:?}"),
-        other => panic!("unexpected reason {other:?}: {log:?}"),
+    // The administrative stop waits for started() (OTP gen_server:stop). If
+    // the untrapped signal arrives while started() still runs, it fails the
+    // start without stopped() (an exit signal kills an initialising
+    // process); otherwise the stop's exit runs stopped().
+    let end = position(&log, "stopped:end");
+    outcome(format!(
+        "late signal: {reason:?}{}",
+        if end.is_none() {
+            " (during started)"
+        } else {
+            ""
+        }
+    ));
+    match (reason.clone(), end) {
+        (ExitReason::Shutdown, _) => {}
+        (ExitReason::Normal, Some(end)) => {
+            assert!(end < signal, "a signal before D was lost: {log:?}")
+        }
+        (other, _) => panic!("unexpected reason {other:?}: {log:?}"),
     }
     let downs = downs(&observer, &observed).await;
     assert_eq!(
