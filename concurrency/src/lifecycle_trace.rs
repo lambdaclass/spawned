@@ -923,6 +923,6 @@ mod imp {
 
 #[cfg(feature = "lifecycle-trace")]
 pub use imp::{
-    record_lifecycle, recorded, take, take_jobs, take_lifecycle, take_replies, take_tree,
-    watch_deferred,
+    record_lifecycle, recorded, recorded_with, take, take_jobs, take_lifecycle, take_replies,
+    take_tree, watch_deferred,
 };
