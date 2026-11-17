@@ -653,143 +653,19 @@ pub(super) async fn run_actor<A: Actor, C: Fn()>(
     owned.finish(false);
 }
 
-pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
+/// The message loop, its own future: the start phase's state and code stay
+/// out of each message's poll (as compact as 0.8's loop).
+#[allow(clippy::too_many_arguments)]
+async fn message_loop<A: Actor, C: Fn()>(
     actor: &mut A,
-    ctx: Context<A>,
+    ctx: &Context<A>,
     rx: &mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cleanup: &mut crate::actor_cleanup::ActorCleanup<C>,
-    cancellation_token: StopToken,
+    cancellation_token: &StopToken,
+    request: &crate::link::LinkedExitReason,
+    trace_id: u64,
+    continuation: Option<Box<dyn Envelope<A> + Send>>,
 ) {
-    let _monitor_cleanup = MonitorCleanup(ctx.shared.monitors.clone());
-    let request = ctx.shared.linked_reason.clone();
-    let trace_id = ctx.shared.id.raw();
-    let cell = ctx.shared.signal.startup.clone();
-    // A kill or the init timer before started() began (`KilledEarly`), or
-    // a managed admission already closed: started() is not run.
-    let (killed, closed) = crate::lifecycle_trace::start_section(|| {
-        let killed = link::lock_request(&request).killed_early()
-            || cell.commit() == crate::start::Commit::TimedOut;
-        let closed = ctx
-            .shared
-            .managed()
-            .is_some_and(|scope| !scope.admission_open());
-        if !killed {
-            // A closed admission skips started() but resolves as if it
-            // returned ready (row 9, or row 3 for a scope's stop): the
-            // model's StartedBegin and StartedEnd.
-            let c = cell.trace_id();
-            crate::lifecycle_trace::start_emit(c, || {
-                crate::lifecycle_trace::StartEvent::new("SStartedBegin", c)
-            });
-        }
-        (killed, closed)
-    });
-    let (returned, continuation) = if killed {
-        (crate::start::Returned::NotBegun, None)
-    } else if closed {
-        (crate::start::Returned::Ready, None)
-    } else {
-        let mut init: Option<start::Init<A>> = None;
-        let start_result = AssertUnwindSafe(async {
-            fail_point!("actor.before_started", async);
-            let started = actor.started(&ctx);
-            let slot = &mut init;
-            DeathFirst::new(
-                crate::lifecycle_trace::in_actor(
-                    ctx.shared.id.raw(),
-                    Box::pin(async move {
-                        *slot = Some(started.await.into());
-                    }),
-                ),
-                &mut *rx,
-                &mut *cleanup,
-                None,
-            )
-            .await
-            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-        })
-        .catch_unwind()
-        .await;
-        match start_result {
-            Err(panic) => {
-                let msg = panic_message(&*panic);
-                crate::actor_cleanup::log_safely(|| {
-                    tracing::error!("Panic in started() callback: {msg}");
-                });
-                (crate::start::Returned::Panic(msg), None)
-            }
-            Ok(()) => init.map_or((crate::start::Returned::Ready, None), |init| {
-                init.into_returned()
-            }),
-        }
-    };
-    fail_point!("actor.after_started_before_ready", async);
-    // The startup decision (design 2.3) and, when ready, the readiness
-    // commit (5.1): under the child's admission gate, its exit-request lock
-    // and the cell lock, one step. No failed start runs stopped().
-    let trapping = ctx.shared.trap_exit.load(Ordering::Acquire);
-    let continued = continuation.is_some();
-    let decide = |open: bool| {
-        let mut req = link::lock_request(&request);
-        cell.decide(&returned, continued, trapping, |timed_out| {
-            let row = req.resolve_start(trapping, timed_out, &returned, open);
-            let cause = match (&row, &returned) {
-                (crate::start::Row::Error, crate::start::Returned::Error(cause)) => {
-                    Some(cause.clone())
-                }
-                _ => None,
-            };
-            (row, req.reason().cloned(), cause)
-        })
-    };
-    let row = crate::lifecycle_trace::start_section(|| {
-        crate::lifecycle_trace::life_section(trace_id, || {
-            let row = match ctx.shared.managed() {
-                Some(scope) => scope.ready_commit(|open| {
-                    let row = decide(open);
-                    let ready = row == crate::start::Row::Ready;
-                    (row, ready)
-                }),
-                None => decide(true),
-            };
-            if row == crate::start::Row::Panic {
-                crate::lifecycle_trace::life_emit(trace_id, || {
-                    crate::lifecycle_trace::LifeEvent::new("Panic", trace_id).x("started")
-                });
-            }
-            row
-        })
-    });
-    if row != crate::start::Row::Ready {
-        if let (crate::start::Returned::Error(cause), false) =
-            (&returned, row == crate::start::Row::Error)
-        {
-            let id = ctx.shared.id;
-            crate::actor_cleanup::log_safely(|| {
-                tracing::debug!(actor = %id, cause, ?row, "init error superseded by a higher-precedence exit");
-            });
-        }
-        cancellation_token.cancel();
-        return;
-    }
-    // A trapping child's held signals are queued; a non-trapping child's
-    // held Normal ones were dropped. A continuation runs first (L10); a stop
-    // observed before it begins discards it, as queued messages.
-    let continuation = match continuation {
-        Some(continuation) if cancellation_token.is_cancelled() => {
-            rx.hold_for_shutdown(continuation);
-            None
-        }
-        Some(continuation) => {
-            let c = cell.trace_id();
-            crate::lifecycle_trace::start_emit(c, || {
-                crate::lifecycle_trace::StartEvent::new("SContinue", c)
-            });
-            Some(continuation)
-        }
-        None => None,
-    };
-
     // One cancellation future for the whole loop: polled only when the
     // mailbox has nothing, so a busy actor registers no waiter per message.
     let mut cancelled = pin!(cancellation_token.cancelled());
@@ -938,6 +814,156 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
             }
         }
     }
+}
+
+pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
+    actor: &mut A,
+    ctx: Context<A>,
+    rx: &mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
+    cleanup: &mut crate::actor_cleanup::ActorCleanup<C>,
+    cancellation_token: StopToken,
+) {
+    let _monitor_cleanup = MonitorCleanup(ctx.shared.monitors.clone());
+    let request = ctx.shared.linked_reason.clone();
+    let trace_id = ctx.shared.id.raw();
+    let cell = ctx.shared.signal.startup.clone();
+    // A kill or the init timer before started() began (`KilledEarly`), or
+    // a managed admission already closed: started() is not run.
+    let (killed, closed) = crate::lifecycle_trace::start_section(|| {
+        let killed = link::lock_request(&request).killed_early()
+            || cell.commit() == crate::start::Commit::TimedOut;
+        let closed = ctx
+            .shared
+            .managed()
+            .is_some_and(|scope| !scope.admission_open());
+        if !killed {
+            // A closed admission skips started() but resolves as if it
+            // returned ready (row 9, or row 3 for a scope's stop): the
+            // model's StartedBegin and StartedEnd.
+            let c = cell.trace_id();
+            crate::lifecycle_trace::start_emit(c, || {
+                crate::lifecycle_trace::StartEvent::new("SStartedBegin", c)
+            });
+        }
+        (killed, closed)
+    });
+    let (returned, continuation) = if killed {
+        (crate::start::Returned::NotBegun, None)
+    } else if closed {
+        (crate::start::Returned::Ready, None)
+    } else {
+        let mut init: Option<start::Init<A>> = None;
+        let start_result = AssertUnwindSafe(async {
+            fail_point!("actor.before_started", async);
+            let started = actor.started(&ctx);
+            let slot = &mut init;
+            DeathFirst::new(
+                crate::lifecycle_trace::in_actor(
+                    ctx.shared.id.raw(),
+                    Box::pin(async move {
+                        *slot = Some(started.await.into());
+                    }),
+                ),
+                &mut *rx,
+                &mut *cleanup,
+                None,
+            )
+            .await
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        })
+        .catch_unwind()
+        .await;
+        match start_result {
+            Err(panic) => {
+                let msg = panic_message(&*panic);
+                crate::actor_cleanup::log_safely(|| {
+                    tracing::error!("Panic in started() callback: {msg}");
+                });
+                (crate::start::Returned::Panic(msg), None)
+            }
+            Ok(()) => init.map_or((crate::start::Returned::Ready, None), |init| {
+                init.into_returned()
+            }),
+        }
+    };
+    fail_point!("actor.after_started_before_ready", async);
+    // The startup decision (design 2.3) and, when ready, the readiness
+    // commit (5.1): under the child's admission gate, its exit-request lock
+    // and the cell lock, one step. No failed start runs stopped().
+    let trapping = ctx.shared.trap_exit.load(Ordering::Acquire);
+    let continued = continuation.is_some();
+    let decide = |open: bool| {
+        let mut req = link::lock_request(&request);
+        cell.decide(&returned, continued, trapping, |timed_out| {
+            let row = req.resolve_start(trapping, timed_out, &returned, open);
+            let cause = match (&row, &returned) {
+                (crate::start::Row::Error, crate::start::Returned::Error(cause)) => {
+                    Some(cause.clone())
+                }
+                _ => None,
+            };
+            (row, req.reason().cloned(), cause)
+        })
+    };
+    let row = crate::lifecycle_trace::start_section(|| {
+        crate::lifecycle_trace::life_section(trace_id, || {
+            let row = match ctx.shared.managed() {
+                Some(scope) => scope.ready_commit(|open| {
+                    let row = decide(open);
+                    let ready = row == crate::start::Row::Ready;
+                    (row, ready)
+                }),
+                None => decide(true),
+            };
+            if row == crate::start::Row::Panic {
+                crate::lifecycle_trace::life_emit(trace_id, || {
+                    crate::lifecycle_trace::LifeEvent::new("Panic", trace_id).x("started")
+                });
+            }
+            row
+        })
+    });
+    if row != crate::start::Row::Ready {
+        if let (crate::start::Returned::Error(cause), false) =
+            (&returned, row == crate::start::Row::Error)
+        {
+            let id = ctx.shared.id;
+            crate::actor_cleanup::log_safely(|| {
+                tracing::debug!(actor = %id, cause, ?row, "init error superseded by a higher-precedence exit");
+            });
+        }
+        cancellation_token.cancel();
+        return;
+    }
+    // A trapping child's held signals are queued; a non-trapping child's
+    // held Normal ones were dropped. A continuation runs first (L10); a stop
+    // observed before it begins discards it, as queued messages.
+    let continuation = match continuation {
+        Some(continuation) if cancellation_token.is_cancelled() => {
+            rx.hold_for_shutdown(continuation);
+            None
+        }
+        Some(continuation) => {
+            let c = cell.trace_id();
+            crate::lifecycle_trace::start_emit(c, || {
+                crate::lifecycle_trace::StartEvent::new("SContinue", c)
+            });
+            Some(continuation)
+        }
+        None => None,
+    };
+
+    message_loop(
+        &mut *actor,
+        &ctx,
+        &mut *rx,
+        &mut *cleanup,
+        &cancellation_token,
+        &request,
+        trace_id,
+        continuation,
+    )
+    .await;
 
     if let Some(scope) = ctx.shared.managed() {
         scope.end_running();
