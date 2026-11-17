@@ -1,9 +1,77 @@
 # Unified start API (0.9): design contract
 
-Status: design in review, revision 3, not implemented. Target release 0.9.
-The implementation follows after two independent reviews. It is designed
-against the 0.8 API as #240 ships it: exit signals, `try_link`, `NoProc`, and
-the 0.8 API-review cleanups (`send_request`, `#[non_exhaustive]` builders).
+Status: revision 3, approved; **implemented in part for 0.9** (see
+[Implementation status](#implementation-status-09)). It is designed against
+the 0.8 API as #240 ships it: exit signals, `try_link`, `NoProc`, and the 0.8
+API-review cleanups (`send_request`, `#[non_exhaustive]` builders).
+
+## Implementation status (0.9)
+
+**Implemented** (both modes unless noted): sections 2.1-2.5 (the verbs,
+`Starter`, `Starting`, `StartOutcome`, `Init` and the 2.3 table, `StartOptions`,
+`Name<A>`, `StartError`), 3 (prepare and one commit), 4 (inheritance; not 4.1),
+5.1-5.5 (the startup cell, disposition at publication, abandonment, answering
+with `pending`), 6 (the init timer and stuck policy), 7 (start-time names), 8
+(continuations), 10 partly (`Mock::spawn`/`spawn_with`, `TestSystem::spawn`/
+`start`/`spawn_mock`/`options`), 12 (migration), 16.2 (trace validation:
+`TraceStart.tla`, all 28 event kinds, 16 recorded scenarios, 15
+recorded-trace controls).
+
+**Not yet implemented** (follow-up PRs):
+
+- 4.1, S8: scope ownership of linked children (the owner gate, the polite
+  `Shutdown` at the parent's publication, the scope deadline, the
+  generation's end). A linked child of a managed parent is admitted to the
+  parent's group but is not owned by its scope.
+- 9: `ChildStart::Ignore`, `ChildState::Ignored`, `ChildStartError`,
+  `ChildSpec::options` and the absolute attempt deadline; the
+  `Supervision.tla`/`Cohorts.tla` changes. A supervised child's
+  `Init::ignore()` is a failed start, as before.
+- 10: `Mock::on_started`, `start_delay`, `drop_flag`.
+- 16.3-16.5: the simulator races, the fuzzer's start generator and oracles,
+  the planted-bug patches of 16.5. The Loom row has one of five tests
+  (`start_edge_commit_races_parent_exit_begin`).
+- `label` sets a managed actor's diagnostic name (threads mode: the thread
+  name); introspection's `set_label` (#256) does not exist yet.
+
+**Deviations, each forced by the code or by Rust:**
+
+- **Slot release** (5.2 step 4, `SReleaseSlot`). A group slot is released at
+  the instance's scope completion, after publication and the owned-work join,
+  not before publication: a thread group's slot is the native worker that
+  still runs the job join, so releasing it earlier admits a new actor onto a
+  busy worker. `Start.tla` was changed to match (`ReleaseSlot` after
+  `Publish` and `WorkDoneC`; P's slot after `WorkDoneP`); every configuration
+  and control was rerun. A retry into a full thread group may therefore see
+  `Capacity` until the old instance's jobs are joined; the name is free at
+  publication as designed.
+- **Lock order of the commit** (section 3, ranks 3-4). The parent's link or
+  monitor table is taken before its exit-request lock, the order every other
+  0.8 path uses (`link/table.rs`: tables, then exit request); the design's
+  reverse order would deadlock against notice delivery. The commit stays
+  atomic: the exit check, the edge and the name are applied under all of
+  them.
+- **Non-ready resolution and D** (2.3). The decision fixes the reason under
+  the exit-request lock and marks it final (a later kill or signal is a
+  no-op, as past D); the link table is closed by the ordinary D right after,
+  outside that lock, as in 0.8. Observably the same as one critical section;
+  the trace records D as a folded step (`SDie` with `f`).
+- **`refining_impl_trait`.** `started()` returns `impl Into<Init<Self>>`; an
+  impl returning `()` refines it, which rustc's warn-by-default lint reports.
+  `#[actor]`/`#[started]` add the allow; manual impls add it themselves
+  (MIGRATION.md). There is no stable alternative (no associated-type
+  defaults).
+- **Bare `Backend::Thread` spawn.** The thread is spawned after the commit,
+  not parked in prepare; a thread-spawn failure panics, as 0.8's did.
+- **A `Normal` failed-start notice to a waiting non-trapping parent** is
+  dropped at publication (the model's legitimate drop) rather than delivered
+  as a no-op; found by trace validation, which rejected the first recording.
+
+**Observation for a maintainer decision** (not a deviation): row 3 makes an
+administrative stop (`ChildHandle::stop`) that arrives during `started()` a
+failed start without `stopped()`. In OTP a `gen_server:stop/1` sent during
+`init/1` is a system message handled after `init` returns, so `terminate/2`
+runs. The implementation follows the approved table.
 
 Revision 2 answered both round-one reviews. Revision 3 answers both round-two
 reviews (Codex and agy, both "approve after the listed changes", no P0). What

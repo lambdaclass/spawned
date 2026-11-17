@@ -235,18 +235,26 @@ Checked by: [`deferred_jobs`][deferred_jobs].
 ## 4. Lifecycle
 
 **L1. Hook order.** `started()` runs once before any handler; `stopped()` runs
-at most once, after the last handler. No handler runs after `stopped()` begins.
+at most once, after the last handler, and only after a ready startup
+commitment: never after a failed or ignored start, including a `ctx.stop*`
+called in `started()` (OTP skips `terminate/2` when `init/1` fails; v0.9).
+No handler runs after `stopped()` begins.
 Checked by: [`sim_ordering::turns_and_hooks_never_overlap_{pct,dfs}`][sim_ordering],
 [`semantics_gaps`][semantics_gaps]`::{native,tasks}_contract::hooks_and_turns_never_overlap_under_concurrent_requests_and_stop`
 (every placement), [`cross_backend::stop_before_first_poll_follows_managed_and_legacy_contract`][cross_backend],
-the fuzz M1/L1/L5 oracle.
+the fuzz M1/L1/L5 oracle;
+[`start_contract`][start_contract]`::{tasks,threads}_mode::init_outcomes_answer_after_publication_without_stopped`,
+`src/{tasks,threads}/actor/early_stop_regression.rs::stop_in_started_fails_the_start_without_stopped`.
 
-**L2. Managed readiness.** For actors admitted with `start_on` or by a
-supervisor, readiness commits after `started()` returns while admission is
-open; ordinary handlers run only after it. `ready()` reports that historical
-barrier, not current liveness. If admission closes before `started()` begins,
-neither hook runs and the state is dropped (its `Drop` runs). Unmanaged
-`.start()` and threads actors stopped that early run both hooks.
+**L2. Readiness.** Every instance, on every placement and verb, has a
+startup result: the startup cell's `Ready`, committed by the child at the end
+of `started()` while its admission is open, before any continuation or
+handler. It is final: a later death is an ordinary death. `ready()` and the
+waiting starts read the same committed value; it is a historical barrier,
+not current liveness. If a managed actor's admission closes before
+`started()` begins, neither hook runs and the state is dropped. Unmanaged and
+threads actors stopped that early run `started()`, and the stop then fails
+the start (L9 row 3), so `stopped()` does not run (v0.9).
 Checked by: [`startup_admission`][startup_admission],
 [`cross_backend::stop_before_first_poll_follows_managed_and_legacy_contract`][cross_backend],
 [`execution_groups::failed_startup_discards_queued_payloads_and_reply_channels_without_dispatch`][execution_groups],
@@ -297,7 +305,7 @@ after a kill, an untrapped exit signal or link notice, or a runtime drop
 (see X3, X4); one that already began finishes.
 Checked by: `src/{tasks,threads}/actor/tests.rs::panic_in_started_stops_actor`,
 `panic_in_handler_stops_actor`, `panic_in_stopped_still_completes`,
-`panic_during_early_stop_is_reported`; [`panic_safety`][panic_safety],
+`stop_in_started_fails_the_start_without_stopped`; [`panic_safety`][panic_safety],
 [`foreign_panics::panicking_subscriber_keeps_handler_reason_and_runs_stopped`][foreign_panics],
 [`semantics_gaps`][semantics_gaps]`::tasks_contract::panics_in_hooks_follow_the_contract_on_every_placement`
 (reason prefix, handled count and `stopped()` calls);
@@ -327,6 +335,52 @@ Checked by: [`shutdown_publication`][shutdown_publication],
 [`semantics_gaps`][semantics_gaps]`::{native,tasks}_contract::stop_window_accepts_then_discards_and_releases_before_join`,
 [`sim_ordering::stop_discards_queue_before_publishing_exit_{pct,dfs}`][sim_ordering]. Not yet checked:
 outgoing monitors cancelled before publication.
+
+**L8. Start (v0.9).** Stage 1 runs in the start call: the options are
+validated and the instance prepared privately, then one commit, under the lock
+order group admission, the parent's link or monitor table, the parent's exit
+request, the registry, applies the group slot, the parent's edge and the name,
+all or nothing. A refusal (`Closed`, `Capacity`, `AlreadyStarted`,
+`ParentExited`, `InvalidOptions`) is never observable: no hook runs, no edge,
+name or slot remains. `spawn` does not wait; `start`, `start_link` and
+`start_monitor` answer `Started` at once on a ready commitment, and an
+`Ignored` or error answer only after the instance's publication (its state
+dropped, its notices disposed of, its name free) with the final reason, or
+after its cleanup deadline with `pending: Some(handle)`. Dropping a `Starting`
+abandons the wait, nothing else.
+Checked by: `Start!AbortInvisible`, `Start!ResultMatchesCommit`,
+`Start!ReadyIsFinal`, `Start!FailureAfterPublication`,
+`Start!PendingOnlyAfterDeadline`, `Start!CommitImmutable` (TLC, 8
+configurations, 40 negative controls); start traces
+([`start_trace`][start_trace], `TraceStart.tla`, 15 recorded-trace negative
+controls); [`start_contract`][start_contract]`::{tasks,threads}_mode::{init_outcomes_answer_after_publication_without_stopped, names_and_refusals}`,
+`tasks_mode::{start_link_through_dead_context_is_refused, ready_then_immediate_crash_with_unpolled_waiter_returns_started_and_delivers_down, stuck_started_reports_pending_after_the_timeout}`;
+[`link_fence_loom::start_edge_commit_races_parent_exit_begin`][link_fence_loom].
+
+**L9. Init resolution (v0.9).** When `started()` returns, the first
+matching row decides the start and the requested reason, under the child's
+exit-request and cell locks: (1) the init timer committed: `Killed`,
+`InitTimeout`; (2) a kill arrived: `Killed`; (3) an administrative stop, or a
+held non-`Normal` signal to a non-trapping child, the first in arrival order;
+(4) `started()` panicked; (5) `ctx.stop*` in `started()`; (6) `Init::stop(r)`;
+(7) `Err(e)`/`Init::error(e)`: `Normal`, `InitFailed`; (8) `Init::ignore()`:
+`Normal`, `Ignored`; (9) ready, but admission closed: `Shutdown`; (10) ready.
+A non-ready decision fixes the reason for good: a later kill does nothing.
+Held signals of a ready child resolve as in phase 0 (E2, E3). No failed row
+runs `stopped()`.
+Checked by: `Start!KillBeforeDIsKilled`, `Start!IgnoredExitsNormal` (TLC);
+start traces `kill_and_admin_stop_during_started`,
+`parent_exit_during_child_started`, `link_stop_in_started_ends_nontrapping_parent`;
+[`start_contract`][start_contract]`::{tasks,threads}_mode::init_outcomes_answer_after_publication_without_stopped`,
+`tasks_mode::trapping_child_with_parent_exit_in_started_commits_ready_then_ends`.
+
+**L10. Continuation (v0.9).** `Init::continue_with(m)` handles `m` as the
+first turn after the readiness commit, before every mailbox entry (messages
+sent during `started()`, signals queued for a trapping child). It is not a
+barrier against termination; a stop observed before it begins discards it.
+Checked by: `Start!ContinueFirst` (TLC); start trace
+`continuation_precedes_queued_messages` and its negative control;
+[`start_contract`][start_contract]`::{tasks_mode::continuation_runs_before_messages_sent_during_started, threads_mode::continuation_runs_first}`.
 
 ## 5. Links, monitors and trapped exits
 
@@ -380,7 +434,7 @@ read when it arrives:
 | `Kill` signal (`kill()`, `exit(Kill)`) | ends `Killed` | ends `Killed` |
 | `Normal` | nothing | `exit_received(Exit { from, reason: Normal })` |
 | any other reason (a `Kill` notice included) | ends with that reason after its current handler, without `stopped()`, queue discarded; propagates further | `exit_received(Exit { from, reason })` |
-| from the receiver's parent (`start_linked` caller, supervisor, system) | as above | a parent exit is queued: when dispatched the actor exits with that reason through `stopped()`; `exit_received` never sees it |
+| from the receiver's parent (`start_link` caller, supervisor, system) | as above | a parent exit is queued: when dispatched the actor exits with that reason through `stopped()`; `exit_received` never sees it |
 
 Propagation is transitive through non-trapping actors. Links work across
 modes. Signals arriving during `started()` take effect when it returns, with
@@ -422,8 +476,10 @@ gets exactly one notice, the real reason or `NoProc`. Repeating a link
 `unlink` and `demonitor` are fences: once they return, no notice of that edge
 takes effect; an `Exit` already queued stays, a `Down` already queued is
 flushed (X2). Each edge has a generation, so a stale
-notice never applies to a later link. `start_linked` registers the link
-before the child's `started()`.
+notice never applies to a later link. `start_link` and `start_monitor`
+commit their edge before the child's `started()`, on every placement, in the
+start's commit; a start through a parent whose exit began is refused
+(`ParentExited`, v0.9).
 Checked by: `Lifecycle!NoProcIffLate`, `Lifecycle!NoEdgeToDead`, `Lifecycle!CancelFenced` (TLC, `MCLifecycleFence`);
 [`link_fence_loom`][link_fence_loom] (the production link table and monitor
 fence under Loom: `unlink_fences_a_death_notice`, `link_racing_death_gets_exactly_one_notice`,
@@ -435,8 +491,30 @@ fence under Loom: `unlink_fences_a_death_notice`, `link_racing_death_gets_exactl
 [`otp_exit_signals::tasks_mode::registrations_after_death_report_noproc`][otp_exit_signals];
 `src/tasks/actor/tests.rs::duplicate_link_is_idempotent`, `unlink_prevents_signal_delivery`;
 `src/native_link_regression_tests.rs::start_linked_registers_before_threads_started`;
+`Start!LinkBeforeStarted`, `Start!EdgeOnlyToRunningParent` (TLC) and the start
+trace control "edge committed after started() began";
+[`link_fence_loom::start_edge_commit_races_parent_exit_begin`][link_fence_loom];
 lifecycle traces `late_registrations_get_noproc`, `unlink_fences_a_notice_taken_at_death`,
 `demonitor_fences_a_down`.
+
+**X8. Startup notices (v0.9).** A start edge's notice is disposed of at the
+child's publication by its startup commitment and its waiter: after a ready
+commitment, or for an abandoned or absent waiter, it is ordinary; while the
+waiter waits on a failed or ignored start, a trapping parent's `Exit` and a
+monitor's `Down` are diverted to it (its error consumes them), a
+non-trapping parent is still ended by a non-`Normal` reason (a `Normal` one
+is dropped); a timed-out start's notice is diverted for both trap settings,
+so an init timeout never reaches a waiting parent. An abandoned wait hands a
+diverted notice on exactly once. No notice is lost or delivered twice.
+Checked by: `Start!FailureFlushed`, `Start!NoticeOnce`, `Start!NoLostNotice`,
+`Start!TimeoutContained`, `Start!AbandonedNoticeDelivered`,
+`Start!FailureEndsNonTrappingParent`, `Start!NormalFailureSparesParent`
+(TLC); start traces `monitor_error_consumes_down`,
+`link_panic_in_started_trapping_parent`,
+`abandon_after_publication_hands_on_exit`, `abandoned_timeout_delivers_killed`,
+`init_timeout_waiting` and their negative controls;
+[`start_contract`][start_contract]`::{tasks,threads}_mode::failed_start_notices_follow_the_disposition_table`,
+`tasks_mode::{abandoned_start_monitor_still_delivers_down, init_timeout_never_reaches_the_parent}`.
 
 **X6. Runtime teardown still notifies.** An actor whose future or thread is
 dropped by its runtime, polled or never polled, ends `Killed` in both modes
@@ -659,11 +737,35 @@ Checked by: [`execution_groups::old_scope_cleanup_cannot_remove_a_replacement_re
 [`supervision::owned_registration_is_released_before_the_replacement_registers`][supervision],
 `src/registry.rs::old_guard_preserves_new_registration_even_with_same_actor_identity`.
 
-**S6. Unmanaged work is not owned.** `.start()`, `tokio::spawn` and raw
-threads, even inside a managed handler, are not joined by shutdown and can be
-aborted at group teardown without `stopped()`.
+**S6. Unmanaged work is not owned.** `spawn`/`start` without a placement,
+`tokio::spawn` and raw threads, even inside a managed handler, are not joined
+by shutdown and can be aborted at group teardown without `stopped()`.
 Checked by: [`execution_groups::ambient_actor_started_inside_group_is_unmanaged_and_aborted_at_teardown`][execution_groups],
 [`semantics_gaps`][semantics_gaps]`::tasks_contract::unmanaged_tasks_and_threads_are_not_joined_by_shutdown`.
+
+**S7. Placement inheritance (v0.9).** A `start_link` or `start_monitor`
+child is placed in its parent's placement (its group and pinned shard, or its
+backend) unless the start names one; `spawn` and `start` never inherit
+(`placement_of(&ctx)` opts in). A closed or full inherited group fails the
+start (`Closed`, `Capacity`), with no fallback. Scope ownership of linked
+children (design S8) is not implemented yet.
+Checked by: `Start!InheritedPlacement`, `Start!AdmittedOnlyOpen`,
+`Start!CapacityRespected` (TLC); start trace
+`inherited_thread_group_capacity` and its control "linked child not in its
+parent's group"; [`start_contract`][start_contract]`::tasks_mode::{link_and_monitor_inherit_the_parents_group, inherited_start_into_full_thread_group_fails_capacity}`.
+
+**S9. Start-time names (v0.9).** `StartOptions::name(Name<A>)` registers the
+name in the start's commit (a clash is `AlreadyStarted` with the holder's
+handle, `None` for a non-actor value; nothing is created), holds it until the
+instance's publication and releases it before any notice, `wait_exit` or
+answer, so a retry after a failed start never overlaps the old instance. A
+group slot is released when the instance's scope completes (after
+publication and the owned-work join).
+Checked by: `Start!NameUnique`, `Start!NameKeptWhileLive`,
+`Start!NoOverlapOnReuse`, `Start!NameFreeBeforeObservation`,
+`Start!SlotHeldUntilReleased` (TLC); start trace
+`named_start_clash_and_release` and its negative controls;
+[`start_contract`][start_contract]`::{tasks_mode::names_are_committed_and_released_atomically, threads_mode::names_and_refusals}`.
 
 ## 8. Timers and time
 
@@ -709,6 +811,18 @@ Checked by: the paused-time tests (`semantics_gaps::tasks::send_after_fires_once
 and the simulator's virtual clock for tasks; `src/threads/timer_tests.rs::threads_send_after_uses_the_monotonic_clock_over_long_delays`,
 `threads_send_interval_is_fixed_delay_while_the_actor_stalls` and
 [`supervision::native_restart_window_expires_on_the_monotonic_clock`][supervision] (`thread_group`) for threads.
+
+**T5. Init timeout (v0.9).** `StartOptions::init_timeout(d)` arms a
+framework-owned timer at the start's commit. At expiry it commits `TimedOut`
+only if nothing is committed (it loses to a ready commitment) and kills the
+instance; the kill is applied when `started()` returns (nothing is
+interrupted): a `started()` that never returns keeps its name and slot, and
+the waiter answers `InitTimeout { pending: Some(handle) }` at the cleanup
+deadline. Default `Infinity`, as OTP.
+Checked by: `Start!TimeoutNeverKillsReady`, `Start!CommitImmutable` (TLC);
+start traces `init_timeout_waiting`, `abandoned_timeout_delivers_killed` and
+the control "init timer wins after a ready commitment";
+[`start_contract`][start_contract]`::tasks_mode::{init_timeout_never_reaches_the_parent, stuck_started_reports_pending_after_the_timeout}`.
 
 ## 9. Panics
 
@@ -841,6 +955,8 @@ remaining differences of the exit-signal design are listed in
 
 See the [ranked backlog](../../ROADMAP.md#ranked-backlog).
 
+[start_contract]: ../../concurrency/tests/start_contract.rs
+[start_trace]: ../../concurrency/tests/start_trace.rs
 [deferred_replies]: ../../concurrency/tests/deferred_replies.rs
 [deferred_jobs]: ../../concurrency/tests/deferred_jobs.rs
 [actor_scenarios]: ../../concurrency/tests/actor_scenarios.rs

@@ -14,6 +14,66 @@ account for when upgrading.
   `async`, the default, if you need it explicitly). The research experiments
   live in the unpublished `benchmarks/experiments` crate.
 
+#### Unified start: API call-site table
+
+0.9 replaces the start methods with OTP's verbs
+([design](design/unified-start.md)): `spawn` does not wait (`proc_lib:spawn`);
+`start`, `start_link` and `start_monitor` wait for `started()`
+(`gen_server:start*`). Every break, old call to new call:
+
+| Old call (0.8) | New call (0.9) | Behaviour |
+|---|---|---|
+| `a.start()` | `a.spawn()` | same (unmanaged `Backend::Async`, does not wait) |
+| | or `a.start().await?` | waits for `started()`; reports init failures |
+| `a.start_with_backend(b)` | `a.with_options(b).spawn()?` | same; returns `Result` (invalid options or executor failure) |
+| `a.start_on(&g)?` | `a.with_options(&g).spawn()?` | same; error type `StartError` (was `SystemError`) |
+| `g.start(a)?` (`ExecutionGroup::start`) | `a.with_options(&g).spawn()?` | same |
+| `a.start_linked(&ctx)` | `a.start_link(&ctx).await?` | **changes**: inherits the parent's placement, waits for `started()`, refuses an exiting parent (`ParentExited`); a failed start answers the error and consumes a trapping parent's `Exit` |
+| | `a.start_link(&ctx).actor_ref()?` (then drop the `Starting`) | the 0.8 behaviour (no wait; notices delivered ordinarily), but with inherited placement |
+| `ctx.monitor(&a.start().child_handle())` | `a.start_monitor(&ctx).await?` → `(ActorRef, MonitorRef)` | atomic; the parent needs `Handler<Down>` |
+| `ctx.register_name(n)` in `started()` | `a.with_options(StartOptions::new().name(n))` | atomic with the start; released at publication; `Name<A>` is typed |
+| `actor.ready().await -> Result<(), SystemError>` (managed only) | `actor.ready().await -> Result<StartOutcome<()>, StartError>` | every placement; `Ok(Ignored)` for `Init::ignore()` |
+| `SystemError::StartupFailed(r)` | `StartError::InitExited { reason: r, .. }` (or `InitFailed`, `InitTimeout`) | removed |
+| `SystemError::UnmanagedActor` from `ready()` | `ready()` answers for unmanaged actors too | |
+| threads `a.start()` | `a.spawn()`, or `a.start()?` (blocks for `started()`) | same / waits |
+| threads `a.start_linked(&ctx)` | `a.start_link(&ctx)?` (blocks) | as tasks |
+| `Mock::new()..start()` | `Mock::new()..spawn()` | same |
+| `Mock::new()..start_on(&g)` | `Mock::new()..spawn_with(&g)` | same; `StartError` |
+| `TestSystem::start(a)` | `TestSystem::spawn(a)`, or `TestSystem::start(a).await` (waits; panics on failure) | same / waits |
+| `TestSystem::start_mock(m)` | `TestSystem::spawn_mock(m)` | same |
+| `async fn started(..) {}` | unchanged | `#[started]` methods are unchanged |
+| manual `impl Actor` with `async fn started` | unchanged, but add `#[allow(refining_impl_trait)]` (or allow the lint crate-wide) | `started()` now returns `impl Into<Init<Self>>`; returning `()` refines it, which rustc's warn-by-default `refining_impl_trait` reports. `#[actor]`/`#[started]` add the allow |
+| `stopped()` ran after a `ctx.stop*()` called in `started()` (and after an administrative stop or held exit signal resolved there) | it no longer runs after any failed start | **changes**: as OTP skips `terminate/2` when `init/1` fails. Release resources acquired in `started()` before returning, or hold them in RAII guards |
+
+New, no migration needed: `started()` may return `Result<(), E>`,
+`Result<Init<Self>, E>` or `Init<Self>` (`Init::ready`, `continue_with(msg)`,
+`error(e)`, `stop(reason)`, `ignore()`); `StartOptions` (`name`, `label`,
+`init_timeout`, `stack_size`, `max_outstanding`, `max_native_jobs`, and in
+tasks mode `group`, `backend`, `placement_of`); `Starting::actor_ref()`;
+`StartOutcome`, `StartError`, `Timeout`.
+
+Behaviour changes to check at call sites:
+
+- **Error type.** Functions that propagated `start_on`'s `SystemError` with
+  `?` now get a `StartError` (`From<SystemError>` exists for the other
+  direction's callers: `StartError::from(system_error)`).
+- **Waiting starts block the parent's turn.** A `start_link` awaited inside a
+  handler waits for the child's `started()`; a request from that `started()`
+  back to its parent waits for its timeout (as OTP's `gen_server:call` from
+  `init/1`). Move slow initialisation into a continuation.
+- **An administrative stop during `started()`** (`ChildHandle::stop*`, a
+  supervisor's or system's shutdown) fails the start (`InitExited`) and skips
+  `stopped()`.
+- **`#[must_use]`.** `Starting` and `StartOutcome` are `#[must_use]`:
+  `a.start();` without `.await` still starts the actor (stage 1 is eager) and
+  warns. `actor.ready().await.unwrap()` now yields a `StartOutcome<()>`:
+  check it (`.started().expect(..)`) or ignore it explicitly.
+- **Not in this release** (still 0.8 behaviour): scope ownership of linked
+  children (S8: a linked child of a managed parent is admitted to the
+  parent's group but not owned by its scope), `ChildStart::Ignore` and
+  `ChildState::Ignored` for supervisors (a supervised child's
+  `Init::ignore()` is a failed start), `ChildSpec::options`.
+
 ## 0.8.0
 
 ### 0.7 to 0.8: API call-site table

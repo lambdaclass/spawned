@@ -84,7 +84,7 @@ runs real actors through the scenarios below and writes each trace as JSON;
 TLC then checks that each trace is a behavior of `Supervision.tla`.
 
 ```bash
-cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace --test job_trace --test reply_trace --test lifecycle_trace
+cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace --test job_trace --test reply_trace --test lifecycle_trace --test start_trace
 nix run .#check-tla -- --traces-only target/lifecycle-traces --negative-controls   # or --traces DIR to also model-check
 nix develop -c python3 verification/tla/trace_check.py target/lifecycle-traces
 ```
@@ -185,7 +185,7 @@ Model actions without an arm are listed in the map's `[trace.unlogged]` with
 the reason.
 
 ```bash
-cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace --test job_trace --test reply_trace --test lifecycle_trace
+cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace --test job_trace --test reply_trace --test lifecycle_trace --test start_trace
 nix develop -c python3 verification/tla/trace_coverage.py --traces dedicated=target/lifecycle-traces \
     --model-keys verification/tla/coverage-model.json.gz --baseline verification/tla/coverage-baseline.json
 # every test binary: each finished supervisor dumps its traces
@@ -556,7 +556,7 @@ admission check with the push, D with the exit-table close. A
 recorded actor's sections take the process-wide trace section first, so the
 log is a linearization. `TraceLifecycle.tla` replays it with no unlogged
 steps; its header lists the mapping (actors `a1`, `a2` in spawn order,
-`start_linked` parents as `LinkParent`, every send a request from `Ext`,
+`start_link` parents as `LinkParent`, every send a request from `Ext`,
 folded request panics, the late `NoProc` notice of a non-trapping caller,
 and `Hook` "skip" accepted after a kill that arrived before `stopped()`
 began, which the model's `Kill` leaves out). Phase 0 (signals held during
@@ -567,7 +567,7 @@ request answered `Killed` and a later `NoProc`, kill during `stopped()`,
 untrapped and `Normal` signals, trapped exits (also from an actor, then a
 kill), late link/try_link/monitor (`NoProc`), a late link ending a
 non-trapping caller, the unlink and demonitor fences between D and
-publication, a monitor's `Down`, a `start_linked` parent exit to a trapping
+publication, a monitor's `Down`, a `start_link` parent exit to a trapping
 child, a link notice ending a non-trapping peer, runtime drop (`Killed`), and
 one threads-mode run. Controls (`lifecycle_trace_controls`): `stopped()`
 after a kill or after an untrapped signal, `Kill` instead of `Killed`,
@@ -763,14 +763,41 @@ below the bound, a reply after death, a second discharge, a drop before the
 turn, and a `Stopped` discharge of the panicking turn's token before its
 `Exit`, the rank 11 behaviour before 5e).
 
-## Unified start (0.9 design)
+## Unified start (0.9)
 
 `Start.tla` backs the [unified start design](../../docs/design/unified-start.md)
-(approved after three review rounds). It was written before the implementation, as the
+(approved after three review rounds), written before the implementation, as the
 deferred-replies models were. Design section 15 lists what it covers, its
-invariants and what it leaves out. It is TLC-only in
-`verification/model-map.toml` until the implementation adds trace
-validation (design section 16.2).
+invariants and what it leaves out.
+
+**Change with the implementation.** A group slot is released when the
+instance's scope completes, after publication and its owned work (the job
+join, helpers): `ReleaseSlot` now follows `Publish` and `WorkDoneC`, and P's
+slot is held until P is published and its work joined. The code holds a
+thread group's slot until then because the slot is the native worker that
+still runs the join; the design's release before publication would admit a
+new actor onto a busy worker. Every per-PR configuration and all 40 controls
+were rerun after the change.
+
+**Trace validation** (`TraceStart.tla`, schema `start-v1`). With
+`lifecycle-trace`, `lifecycle_trace::record_start_parent(&p)` records, for
+every start made from then on and for the parent P, one `StartEvent` per
+model action at its linearization point (the table in `TraceStart.tla`'s
+header and design 16.2): `SBegin`, `SCommit`/`SRefuse` under the commit's
+locks, `SResolve` under the exit-request and cell locks, `SPublish` with the
+notice's disposition under the cell lock, `SAnswer`/`SReady`/`SAbandon`,
+`STimer`, `SDeadline`, `SExit`/`SDie`, `SReleaseName` under the registry
+lock, `SWorkDone`/`SReleaseSlot` at the scope's completion, `PExitBegin`,
+`PDie`, `PPublish` and `PNotice` for the parent. `concurrency/tests/start_trace.rs`
+records 16 scenarios (link, monitor, failed and ignored starts, names,
+continuations, the init timer, kills and stops during `started()`, the
+parent's exit during a child's `started()`, abandonment, unlink, an
+inherited thread group's capacity, threads mode); each waits for the events
+it needs before taking the trace. `negative_checks.py`
+(`start_trace_controls`) requires 15 edits of recorded traces to be rejected
+(design 16.2's list). Coverage: all 28 arms (`coverage-baseline.json`, floor
+28 in `model-map.toml`). Not mapped: scope ownership (S8: `OwnerClose`,
+`ScopeDeadline`, `GenDone`), group closure, a second group `G2`.
 
 | Configuration | Run | Instance |
 |---|---|---|

@@ -358,12 +358,12 @@ that traps exits receives its parent's death in `exit_received`.
 
 - **Parent identity.** Each actor instance has an immutable parent, fixed at
   spawn before the link is registered and before `started()`:
-  - `start_linked(parent_ctx)`: the actor whose `Context` was passed
-    (normally the caller);
+  - `start_link(parent_ctx)` (0.8: `start_linked`): the actor whose
+    `Context` was passed (normally the caller);
   - a supervised child: its supervisor (each replacement generation gets the
     same supervisor parent);
   - a standalone actor started on an `ActorSystem` or group: the system;
-  - an unmanaged `.start()`: none.
+  - an unmanaged `.spawn()`/`.start()` (0.9): none.
 
   Supervisors and systems are not actors; their signals use an internal
   entry point on the actor's scope that marks them as parent signals.
@@ -378,9 +378,10 @@ that traps exits receives its parent's death in `exit_received`.
   This includes `Normal`: a trapping `start_linked` child ends when its parent
   ends normally, as a gen_server does. Users who want to observe the parent's
   exit instead use `ctx.link`, not `start_linked`.
-- **A parent already past D.** `start_linked` with such a parent registers the
-  link against a gone actor (E4): the child receives a parent exit with
-  `NoProc` (trapping: queued; non-trapping: begins exit with `NoProc`).
+- **A parent already past D.** In 0.8, `start_linked` with such a parent
+  registered the link against a gone actor (E4): the child received a parent
+  exit with `NoProc`. Since 0.9 `start_link` refuses it (`ParentExited`,
+  unified start X5): the child is never created.
 - **No early commitment.** Queuing a parent exit commits no reason and cancels
   neither the child's token nor its helpers. Supervisor or system shutdown
   still closes admission for the whole managed tree at once (semantics S1), so
@@ -397,7 +398,7 @@ that traps exits receives its parent's death in `exit_received`.
   | rollback of a failed start (S1, S2) | same | `kill` | same |
   | a child ends on its own, by an administrative stop or by a kill | `shutdown_timeout` from exit begin | cleanup stuck (V3, unchanged) | none: it is already exiting, and a kill would relabel its reason |
   | `ActorSystem::shutdown(grace)` / group shutdown, standalone actor | until its turn ends or `grace` expires (S2, reverse order, parent Shutdown) | `kill` to every remaining actor at `grace` | report incomplete; pending work stays owned by the system (S3, unchanged) |
-  | unmanaged `.start()` actor | none | none | none |
+  | unmanaged `.spawn()`/`.start()` actor | none | none | none |
 
   A supervisor `shutdown(deadline)` keeps `deadline` as the report deadline
   only: at it, siblings not yet signalled get their Shutdown and the report is

@@ -335,18 +335,22 @@ giving collateral children their own backoff fails
 | R3 | `protocol_timeouts` precedence; `tasks_contract::default_request_timeout_*` (4.9 s Ok, 5.1 s timeout, no timer before first poll) | A N, Sim | partial → covered | send-only methods: by type (no `Response`) |
 | R4 | `cancellation_safety`; `request_histories` pending ops | A B T G TG, Sim | covered | |
 | R5 | `semantics_gaps::*::panicking_request_handler_*`; `cross_backend` | A B T N G TG P | covered | |
-| L1 | `sim_ordering::turns_*`; `*_contract::hooks_and_turns_*`; Fz | A B T N G TG, Sim (PCT, DFS) | covered (A only) → covered | |
-| L2 | `startup_admission`; `execution_groups::failed_startup_*`; `tasks_contract::managed_readiness_*` (historical `ready()`) | G TG, Sim (G) | partial → covered | |
+| L1 | `sim_ordering::turns_*`; `*_contract::hooks_and_turns_*`; Fz; v0.9: `start_contract::*::init_outcomes_*` (no `stopped()` after any failed start), `early_stop_regression::stop_in_started_*` | A B T N G TG, Sim (PCT, DFS) | covered (A only) → covered | |
+| L2 | `startup_admission`; `execution_groups::failed_startup_*`; `tasks_contract::managed_readiness_*` (historical `ready()`); v0.9 every placement: `start_contract::*::ready_then_immediate_crash_*`, `Start!ReadyIsFinal`, `Start!ReadyOnlyWhileOpen` | A N G TG, Sim (G), Model | partial → covered | |
 | L3 | `context_exit` (first reason wins); `sim_ordering::turns_*` (stop never splits a turn) | A N, Sim | partial | cleanup panic after a committed reason; owned by #240 (rank 5e) |
 | L4 | `exit_signal_matrix`, `context_exit`, `panic_safety` | A B T N G TG | covered | owned by #240 |
 | L5 | `foreign_panics` (strict); `tasks_contract::panics_in_hooks_*` | A B T N G TG | covered (B, T unchecked) → covered | |
 | L6 | `mailbox_drop_panic` (5 placements x 1/2/256), `native_mailbox_drop`, lifecycle traces | A B T N G TG | covered | not simulated (subprocesses) |
 | L7 | `shutdown_publication`; `*_contract::stop_window_*`; `sim_ordering::stop_discards_*` | A B T N G TG, Sim | partial | outgoing monitors cancelled before publication (after #240) |
+| L8 (v0.9) | `Start.tla` (8 configurations, 40 controls); start traces (16 scenarios, 15 recorded-trace controls); `start_contract::*::{init_outcomes_*, names_*}`, `tasks_mode::{start_link_through_dead_context_is_refused, stuck_started_reports_pending_*}`; `link_fence_loom::start_edge_commit_races_parent_exit_begin` | A T N G TG, Model, Loom | new: covered | the sim and fuzz layers of design 16.3-16.4 |
+| L9 (v0.9) | `Start!KillBeforeDIsKilled`, `Start!IgnoredExitsNormal`; traces `kill_and_admin_stop_during_started`, `parent_exit_during_child_started`; `start_contract::*::init_outcomes_*` (every row but 1-3 per mode), `trapping_child_with_parent_exit_*` | A N, Model | new: covered | rows 2-3 not in threads mode tests |
+| L10 (v0.9) | `Start!ContinueFirst`; trace `continuation_precedes_queued_messages` and its control; `start_contract::*::continuation_*` | A N, Model | new: covered | |
 | X1 | `actor_scenarios` monitor races; `exit_signal_matrix`; Fz | A B T N, Sim | covered | owned by #240 |
 | X2 | unit `demonitor_*`, `closed_monitor_table_*`; `leaks` | A N | covered | demonitor checks use a bounded window |
 | X3 | unit link tests; `exit_signal_matrix`; Fz | A N, Sim | covered | owned by #240; threads lacks the Normal and chain variants (after #240) |
 | X4 | `kill_links` | A N | covered | owned by #240 |
-| X5 | unit link tests; `link_regression_tests` | A N | covered | owned by #240 |
+| X5 | unit link tests; `link_regression_tests`; v0.9: `Start!LinkBeforeStarted`, `Start!EdgeOnlyToRunningParent`, the trace control "edge committed after started() began", `link_fence_loom::start_edge_commit_races_parent_exit_begin`, `start_contract::*::start_link_through_dead_context_is_refused`/`names_and_refusals` | A N, Model, Loom | covered | owned by #240 |
+| X8 (v0.9) | `Start!{FailureFlushed, NoticeOnce, NoLostNotice, TimeoutContained, AbandonedNoticeDelivered}`; traces with diverted, dropped and handed-on notices and their controls; `start_contract::*::failed_start_notices_*`, `tasks_mode::{abandoned_start_monitor_*, init_timeout_never_reaches_the_parent}` | A N, Model | new: covered | |
 | X6 | `link_regression_tests` | A | covered | owned by #240 |
 | X7 | `semantics_gaps::*::exit_and_down_follow_*`; `sim_ordering::exit_and_down_follow_the_last_message_*`; Fz | A B T N, Sim (PCT, DFS) | partial | a non-trapping linked stop after the current handler (exit signals, #240) |
 | V1 | `supervisor_policies` oracle; `supervision::restart_modes_*` (real `Normal`, `Shutdown` and panic exits); `Supervision!RestartFollowsPolicy`, `TemporaryStartsOnce` (`MCSupervisionTemporary`) | G, Sim, Model | covered | |
@@ -364,9 +368,12 @@ giving collateral children their own backoff fails
 | S4 | `src/system.rs::coordinator_fault_*`; failpoints | G, Model | covered | not simulated (failpoints) |
 | S5 | `execution_groups`, `supervision`, `src/registry.rs` tests; Fz | G, Sim | covered | |
 | S6 | `execution_groups::ambient_actor_*`; `tasks_contract::unmanaged_tasks_and_threads_*` | G | partial → covered | |
+| S7 (v0.9) | `Start!InheritedPlacement`, `CapacityRespected`; trace `inherited_thread_group_capacity` and its control; `start_contract::tasks_mode::{link_and_monitor_inherit_*, inherited_start_into_full_thread_group_*}` | G TG, Model | new: covered | pinned shards and the Blocking/Thread backends are not asserted (no backend query) |
+| S9 (v0.9) | `Start!{NameUnique, NameKeptWhileLive, NoOverlapOnReuse, NameFreeBeforeObservation}`; trace `named_start_clash_and_release` and its controls; `start_contract::*::names_*` | A N, Model | new: covered | |
 | T1 | `semantics_gaps::tasks::send_after_fires_once_*` (paused time); `resource_cleanup`; `cross_backend::timers_match` | A B T N G TG P | covered | |
 | T2 | `semantics_gaps::tasks::send_interval_is_fixed_delay_*` (paused time) | A | covered | threads by construction |
 | T3 | `semantics_gaps::tasks::timers_are_not_carried_*`; `tasks_contract::managed_timers_run_on_the_group_*` | G | partial → covered | `send_message_on` in threads |
+| T5 (v0.9) | `Start!TimeoutNeverKillsReady`; traces `init_timeout_waiting`, `abandoned_timeout_delivers_killed` and the control "init timer wins after a ready commitment"; `start_contract::tasks_mode::{init_timeout_never_reaches_the_parent, stuck_started_reports_pending_*}` | A, Model | new: covered | threads mode; the timer under the simulator's virtual time |
 | T4 | paused-time tests and the simulator clock; `src/threads/timer_tests.rs::threads_send_*`; `supervision::native_restart_window_expires_on_the_monotonic_clock` | A N TG, Sim | partial → covered | |
 | P1 | `panic_safety`; `foreign_panics`; `mailbox_drop_panic`; failpoints | A B T N G TG | covered | not simulated |
 | P2 | `panic-abort` CI job; `foreign_panics::panicking_panic_hook_*` | A N | covered | no observer for `Down`/`Exit` |
@@ -888,7 +895,7 @@ replays from the input alone.
 | Part | Contents |
 |---|---|
 | Schedule | `Random` (seeded walk), `Pct { d = 1..4, k = 1..4000 }` (one PCT run) or `Canonical` (smallest ready task), all from `sim::explore` |
-| Actors | spawn unmanaged (`start`), managed (`start_on` an async group of up to three systems) or `start_linked`; hooks that sleep (virtual time) or panic in `started()`, `stopped()` or the state destructor |
+| Actors | spawn unmanaged (`spawn`), managed (`with_options(&group)` an async group of up to three systems) or `start_link`; hooks that sleep (virtual time) or panic in `started()`, `stopped()` or the state destructor |
 | Messages | `send` (by `ActorRef` or `Recipient`), requests inline or in their own task with no or any timeout; handler commands: no-op, panic, sleep, stop self with any `ExitReason`, send a `Note`, link, unlink, monitor, trap exits, register a name, stop another actor |
 | Signals | link, unlink, monitor, demonitor and `trap_exit` from outside; `stop`, `shutdown`, `stop_with_reason(Kill/Panic)` |
 | Timers and time | `send_after`, `send_interval`, cancel; advance virtual time; yield |
