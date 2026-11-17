@@ -377,13 +377,16 @@ async fn link_stop_in_started_ends_nontrapping_parent() {
     let result = Child::new(Outcome::StopShutdown)
         .start_link(&p.context())
         .await;
-    assert!(matches!(
-        result,
-        Err(StartError::InitExited {
-            reason: ExitReason::Shutdown,
-            pending: None
-        })
-    ));
+    assert!(
+        matches!(
+            result,
+            Err(StartError::InitExited {
+                reason: ExitReason::Shutdown,
+                pending: None
+            })
+        ),
+        "{result:?}"
+    );
     assert_eq!(p.wait_exit().await, ExitReason::Shutdown);
     children_done(1).await;
     until("P's publication", || count("PPublish") >= 1).await;

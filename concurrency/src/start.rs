@@ -805,7 +805,15 @@ impl StartupCell {
         waiter: bool,
         deadline: Option<Instant>,
     ) -> Observed {
-        if waiter && inner.parent_exited && inner.waiter == Waiter::Waiting {
+        // Only an undecided start (the child still in started()) is
+        // abandoned: a decided one is answered at its publication, bounded
+        // by the cleanup deadline. (The failed child's own notice may be
+        // what kills a non-trapping parent; it must still get the answer.)
+        if waiter
+            && inner.parent_exited
+            && inner.waiter == Waiter::Waiting
+            && self.commit() == Commit::Pending
+        {
             drop(inner);
             self.abandon();
             return Observed::Answer(Err(StartError::ParentExited));
@@ -1174,5 +1182,48 @@ fn run_timers(timers: &'static Timers) {
                 queue = timers.wake.wait(queue).unwrap_or_else(|p| p.into_inner());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod parent_exit_tests {
+    use super::*;
+
+    fn no_handle() -> ChildHandle {
+        unreachable!("no pending handle in these answers")
+    }
+
+    /// Review #291 item 7 follow-up: a parent whose exit a signal begins
+    /// while the start is already decided (the failed child's own notice
+    /// killing a non-trapping parent during publication) gets the start's
+    /// answer, not `ParentExited`. Only an undecided start (the child still
+    /// in `started()`) is abandoned.
+    #[test]
+    fn a_decided_start_is_answered_not_abandoned() {
+        let cell = StartupCell::new();
+        cell.prepare(true, None, Duration::from_secs(5), 0);
+        cell.fail_at_death(&ExitReason::Shutdown);
+        let _ = cell.publish(&ExitReason::Shutdown, None);
+        cell.parent_exit();
+        assert!(matches!(cell.observe(true, no_handle), Observed::Wait(_)));
+        cell.published(&ExitReason::Shutdown);
+        assert!(matches!(
+            cell.observe(true, no_handle),
+            Observed::Answer(Err(StartError::InitExited {
+                reason: ExitReason::Shutdown,
+                pending: None
+            }))
+        ));
+    }
+
+    #[test]
+    fn an_undecided_start_is_abandoned() {
+        let cell = StartupCell::new();
+        cell.prepare(true, None, Duration::from_secs(5), 0);
+        cell.parent_exit();
+        assert!(matches!(
+            cell.observe(true, no_handle),
+            Observed::Answer(Err(StartError::ParentExited))
+        ));
     }
 }
