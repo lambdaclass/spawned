@@ -5,6 +5,10 @@
 - ROADMAP: 0.9 is now soundness and introspection; the unified start API
   (G1, G2, G8) and `{shutdown, Term}` exits (G7) move into 0.9, and the
   admission package is designed during 0.9.
+- `model-sync`: a design-only TLA+ model (`design_only = true`: Start,
+  Introspection, DynamicSupervisor) stays allowlisted as TLC-only only while
+  no code maps to it; the PR that implements it must add its trace
+  validation.
 - Fix the flaky `tla-traces` coverage gate (`LOST coverage: Cohorts
   A|OneForAll|CEnd/complete`): the cohort trace tests now wait for the restart
   round to record `CEnd complete` before shutting down, instead of racing it

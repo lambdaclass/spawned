@@ -15,6 +15,9 @@
 # validation (a Trace*.tla spec that trace_check.py runs against events the
 # code records) or a `tlc_only` allowlist entry with a reason and a tracking
 # item: a model no real run is checked against can drift from the code.
+# `design_only = true` marks a model of code that does not exist yet: the
+# allowlist expires when its `code` list stops being empty, so the PR that
+# implements the design must also add its trace validation.
 # `coverage_floor` is the number of action keys (`A|...`) the dedicated trace
 # tests cover in verification/tla/coverage-baseline.json (key
 # `coverage_key`, default the model name); it may only go up.
@@ -167,6 +170,7 @@ files = [
 ]
 code = []
 [models.DynamicSupervisor.tlc_only]
+design_only = true
 reason = "rank 12a design model; the dynamic supervisor is not implemented"
 tracking = "trace validation is part of implementing rank 12a (design: PR #245)"
 
@@ -179,6 +183,7 @@ files = [
 ]
 code = []
 [models.Start.tlc_only]
+design_only = true
 reason = "0.9 unified start design model; the unified start API is not implemented"
 tracking = "trace validation is part of implementing the unified start API, design PR #259"
 
@@ -191,6 +196,7 @@ files = [
 ]
 code = []
 [models.Introspection.tlc_only]
+design_only = true
 reason = "introspection v1 design model (0.9); process_info, get_state, the watchdog's fenced kill and the console are not implemented"
 tracking = "trace validation is part of implementing introspection v1 (design: PR #256; event table in docs/design/introspection.md)"
 

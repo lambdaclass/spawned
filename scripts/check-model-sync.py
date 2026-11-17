@@ -752,6 +752,12 @@ def check_models(args, root):
             tlc_only.add(model)
             if not allow.get("reason") or not allow.get("tracking"):
                 errors.append(f"{model}: a `tlc_only` entry needs both `reason` and `tracking`")
+            if allow.get("design_only") and entry.get("code"):
+                # A design model is allowlisted only until its code exists:
+                # implementing it must bring the trace validation with it.
+                errors.append(f"{model} is a design-only model (`design_only = true`) but now maps code "
+                              f"({', '.join(entry['code'])}): add its trace spec, recorded traces and a coverage "
+                              f"floor in the same PR as the implementation, then remove the `tlc_only` entry")
             status = f"TLC ONLY (allowlisted: {allow.get('reason', '?')}; tracking: {allow.get('tracking', '?')})"
         else:
             errors.append(f"{model} has no trace validation ({detail}): a model no real run is checked against can drift "
