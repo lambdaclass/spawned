@@ -196,6 +196,9 @@ where
                     if let Some(outcome) = outcome.and_then(|o| o.into_inner()) {
                         run.notify(outcome);
                     }
+                    // Possibly the last reference (`done` and its captures):
+                    // off the deadline service thread.
+                    crate::reply::disposal::defer_drop(run);
                 })
             },
         );
@@ -717,6 +720,8 @@ impl<A: Actor> Context<A> {
             notify: Mutex::new(Some(Box::new(move || {
                 if let Some(run) = weak.upgrade() {
                     run.notify(Err(JobError::DeadlineExceeded));
+                    // Possibly the last reference: off the deadline thread.
+                    crate::reply::disposal::defer_drop(run);
                 }
             }))),
         });

@@ -59,8 +59,14 @@ impl<R: Send> Expirable for Slot<R> {
         let deadline = self.deadline();
         (!self.is_terminal() && deadline != NEVER).then_some(deadline)
     }
+    /// The transition and credit return happen here; a parked blocking
+    /// receiver is unparked here too (no user code); the wakers are handed
+    /// to a disposal worker when this runs on the deadline thread.
     fn expire(&self, now: u64) {
-        self.check_deadline(&|| now);
+        if let Some(mut wake) = self.expire_collect(now) {
+            wake.notify_parked();
+            super::disposal::defer(move || wake.run());
+        }
     }
 }
 
@@ -292,10 +298,13 @@ impl Registry {
     /// The service visits: expire every due entry outside the lock, and
     /// return the next earliest deadline.
     ///
-    /// Entries run framework code that can reach user code (a waker, a
-    /// payload destructor the entry did not route to its failure sink, the
-    /// last reference to a job's `done`). Each runs contained, so one
-    /// failing entry neither skips the others nor ends the shared service.
+    /// Entries make their terminal transitions and return credits here.
+    /// What they release that can run user code (a waker, a payload
+    /// destructor, the last reference to an entry or a job's `done`) is
+    /// deferred: on the deadline thread it goes to a disposal worker
+    /// ([`disposal`](super::disposal)); elsewhere it runs inline. Each entry
+    /// runs contained, so one failing entry neither skips the others nor
+    /// ends the shared service.
     pub(crate) fn service_deadlines(&self, now: u64) -> Option<u64> {
         let due = lock(&self.lists).deadlines.due(now);
         for item in due {
@@ -303,8 +312,8 @@ impl Registry {
                 if item.pending_deadline().is_some_and(|d| d <= now) {
                     item.expire(now);
                 }
-                // Possibly the last reference: dropped inside the guard.
-                drop(item);
+                // Possibly the last reference.
+                super::disposal::defer_drop(item);
             });
         }
         lock(&self.lists).deadlines.earliest()

@@ -336,7 +336,7 @@ impl Wake {
     };
     /// Wake a parked blocking receiver (no user code). Done first, so a
     /// parked `recv()` never waits behind an arbitrary waker.
-    fn notify_parked(&mut self) {
+    pub(crate) fn notify_parked(&mut self) {
         if std::mem::take(&mut self.parked) {
             if let Some(waker) = self.waker.take() {
                 waker.wake();
@@ -344,7 +344,7 @@ impl Wake {
         }
     }
     #[inline]
-    fn run(self) {
+    pub(crate) fn run(self) {
         if let Some(waker) = self.waker {
             waker.wake();
         }
@@ -611,6 +611,28 @@ impl<R> Slot<R> {
         } else {
             false
         }
+    }
+
+    /// The deadline service's `[deadline]` check: the same `OPEN -> TIMED_OUT`
+    /// transition and credit return as [`check_deadline`](Self::check_deadline),
+    /// but the wake-up (a caller's waker, the token's watchers: executor or
+    /// user code) is returned for the caller to run elsewhere. `None` when
+    /// the deadline has not passed or another transition won.
+    pub(crate) fn expire_collect(&self, now: u64) -> Option<Wake> {
+        let deadline = self.deadline();
+        if deadline == NEVER || now < deadline {
+            return None;
+        }
+        let (old, new) = self
+            .cas::<()>(None, |w| {
+                if state(w) == OPEN {
+                    Ok(with_state(w, TIMED_OUT))
+                } else {
+                    Err(())
+                }
+            })
+            .ok()?;
+        Some(self.after(old, new))
     }
 
     /// `is_closed()`: not `OPEN`, or past its deadline (then expired).

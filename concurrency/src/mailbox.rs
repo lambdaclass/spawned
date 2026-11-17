@@ -44,7 +44,10 @@ impl DropFailures {
             self.drop_contained(value);
         }
     }
-    pub(crate) fn discard<T: Send + 'static>(&self, value: T) {
+    /// On the deadline service thread the drop goes to a disposal worker,
+    /// which discards it again there: the hold is re-checked, so a drop
+    /// deferred before the owner's exit still waits for its death point.
+    pub(crate) fn discard<T: Send + 'static>(self: &Arc<Self>, value: T) {
         let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(held) = held.as_mut() {
             // Moved, not dropped: no user code under the lock.
@@ -52,6 +55,11 @@ impl DropFailures {
             return;
         }
         drop(held);
+        if crate::reply::disposal::collecting() {
+            let failures = self.clone();
+            crate::reply::disposal::defer(move || failures.discard(value));
+            return;
+        }
         self.drop_contained(value);
     }
     /// Drop at once (contained): the mailbox's own items, destroyed after

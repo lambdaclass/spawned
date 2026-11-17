@@ -415,9 +415,15 @@ impl JobState {
     #[cfg(feature = "async")]
     fn wake_emitters(&self) {
         let wakers = std::mem::take(&mut *lock(&self.emit_wakers));
-        for waker in wakers {
-            waker.wake();
+        if wakers.is_empty() {
+            return;
         }
+        // Off the deadline service thread when a deadline or emit fires.
+        super::disposal::defer(move || {
+            for waker in wakers {
+                waker.wake();
+            }
+        });
     }
 
     /// Take the terminal notification and run `enqueue` under the job's
@@ -456,8 +462,11 @@ impl JobState {
             (taken, unsent, held)
         });
         // A held result the deadline displaced (user payload): dropped
-        // outside the trace section, after JobDeadline is recorded.
-        drop(held);
+        // outside the trace section, after JobDeadline is recorded, and off
+        // the deadline service thread.
+        if let Some(held) = held {
+            super::disposal::defer_drop(held);
+        }
         #[cfg(feature = "async")]
         if taken {
             self.wake_emitters();
@@ -1107,6 +1116,8 @@ impl Expirable for ScheduledEmit {
         fail_point!("job.emit_due");
         if let Some(job) = self.job.upgrade() {
             self.settle(&job, true);
+            // Possibly the last reference (its other scheduled emits).
+            super::disposal::defer_drop(job);
         }
     }
 }

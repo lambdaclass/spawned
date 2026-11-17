@@ -12,7 +12,9 @@
 //! due entries even when no caller polls, so credits return on time:
 //!
 //! - real time: one process-wide service thread with its own timer, so
-//!   per-test Tokio runtimes cannot break it;
+//!   per-test Tokio runtimes cannot break it. It runs no user code: what an
+//!   expiry releases (wakers, payload destructors) goes to a disposal worker
+//!   (`super::disposal`);
 //! - under `spawned_sim`: a task of the simulated runtime per actor heap, so
 //!   clock domains never mix and virtual time drives it.
 
@@ -304,15 +306,21 @@ mod thread_service {
                     state.actors.remove(&key);
                     drop(state);
                     // Entries are contained one by one; this also covers the
-                    // visit itself and dropping the upgraded registry, so the
-                    // one process-wide service never stops.
-                    super::super::registry::contain_entry(|| {
-                        if let Some(registry) = weak.upgrade() {
-                            if let Some(next) = registry.service_deadlines(now) {
-                                schedule(&registry, next);
+                    // visit itself, so the one process-wide service never
+                    // stops. Whatever the visit releases that can run user
+                    // code (wakers, payloads, the upgraded registry) goes to
+                    // a disposal worker: this thread runs none of it.
+                    let released = super::super::disposal::collect(|| {
+                        super::super::registry::contain_entry(|| {
+                            if let Some(registry) = weak.upgrade() {
+                                if let Some(next) = registry.service_deadlines(now) {
+                                    schedule(&registry, next);
+                                }
+                                super::super::disposal::defer_drop(registry);
                             }
-                        }
+                        });
                     });
+                    super::super::disposal::submit(released);
                     state = lock(service);
                 }
                 Some(Reverse((at, _))) => {
