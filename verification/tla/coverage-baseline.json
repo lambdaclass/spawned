@@ -168,5 +168,16 @@
   "A|STimer",
   "A|SUnlink",
   "A|SWorkDone"
+ ],
+ "Coordinator": [
+  "A|Advance",
+  "A|Begin",
+  "A|Crash",
+  "A|Emergency",
+  "A|Finish",
+  "A|GraceExpired",
+  "A|Join",
+  "A|Ordered",
+  "A|StopNext"
  ]
 }

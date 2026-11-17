@@ -443,6 +443,61 @@ async fn slow_controller_after_completed_cleanup_is_not_a_cleanup_failure() {
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
+/// S2: once a cleanup is stuck the child's snapshot settles as `Failed`,
+/// and stays so when the stuck actor finally exits: the controller's
+/// post-exit bookkeeping (held here at `child.before_cleanup_join`) must
+/// not move it back to `Stopping`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stuck_cleanup_stays_failed_after_the_late_exit() {
+    struct SlowStopped(Option<tokio::sync::oneshot::Receiver<()>>);
+    impl Actor for SlowStopped {
+        async fn stopped(&mut self, _: &Context<Self>) {
+            if let Some(release) = self.0.take() {
+                let _ = release.await;
+            }
+        }
+    }
+    let _scenario = FailScenario::setup();
+    let site = "child.before_cleanup_join";
+    failpoints::configure(
+        site,
+        FailPoint::new(Action::Delay(Duration::from_millis(500))).times(1),
+    )
+    .unwrap();
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("fp-stuck-settled", 1).unwrap();
+    let mut tree = system.supervisor(config(5)).unwrap();
+    let (release, held) = tokio::sync::oneshot::channel();
+    let held = Arc::new(Mutex::new(Some(held)));
+    let child = tree
+        .add(
+            ChildSpec::new("slow", &group, move |_| {
+                let held = held.lock().unwrap().take();
+                async move { Ok::<_, String>(SlowStopped(held)) }
+            })
+            .shutdown_timeout(Duration::from_millis(20)),
+        )
+        .unwrap();
+    let tree = within!(tree.start()).await.unwrap();
+    // Its own stop, through a stopped() that outlives shutdown_timeout.
+    child.current().unwrap().child_handle().stop();
+    within!(async {
+        while child.snapshot().state != ChildState::Failed {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await;
+    assert_eq!(failpoints::stats(site).hits, 0);
+    release.send(()).unwrap();
+    // The late exit is processed; the controller is now held at the site.
+    within!(reached(site, 1)).await;
+    assert_eq!(child.snapshot().state, ChildState::Failed);
+    within!(tree.join()).await;
+    assert_eq!(child.snapshot().state, ChildState::Failed);
+    assert!(tree.failure().unwrap().contains("actor cleanup stuck"));
+    assert!(system.shutdown(LIMIT).await.complete);
+}
+
 // -------------------------------------------------------- shutdown.before_stop_child
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

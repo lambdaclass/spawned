@@ -154,17 +154,25 @@ class ModelInventory(RepoCopy):
 
     def test_tlc_only_model_without_allowlist_fails(self):
         tmp = self.copy()
-        self.edit_map(tmp, "[models.Coordinator.tlc_only]", "[models.Coordinator.not_allowlisted]")
+        self.edit_map(tmp, "[models.ReplyTimer.tlc_only]", "[models.ReplyTimer.not_allowlisted]")
         code, out = run("--root", str(tmp), "models")
         self.assertEqual(code, 1, out)
-        self.assertIn("Coordinator has no trace validation", out)
+        self.assertIn("ReplyTimer has no trace validation", out)
 
     def test_allowlist_needs_tracking(self):
         tmp = self.copy()
-        self.edit_map(tmp, 'tracking = "work item to be filed', 'untracked = "work item to be filed')
+        self.edit_map(tmp, 'tracking = "receiver timer projection', 'untracked = "receiver timer projection')
         code, out = run("--root", str(tmp), "models")
         self.assertEqual(code, 1, out)
         self.assertIn("needs both `reason` and `tracking`", out)
+
+    def test_design_only_model_with_code_fails(self):
+        tmp = self.copy()
+        self.edit_map(tmp, "code = []\n[models.Start.tlc_only]",
+                      'code = ["concurrency/src/system.rs"]\n[models.Start.tlc_only]')
+        code, out = run("--root", str(tmp), "models")
+        self.assertEqual(code, 1, out)
+        self.assertIn("Start is a design-only model", out)
 
     def test_unrun_trace_spec_is_not_validation(self):
         tmp = self.copy()

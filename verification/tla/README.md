@@ -13,7 +13,8 @@ this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 | `TraceSupervision.tla` | Trace validation: replays a lifecycle trace recorded from real Rust runs as a behavior of `Supervision.tla`. |
 | `Cohorts.tla`, `MCCohorts*.tla/.cfg` | OneForAll/RestForOne range selection, reverse cleanup, whole-cohort join barrier, ordered resume, stale notifications, superseding rounds and retired slots. Three-child mixed-mode and two-round configurations. |
 | `Introspection.tla`, `MCIntrospection.tla/.cfg` | Introspection v1 design model, revision 4 (not implemented, [design](../../docs/design/introspection.md)): one actor whose every activity (`started()`, messages, the status turn, `stopped()`) opens a turn id on an activity word; activities that may suspend forever; panics in `started()`, handlers and `stopped()`, and a caught status-callback panic; the status request with a deadline, callback admission, answer and turn end as separate steps, and the skip of abandoned callbacks; stop, unfenced kill, the runtime drop's swap and D as separate steps, publication; the watchdog's observe, CAS (successful and failed) and record. Each action is one implementation linearization point; ghosts are derived from state changes, never from the fault selector. Twenty named negative controls. 47,968 states (4 messages: 80,482). |
-| `Coordinator.tla`, `MCCoordinator.tla/.cfg` | System shutdown coordinator: ordered stop of admitted roots, panic fallback that signals all remaining roots, records failure and retains runtime ownership until joins; ordered-shutdown invariants, cooperative cleanup liveness and four negative mutations. |
+| `Coordinator.tla`, `MCCoordinator.tla/.cfg` | System shutdown coordinator: ordered stop of admitted roots, grace expiry with the kill of the remaining roots, panic fallback that signals all remaining roots, records failure and retains runtime ownership until joins; ordered-shutdown invariants, cooperative cleanup liveness and six negative mutations (`ReleaseEarly`, `ForgetFailure`, `ForgetSignal`, `RollbackReady`, `NoKillAtGrace`, `KillEarly`). |
+| `TraceCoordinator.tla` | Trace validation of `Coordinator.tla`: replays the shutdown coordinator events recorded from real `ActorSystem::shutdown` runs (`coordinator_trace`). |
 | `NestedSupervision.tla`, `MCNested.tla/.cfg` | Dynamic subtree ownership and shutdown delivery; parent scope completion waits for descendant completion. Bounded three-node/two-generation model with fair cleanup. |
 | `DeferredReplies.tla`, `MCDeferredReplies*.tla/.cfg` | Rank 11 design model (not implemented), part 1: reply slots, send-time deadlines with shortening, deferral credits shared by a token and its first linked job, the exiting phase with exit-pending drops (unwound or dropped while exiting, answered at death with the final reason), a stuck phase (cleanup deadline passed while `stopped()` runs: nothing closed early, death later or never), death, and downstream request cleanup. Fourteen named negative controls. |
 | `DeferredJobs.tla`, `MCDeferredJobs*.tla/.cfg` | Rank 11 design model, part 2: pipe jobs with separate execution, cancellation and notification states; keyed replacement including notified jobs; optional job deadlines; a FIFO mailbox with emit credits and the terminal message last; `ActorId` fencing. `MCDeferredJobsEmits` is the fast configuration with emits; `MCDeferredJobsHeld` the one with delayed emits (`emit_at`) and held results (completion, held notification, scheduled emits and credit ownership as separate steps). Twelve named negative controls; `MCDeferredJobsEmitRace` checks retained emit admission at held-result release (306 states). |
@@ -84,7 +85,7 @@ runs real actors through the scenarios below and writes each trace as JSON;
 TLC then checks that each trace is a behavior of `Supervision.tla`.
 
 ```bash
-cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace --test job_trace --test reply_trace --test lifecycle_trace --test start_trace
+cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace --test job_trace --test reply_trace --test lifecycle_trace --test start_trace --test coordinator_trace
 nix run .#check-tla -- --traces-only target/lifecycle-traces --negative-controls   # or --traces DIR to also model-check
 nix develop -c python3 verification/tla/trace_check.py target/lifecycle-traces
 ```
@@ -172,11 +173,13 @@ Trace validation says every recorded run is a behavior of the model. Trace
 coverage asks the converse: which parts of the model's reachable behavior do
 the recorded runs never exercise? `trace_coverage.py` reports it per model with
 trace validation (`Supervision`, `Cohorts`, `NestedSupervision`, and by
-action keys only `Lifecycle`, `DeferredJobs`, `DeferredReplies`).
+action keys only `Lifecycle`, `DeferredJobs`, `DeferredReplies`,
+`Coordinator`).
 
-**Action-only models.** For `Lifecycle.tla`, `DeferredJobs.tla` and
-`DeferredReplies.tla` the keys are the log-event arms of their trace spec
-(`TraceLifecycle.tla`, `TraceJobs.tla`, `TraceReplies.tla`; each arm is one
+**Action-only models.** For `Lifecycle.tla`, `DeferredJobs.tla`,
+`DeferredReplies.tla` and `Coordinator.tla` the keys are the log-event arms of
+their trace spec (`TraceLifecycle.tla`, `TraceJobs.tla`, `TraceReplies.tla`,
+`TraceCoordinator.tla`; each arm is one
 model action or a named group of them, `A|Send`, `A|Fire`, ...): the model
 side is the set of arms, a trace covers the arms its accepted replay takes,
 and no state space is explored for them. `coverage-baseline.json` and the
@@ -584,9 +587,38 @@ signalled work eventually completes; uncooperative native code remains a host
 escalation decision. Negative controls remove failure reporting, omit emergency
 signals, release runtime ownership early, or stop a ready root out of order
 through its startup rollback (#209). The same safety invariants are proven
-inductive with Apalache ([Coordinator](#coordinator)). This is an abstract fault model,
-not a replay of Rust failpoint traces. Private Rust tests separately inject
+inductive with Apalache ([Coordinator](#coordinator)). Private Rust tests separately inject
 supervisor-launch and system-shutdown panics with real actor/helper cleanup.
+
+**Coordinator trace validation (#266).** With `lifecycle-trace`,
+`begin_shutdown` and its panic fallback (`concurrency/src/system.rs`) record
+one `Coordinator.tla` action per step under the system's trace id
+(`lifecycle_trace::Coordinator`, `ActorSystem::trace_id`); only the
+coordinator task records, so the log is its program order. Targets are
+numbered in stop order (1 is the last-admitted root). `Begin` (with the target
+count), `StopNext`, `Finish` (the coordinator observed the target's join,
+which includes its helpers and, for a supervisor, its tree), `Advance`,
+`Ordered`, `GraceExpired` (a join in the ordered loop timed out), `Emergency`
+(`kill` after the grace: the remaining roots get the kill; `shutdown` after a
+panic: the fallback's first complete stop pass), `Crash` (`reported` if the
+failure reached the report) and `Join` (every target and group joined,
+runtime ownership released). Refinement: after the grace expired the code
+still walks the remaining targets in stop order (Shutdown with a zero cleanup
+timeout, or a supervisor's stop and immediate `stop_remaining`) before
+killing every scope; the model's `Emergency` is that whole pass, so the walk
+records nothing. Execution groups stay outside the model; their completion is
+folded into `Join`. `concurrency/tests/coordinator_trace.rs` records four
+scenarios (no roots; two actors and a supervisor stopped in order; a trapping
+root stuck in `stopped()` past the grace; a coordinator panic through the
+`system.shutdown_before_target` failpoint), each waiting for what it needs so
+the events are deterministic (the test asserts the exact action sequence).
+`TraceCoordinator.tla` replays them with every `Coordinator` invariant
+checked. Seven edited traces must be rejected: the next root signalled before
+the previous one joined, roots stopped in admission order, runtime released
+before every root joined, no kill at grace, a kill pass without grace expiry,
+an unreported panic, and a panic fallback that kills. `RollbackReady` (the
+#209 fault device) has no event. `trace_coverage.py` covers the nine arms by
+action keys.
 
 ## Deferred replies (rank 11 design)
 

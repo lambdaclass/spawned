@@ -39,6 +39,19 @@
   does. Not yet: scope ownership (S8), supervisor `ignore` and
   `ChildSpec::options`.
 
+- `model-sync`: a design-only TLA+ model (`design_only = true`: Start,
+  Introspection, DynamicSupervisor) stays allowlisted as TLC-only only while
+  no code maps to it; the PR that implements it must add its trace
+  validation.
+- Kill the meaningful surviving `cargo mutants` in the supervisor
+  (`supervision.rs`, `supervision/*.rs`) with deterministic tests: unit tests
+  in `supervision/guard_tests.rs` for the supersession check of
+  `finish_unless_recovering`, admission closure, stop escalation, start
+  errors, escaped controller failures and the stop-during-round and
+  self-exit kill paths; a failpoint test for a stuck cleanup's late exit; and
+  a simulator seed sweep (`supervision_races`) for a OneForAll child that
+  decides to stop while a recovery round is assigned to it. Test-only; the
+  per-mutant classification is in `docs/TESTING.md`.
 - Fix the flaky `tla-traces` coverage gate (`LOST coverage: Cohorts
   A|OneForAll|CEnd/complete`): the cohort trace tests now wait for the restart
   round to record `CEnd complete` before shutting down, instead of racing it
@@ -50,6 +63,19 @@
   `spawned-concurrency` (they only enabled `async` since 0.8.0). The
   experiments patch in `benchmarks/experiments` re-adds what it needs. The API
   policy now declares 0.9 a breaking release against v0.8.0.
+- Trace validation for the `Coordinator` TLA+ model (#266): with
+  `lifecycle-trace`, `ActorSystem` shutdown records one `Coordinator.tla`
+  action per step (ordered stop, grace expiry and kill, panic fallback,
+  runtime release; compiled out otherwise). New `coordinator_trace` test,
+  `TraceCoordinator.tla`, seven trace negative controls and a coverage floor
+  of 9 of 9 action keys; `Coordinator` is no longer TLC-only.
+
+- Fix the flaky `tla-traces` coverage gate (`LOST coverage: Cohorts
+  A|OneForAll|CEnd/complete`): the cohort trace tests now wait for the restart
+  round to record `CEnd complete` before shutting down, instead of racing it
+  (the selection trace missed it in 24 of 30 runs). New
+  `lifecycle_trace::recorded_with` test helper.
+
 - Regenerate the 11 planted-bug patches (04, 10-17, 19, 20) that no longer
   applied, each planting the same fault where the code now lives, and check in
   the required `model-sync` job that every planted patch still applies.

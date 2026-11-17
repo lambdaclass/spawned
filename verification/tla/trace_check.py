@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check recorded lifecycle traces against Supervision.tla (and, by schema,
-Cohorts.tla, NestedSupervision.tla, DeferredJobs.tla, DeferredReplies.tla and
-Lifecycle.tla).
+Cohorts.tla, NestedSupervision.tla, DeferredJobs.tla, DeferredReplies.tla,
+Lifecycle.tla and Coordinator.tla).
 
 Each JSON trace (written by concurrency/tests/supervision_trace.rs with the
 `lifecycle-trace` feature) looks like:
@@ -50,7 +50,7 @@ def tla_event(event, cohort=False):
 def generate(trace, workdir):
     schema = trace.get("schema", "one-for-one-v1")
     if schema not in {"one-for-one-v1", "cohort-v1", "tree-v1", "jobs-v1", "replies-v1",
-                      "lifecycle-v1", "start-v1"}:
+                      "lifecycle-v1", "start-v1", "coordinator-v1"}:
         raise ValueError(f"unsupported trace schema: {schema}")
     if schema == "start-v1":
         return generate_start(trace, workdir)
@@ -62,6 +62,8 @@ def generate(trace, workdir):
         return generate_replies(trace, workdir)
     if schema == "lifecycle-v1":
         return generate_lifecycle(trace, workdir)
+    if schema == "coordinator-v1":
+        return generate_coordinator(trace, workdir)
     cohort = schema == "cohort-v1"
     modules = ("Cohorts.tla", "TraceCohorts.tla") if cohort else MODELS
     for model in modules:
@@ -333,6 +335,27 @@ def generate_start(trace, workdir):
                   f"    TracePlace = {tla_string(place)}\n"
                   f"    TraceTrap = {'TRUE' if trace.get('ptrap') else 'FALSE'}\n"
                   "INVARIANT Safety\nINVARIANT TraceIncomplete\n")
+
+
+def generate_coordinator(trace, workdir):
+    """One ActorSystem shutdown against Coordinator.tla."""
+    for model in ("Coordinator.tla", "TraceCoordinator.tla"):
+        shutil.copy(os.path.join(HERE, model), workdir)
+    targets = int(trace["targets"])
+    records = ",\n    ".join(
+        "[a |-> {}, c |-> {}, x |-> {}, n |-> {}]".format(
+            tla_string(e["a"]), int(e["c"]), tla_string(e["x"]), int(e["n"]))
+        for e in trace["events"])
+    with open(os.path.join(workdir, "TraceRun.tla"), "w") as out:
+        out.write("---- MODULE TraceRun ----\nEXTENDS TraceCoordinator\n"
+                  f"TraceLog == <<\n    {records}\n>>\n====\n")
+    with open(os.path.join(workdir, "TraceRun.cfg"), "w") as out:
+        out.write("INIT TraceInit\nNEXT TraceNext\nCONSTANTS\n"
+                  f"    TargetCount = {targets}\n    Fault = \"None\"\n"
+                  "    Trace <- TraceLog\n"
+                  "INVARIANT Safety\nINVARIANT OrderedShutdown\n"
+                  "INVARIANT JoinAfterAllSignalled\nINVARIANT KillOnlyAtGrace\n"
+                  "INVARIANT GraceKillsRemaining\nINVARIANT TraceIncomplete\n")
 
 
 def generate_jobs(trace, workdir):
