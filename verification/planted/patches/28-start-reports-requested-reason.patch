@@ -1,8 +1,8 @@
 diff --git a/concurrency/src/start.rs b/concurrency/src/start.rs
-index 071efb01..058461e7 100644
+index 42725a76..b54a36aa 100644
 --- a/concurrency/src/start.rs
 +++ b/concurrency/src/start.rs
-@@ -668,7 +668,10 @@ impl StartupCell {
+@@ -726,7 +726,10 @@ impl StartupCell {
              Commit::Ready => Ok(StartOutcome::Started(())),
              _ => {
                  let (pending, reason) = match &inner.published {
@@ -11,6 +11,6 @@ index 071efb01..058461e7 100644
 +                        None,
 +                        inner.requested.clone().unwrap_or_else(|| final_reason.clone()),
 +                    ),
-                     None if inner.publishing => return Observed::Wait(None),
+                     None if inner.publishing => return self.wait_or_abandon(inner, waiter, None),
                      None => {
                          let deadline = inner

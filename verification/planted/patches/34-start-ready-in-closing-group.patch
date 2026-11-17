@@ -1,8 +1,8 @@
 diff --git a/concurrency/src/system.rs b/concurrency/src/system.rs
-index 0c78f5db..b5eec13b 100644
+index b1354adf..bb654d6f 100644
 --- a/concurrency/src/system.rs
 +++ b/concurrency/src/system.rs
-@@ -1197,9 +1197,7 @@ impl Scope {
+@@ -1249,9 +1249,7 @@ impl Scope {
          let group = self.group.upgrade();
          let group_state = group.as_ref().map(|g| lock(&g.state));
          let mut scope = lock(&self.state);

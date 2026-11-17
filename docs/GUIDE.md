@@ -1858,6 +1858,13 @@ out.expect_no_message(Duration::from_millis(20)).await;
   messages; a reply closure that panics logs its message as `Crashed`.
 - The log keeps one entry per message for the mock's lifetime, so it suits
   unit tests rather than soak runs with millions of messages.
+- Start behaviour (0.9): `on_started(|ctx| Init::error("no backend"))` makes
+  the mock's `started()` return that `Init` (continue, error, stop, ignore),
+  to test how the code under test handles a dependency that fails to start;
+  `start_delay(d)` makes `started()` take `d` first (virtual time under the
+  simulator in tasks mode), for `init_timeout` and waiting starts;
+  `drop_flag(flag)` sets `flag` when the mock's state is dropped, so a test
+  can check that a failed start answered only after the state was gone.
 
 `MockRef` dereferences to `ActorRef<Mock>`. Its own methods win over protocol
 methods with the same name; call those through `actor_ref()` or the `XRef`.

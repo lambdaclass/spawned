@@ -1,8 +1,8 @@
 diff --git a/concurrency/src/start.rs b/concurrency/src/start.rs
-index 071efb01..ceaaa8ee 100644
+index 42725a76..caee8999 100644
 --- a/concurrency/src/start.rs
 +++ b/concurrency/src/start.rs
-@@ -827,7 +827,7 @@ fn dispose(
+@@ -955,7 +955,7 @@ fn dispose(
              // A non-trapping parent: applied if non-Normal (OTP: the link
              // kills the caller); a Normal one is ignored, so it is dropped
              // here (the model's legitimate drop) rather than delivered.

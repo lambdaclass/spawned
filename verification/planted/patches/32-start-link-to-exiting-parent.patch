@@ -1,13 +1,13 @@
 diff --git a/concurrency/src/tasks/actor/lifecycle.rs b/concurrency/src/tasks/actor/lifecycle.rs
-index 3a2852dc..85575a4f 100644
+index c3cb4b99..10cd89fa 100644
 --- a/concurrency/src/tasks/actor/lifecycle.rs
 +++ b/concurrency/src/tasks/actor/lifecycle.rs
-@@ -252,7 +252,7 @@ impl<A: Actor> ActorRef<A> {
+@@ -239,7 +239,7 @@ impl<A: Actor> ActorRef<A> {
                          &links,
                          || {
                              let request = link::lock_request(&p.request);
 -                            if request.reason().is_some() || request.is_dead() {
 +                            if request.is_dead() {
+                                 trace::commit_point(Some("parentexited"));
                                  return false;
                              }
-                             // The registry is the innermost lock.

@@ -1,8 +1,8 @@
 diff --git a/concurrency/src/link.rs b/concurrency/src/link.rs
-index 7409e951..e40526a5 100644
+index 5add5c2a..92c36109 100644
 --- a/concurrency/src/link.rs
 +++ b/concurrency/src/link.rs
-@@ -276,7 +276,7 @@ impl ExitRequest {
+@@ -312,7 +312,7 @@ impl ExitRequest {
          // Row 3: the first held non-Normal signal to a non-trapping child.
          // (An administrative stop is not a row: it is applied after a ready
          // commitment, below.)

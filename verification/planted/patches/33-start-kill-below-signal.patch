@@ -1,8 +1,8 @@
 diff --git a/concurrency/src/link.rs b/concurrency/src/link.rs
-index 7409e951..88e11207 100644
+index 5add5c2a..67841882 100644
 --- a/concurrency/src/link.rs
 +++ b/concurrency/src/link.rs
-@@ -285,7 +285,7 @@ impl ExitRequest {
+@@ -321,7 +321,7 @@ impl ExitRequest {
          let row = if timed_out {
              self.reason = Some(ExitReason::Killed);
              Row::Timer

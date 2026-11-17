@@ -1,8 +1,8 @@
 diff --git a/concurrency/src/start.rs b/concurrency/src/start.rs
-index 071efb01..fedaf994 100644
+index 42725a76..fbcc311e 100644
 --- a/concurrency/src/start.rs
 +++ b/concurrency/src/start.rs
-@@ -553,7 +553,7 @@ impl StartupCell {
+@@ -611,7 +611,7 @@ impl StartupCell {
      pub(crate) fn time_out(&self) -> bool {
          let mut inner = self.lock();
          inner.timer = None;
