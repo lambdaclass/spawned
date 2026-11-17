@@ -92,6 +92,22 @@ fn runtime(current_thread: bool) -> tokio::runtime::Runtime {
     builder.enable_all().build().unwrap()
 }
 
+/// Start an actor without waiting for `started()`: `spawn()` since the 0.9
+/// unified start, `start()` before it (`hotpath.py` sets the cfg for an older
+/// base), so both sides run the same workload.
+#[cfg(not(hotpath_legacy_start))]
+macro_rules! spawn_actor {
+    ($actor:expr) => {
+        $actor.spawn()
+    };
+}
+#[cfg(hotpath_legacy_start)]
+macro_rules! spawn_actor {
+    ($actor:expr) => {
+        $actor.start()
+    };
+}
+
 /// Async actor benchmarks. Each returns the measured time; setup and warm-up
 /// are outside it (the gate cancels them by differencing two sizes).
 fn run_async(name: &str, n: u64) -> Duration {
@@ -100,7 +116,7 @@ fn run_async(name: &str, n: u64) -> Duration {
     let rt = runtime(current_thread);
     let name = name.replacen("async_ct_", "async_", 1);
     let name = name.as_str();
-    let actor = rt.block_on(async { a::Sink(0).spawn() });
+    let actor = rt.block_on(async { spawn_actor!(a::Sink(0)) });
     let fence = |actor: &spawned_concurrency::tasks::ActorRef<a::Sink>| {
         rt.block_on(actor.request(Q(0))).unwrap();
     };
@@ -192,7 +208,7 @@ fn run_async(name: &str, n: u64) -> Duration {
 
 fn run_threads(name: &str, n: u64) -> Duration {
     use spawned_concurrency::threads::ActorStart;
-    let actor = t::Sink(0).spawn();
+    let actor = spawn_actor!(t::Sink(0));
     for i in 0..WARMUP {
         actor.request(Q(i)).unwrap();
     }
