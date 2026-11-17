@@ -307,7 +307,11 @@ handles a call even after the caller timed out, and the late reply is dropped.
   independently). Disposal workers form an elastic pool: when queued items
   outnumber idle workers one more starts (one start at a time, up to 64;
   idle ones exit after 10 s), and each worker re-checks when it takes an
-  item. Reaching the cap logs `disposal_workers_capped` once.
+  item. Reaching the cap logs `disposal_workers_capped` once. Modelled in
+  `verification/tla/Disposal.tla` (trace-validated against
+  `concurrency/tests/disposal_trace.rs`): no wake-up before the transition
+  and credit return, no payload drop while held, and no expiry or wake-up
+  waiting for a blocked item; its controls include the shared-batch bug.
   - *Why a pool and not the owner.* Deferring disposal to the owning actor
     would tie a caller's wake-up to the owner's next turn (a wedged owner
     would hang its callers past their deadline), and deferring it to the

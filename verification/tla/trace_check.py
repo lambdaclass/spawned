@@ -154,7 +154,9 @@ def generate_replies(trace, workdir):
 def generate_disposal(trace, workdir):
     """The deadline service's hand-off and the disposal workers against
     Disposal.tla. Expire ids number the requests 1..N, Release ids the
-    payloads 1..P, each in order of first appearance."""
+    payloads 1..P, each in order of appearance. Numbering is over the whole
+    log, so a worker step logged before its hand-off keeps its request or
+    payload and the model rejects it; one never handed off gets 0 (no item)."""
     for model in ("Disposal.tla", "TraceDisposal.tla"):
         shutil.copy(os.path.join(HERE, model), workdir)
     reqs, pays, records = {}, {}, []
@@ -168,14 +170,14 @@ def generate_disposal(trace, workdir):
             if raw in pays:
                 raise ValueError(f"a payload released twice: {e}")
             pays[raw] = len(pays) + 1
+    for e in trace["events"]:
+        a, raw = e["a"], int(e["id"])
         if a in {"Expire", "Wake"}:
             ident = reqs.get(raw, 0)
         elif a in {"Release", "Drop"}:
             ident = pays.get(raw, 0)
         else:
             ident = 0
-        if a in {"Wake", "Drop"} and not ident:
-            raise ValueError(f"a worker step for an item never handed off: {e}")
         records.append("[a |-> {}, id |-> {}, x |-> {}]".format(
             tla_string(a), ident, tla_string(e["x"])))
     if not records:
