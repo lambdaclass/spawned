@@ -1,5 +1,5 @@
 {
   "baseline": "v0.8.0",
-  "release_type": "patch",
-  "reason": "0.8.0 is published. Enforce patch compatibility across async, metrics and native-only API profiles against that release. Future intentional breaking releases must explicitly update this policy and their migration guide."
+  "release_type": "minor",
+  "reason": "0.9 is a breaking release (0.x minor). First declared break: the no-op backend-experiments, io-experiments and profiling-experiments features are removed from spawned-rt and spawned-concurrency. Every break must be listed in docs/MIGRATION.md under 0.8 to 0.9."
 }

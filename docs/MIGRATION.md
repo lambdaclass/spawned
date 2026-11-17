@@ -6,6 +6,14 @@ account for when upgrading.
 
 ## Unreleased
 
+### 0.8 to 0.9
+
+- The `backend-experiments`, `io-experiments` and `profiling-experiments`
+  features are removed from `spawned-rt` and `spawned-concurrency`. Since
+  0.8.0 they only enabled `async`; drop them from your `features` list (use
+  `async`, the default, if you need it explicitly). The research experiments
+  live in the unpublished `benchmarks/experiments` crate.
+
 ## 0.8.0
 
 ### 0.7 to 0.8: API call-site table
