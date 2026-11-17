@@ -312,6 +312,8 @@ pub(crate) struct Slot<R> {
     /// The slot lock: the value and waker handoff, and the order of a
     /// deadline shortening against a reply's deadline read.
     inner: Mutex<Inner<R>>,
+    /// `spawned_reply_slots_alive` (zero-sized; nothing without `metrics`).
+    _alive: super::sync::SlotAlive,
 }
 
 #[inline]
@@ -379,6 +381,7 @@ impl<R> Slot<R> {
                 payload: Payload::Empty,
                 waker: None,
             }),
+            _alive: Default::default(),
         }
     }
 

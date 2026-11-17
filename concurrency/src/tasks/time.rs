@@ -7,6 +7,9 @@ use super::actor::{Actor, Context, Handler};
 use crate::message::Message;
 use core::pin::pin;
 
+/// `spawned_timers_alive`: held by the timer task until it ends.
+type TimerAlive = crate::instrumentation::Live<crate::instrumentation::gauge::Timers>;
+
 /// Handle returned by [`send_after`] and [`send_interval`].
 ///
 /// Cancel the timer by calling `timer.cancellation_token.cancel()`.
@@ -25,6 +28,7 @@ where
 {
     let cancellation_token = CancellationToken::new();
     let cloned_token = cancellation_token.clone();
+    let alive = TimerAlive::default();
     let actor_cancellation_token = ctx.cancellation_token();
     let spawn_ctx = ctx.clone();
     let join_handle = spawn_ctx.spawn_framework(async move {
@@ -37,6 +41,7 @@ where
             let _ = ctx.send(msg);
         });
         let _ = select(cancel_conditions, async_block).await;
+        let _held_until_here = &alive;
     });
     TimerHandle {
         join_handle,
@@ -57,6 +62,7 @@ where
 {
     let cancellation_token = CancellationToken::new();
     let cloned_token = cancellation_token.clone();
+    let alive = TimerAlive::default();
     let actor_cancellation_token = ctx.cancellation_token();
     let spawn_ctx = ctx.clone();
     let join_handle = spawn_ctx.spawn_framework(async move {
@@ -76,6 +82,7 @@ where
                 futures::future::Either::Right(_) => (),
             }
         }
+        let _held_until_here = &alive;
     });
     TimerHandle {
         join_handle,

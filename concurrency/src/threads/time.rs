@@ -6,6 +6,9 @@ use spawned_rt::threads::{self as rt, CancelRegistration, CancellationToken, Joi
 use super::actor::{Actor, Context, Handler};
 use crate::message::Message;
 
+/// `spawned_timers_alive`: held by the timer thread until it ends.
+type TimerAlive = crate::instrumentation::Live<crate::instrumentation::gauge::Timers>;
+
 /// Handle returned by [`send_after`] and [`send_interval`].
 ///
 /// Cancel the timer by calling `timer.cancellation_token.cancel()`.
@@ -48,9 +51,11 @@ where
     let actor_token = ctx.cancellation_token();
 
     let (wake_rx, registrations) = wake_on_cancel(&timer_token, &actor_token);
+    let alive = TimerAlive::default();
 
     let join_handle = rt::spawn(move || {
         let _registrations = registrations;
+        let _alive = alive;
         match wake_rx.recv_timeout(period) {
             Err(RecvTimeoutError::Timeout) => {
                 if !timer_token.is_cancelled() && !actor_token.is_cancelled() {
@@ -83,9 +88,11 @@ where
     let actor_token = ctx.cancellation_token();
 
     let (wake_rx, registrations) = wake_on_cancel(&timer_token, &actor_token);
+    let alive = TimerAlive::default();
 
     let join_handle = rt::spawn(move || {
         let _registrations = registrations;
+        let _alive = alive;
         while let Err(RecvTimeoutError::Timeout) = wake_rx.recv_timeout(period) {
             if timer_token.is_cancelled() || actor_token.is_cancelled() {
                 break;

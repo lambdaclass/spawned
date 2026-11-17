@@ -29,8 +29,9 @@ index f7bbaa27..d7778cf3 100644
      };
      if active {
          deliver();
-@@ -155,7 +162,8 @@ pub(crate) fn demonitor<K: Hash + Eq, V>(
+@@ -164,8 +171,9 @@ pub(crate) fn demonitor<K: Hash + Eq, V>(
      let entry = guard.as_mut().and_then(|entries| entries.remove(key))?;
+     monitors_removed(1);
      removed();
      match entry {
 -        Entry::Active(value) => Some(value),

@@ -23,6 +23,20 @@
   `callbacks_registered`; the timer thread now holds its registrations and
   drops them when it fires or is cancelled. Tasks-mode timers were not
   affected (Tokio removes a cancellation waiter when its future is dropped).
+- `metrics`: gauges of spawned's own retained structures, so memory growth
+  can be attributed to the framework (or ruled out) from one scrape, without a
+  heap-profiling build: `spawned_reply_slots_alive`, `reply_tokens_alive`,
+  `pending_replies_entries`, `reply_registries_alive`,
+  `deadline_heap_entries`, `deadline_service_entries`,
+  `deadline_service_actors`, `jobs_alive`, `monitors_alive`,
+  `link_records_alive`, `registered_names` and `timers_alive` (docs/GUIDE.md,
+  "Retained internal structures"). Counted by a zero-sized field at each
+  structure's creation and drop (one relaxed atomic each end, no lock); the
+  deadline service's sizes are read at scrape. Compiled out without the
+  feature. A churn test in both backends checks that every gauge returns to
+  its baseline (`tests/metrics_retained.rs`), which doubles as a leak test.
+  `timers_alive` is how the threads-mode timer callback leak above was
+  found.
 - Fix the flaky `supervision::transient_startup_timeout_retries_after_actual_cleanup`
   (a 20 ms startup deadline raced the fast starts on a loaded host, which also
   made cargo-mutants report surviving mutants as caught): the replacement's

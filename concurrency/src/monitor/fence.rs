@@ -10,7 +10,7 @@
 //! death point, record a trace event and enqueue a `Down` (which never takes
 //! a monitor table lock).
 
-use super::sync::{Mutex, MutexGuard};
+use super::sync::{monitors_added, monitors_removed, Mutex, MutexGuard};
 use std::collections::HashMap;
 use std::hash::Hash;
 
@@ -72,10 +72,13 @@ pub(crate) fn register<K: Hash + Eq, V>(
     if target_dead() {
         late();
         entries.insert(key, Entry::Queued);
+        monitors_added(1);
         return Registration::Late;
     }
     entries.insert(key, Entry::Active(value));
     active();
+    // Keys are fresh `MonitorRef`s: an insert never replaces an entry.
+    monitors_added(1);
     Registration::Active
 }
 
@@ -113,6 +116,7 @@ pub(crate) fn take_queued<K: Hash + Eq, V>(table: &Entries<K, V>, key: &K) -> bo
     };
     if matches!(entries.get(key), Some(Entry::Queued)) {
         entries.remove(key);
+        monitors_removed(1);
         true
     } else {
         false
@@ -134,6 +138,7 @@ pub(crate) fn remove<K: Hash + Eq, V>(
         return None;
     }
     removed();
+    monitors_removed(1);
     match entries.remove(key) {
         Some(Entry::Active(value)) => Some(value),
         _ => None,
@@ -153,6 +158,7 @@ pub(crate) fn demonitor<K: Hash + Eq, V>(
 ) -> Option<V> {
     let mut guard = lock(table);
     let entry = guard.as_mut().and_then(|entries| entries.remove(key))?;
+    monitors_removed(1);
     removed();
     match entry {
         Entry::Active(value) => Some(value),
@@ -164,6 +170,7 @@ pub(crate) fn demonitor<K: Hash + Eq, V>(
 /// waiters the caller wakes after the lock is released.
 pub(crate) fn close<K, V>(table: &Entries<K, V>) -> Option<Vec<(K, V)>> {
     lock(table).take().map(|entries| {
+        monitors_removed(entries.len());
         entries
             .into_iter()
             .filter_map(|(key, entry)| match entry {

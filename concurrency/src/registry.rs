@@ -6,6 +6,8 @@ use std::sync::{OnceLock, RwLock};
 struct Entry {
     value: Box<dyn Any + Send + Sync>,
     owner: Option<(crate::ActorId, u64)>,
+    /// `spawned_registered_names`.
+    _alive: crate::instrumentation::Live<crate::instrumentation::gauge::Names>,
 }
 type Store = RwLock<HashMap<String, Entry>>;
 static NEXT_REGISTRATION: AtomicU64 = AtomicU64::new(1);
@@ -54,6 +56,7 @@ pub fn register<T: Clone + Send + Sync + 'static>(
             e.insert(Entry {
                 value: Box::new(value),
                 owner: None,
+                _alive: Default::default(),
             });
             Ok(())
         }
@@ -114,6 +117,7 @@ pub fn register_owned<T: Clone + Send + Sync + 'static>(
             slot.insert(Entry {
                 value: Box::new(value),
                 owner: Some(owner),
+                _alive: Default::default(),
             });
             Ok(RegistrationGuard {
                 name: name.into(),
