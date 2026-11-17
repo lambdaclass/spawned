@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fix the flaky `tla-traces` coverage gate (`LOST coverage: Cohorts
+  A|OneForAll|CEnd/complete`): the cohort trace tests now wait for the restart
+  round to record `CEnd complete` before shutting down, instead of racing it
+  (the selection trace missed it in 24 of 30 runs). New
+  `lifecycle_trace::recorded_with` test helper.
+
 - Regenerate the 11 planted-bug patches (04, 10-17, 19, 20) that no longer
   applied, each planting the same fault where the code now lives, and check in
   the required `model-sync` job that every planted patch still applies.

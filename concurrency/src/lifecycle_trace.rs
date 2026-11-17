@@ -689,6 +689,14 @@ mod imp {
             .is_some_and(|events| events.iter().any(|e| e.action == action))
     }
 
+    /// Whether a supervisor's trace already holds `action` with parameter
+    /// `arg` (e.g. a cohort round's `CEnd` with `complete`).
+    pub fn recorded_with(id: u64, action: &str, arg: &str) -> bool {
+        lock(&TRACES)
+            .get(&id)
+            .is_some_and(|events| events.iter().any(|e| e.action == action && e.arg == arg))
+    }
+
     /// What a dumped trace needs besides its events: the constants
     /// `trace_check.py` instantiates the model with.
     struct Meta {
@@ -915,6 +923,6 @@ mod imp {
 
 #[cfg(feature = "lifecycle-trace")]
 pub use imp::{
-    record_lifecycle, recorded, take, take_jobs, take_lifecycle, take_replies, take_tree,
-    watch_deferred,
+    record_lifecycle, recorded, recorded_with, take, take_jobs, take_lifecycle, take_replies,
+    take_tree, watch_deferred,
 };
