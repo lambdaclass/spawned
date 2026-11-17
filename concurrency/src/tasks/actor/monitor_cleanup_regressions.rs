@@ -38,6 +38,17 @@ fn closed_monitor_table_rejects_late_registration() {
         },
     );
 }
+/// Poll `done` while driving `rt`: the waiter is released by a task on that
+/// runtime. A blocking `test_wait::wait_for` here would hang under
+/// spawned_sim, where nothing runs the (single-threaded) simulated runtime
+/// outside `block_on` and the entered thread's clock is virtual, so neither
+/// the condition nor the deadline would ever change.
+fn released(rt: &rt::Runtime, done: impl Fn() -> bool) -> bool {
+    rt.block_on(crate::test_wait::wait_for_async(
+        || std::future::ready(done()),
+        |r| *r,
+    ))
+}
 fn check_cleanup(stop_owner: bool) {
     let rt = rt::Runtime::new().unwrap();
     let _entered = rt.enter();
@@ -54,7 +65,7 @@ fn check_cleanup(stop_owner: bool) {
     } else {
         observer.context().demonitor(monitor);
         // Only the waiter now owns this particular ChildHandle allocation.
-        let released = crate::test_wait::wait_for(|| waiter.strong_count() == 0, |r| *r);
+        let released = released(&rt, || waiter.strong_count() == 0);
         observer.child_handle().stop();
         rt.block_on(observer.join());
         drop(observer);
@@ -63,7 +74,7 @@ fn check_cleanup(stop_owner: bool) {
         assert!(released, "demonitor retained its waiter until target exit");
         return;
     }
-    let released = crate::test_wait::wait_for(|| waiter.strong_count() == 0, |r| *r);
+    let released = released(&rt, || waiter.strong_count() == 0);
     target.child_handle().stop();
     rt.block_on(target.join());
     assert!(released, "stopped observer retained its monitor waiter");

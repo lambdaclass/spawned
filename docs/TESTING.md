@@ -803,8 +803,16 @@ RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim \
 
 `spawned-concurrency`'s own unit tests (`--lib`) are not simulated suites:
 many build real multi-thread runtimes, Blocking or Thread backends, or drop
-runtimes mid-run, which the simulator does not model; their `sim_test`s also
-run in the normal build.
+runtimes mid-run, which the simulator does not model, and none is a
+`sim_test`. Under the cfg every runtime is the simulated executor, so a
+`#[tokio::test]` that starts actors parks on real Tokio while its actors wait
+in an executor nothing drives: built with the cfg, 45 of the 244 tests hang
+or fail by design (measured 2026-11). The one unit test that is meaningful
+there (`reply::registry::tests::deadline_service_*`) runs as its own CI step.
+A unit test that must wait on actors from a runtime it entered drives that
+runtime (`rt.block_on(test_wait::wait_for_async(..))`), never a blocking
+`test_wait::wait_for`: under the cfg that thread's clock is virtual and
+frozen, so a blocking poll never sees the effect or its deadline.
 
 ### Exploration strategies (`sim::explore`)
 

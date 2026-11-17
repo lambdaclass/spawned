@@ -1056,37 +1056,47 @@ async fn disabled_retries_fail_without_waiting_for_a_long_backoff() {
     assert_eq!(child.snapshot().generation, 1);
 }
 
-struct SlowInit {
-    first: bool,
+/// Holds `started()` until the test releases it, so the startup deadline is
+/// the only way the attempt can end, whatever the machine's load.
+struct HeldInit {
+    release: Option<tokio::sync::oneshot::Receiver<()>>,
 }
-impl Actor for SlowInit {
+impl Actor for HeldInit {
     async fn started(&mut self, _: &Context<Self>) {
-        if self.first {
-            spawned_rt::tasks::sleep(Duration::from_millis(100)).await;
+        if let Some(release) = self.release.take() {
+            let _ = release.await;
         }
     }
 }
+// No wall-clock race: the replacement's started() is held until the test
+// has seen its startup deadline fire, and the deadline is far above any
+// healthy fast start (generations 1 and 3), so load only delays the pass.
+// Under spawned_sim the deadline is virtual and costs nothing.
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn transient_startup_timeout_retries_after_actual_cleanup() {
+    const STARTUP: Duration = Duration::from_secs(2);
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("startup-timeout-retry", 1).unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let attempts = calls.clone();
+    let (release, held) = tokio::sync::oneshot::channel();
+    let held = Arc::new(std::sync::Mutex::new(Some(held)));
     let mut tree = system.supervisor(config(3)).unwrap();
     let child = tree
         .add(
-            ChildSpec::new("slow-init", &group, move |ctx| {
+            ChildSpec::new("held-init", &group, move |ctx| {
                 attempts.fetch_add(1, Ordering::SeqCst);
-                async move {
-                    // v0.8 (S1): a first start is never retried, so the
-                    // slow start is the first replacement's.
-                    Ok::<_, String>(SlowInit {
-                        first: ctx.generation() == 2,
-                    })
-                }
+                // v0.8 (S1): a first start is never retried, so the held
+                // start is the first replacement's.
+                let release = if ctx.generation() == 2 {
+                    held.lock().unwrap().take()
+                } else {
+                    None
+                };
+                async move { Ok::<_, String>(HeldInit { release }) }
             })
             .restart(RestartMode::Transient)
-            .startup_timeout(Duration::from_millis(20)),
+            .startup_timeout(STARTUP),
         )
         .unwrap();
     let supervisor = spawned_rt::tasks::timeout(LIMIT, tree.start())
@@ -1094,6 +1104,21 @@ async fn transient_startup_timeout_retries_after_actual_cleanup() {
         .unwrap()
         .unwrap();
     child.current().unwrap().child_handle().kill();
+    // The held replacement can only end through its startup deadline.
+    spawned_rt::tasks::timeout(STARTUP + LIMIT, async {
+        while child.snapshot().last_error.as_deref() != Some("startup deadline exceeded") {
+            spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // Its actor is still inside started(), so its cleanup has not finished
+    // and the retry must not have begun.
+    for _ in 0..20 {
+        spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "retried before cleanup");
+    }
+    release.send(()).unwrap();
     spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(2))
         .await
         .unwrap()
