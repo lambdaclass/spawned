@@ -7,7 +7,9 @@
 //! The `*_contract` modules close the gaps found by the coverage audit in
 //! `docs/TESTING.md` ("Semantics coverage"): D3/D4/L7 (the stop window), D5,
 //! M1/L1, M4, M5, L2, L5, R3, T3 and S6 on every placement, and V2, V4, V6,
-//! V9, S1 and S3 on the simulator.
+//! V9, S1 and S3 on the simulator. The `*_partial` modules close the last
+//! partial rows: X7's non-trapping linked stop and L3's reason precedence
+//! through cleanup.
 //! Every wait is event-driven and bounded; no sleep is used to synchronize.
 use spawned_concurrency::{message::Message, ActorError, ChildHandle, Down, Exit, ExitReason};
 use std::time::Duration;
@@ -2449,5 +2451,596 @@ mod supervision_contract {
             matches!(later_reason, ExitReason::Shutdown | ExitReason::Killed),
             "{later_reason:?}"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The last partial guarantees (docs/TESTING.md, "Semantics coverage"): X7's
+// non-trapping linked stop and L3's reason precedence through cleanup, in
+// both modes and on every tasks placement. L7's monitor clause is checked in
+// `src/tasks/actor/monitor_cleanup_regressions.rs` (it needs the waiter's
+// lifetime probe).
+// ---------------------------------------------------------------------------
+
+/// What a linked bystander or a stopping victim did, in order.
+#[derive(Clone, Debug, PartialEq)]
+enum Step {
+    HoldBegin,
+    HoldEnd,
+    Handled(usize),
+    Stopped,
+}
+
+/// Link the receiving actor to this peer (without trapping exits).
+struct LinkTo(ChildHandle);
+impl Message for LinkTo {
+    type Result = ();
+}
+
+/// Ask the receiving actor to request its own stop with each reason in turn.
+struct StopSelf(Vec<ExitReason>);
+impl Message for StopSelf {
+    type Result = ();
+}
+
+/// Every non-`Normal` reason a peer can exit with: each one stops a
+/// non-trapping linked actor, which then publishes it (X3).
+fn linked_reasons() -> Vec<ExitReason> {
+    vec![
+        ExitReason::Shutdown,
+        ExitReason::Kill,
+        ExitReason::Killed,
+        ExitReason::Panic("peer crashed".into()),
+    ]
+}
+
+/// How an L3 case requests the stop and what goes wrong in cleanup.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Cleanup {
+    /// A second request with another reason: the first one wins.
+    SecondRequest,
+    /// `stopped()` panics: the panic replaces the requested reason.
+    StoppedPanics,
+    /// A kill arrives while `stopped()` runs, then `stopped()` panics:
+    /// `Killed` wins over both.
+    KillThenStoppedPanics,
+    /// The state destructor panics after D: the reason is already final.
+    DestructorPanics,
+}
+const CLEANUPS: [Cleanup; 4] = [
+    Cleanup::SecondRequest,
+    Cleanup::StoppedPanics,
+    Cleanup::KillThenStoppedPanics,
+    Cleanup::DestructorPanics,
+];
+
+/// The reasons a stop can request (`Kill` through `stop_with_reason` is a
+/// stop, not a kill).
+fn requested_reasons() -> Vec<ExitReason> {
+    vec![
+        ExitReason::Normal,
+        ExitReason::Shutdown,
+        ExitReason::Kill,
+        ExitReason::Panic("chosen".into()),
+    ]
+}
+
+/// A different reason to request second.
+fn other_reason(first: &ExitReason) -> ExitReason {
+    if *first == ExitReason::Shutdown {
+        ExitReason::Normal
+    } else {
+        ExitReason::Shutdown
+    }
+}
+
+/// L3: the published reason for `requested` after `cleanup`.
+fn expected_after(cleanup: Cleanup, requested: &ExitReason) -> ExitReason {
+    match cleanup {
+        Cleanup::SecondRequest | Cleanup::DestructorPanics => requested.clone(),
+        Cleanup::StoppedPanics => ExitReason::Panic("panic in stopped(): cleanup failed".into()),
+        Cleanup::KillThenStoppedPanics => ExitReason::Killed,
+    }
+}
+
+mod native_partial {
+    use super::*;
+    use spawned_concurrency::threads::{Actor, ActorStart, Context, Handler};
+    use std::sync::{mpsc, Arc, Mutex};
+
+    /// `wait_exit` with a bound, so a broken stop fails instead of hanging.
+    fn exit_within(handle: &ChildHandle) -> ExitReason {
+        let (tx, rx) = mpsc::channel();
+        let handle = handle.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(handle.wait_exit_blocking());
+        });
+        rx.recv_timeout(LIMIT).expect("the actor did not exit")
+    }
+
+    struct Hold {
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+    impl Message for Hold {
+        type Result = ();
+    }
+
+    struct Bystander(Arc<Mutex<Vec<Step>>>);
+    impl Actor for Bystander {
+        fn stopped(&mut self, _: &Context<Self>) {
+            self.0.lock().unwrap().push(Step::Stopped);
+        }
+    }
+    impl Handler<LinkTo> for Bystander {
+        fn handle(
+            &mut self,
+            LinkTo(peer): LinkTo,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
+            ctx.link(&peer);
+            reply.reply(());
+        }
+    }
+    impl Handler<Hold> for Bystander {
+        fn handle(
+            &mut self,
+            hold: Hold,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            self.0.lock().unwrap().push(Step::HoldBegin);
+            hold.entered.send(()).unwrap();
+            let _ = hold.release.recv_timeout(LIMIT);
+            self.0.lock().unwrap().push(Step::HoldEnd);
+            reply.reply(());
+        }
+    }
+    impl Handler<Seq> for Bystander {
+        fn handle(
+            &mut self,
+            Seq(i): Seq,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            self.0.lock().unwrap().push(Step::Handled(i));
+            reply.reply(());
+        }
+    }
+
+    struct Peer;
+    impl Actor for Peer {}
+
+    /// X7: a non-trapping actor's linked stop takes effect after its current
+    /// handler (which finishes) and discards its queue (D4): no queued
+    /// message runs, `stopped()` is skipped (an untrapped notice) and the
+    /// peer's reason is published.
+    #[test]
+    fn linked_stop_waits_for_the_running_handler_and_discards_the_queue() {
+        for reason in linked_reasons() {
+            for _ in 0..ROUNDS {
+                let seen = Arc::new(Mutex::new(Vec::new()));
+                let bystander = Bystander(seen.clone()).start();
+                let peer = Peer.start();
+                bystander
+                    .request_with_timeout(LinkTo(peer.child_handle()), LIMIT)
+                    .unwrap();
+                let (entered, entered_rx) = mpsc::channel();
+                let (release, release_rx) = mpsc::channel();
+                bystander
+                    .send(Hold {
+                        entered,
+                        release: release_rx,
+                    })
+                    .unwrap();
+                entered_rx.recv_timeout(LIMIT).unwrap();
+                for i in 0..WINDOW {
+                    bystander.send(Seq(i)).unwrap();
+                }
+                if reason == ExitReason::Killed {
+                    peer.child_handle().kill();
+                } else {
+                    peer.child_handle().stop_with_reason(reason.clone());
+                }
+                // The peer's publication delivered its link notice: the
+                // bystander's stop is requested while its handler runs.
+                assert_eq!(exit_within(&peer.child_handle()), reason);
+                assert!(
+                    bystander.child_handle().is_alive(),
+                    "X7 {reason:?}: the linked stop preempted the running handler"
+                );
+                release.send(()).unwrap();
+                assert_eq!(exit_within(&bystander.child_handle()), reason, "X3");
+                assert_eq!(
+                    *seen.lock().unwrap(),
+                    [Step::HoldBegin, Step::HoldEnd],
+                    "X7 {reason:?}: the handler must finish and the queue be discarded"
+                );
+            }
+        }
+    }
+
+    struct Victim {
+        cleanup: Cleanup,
+        seen: Arc<Mutex<Vec<Step>>>,
+        /// `KillThenStoppedPanics`: `stopped()` reports it began, then waits.
+        in_stopped: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
+    }
+    impl Actor for Victim {
+        fn stopped(&mut self, _: &Context<Self>) {
+            self.seen.lock().unwrap().push(Step::Stopped);
+            if let Some((began, resume)) = self.in_stopped.take() {
+                began.send(()).unwrap();
+                let _ = resume.recv_timeout(LIMIT);
+            }
+            if matches!(
+                self.cleanup,
+                Cleanup::StoppedPanics | Cleanup::KillThenStoppedPanics
+            ) {
+                panic!("cleanup failed");
+            }
+        }
+    }
+    impl Drop for Victim {
+        fn drop(&mut self) {
+            if self.cleanup == Cleanup::DestructorPanics {
+                panic!("state destructor failed");
+            }
+        }
+    }
+    impl Handler<StopSelf> for Victim {
+        fn handle(
+            &mut self,
+            StopSelf(reasons): StopSelf,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
+            for reason in reasons {
+                ctx.stop_with_reason(reason);
+            }
+            reply.reply(());
+        }
+    }
+
+    /// L3: the first requested reason wins over a later request; a panic in
+    /// `stopped()` replaces it unless a kill arrived first; a destructor
+    /// panic after D changes nothing (it is a cleanup failure, L6). Each case
+    /// requests the stop from inside (`ctx`) and from outside (`ChildHandle`).
+    #[test]
+    fn stop_reason_precedence_through_cleanup() {
+        for requested in requested_reasons() {
+            for cleanup in CLEANUPS {
+                for from_inside in [true, false] {
+                    let seen = Arc::new(Mutex::new(Vec::new()));
+                    let (began, began_rx) = mpsc::channel();
+                    let (resume, resume_rx) = mpsc::channel();
+                    let actor = Victim {
+                        cleanup,
+                        seen: seen.clone(),
+                        in_stopped: (cleanup == Cleanup::KillThenStoppedPanics)
+                            .then_some((began, resume_rx)),
+                    }
+                    .start();
+                    let handle = actor.child_handle();
+                    // Started first, as in the tasks version.
+                    actor
+                        .request_with_timeout(StopSelf(Vec::new()), LIMIT)
+                        .unwrap();
+                    let mut reasons = vec![requested.clone()];
+                    if cleanup == Cleanup::SecondRequest {
+                        reasons.push(other_reason(&requested));
+                    }
+                    if from_inside {
+                        actor
+                            .request_with_timeout(StopSelf(reasons), LIMIT)
+                            .unwrap();
+                    } else {
+                        for reason in reasons {
+                            handle.stop_with_reason(reason);
+                        }
+                    }
+                    if cleanup == Cleanup::KillThenStoppedPanics {
+                        began_rx.recv_timeout(LIMIT).unwrap();
+                        handle.kill();
+                        resume.send(()).unwrap();
+                    }
+                    let case = format!("{requested:?} {cleanup:?} inside={from_inside}");
+                    assert_eq!(
+                        exit_within(&handle),
+                        expected_after(cleanup, &requested),
+                        "L3 {case}"
+                    );
+                    assert_eq!(*seen.lock().unwrap(), [Step::Stopped], "L3 {case}");
+                    assert_eq!(
+                        handle.cleanup_failure().is_some(),
+                        cleanup == Cleanup::DestructorPanics,
+                        "L6 {case}: {:?}",
+                        handle.cleanup_failure()
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(all(feature = "async", not(spawned_sim)))]
+mod tasks_partial {
+    use super::*;
+    use spawned_concurrency::{
+        system::{ActorSystem, ExecutionGroup},
+        tasks::{Actor, ActorRef, ActorStart, Backend, Context, Handler},
+    };
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::oneshot;
+    use tokio::time::timeout;
+
+    #[derive(Clone, Copy, Debug)]
+    enum Place {
+        Async,
+        Blocking,
+        Thread,
+        AsyncGroup,
+        ThreadGroup,
+    }
+    const PLACES: [Place; 5] = [
+        Place::Async,
+        Place::Blocking,
+        Place::Thread,
+        Place::AsyncGroup,
+        Place::ThreadGroup,
+    ];
+
+    struct Placement {
+        system: ActorSystem,
+        async_group: ExecutionGroup,
+        thread_group: ExecutionGroup,
+    }
+    impl Placement {
+        fn new() -> Self {
+            let system = ActorSystem::new().unwrap();
+            let async_group = system.async_group("partial-async", 2).unwrap();
+            let thread_group = system.thread_group("partial-threads", 128).unwrap();
+            Self {
+                system,
+                async_group,
+                thread_group,
+            }
+        }
+        fn start<A: Actor>(&self, actor: A, place: Place) -> ActorRef<A> {
+            match place {
+                Place::Async => actor.start_with_backend(Backend::Async),
+                Place::Blocking => actor.start_with_backend(Backend::Blocking),
+                Place::Thread => actor.start_with_backend(Backend::Thread),
+                Place::AsyncGroup => actor.start_on(&self.async_group).unwrap(),
+                Place::ThreadGroup => actor.start_on(&self.thread_group).unwrap(),
+            }
+        }
+        async fn finish(self) {
+            assert!(self.system.shutdown(LIMIT).await.complete);
+        }
+    }
+
+    async fn exit_within(handle: &ChildHandle) -> ExitReason {
+        timeout(LIMIT, handle.wait_exit_async())
+            .await
+            .expect("the actor did not exit")
+    }
+
+    struct Hold {
+        entered: oneshot::Sender<()>,
+        release: oneshot::Receiver<()>,
+    }
+    impl Message for Hold {
+        type Result = ();
+    }
+
+    struct Bystander(Arc<Mutex<Vec<Step>>>);
+    impl Actor for Bystander {
+        async fn stopped(&mut self, _: &Context<Self>) {
+            self.0.lock().unwrap().push(Step::Stopped);
+        }
+    }
+    impl Handler<LinkTo> for Bystander {
+        async fn handle(
+            &mut self,
+            LinkTo(peer): LinkTo,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
+            ctx.link(&peer);
+            reply.reply(());
+        }
+    }
+    impl Handler<Hold> for Bystander {
+        async fn handle(
+            &mut self,
+            hold: Hold,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            self.0.lock().unwrap().push(Step::HoldBegin);
+            hold.entered.send(()).unwrap();
+            let _ = timeout(LIMIT, hold.release).await;
+            self.0.lock().unwrap().push(Step::HoldEnd);
+            reply.reply(());
+        }
+    }
+    impl Handler<Seq> for Bystander {
+        async fn handle(
+            &mut self,
+            Seq(i): Seq,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            self.0.lock().unwrap().push(Step::Handled(i));
+            reply.reply(());
+        }
+    }
+
+    struct Peer;
+    impl Actor for Peer {}
+
+    /// X7 on every tasks placement (threads mode: `native_partial`). An
+    /// async handler that awaits keeps its turn: the linked stop does not
+    /// cancel it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn linked_stop_waits_for_the_running_handler_and_discards_the_queue() {
+        let placement = Placement::new();
+        for place in PLACES {
+            for reason in linked_reasons() {
+                for _ in 0..ROUNDS {
+                    let seen = Arc::new(Mutex::new(Vec::new()));
+                    let bystander = placement.start(Bystander(seen.clone()), place);
+                    let peer = placement.start(Peer, place);
+                    bystander
+                        .request_with_timeout(LinkTo(peer.child_handle()), LIMIT)
+                        .await
+                        .unwrap();
+                    let (entered, entered_rx) = oneshot::channel();
+                    let (release, release_rx) = oneshot::channel();
+                    bystander
+                        .send(Hold {
+                            entered,
+                            release: release_rx,
+                        })
+                        .unwrap();
+                    timeout(LIMIT, entered_rx).await.unwrap().unwrap();
+                    for i in 0..WINDOW {
+                        bystander.send(Seq(i)).unwrap();
+                    }
+                    if reason == ExitReason::Killed {
+                        peer.child_handle().kill();
+                    } else {
+                        peer.child_handle().stop_with_reason(reason.clone());
+                    }
+                    assert_eq!(exit_within(&peer.child_handle()).await, reason);
+                    assert!(
+                        bystander.child_handle().is_alive(),
+                        "X7 {place:?} {reason:?}: the linked stop preempted the running handler"
+                    );
+                    release.send(()).unwrap();
+                    assert_eq!(
+                        exit_within(&bystander.child_handle()).await,
+                        reason,
+                        "X3 {place:?}"
+                    );
+                    assert_eq!(
+                        *seen.lock().unwrap(),
+                        [Step::HoldBegin, Step::HoldEnd],
+                        "X7 {place:?} {reason:?}: the handler must finish and the queue be discarded"
+                    );
+                }
+            }
+        }
+        placement.finish().await;
+    }
+
+    struct Victim {
+        cleanup: Cleanup,
+        seen: Arc<Mutex<Vec<Step>>>,
+        in_stopped: Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>,
+    }
+    impl Actor for Victim {
+        async fn stopped(&mut self, _: &Context<Self>) {
+            self.seen.lock().unwrap().push(Step::Stopped);
+            if let Some((began, resume)) = self.in_stopped.take() {
+                began.send(()).unwrap();
+                let _ = timeout(LIMIT, resume).await;
+            }
+            if matches!(
+                self.cleanup,
+                Cleanup::StoppedPanics | Cleanup::KillThenStoppedPanics
+            ) {
+                panic!("cleanup failed");
+            }
+        }
+    }
+    impl Drop for Victim {
+        fn drop(&mut self) {
+            if self.cleanup == Cleanup::DestructorPanics {
+                panic!("state destructor failed");
+            }
+        }
+    }
+    impl Handler<StopSelf> for Victim {
+        async fn handle(
+            &mut self,
+            StopSelf(reasons): StopSelf,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
+            for reason in reasons {
+                ctx.stop_with_reason(reason);
+            }
+            reply.reply(());
+        }
+    }
+
+    /// L3 on every tasks placement (threads mode: `native_partial`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stop_reason_precedence_through_cleanup() {
+        let placement = Placement::new();
+        for place in PLACES {
+            for requested in requested_reasons() {
+                for cleanup in CLEANUPS {
+                    for from_inside in [true, false] {
+                        let seen = Arc::new(Mutex::new(Vec::new()));
+                        let (began, began_rx) = oneshot::channel();
+                        let (resume, resume_rx) = oneshot::channel();
+                        let actor = placement.start(
+                            Victim {
+                                cleanup,
+                                seen: seen.clone(),
+                                in_stopped: (cleanup == Cleanup::KillThenStoppedPanics)
+                                    .then_some((began, resume_rx)),
+                            },
+                            place,
+                        );
+                        let handle = actor.child_handle();
+                        // Started first: a managed actor stopped before it
+                        // is admitted runs neither hook (L2).
+                        actor
+                            .request_with_timeout(StopSelf(Vec::new()), LIMIT)
+                            .await
+                            .unwrap();
+                        let mut reasons = vec![requested.clone()];
+                        if cleanup == Cleanup::SecondRequest {
+                            reasons.push(other_reason(&requested));
+                        }
+                        if from_inside {
+                            actor
+                                .request_with_timeout(StopSelf(reasons), LIMIT)
+                                .await
+                                .unwrap();
+                        } else {
+                            for reason in reasons {
+                                handle.stop_with_reason(reason);
+                            }
+                        }
+                        if cleanup == Cleanup::KillThenStoppedPanics {
+                            timeout(LIMIT, began_rx).await.unwrap().unwrap();
+                            handle.kill();
+                            resume.send(()).unwrap();
+                        }
+                        let case =
+                            format!("{place:?} {requested:?} {cleanup:?} inside={from_inside}");
+                        assert_eq!(
+                            exit_within(&handle).await,
+                            expected_after(cleanup, &requested),
+                            "L3 {case}"
+                        );
+                        assert_eq!(*seen.lock().unwrap(), [Step::Stopped], "L3 {case}");
+                        assert_eq!(
+                            handle.cleanup_failure().is_some(),
+                            cleanup == Cleanup::DestructorPanics,
+                            "L6 {case}: {:?}",
+                            handle.cleanup_failure()
+                        );
+                    }
+                }
+            }
+        }
+        placement.finish().await;
     }
 }
