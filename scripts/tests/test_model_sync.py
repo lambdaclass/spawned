@@ -166,6 +166,14 @@ class ModelInventory(RepoCopy):
         self.assertEqual(code, 1, out)
         self.assertIn("needs both `reason` and `tracking`", out)
 
+    def test_design_only_model_with_code_fails(self):
+        tmp = self.copy()
+        self.edit_map(tmp, "code = []\n[models.Start.tlc_only]",
+                      'code = ["concurrency/src/system.rs"]\n[models.Start.tlc_only]')
+        code, out = run("--root", str(tmp), "models")
+        self.assertEqual(code, 1, out)
+        self.assertIn("Start is a design-only model", out)
+
     def test_unrun_trace_spec_is_not_validation(self):
         tmp = self.copy()
         path = tmp / "verification" / "tla" / "trace_check.py"
