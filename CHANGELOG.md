@@ -83,9 +83,10 @@
   limitation). The thread still decides expiry and returns credits, but the
   wakers and payload destructors an expiry releases (a caller's waker, a
   discarded scheduled emit, a displaced job result, a `done` closure and its
-  captures) now run on an elastic pool of disposal workers, so a blocking
-  destructor or waker in one actor no longer delays other actors' deadlines.
-  A payload handed off still waits for its owner's death point (R6). No cost
+  captures) now run on an elastic pool of disposal workers, one item at a
+  time, so a blocking destructor or waker no longer delays other actors'
+  deadlines or other callers of the same actor. A payload handed off still
+  waits for its owner's death point (R6). No cost
   on requests that do not expire. New regression tests (tasks and threads),
   a Loom case for the handed-off wake-up, and an `InlineDisposal` negative
   control in `DeferredReplies.tla`.
