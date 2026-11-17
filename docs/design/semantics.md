@@ -332,7 +332,8 @@ Checked by: [`shutdown_publication`][shutdown_publication],
 [`sim_ordering::stop_discards_queue_before_publishing_exit_{pct,dfs}`][sim_ordering];
 outgoing monitors cancelled before publication:
 `src/tasks/actor/monitor_cleanup_regressions.rs::observer_cancels_its_monitors_before_publishing_its_exit`
-(the cleanup is shared with threads mode).
+(the cleanup is shared with threads mode); the fuzz L7 probe also checks that an
+exited observer's waiters are released while the target lives on.
 
 ## 5. Links, monitors and trapped exits
 
@@ -374,7 +375,9 @@ is in dispatch; the window is cross-thread, so a failpoint, not the
 simulator, reaches it);
 `link::tests::link_from_an_exiting_or_dead_caller_is_inert`,
 [`otp_exit_signals::tasks_mode::link_from_a_dead_actor_is_inert`][otp_exit_signals],
-`closed_monitor_table_rejects_late_registration`, [`leaks::monitor_waiters_released_on_demonitor_owner_exit_and_target_exit`][leaks].
+`closed_monitor_table_rejects_late_registration`, [`leaks::monitor_waiters_released_on_demonitor_owner_exit_and_target_exit`][leaks],
+the fuzz X2 (flush) oracle (no `Down` handled after the driver's `demonitor`
+returned).
 
 **X3. Exit signals and link propagation.** An exit signal
 (`ChildHandle::exit`, `ctx.exit`, `kill`) or a linked actor's death notice is
@@ -691,7 +694,8 @@ delay: each tick waits `period` after the previous send, so ticks drift and
 missed time is never caught up in a burst.
 Checked by: `src/{tasks,threads}/timer_tests.rs::test_send_interval_and_cancellation`,
 [`semantics_gaps`][semantics_gaps]`::tasks::send_interval_is_fixed_delay_and_never_catches_up` (paused time,
-one jump of 3.5 periods). threads timers use real time and are
+one jump of 3.5 periods), the fuzz T2 (stop) oracle (no round after the
+actor's exit is published). threads timers use real time and are
 checked by construction only.
 
 **T3. Timers belong to one instance.** A timer targets the instance whose
