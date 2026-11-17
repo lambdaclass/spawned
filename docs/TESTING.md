@@ -785,7 +785,8 @@ at a time, each killed after 120 s, so one wedged schedule fails that test
 instead of hanging the binary. Failing seeds leave their decision tapes in the
 `sim-tapes` artifact. The run takes under a minute after the build; the
 seed counts are the defaults (8 per `sim_test`, 200 for the `sim.rs`
-sweeps). Larger sweeps (`SPAWNED_SIM_SEEDS`, `SPAWNED_SIM_ITERATIONS`, the
+sweeps, 64 for the `supervision_races` sweep, which also asserts that some
+seed reached its window). Larger sweeps (`SPAWNED_SIM_SEEDS`, `SPAWNED_SIM_ITERATIONS`, the
 ignored `explore_budget_table`) stay manual. Same run locally:
 
 ```sh
@@ -1682,23 +1683,79 @@ adapter's `Drop` deleted or with its own-entry check inverted) are killed by
 `nested::resolve_and_drop_tests`. All of `monitor.rs` and `registry.rs` was
 caught.
 
-`supervision.rs` (314 mutants, run against the supervision-focused tests
-only: `--lib` and the `supervision`, `supervision_strategies`,
-`supervisor_policies`, `nested_supervision`, `failpoints` and
-`execution_groups` binaries, so a survivor here may still die under the full
-weekly run): 175 caught, 11 timeouts, 65 unviable, 63 missed. About 40 of the
-63 change only `lifecycle-trace` event arguments (`+ 1` slot and round
-indices, `count`, `trace_id`, `Core::cohort`) or logging (`log_failure_once`,
-the `generation > 1` restart log), which are equivalent in a default build.
-Two were real gaps and are now killed by unit tests: `jitter_seed` with `^`
-to `|` (the existing test only checked that pairs differ) and
-`RetryBudget::available` with `<` to `<=` (no test reached a reservation at
-exactly the limit). The rest are the race-only guards listed above
-(`finish_unless_recovering`'s supersession check, `close_admission`,
-`cancel_unready_startup`, `stop_remaining`, the OneForOne/closed-gate exit of
-`run_child`'s non-restart branch); the planted bugs show the stack catches
-gross mistakes on these paths, and these single-operator survivors need the
-narrow windows the failpoints were built for.
+`supervision.rs` and `supervision/{child,state,builder,run,nested}.rs` (369
+mutants, run against the supervision-focused tests only, with `failpoints`:
+`--lib` and the `supervision`, `supervision_strategies`,
+`supervisor_policies`, `nested_supervision`, `failpoints`,
+`execution_groups` and `supervision_races` binaries, so a survivor here may
+still die under the full weekly run): 206 caught, 20 timeouts, 81 unviable,
+62 missed, two of them caught only on the simulator. Before the tests below it
+was 195 caught, 20 timeouts, 81 unviable, 73 missed, and two of those
+"caught" were false: `stop_turn` to `false` and `SupervisorBuilder::trace_id`
+to `1` were each failed only by a flake of
+`supervision::transient_startup_timeout_retries_after_actual_cleanup` (its
+20 ms `startup_timeout` also bounds the first start, which a loaded host can
+miss). Earlier rounds killed
+`jitter_seed` with `^` to `|` and `RetryBudget::available` with `<` to `<=`
+with unit tests.
+
+```bash
+cargo mutants -p spawned-concurrency --features failpoints \
+  -f concurrency/src/supervision.rs -f 'concurrency/src/supervision/*.rs' \
+  -C --lib -C --test=supervision -C --test=supervision_strategies \
+  -C --test=supervisor_policies -C --test=nested_supervision \
+  -C --test=failpoints -C --test=execution_groups -C --test=supervision_races
+```
+
+Passing the test targets with `-C` rather than after `--` also limits what
+each mutant builds, which keeps the run near an hour on a shared host.
+
+Killed by deterministic tests (in `supervision/guard_tests.rs` unless noted):
+
+| Survivor | Test |
+|---|---|
+| `View::finish_unless_recovering`: `!failed` deleted, `>` to `<`, `\|\|` to `&&` in the state choice | `finish_unless_recovering_yields_only_to_a_newer_round` |
+| `Core::fail_as_kind` emptied (a controller task that fails outside its own panic boundary) | `escaped_controller_failure_fails_the_tree` |
+| `ShutdownUnit::stop_remaining` emptied, `ShutdownUnit::is_done` to `false` | `stop_remaining_signals_every_child_at_once` |
+| `Core::start_error`: the `Cleanup` arm deleted, the rollback filter `!=` to `==` | `start_error_separates_the_cause_from_rollback_failures` |
+| `run_recoveries`: the `admission_closed` arm of the cleanup wait deleted (a stop during a round became a stuck cleanup) | `stop_during_round_cleanup_is_not_a_cleanup_failure` |
+| `run_child`: the `stop_turn` kill guard to `true` (a self-exiting child with a stuck cleanup was killed); `View::mark_stuck` emptied | `self_exit_with_stuck_cleanup_is_not_killed` |
+| `run_child`: the `stop_turn` kill guard to `false` (the stop turn's kill after `shutdown_timeout` skipped) | `stop_turn_kills_a_child_whose_cleanup_outlives_shutdown_timeout` |
+| `run_child`: `state != Failed` to `==` (a stuck cleanup's late exit moved the snapshot back to `Stopping`) | `failpoints::stuck_cleanup_stays_failed_after_the_late_exit`, held at `child.before_cleanup_join` |
+| `run_child`'s non-restart exit: `== OneForOne` to `!=`, `!gate.is_open()` to `gate.is_open()` (a OneForAll child retired while a round was assigned to it) | `supervision_races::deferred_stop_serves_a_round_assigned_before_the_decision_over_seeds`; simulator only (about 1 seed in 4 hits the window), so a default-build run still lists these two as missed |
+
+`Core::close_admission`, `Core::cancel_unready_startup`, `Core::stop_remaining`
+and `Supervisor::stop` emptied were caught only by a test timing out; the
+tests above, `close_admission_closes_the_gate_without_taking_the_stop_turn`
+and `cancel_unready_startup_cancels_only_before_readiness` now fail on them
+at once (cargo-mutants may still report a timeout, since other tests in the
+same binary hang). `View::settled` emptied survives this test set but is
+caught by `otp_exit_signals::start_returns_its_error_after_rollback`.
+
+Equivalent in a default build (57): `lifecycle-trace` event arguments and
+cfg-gated trace code (`exit_class`; the `+ 1` slot, round and count indices
+in `run_supervisor_body`, `run_recoveries`, `run_child`, `request_recovery`,
+`reserve_retry`, `retry_under_gate`, `RetryReservation::drop` and
+`SupervisorBuilder::add`'s `trace_index`; `Core::cohort`; the `Close` and
+`ShutdownDeadline` conditions in `close_admission`, `cancel_unready_startup`
+and `stop_remaining`; `trace_id`; the `LoopTop`, `SelfExit`, `StartupFailed`,
+`BackoffDone`, `Attempt`, `Decide` and `DeferExit` conditions in
+`run_child`), logging (`log_failure_once`, the `generation > 1` restart log),
+and two that are equivalent by logic: `generation.is_none() && was_retry` to
+`||` (it only drops a reservation that `retry_under_gate` already released)
+and `OneForOne || !gate.is_open()` to `&&` (with the gate closed both paths
+retire the child).
+
+Two remain, and catching either needs a pause that no hook provides. In the
+stop turn, `finished || child.done()` to `&&`: the child would have to finish
+between its deadline firing and the check, and `rt::timeout` polls the wait
+before the deadline, so not even the simulator interleaves it. In
+`run_child`'s publication guard, `r.meta.id > last_recovery` to `<`: a
+generation that turns ready after a newer round was assigned to it but before
+the coordinator stops it. `current()` already refuses that generation through
+its scope token, so only a transient snapshot and the `BecomeReady` trace
+flag would show it; a generation held in `started()` instead never turns
+ready, because the round's stop is held behind `started()`.
 
 ## Kani proofs of supervisor arithmetic
 
