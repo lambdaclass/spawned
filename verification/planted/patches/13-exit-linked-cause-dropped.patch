@@ -1,10 +1,10 @@
 Planted bug 13 (exit-linked-cause-dropped): An actor killed through a link exits Normal, so the crash stops propagating
 
 diff --git a/concurrency/src/link.rs b/concurrency/src/link.rs
-index ff5b35ef..cf77cea9 100644
+index 5add5c2a..91a9ee47 100644
 --- a/concurrency/src/link.rs
 +++ b/concurrency/src/link.rs
-@@ -310,7 +310,13 @@ fn apply_signal(
+@@ -492,7 +492,13 @@ fn apply_signal(
      if exit.reason == ExitReason::Normal {
          return;
      }
@@ -16,6 +16,6 @@ index ff5b35ef..cf77cea9 100644
 +        exit.reason
 +    };
 +    if request.untrapped(reason) {
+         let waits = request.take_waiting_starts();
          drop(request);
          (target.wake)();
-     }
