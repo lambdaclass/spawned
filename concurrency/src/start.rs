@@ -845,6 +845,65 @@ fn dispose(
     }
 }
 
+/// A committed child whose lifecycle cannot be dispatched (its group or
+/// worker is gone, its thread cannot be spawned): kill it, then drive its
+/// lifecycle here. The kill arrived before `started()` began, so the
+/// lifecycle runs no user code and never blocks (`KilledEarly`): it
+/// resolves the start `InitExited { Killed }`, publishes and returns. The
+/// caller's `Starting` answers as for any other failed start.
+pub(crate) fn run_killed(child: &ChildHandle, run: impl FnOnce()) {
+    child.kill();
+    run();
+}
+
+/// Poll a future that never blocks (a killed lifecycle) to completion on
+/// this thread, without a runtime.
+pub(crate) fn run_inline<F: std::future::Future<Output = ()>>(future: F) {
+    struct Unpark(std::thread::Thread);
+    impl std::task::Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = std::task::Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut cx = std::task::Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    while future.as_mut().poll(&mut cx).is_pending() {
+        std::thread::park();
+    }
+}
+
+/// Run `payload` with `run` on a new OS thread; if the thread cannot be
+/// spawned, kill `child` and finish it with `killed` here ([`run_killed`]).
+pub(crate) fn spawn_thread_or_kill<T: Send + 'static>(
+    builder: std::thread::Builder,
+    child: &ChildHandle,
+    payload: T,
+    run: impl FnOnce(T) + Send + 'static,
+    killed: impl FnOnce(T),
+) {
+    let slot = Arc::new(Mutex::new(Some(payload)));
+    let theirs = slot.clone();
+    let spawn = || -> std::io::Result<()> {
+        fail_point!("actor.thread_spawn" => return Err(std::io::Error::other("failpoint")));
+        builder
+            .spawn(move || {
+                let payload = theirs.lock().unwrap_or_else(|p| p.into_inner()).take();
+                if let Some(payload) = payload {
+                    run(payload);
+                }
+            })
+            .map(drop)
+    };
+    if let Err(error) = spawn() {
+        tracing::error!(%error, actor = ?child.id(), "actor thread spawn failed; killing the child");
+        let payload = slot.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some(payload) = payload {
+            run_killed(child, || killed(payload));
+        }
+    }
+}
+
 /// The init timer (design 6): a framework-owned thread that commits
 /// `TimedOut` at expiry unless the child committed first, then kills it.
 /// Only a start with `init_timeout` pays for it.

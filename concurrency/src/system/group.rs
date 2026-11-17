@@ -237,14 +237,18 @@ impl GroupInner {
     pub(super) fn shard_count(&self) -> usize {
         self.targets.len()
     }
-    pub(super) fn dispatch<F>(&self, target: usize, future: F) -> Result<(), SystemError>
+    /// Hands the future back when the worker is gone.
+    pub(super) fn dispatch<F>(&self, target: usize, future: F) -> Result<(), WorkFuture>
     where
         F: Future<Output = ()> + Send + 'static,
     {
         match &self.targets[target].native {
             Some(sender) => sender
                 .send(Work::Actor(Box::pin(future)))
-                .map_err(|_| SystemError::Runtime("native worker is unavailable".into())),
+                .map_err(|refused| match refused.0 {
+                    Work::Actor(future) => future,
+                    Work::Stop => unreachable!("dispatch sends actors only"),
+                }),
             None => {
                 drop(self.targets[target].handle.spawn(future));
                 Ok(())

@@ -1271,14 +1271,20 @@ impl Scope {
         self.lease(false)
     }
     /// Dispatch the actor root to its reserved worker or runtime shard.
-    pub(crate) fn dispatch_actor<F>(&self, future: F) -> Result<(), SystemError>
+    /// Dispatch a committed actor to its worker. The future comes back if
+    /// the group or its worker is gone (dropped mid-shutdown).
+    pub(crate) fn dispatch_actor<F>(
+        &self,
+        future: F,
+    ) -> Result<(), std::pin::Pin<Box<dyn Future<Output = ()> + Send>>>
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        self.group
-            .upgrade()
-            .ok_or(SystemError::Closed)?
-            .dispatch(self.target, future)
+        fail_point!("system.dispatch_actor" => return Err(Box::pin(future)));
+        match self.group.upgrade() {
+            Some(group) => group.dispatch(self.target, future),
+            None => Err(Box::pin(future)),
+        }
     }
     /// Internal lifecycle cleanup is deliberately not cancelled with ordinary
     /// helpers: its lease must survive until the owned subtree actually joins.

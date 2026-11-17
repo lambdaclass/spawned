@@ -442,6 +442,20 @@ def start_trace_controls(traces, tlc):
                      admin_stop_fails_start,
                      "an administrative stop during started() fails the start", tlc)
 
+    def dispatch_failure_answered_ready(events):
+        # Review #291 item 1: the committed child the dispatch lost must
+        # resolve killed; a waiter answered `ok` with no ready child is wrong.
+        events[at(events, "SAnswer", "failed")]["x"] = "ok"
+    require_rejected(by_name["start_dispatch_failure_after_commit_kills_child"],
+                     dispatch_failure_answered_ready,
+                     "a lost dispatch answers the start ok", tlc)
+
+    def dispatch_failure_unkilled(events):
+        del events[at(events, "SKill")]
+    require_rejected(by_name["start_dispatch_failure_after_commit_kills_child"],
+                     dispatch_failure_unkilled,
+                     "a lost dispatch resolves killed without a kill", tlc)
+
     def abandon_drops_diverted(events):
         events[at(events, "SAbandon")]["f"] = False
     require_rejected(by_name["start_abandon_after_publication_hands_on_exit"],

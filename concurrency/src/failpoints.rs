@@ -167,6 +167,21 @@ pub const SITES: &[Site] = &[
                       supervised generation). Error reports `SystemError::Capacity`.",
     },
     Site {
+        name: "system.dispatch_actor",
+        has_error: true,
+        description: "Dispatch of a committed managed actor to its worker. Error models \
+                      a group dropped mid-shutdown or a closed native worker channel: \
+                      the child is killed before started() (`KilledEarly`) and its \
+                      start answers `InitExited { Killed }`.",
+    },
+    Site {
+        name: "actor.thread_spawn",
+        has_error: true,
+        description: "OS thread spawn of a committed thread-backed actor. Error models \
+                      a failed spawn: the child is killed before started() and its \
+                      start answers `InitExited { Killed }`.",
+    },
+    Site {
         name: "registry.before_register",
         has_error: true,
         description: "Managed `register_name`, before the owner's admission is checked. \

@@ -425,12 +425,16 @@ impl<A: Actor> ActorRef<A> {
                 .shared
                 .managed()
                 .expect("managed lease without scope");
-            scope
-                .dispatch_actor(crate::system::Tracked {
-                    future: inner_future,
-                    lease,
-                })
-                .map_err(crate::start::StartError::from)?;
+            // Committed: a dispatch failure (the group dropped mid-shutdown,
+            // its worker gone) is not a stage-1 refusal. The child is killed
+            // before started() and its start answers `InitExited { Killed }`.
+            if let Err(future) = scope.dispatch_actor(crate::system::Tracked {
+                future: inner_future,
+                lease,
+            }) {
+                tracing::error!(actor = ?id, "actor dispatch failed after commit; killing the child");
+                crate::start::run_killed(&child_handle, || crate::start::run_inline(future));
+            }
             return Ok((actor_ref, monitor_ref));
         }
 
@@ -443,17 +447,19 @@ impl<A: Actor> ActorRef<A> {
             Backend::Blocking => {
                 let _handle = rt::spawn_blocking(move || rt::block_on(inner_future));
             }
-            Backend::Thread => match options.stack_size {
-                None => {
-                    let _handle = threads::spawn(move || threads::block_on(inner_future));
+            Backend::Thread => {
+                let mut builder = std::thread::Builder::new();
+                if let Some(bytes) = options.stack_size {
+                    builder = builder.stack_size(bytes);
                 }
-                Some(bytes) => {
-                    std::thread::Builder::new()
-                        .stack_size(bytes)
-                        .spawn(move || threads::block_on(inner_future))
-                        .expect("actor thread spawn failed");
-                }
-            },
+                crate::start::spawn_thread_or_kill(
+                    builder,
+                    &child_handle,
+                    inner_future,
+                    threads::block_on,
+                    crate::start::run_inline,
+                );
+            }
         }
 
         Ok((actor_ref, monitor_ref))

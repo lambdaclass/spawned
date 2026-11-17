@@ -937,3 +937,146 @@ async fn threads_mode_link_and_continuation() {
     p.context().stop();
     p.wait_exit();
 }
+
+/// Review #291 item 1: a committed managed child whose dispatch fails (its
+/// group dropped mid-shutdown; failpoint `system.dispatch_actor`) is killed
+/// before started() (`KilledEarly`): the start_link answers
+/// `InitExited { Killed }` (not a stage-1 refusal with the edge applied),
+/// the waiting trapping parent's Exit is consumed by the answer, and the
+/// start_monitor's Down likewise. No waiter stays `Waiting`.
+#[cfg(all(feature = "failpoints", not(spawned_sim)))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dispatch_failure_after_commit_kills_child() {
+    use spawned_concurrency::failpoints::{self, Action, FailPoint, FailScenario};
+    let _serial = SERIAL.lock().await;
+    let _scenario = FailScenario::setup();
+    let system = spawned_concurrency::system::ActorSystem::new().unwrap();
+    let group = system.thread_group("start-dispatch", 3).unwrap();
+    let seen = Seen::default();
+    let p = Parent {
+        trap: true,
+        seen: seen.clone(),
+    }
+    .with_options(&group)
+    .start()
+    .await
+    .unwrap()
+    .started()
+    .unwrap();
+    lifecycle_trace::record_start_parent(&p.child_handle());
+    failpoints::configure("system.dispatch_actor", FailPoint::new(Action::Error)).unwrap();
+    let linked = tokio::time::timeout(LIMIT, Child::new(Outcome::Ready).start_link(&p.context()))
+        .await
+        .expect("the start_link answers");
+    assert!(
+        matches!(
+            linked,
+            Err(StartError::InitExited {
+                reason: ExitReason::Killed,
+                pending: None
+            })
+        ),
+        "{linked:?}"
+    );
+    let monitored = tokio::time::timeout(
+        LIMIT,
+        Child::new(Outcome::Ready).start_monitor(&p.context()),
+    )
+    .await
+    .expect("the start_monitor answers");
+    assert!(
+        matches!(
+            monitored,
+            Err(StartError::InitExited {
+                reason: ExitReason::Killed,
+                pending: None
+            })
+        ),
+        "{monitored:?}"
+    );
+    failpoints::remove("system.dispatch_actor");
+    until("both slots", || count("SReleaseSlot") >= 2).await;
+    let events = write("dispatch_failure_after_commit_kills_child", "G", true, 2);
+    has(
+        &events,
+        &[
+            "SBegin:link",
+            "SCommit:G",
+            "SKill",
+            "SResolve:none",
+            "SDie:Killed",
+            "SPublish:divert",
+            "SAnswer:failed",
+            "SBegin:monitor",
+            "SCommit:G",
+            "SKill",
+            "SResolve:none",
+            "SPublish:divert",
+            "SAnswer:failed",
+        ],
+    );
+    assert!(
+        seen.exits.lock().unwrap().is_empty(),
+        "Exit consumed by the answer"
+    );
+    assert!(
+        seen.downs.lock().unwrap().is_empty(),
+        "Down consumed by the answer"
+    );
+    assert!(p.child_handle().is_alive(), "a trapping parent survives");
+    p.request(Stop).await.unwrap();
+    p.wait_exit().await;
+    assert!(system.shutdown(LIMIT).await.complete);
+}
+
+/// Review #291 item 1: a committed `Backend::Thread` child whose thread
+/// cannot be spawned (failpoint `actor.thread_spawn`) is killed before
+/// started(), and its start_link answers `InitExited { Killed }` instead of
+/// panicking in the parent.
+#[cfg(feature = "failpoints")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn thread_spawn_failure_after_commit_kills_child() {
+    use spawned_concurrency::failpoints::{self, Action, FailPoint, FailScenario};
+    let _serial = SERIAL.lock().await;
+    let _scenario = FailScenario::setup();
+    let (p, seen) = parent(true).await;
+    lifecycle_trace::record_start_parent(&p.child_handle());
+    failpoints::configure("actor.thread_spawn", FailPoint::new(Action::Error)).unwrap();
+    let linked = Child::new(Outcome::Ready)
+        .with_options(StartOptions::new().backend(spawned_concurrency::tasks::Backend::Thread))
+        .start_link(&p.context())
+        .await;
+    failpoints::remove("actor.thread_spawn");
+    assert!(
+        matches!(
+            linked,
+            Err(StartError::InitExited {
+                reason: ExitReason::Killed,
+                pending: None
+            })
+        ),
+        "{linked:?}"
+    );
+    children_done(1).await;
+    let events = write(
+        "thread_spawn_failure_after_commit_kills_child",
+        "U",
+        true,
+        1000,
+    );
+    has(
+        &events,
+        &[
+            "SBegin:link",
+            "SCommit:U",
+            "SKill",
+            "SResolve:none",
+            "SDie:Killed",
+            "SPublish:divert",
+            "SAnswer:failed",
+        ],
+    );
+    assert!(seen.exits.lock().unwrap().is_empty());
+    p.request(Stop).await.unwrap();
+    p.wait_exit().await;
+}

@@ -220,7 +220,7 @@ impl<A: Actor> ActorRef<A> {
         // Recorded from here: the start_link link is the model's initial one.
         crate::lifecycle_trace::life_spawn(id.raw(), link_parent.map_or(0, |p| p.raw()));
         if let crate::start::Timeout::After(after) = options.init_timeout {
-            crate::start::spawn_init_timer(&cell, child_handle, after);
+            crate::start::spawn_init_timer(&cell, child_handle.clone(), after);
         }
 
         let cleanup_token = cancellation_token.clone();
@@ -294,21 +294,22 @@ impl<A: Actor> ActorRef<A> {
                 crate::lifecycle_trace::StartEvent::new("SWorkDone", c)
             });
         };
-        match (options.stack_size, &options.label) {
-            (None, None) => {
-                let _thread_handle = rt::spawn(body);
-            }
-            (stack, label) => {
-                let mut builder = std::thread::Builder::new();
-                if let Some(bytes) = stack {
-                    builder = builder.stack_size(bytes);
-                }
-                if let Some(label) = label {
-                    builder = builder.name(label.to_string());
-                }
-                builder.spawn(body).expect("actor thread spawn failed");
-            }
+        let mut builder = std::thread::Builder::new();
+        if let Some(bytes) = options.stack_size {
+            builder = builder.stack_size(bytes);
         }
+        if let Some(label) = &options.label {
+            builder = builder.name(label.to_string());
+        }
+        // A spawn failure after the commit kills the child before started()
+        // (`InitExited { Killed }`), not a stage-1 refusal.
+        crate::start::spawn_thread_or_kill(
+            builder,
+            &child_handle,
+            body,
+            |body| body(),
+            |body| body(),
+        );
         Ok((actor_ref, monitor_ref))
     }
 }
