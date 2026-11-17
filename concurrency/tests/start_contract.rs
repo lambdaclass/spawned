@@ -701,33 +701,36 @@ mod threads_mode {
                     assert_eq!(hooks.dropped.load(Ordering::SeqCst), 1, "{then:?}");
                 }
                 assert_eq!(hooks.stopped.load(Ordering::SeqCst), 0, "{then:?}");
-                let ok = match (then, &result) {
-                    (Then::Ready | Then::Continue, Ok(StartOutcome::Started(()))) => true,
-                    (Then::Error, Err(StartError::InitFailed { pending: None, .. })) => true,
-                    (Then::Ignore, Ok(StartOutcome::Ignored { pending: None })) => true,
-                    (
-                        Then::Panic,
-                        Err(StartError::InitExited {
-                            reason: ExitReason::Panic(_),
-                            pending: None,
-                        }),
-                    ) => true,
-                    (
-                        Then::Stop,
-                        Err(StartError::InitExited {
-                            reason: ExitReason::Shutdown,
-                            pending: None,
-                        }),
-                    ) => true,
-                    (
-                        Then::CtxStop,
-                        Err(StartError::InitExited {
-                            reason: ExitReason::Normal,
-                            pending: None,
-                        }),
-                    ) => true,
-                    _ => false,
-                };
+                let ok = matches!(
+                    (then, &result),
+                    (Then::Ready | Then::Continue, Ok(StartOutcome::Started(())))
+                        | (
+                            Then::Error,
+                            Err(StartError::InitFailed { pending: None, .. })
+                        )
+                        | (Then::Ignore, Ok(StartOutcome::Ignored { pending: None }))
+                        | (
+                            Then::Panic,
+                            Err(StartError::InitExited {
+                                reason: ExitReason::Panic(_),
+                                pending: None,
+                            }),
+                        )
+                        | (
+                            Then::Stop,
+                            Err(StartError::InitExited {
+                                reason: ExitReason::Shutdown,
+                                pending: None,
+                            }),
+                        )
+                        | (
+                            Then::CtxStop,
+                            Err(StartError::InitExited {
+                                reason: ExitReason::Normal,
+                                pending: None,
+                            }),
+                        )
+                );
                 assert!(ok, "{then:?} (waiting {waiting}): {result:?}");
             }
         }
