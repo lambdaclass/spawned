@@ -180,7 +180,7 @@ where
                     }
                     // Possibly the last reference (`done` and its captures):
                     // off the deadline service thread.
-                    crate::reply::disposal::defer_drop(run);
+                    crate::reply::disposal::defer_drop_arc(run);
                 })
             },
         );
@@ -492,7 +492,7 @@ impl<A: Actor> Context<A> {
                 if let Some(run) = weak.upgrade() {
                     run.notify(Err(JobError::DeadlineExceeded));
                     // Possibly the last reference: off the deadline thread.
-                    crate::reply::disposal::defer_drop(run);
+                    crate::reply::disposal::defer_drop_arc(run);
                 }
             }))),
         });

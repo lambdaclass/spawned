@@ -291,18 +291,23 @@ handles a call even after the caller timed out, and the late reply is dropped.
 - **Callback progress (disposal off the service thread).** The service
   thread only decides expiry: it pops due entries, makes the terminal
   transition (`OPEN -> TIMED_OUT`, a job's `JobDeadline` notification or a
-  scheduled emit's fire) and returns the credit, all under framework locks.
-  It also unparks a parked blocking receiver and enqueues a job's message on
-  its owner's mailbox (the runtime wake of the owner's own task). Anything an
-  expiry releases that can run user code is collected during the visit and
-  handed to a disposal worker (`reply/disposal.rs`): the caller's waker and
-  the token's watchers, payloads routed to the owner's failure sink (a held
-  or refused job result, a discarded emit, `done` and its captures), and the
-  last references to entries, jobs and the registry. Disposal workers form an
-  elastic pool: a batch that finds no idle worker starts one (up to 64,
-  idle ones exit after 10 s), so a destructor or waker that blocks holds
-  only its own worker, and no other actor's expiry, credit return or
-  wake-up waits for it.
+  scheduled emit's fire) and returns the deferral credit, all under
+  framework locks. It also unparks a parked blocking receiver and enqueues a
+  job's message on its owner's mailbox (the runtime wake of the owner's own
+  task). Anything an expiry releases that can run user code is collected
+  during the visit and handed to the disposal workers (`reply/disposal.rs`):
+  the caller's waker and the token's watchers, payloads routed to the
+  owner's failure sink (a held or refused job result, a discarded emit,
+  `done` and its captures), the due entries, and the last references to
+  jobs, runs and the registry (a reference that is not the last is dropped
+  in place: it runs no user code). Each item is queued on its own, so a
+  destructor or waker that blocks holds only the worker running it: no
+  other expiry, credit return or wake-up waits for it, of another actor or
+  of the same one (two callers of one actor expiring in one visit are woken
+  independently). Disposal workers form an elastic pool: when queued items
+  outnumber idle workers one more starts (one start at a time, up to 64;
+  idle ones exit after 10 s), and each worker re-checks when it takes an
+  item. Reaching the cap logs `disposal_workers_capped` once.
   - *Why a pool and not the owner.* Deferring disposal to the owning actor
     would tie a caller's wake-up to the owner's next turn (a wedged owner
     would hang its callers past their deadline), and deferring it to the
@@ -313,14 +318,20 @@ handles a call even after the caller timed out, and the late reply is dropped.
     wake-up as before (a caller that polls in between sees the terminal
     state); a payload handed off is discarded again on the worker, where the
     owner's hold is re-checked, so a drop deferred before the owner's exit
-    still waits for its death point (R6, callers before payloads).
+    still waits for its death point (R6, callers before payloads). If a
+    visit unwinds, what it collected is still submitted, so no wake-up is
+    lost. A deferral from a thread-local destructor after this thread's
+    batch is gone runs inline instead of aborting.
+  - *Credits.* Deferral credits (`MAX_OUTSTANDING`) return on the service
+    thread with the transition. A scheduled emit's per-job emit credit
+    travels inside its message; when the emit is discarded or refused at its
+    instant, that credit returns when the message is dropped on a worker.
   - *Cost.* None on a request or reply that does not expire: the hand-off is
     in the service's own path, and the shared helpers test a thread-local
-    only when they already have a waker or a payload to dispose of. The
-    perf-gate driver measures within noise.
+    only when they already have a waker or a payload to dispose of.
   - *Remaining assumption.* The owner's own executor wake (a runtime waker or
     condvar) still runs on the service thread; it is framework code. With
-    more than 64 callbacks blocked at once, later batches queue behind them.
+    64 callbacks blocked at once, later items queue behind them.
   Ordinary request/Response runtime timers and send_after/send_interval
   drivers are separate (see semantics.md, section 10).
 - **Simulation.** Under `spawned_sim` the service is a task of the simulated

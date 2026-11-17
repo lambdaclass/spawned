@@ -314,6 +314,58 @@ fn deadline_service_blocking_destructor_child() {
 }
 
 #[test]
+fn deadline_service_isolates_callers_of_one_actor() {
+    subprocess::run(
+        "deadline_service_same_actor_child",
+        "same-actor callers isolated",
+    );
+}
+
+/// Two callers of one actor with the same deadline, expired in the same
+/// service visit: the first caller's waker blocks, the second caller must
+/// still be woken with its timeout.
+#[test]
+#[ignore = "subprocess helper exercised by the enabled parent"]
+fn deadline_service_same_actor_child() {
+    if std::env::var_os("SPAWNED_MAILBOX_DROP_CHILD").is_none() {
+        return;
+    }
+    let blocker = std::sync::Arc::new(Blocker::default());
+    tokio_runtime().block_on(async {
+        let owner = Owner::default().start();
+        let deadline = Deadline::after(Duration::from_millis(100));
+        let first = owner.send_request(Park, deadline).unwrap();
+        let second = owner.send_request(Park, deadline).unwrap();
+        // The first is polled (and put in the heap) first, so its wake-up is
+        // collected first in the visit.
+        let mut first = Box::pin(std::future::IntoFuture::into_future(first));
+        let waker = std::task::Waker::from(std::sync::Arc::new(BlockingWake(blocker.clone())));
+        let mut cx = std::task::Context::from_waker(&waker);
+        assert!(std::future::Future::poll(first.as_mut(), &mut cx).is_pending());
+        // The wake-up must come with the expiry: a final poll at the outer
+        // timeout would find the slot expired anyway, so time it.
+        let started = std::time::Instant::now();
+        let outcome = tokio::time::timeout(Duration::from_secs(3), second).await;
+        let woken_after = started.elapsed();
+        let entered = blocker.entered.wait(Duration::from_secs(5));
+        blocker.release.set();
+        drop(first);
+        owner.context().stop();
+        owner.join().await;
+        assert!(entered, "the first caller's waker never ran");
+        assert!(
+            matches!(outcome, Ok(Err(ActorError::RequestTimeout))),
+            "unexpected outcome {outcome:?}"
+        );
+        assert!(
+            woken_after < Duration::from_millis(1500),
+            "a blocking waker delayed another caller of the same actor ({woken_after:?})"
+        );
+    });
+    println!("same-actor callers isolated");
+}
+
+#[test]
 #[ignore = "subprocess helper exercised by the enabled parent"]
 fn deadline_service_blocking_waker_child() {
     if std::env::var_os("SPAWNED_MAILBOX_DROP_CHILD").is_none() {

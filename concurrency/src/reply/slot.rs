@@ -343,6 +343,10 @@ impl Wake {
             }
         }
     }
+    /// Nothing left to run: no waker and no watchers.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.waker.is_none() && self.watchers.is_empty()
+    }
     #[inline]
     pub(crate) fn run(self) {
         if let Some(waker) = self.waker {

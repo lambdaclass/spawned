@@ -1117,7 +1117,7 @@ impl Expirable for ScheduledEmit {
         if let Some(job) = self.job.upgrade() {
             self.settle(&job, true);
             // Possibly the last reference (its other scheduled emits).
-            super::disposal::defer_drop(job);
+            super::disposal::defer_drop_arc(job);
         }
     }
 }

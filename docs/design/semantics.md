@@ -161,8 +161,9 @@ the value), as an OTP reply already in the caller's mailbox when its
 `after` clause would fire is received. Timer resolution and when the runtime
 or deadline service can process expiry determine that window; this is not a
 hard real-time bound. The deadline service runs no user code: the wakers and
-payload destructors an expiry releases run on disposal workers, so another
-actor's blocking destructor or waker does not delay an expiry, its credit
+payload destructors an expiry releases run on disposal workers, one item at a
+time, so a blocking destructor or waker (of another actor, or of another
+caller of the same actor) does not delay an expiry, its deferral-credit
 return or its caller's wake-up
 ([`deadline_service`][deadline_service]).
 Which clock expires a waiting caller is part of the contract: `request`,
@@ -771,8 +772,10 @@ stopped after `Shutdown`),
   deadline-service thread runs no user code (section 3): wakers and
   payload destructors an expiry releases go to a pool of at most 64 disposal
   workers. With that many callbacks blocked at once, later disposals (and so
-  their callers' wake-ups) queue behind them; expiry and credit return do
-  not. No callback is preempted.
+  their callers' wake-ups) queue behind them; expiry and deferral-credit
+  return do not. A discarded scheduled emit's per-job emit credit returns
+  with its message's disposal, so it can queue too. No callback is
+  preempted.
 - **Bounded memory.** Mailboxes are unbounded (D5); there are no per-actor
   memory limits (rank 18a).
 - **Deadlock detection.** A request cycle, or a handler requesting its own

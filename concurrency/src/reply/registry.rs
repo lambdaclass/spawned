@@ -65,7 +65,9 @@ impl<R: Send> Expirable for Slot<R> {
     fn expire(&self, now: u64) {
         if let Some(mut wake) = self.expire_collect(now) {
             wake.notify_parked();
-            super::disposal::defer(move || wake.run());
+            if !wake.is_empty() {
+                super::disposal::defer(move || wake.run());
+            }
         }
     }
 }

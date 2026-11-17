@@ -316,7 +316,7 @@ mod thread_service {
                                 if let Some(next) = registry.service_deadlines(now) {
                                     schedule(&registry, next);
                                 }
-                                super::super::disposal::defer_drop(registry);
+                                super::super::disposal::defer_drop_arc(registry);
                             }
                         });
                     });
