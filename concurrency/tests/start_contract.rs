@@ -943,9 +943,10 @@ mod threads_mode {
     #[test]
     fn parent_killed_while_awaiting_start_link_abandons_the_wait() {
         type Gate = std::sync::mpsc::Receiver<()>;
-        struct Gated(Mutex<Option<Gate>>);
+        struct Gated(Mutex<Option<Gate>>, std::sync::mpsc::Sender<()>);
         impl Actor for Gated {
             fn started(&mut self, _: &Context<Self>) {
+                let _ = self.1.send(());
                 if let Some(gate) = self.0.lock().unwrap().take() {
                     let _ = gate.recv_timeout(Duration::from_secs(10));
                 }
@@ -967,13 +968,15 @@ mod threads_mode {
         }
         let (release, gate) = std::sync::mpsc::channel();
         let (done_tx, done) = std::sync::mpsc::channel();
+        let (entered_tx, entered) = std::sync::mpsc::channel();
         let p = Waiter.start().unwrap().started().unwrap();
         p.request(LinkGated(Mutex::new(Some((
-            Gated(Mutex::new(Some(gate))),
+            Gated(Mutex::new(Some(gate)), entered_tx),
             done_tx,
         )))))
         .unwrap();
-        std::thread::sleep(Duration::from_millis(50));
+        // The child is in started(): the parent waits in start_link.
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
         p.child_handle().kill();
         let result = done
             .recv_timeout(Duration::from_secs(5))
