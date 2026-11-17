@@ -16,6 +16,19 @@
   `spawned-concurrency` (they only enabled `async` since 0.8.0). The
   experiments patch in `benchmarks/experiments` re-adds what it needs. The API
   policy now declares 0.9 a breaking release against v0.8.0.
+- Trace validation for the `Coordinator` TLA+ model (#266): with
+  `lifecycle-trace`, `ActorSystem` shutdown records one `Coordinator.tla`
+  action per step (ordered stop, grace expiry and kill, panic fallback,
+  runtime release; compiled out otherwise). New `coordinator_trace` test,
+  `TraceCoordinator.tla`, seven trace negative controls and a coverage floor
+  of 9 of 9 action keys; `Coordinator` is no longer TLC-only.
+
+- Fix the flaky `tla-traces` coverage gate (`LOST coverage: Cohorts
+  A|OneForAll|CEnd/complete`): the cohort trace tests now wait for the restart
+  round to record `CEnd complete` before shutting down, instead of racing it
+  (the selection trace missed it in 24 of 30 runs). New
+  `lifecycle_trace::recorded_with` test helper.
+
 - Regenerate the 11 planted-bug patches (04, 10-17, 19, 20) that no longer
   applied, each planting the same fault where the code now lives, and check in
   the required `model-sync` job that every planted patch still applies.

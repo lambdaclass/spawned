@@ -154,14 +154,14 @@ class ModelInventory(RepoCopy):
 
     def test_tlc_only_model_without_allowlist_fails(self):
         tmp = self.copy()
-        self.edit_map(tmp, "[models.Coordinator.tlc_only]", "[models.Coordinator.not_allowlisted]")
+        self.edit_map(tmp, "[models.ReplyTimer.tlc_only]", "[models.ReplyTimer.not_allowlisted]")
         code, out = run("--root", str(tmp), "models")
         self.assertEqual(code, 1, out)
-        self.assertIn("Coordinator has no trace validation", out)
+        self.assertIn("ReplyTimer has no trace validation", out)
 
     def test_allowlist_needs_tracking(self):
         tmp = self.copy()
-        self.edit_map(tmp, 'tracking = "work item to be filed', 'untracked = "work item to be filed')
+        self.edit_map(tmp, 'tracking = "receiver timer projection', 'untracked = "receiver timer projection')
         code, out = run("--root", str(tmp), "models")
         self.assertEqual(code, 1, out)
         self.assertIn("needs both `reason` and `tracking`", out)

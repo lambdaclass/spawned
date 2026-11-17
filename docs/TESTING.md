@@ -1403,7 +1403,10 @@ supervisor is open, via `ChildHandle::shutdown`); no implementation deviation.
 `lifecycle_trace` does the same for the base actor lifecycle against
 `Lifecycle.tla` (exit signals, stops, links, monitors, requests, `stopped()`
 run or skip, the death point, runtime drop and publication, in both modes;
-eleven edited traces must be rejected).
+eleven edited traces must be rejected). `coordinator_trace` does it for the
+`ActorSystem` shutdown coordinator against `Coordinator.tla` (ordered stop,
+grace expiry and kill, panic fallback, runtime release; seven edited traces
+must be rejected).
 
 Apalache checks that the safety invariants of `Supervision`, `Cohorts`,
 `NestedSupervision` and `Coordinator` are inductive (`Init => IndInv`,
@@ -1415,7 +1418,7 @@ controls must break induction. See [the model README](../verification/tla/README
 ```bash
 nix run .#check-tla                                   # model check (TLC via the flake)
 nix run .#check-apalache -- --negative-controls       # inductive invariants (Apalache)
-cargo test -p spawned-concurrency --features lifecycle-trace --test supervision_trace --test lifecycle_trace
+cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test lifecycle_trace --test coordinator_trace
 nix run .#check-tla -- --traces target/lifecycle-traces
 ```
 
@@ -1500,7 +1503,7 @@ updates the model in the same PR, and drift is a bug. The `model-sync` job
 - **Coverage floors.** Each trace-validated model has a `coverage_floor`: the
   action keys the dedicated trace tests cover in
   `verification/tla/coverage-baseline.json` (Supervision 36 of 40, Cohorts
-  40 of 46, Nested 11 of 11). The `tla` job already fails when a baseline key
+  40 of 46, Nested 11 of 11, Coordinator 9 of 9). The `tla` job already fails when a baseline key
   stops being covered; this check fails when the baseline shrinks below the
   floor, so coverage only grows. Raise the floor when coverage grows.
 

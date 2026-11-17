@@ -5,7 +5,9 @@
 //! supervisor's trace id; the reply and job cores record `DeferredReplies.tla`
 //! and `DeferredJobs.tla` actions; and the actor runtime records
 //! `Lifecycle.tla` actions (`LifeEvent`, see `TraceLifecycle.tla`) for the
-//! actors spawned while `record_lifecycle` is on.
+//! actors spawned while `record_lifecycle` is on; the `ActorSystem` shutdown
+//! coordinator records `Coordinator.tla` actions (`Coordinator`, see
+//! `TraceCoordinator.tla`) under the system's trace id.
 //! `verification/tla/trace_check.py` then checks that each recorded trace is
 //! a behavior of its model.
 //!
@@ -33,6 +35,11 @@ pub struct Event {
 impl Event {
     pub(crate) fn sup(action: &'static str) -> Self {
         Self::new(action, 0, "")
+    }
+    /// A `Coordinator.tla` action (see `lifecycle_trace::Coordinator`).
+    #[allow(dead_code)] // recording is compiled out without the feature
+    pub(crate) fn coordinator(action: &'static str, k: usize, x: &'static str) -> Self {
+        Self::new(action, k, x)
     }
     pub(crate) fn new(action: &'static str, child: usize, arg: &'static str) -> Self {
         Self {
@@ -697,6 +704,139 @@ mod imp {
             .is_some_and(|events| events.iter().any(|e| e.action == action && e.arg == arg))
     }
 
+    /// The system shutdown coordinator's recorder (`Coordinator.tla`, see
+    /// `TraceCoordinator.tla`). One per `begin_shutdown`, keyed by the
+    /// system's trace id. Targets are numbered in stop order (1 is the
+    /// last-admitted root). Only the coordinator task calls it, one call at a
+    /// time, so the recorded order is the coordinator's program order; a
+    /// target's `Finish` is recorded when the coordinator observes its join.
+    /// What the coordinator does that the model has no step for (the walk of
+    /// the remaining targets after the grace expired, which the model folds
+    /// into `Emergency`) is not recorded.
+    /// Record one `Coordinator.tla` action (`TraceCoordinator.tla` arm):
+    /// target `k` in stop order, parameter `x`, target count `n`.
+    fn coordinator_step(id: TraceId, action: &'static str, k: usize, x: &'static str, n: usize) {
+        emit(id, || Event::coordinator(action, k, x).count(n));
+    }
+    pub(crate) struct Coordinator {
+        id: TraceId,
+        state: Mutex<CoordState>,
+    }
+    struct CoordState {
+        /// Admission id -> stop-order index (1-based).
+        index: BTreeMap<u64, usize>,
+        signalled: Vec<bool>,
+        finished: Vec<bool>,
+        /// A join in the ordered loop timed out (`GraceExpired`).
+        expired: bool,
+        /// `Emergency` recorded since the last `Crash` (every target signalled).
+        emergency: bool,
+    }
+    impl Coordinator {
+        /// `Begin`: admission closed; `stop_order` are the targets' admission ids.
+        pub(crate) fn begin(id: TraceId, stop_order: impl Iterator<Item = u64>) -> Self {
+            let index: BTreeMap<u64, usize> =
+                stop_order.enumerate().map(|(k, id)| (id, k + 1)).collect();
+            let n = index.len();
+            coordinator_step(id, "Begin", 0, "", n);
+            Self {
+                id,
+                state: Mutex::new(CoordState {
+                    index,
+                    signalled: vec![false; n + 1],
+                    finished: vec![false; n + 1],
+                    expired: false,
+                    emergency: false,
+                }),
+            }
+        }
+        /// The ordered loop signalled `target` (`StopNext`).
+        pub(crate) fn stop_next(&self, target: u64) {
+            let mut s = lock(&self.state);
+            if s.expired || s.emergency {
+                return;
+            }
+            if let Some(&k) = s.index.get(&target) {
+                s.signalled[k] = true;
+                coordinator_step(self.id, "StopNext", k, "", 0);
+            }
+        }
+        /// The ordered loop's join of `target` returned (`ok`) or timed out.
+        pub(crate) fn joined(&self, target: u64, ok: bool) {
+            let mut s = lock(&self.state);
+            if s.expired || s.emergency {
+                return;
+            }
+            let Some(&k) = s.index.get(&target) else {
+                return;
+            };
+            if ok {
+                s.finished[k] = true;
+                coordinator_step(self.id, "Finish", k, "", 0);
+                coordinator_step(self.id, "Advance", 0, "", 0);
+            } else {
+                s.expired = true;
+                coordinator_step(self.id, "GraceExpired", 0, "", 0);
+            }
+        }
+        /// The ordered pass ended: `Ordered` if every join returned, else the
+        /// grace fallback (`Emergency`) after its kills (`kill`: the code
+        /// killed the remaining scopes).
+        pub(crate) fn ordered_end(&self, kill: bool) {
+            let mut s = lock(&self.state);
+            if s.expired {
+                s.emergency = true;
+                s.signalled.iter_mut().for_each(|x| *x = true);
+                coordinator_step(
+                    self.id,
+                    "Emergency",
+                    0,
+                    if kill { "kill" } else { "shutdown" },
+                    0,
+                );
+            } else {
+                coordinator_step(self.id, "Ordered", 0, "", 0);
+            }
+        }
+        /// The coordinator panicked; `reported`: the failure is visible.
+        pub(crate) fn crash(&self, reported: impl FnOnce() -> bool) {
+            let mut s = lock(&self.state);
+            s.emergency = false;
+            coordinator_step(
+                self.id,
+                "Crash",
+                0,
+                if reported() { "reported" } else { "lost" },
+                0,
+            );
+        }
+        /// The panic fallback finished one pass of stops; `ok`: none panicked,
+        /// so every target is signalled (`Emergency`, once per crash).
+        pub(crate) fn emergency_signalled(&self, ok: bool) {
+            let mut s = lock(&self.state);
+            if ok && !s.emergency {
+                s.emergency = true;
+                s.signalled.iter_mut().for_each(|x| *x = true);
+                coordinator_step(self.id, "Emergency", 0, "shutdown", 0);
+            }
+        }
+        /// The coordinator observed `target`'s join (`Finish`, once).
+        pub(crate) fn finish(&self, target: u64) {
+            let mut s = lock(&self.state);
+            let Some(&k) = s.index.get(&target) else {
+                return;
+            };
+            if s.signalled[k] && !s.finished[k] {
+                s.finished[k] = true;
+                coordinator_step(self.id, "Finish", k, "", 0);
+            }
+        }
+        /// Runtime ownership released (`Join`).
+        pub(crate) fn join(&self) {
+            coordinator_step(self.id, "Join", 0, "", 0);
+        }
+    }
+
     /// What a dumped trace needs besides its events: the constants
     /// `trace_check.py` instantiates the model with.
     struct Meta {
@@ -863,6 +1003,29 @@ mod imp {
         pub(crate) fn next() -> Self {
             Self
         }
+    }
+
+    /// The coordinator recorder compiles to nothing without the feature.
+    pub(crate) struct Coordinator;
+    impl Coordinator {
+        #[inline(always)]
+        pub(crate) fn begin(_: TraceId, _: impl Iterator<Item = u64>) -> Self {
+            Self
+        }
+        #[inline(always)]
+        pub(crate) fn stop_next(&self, _: u64) {}
+        #[inline(always)]
+        pub(crate) fn joined(&self, _: u64, _: bool) {}
+        #[inline(always)]
+        pub(crate) fn ordered_end(&self, _: bool) {}
+        #[inline(always)]
+        pub(crate) fn crash(&self, _: impl FnOnce() -> bool) {}
+        #[inline(always)]
+        pub(crate) fn emergency_signalled(&self, _: bool) {}
+        #[inline(always)]
+        pub(crate) fn finish(&self, _: u64) {}
+        #[inline(always)]
+        pub(crate) fn join(&self) {}
     }
 
     #[inline(always)]

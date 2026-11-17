@@ -78,20 +78,20 @@ coverage_key = "Nested"
 coverage_floor = 11   # of 11 observable action keys (Deliver has no event)
 
 [models.Coordinator]
-# ActorSystem::begin_shutdown: ordered stop of admitted roots, emergency
-# fallback, failure recording, runtime ownership. Execution groups
-# (system/group.rs) are explicitly outside the model.
+# ActorSystem::begin_shutdown: ordered stop of admitted roots, grace expiry
+# and kill, emergency fallback, failure recording, runtime ownership.
+# Execution groups (system/group.rs) are explicitly outside the model.
 files = [
     "verification/tla/Coordinator.tla",
     "verification/tla/CoordinatorInd.tla",
     "verification/tla/MCCoordinator*",
+    "verification/tla/TraceCoordinator.tla",
 ]
 code = [
     "concurrency/src/system.rs",
+    "concurrency/src/lifecycle_trace.rs",
 ]
-[models.Coordinator.tlc_only]
-reason = "abstract fault model of begin_shutdown; no coordinator events are recorded, so no real run is replayed against it"
-tracking = "work item to be filed from the model-sync inventory (PR #260)"
+coverage_floor = 9   # of 9 trace-spec arms (trace_coverage.py STATIC)
 
 [models.Lifecycle]
 # Base actor lifecycle: phases and the death point, request admission and
@@ -271,6 +271,17 @@ end = '\)'
 Unmodelled = "placement failure, execution-group closure, controller and coordinator panics: outside Supervision.tla, so the trace is rejected"
 [trace.unlogged]
 WindowExpire = "the rolling restart window has no observable event; TraceSupervision stutters it before BackoffDone/RetryReserve"
+
+# The system shutdown coordinator records `Event`s on its own tape (keyed by
+# the system's trace id) through `coordinator_step`.
+[[trace]]
+struct = "Event"
+emitters = [
+    { call = '\bcoordinator_step\(', arg = 1 },
+]
+specs = ["verification/tla/TraceCoordinator.tla"]
+[trace.unlogged]
+RollbackReady = "fault device only (Fault = RollbackReady, the #209 rollback of a ready tree); disabled with Fault = None"
 
 [[trace]]
 struct = "TreeEvent"
