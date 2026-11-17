@@ -186,6 +186,10 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
 
+    /// Generous: sanitizer builds are slow, and a panic's first report there
+    /// can take seconds.
+    const WAIT: Duration = Duration::from_secs(60);
+
     #[test]
     fn defer_runs_inline_outside_a_scope() {
         let (tx, rx) = mpsc::channel();
@@ -207,7 +211,7 @@ mod tests {
         assert!(rx.try_recv().is_err(), "deferred, not run");
         assert_eq!(work.len(), 2);
         submit(work);
-        assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(1));
+        assert_eq!(rx.recv_timeout(WAIT), Ok(1));
     }
 
     #[test]
@@ -216,16 +220,16 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let blocked: Vec<Work> = vec![Box::new(move || {
             entered_tx.send(()).unwrap();
-            let _ = release_rx.recv_timeout(Duration::from_secs(10));
+            let _ = release_rx.recv_timeout(WAIT);
         })];
         submit(blocked);
         entered_rx
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(WAIT)
             .expect("the first batch started");
         let (tx, rx) = mpsc::channel();
         submit(vec![Box::new(move || tx.send(()).unwrap())]);
         assert!(
-            rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+            rx.recv_timeout(WAIT).is_ok(),
             "a blocked worker held back another batch"
         );
         release_tx.send(()).unwrap();
@@ -238,6 +242,6 @@ mod tests {
             Box::new(|| panic!("injected disposal panic")),
             Box::new(move || tx.send(()).unwrap()),
         ]);
-        assert!(rx.recv_timeout(Duration::from_secs(5)).is_ok());
+        assert!(rx.recv_timeout(WAIT).is_ok());
     }
 }
