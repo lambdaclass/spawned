@@ -152,6 +152,8 @@ code = [
     "concurrency/src/reply/deadline.rs",
     "concurrency/src/reply/registry.rs",
     "concurrency/src/mailbox.rs",
+    "concurrency/src/tasks/jobs.rs",     # job runs' last references (`Run`)
+    "concurrency/src/threads/jobs.rs",
     "concurrency/src/lifecycle_trace.rs",
 ]
 coverage_floor = 7   # of 7 action keys (TraceDisposal arms)
