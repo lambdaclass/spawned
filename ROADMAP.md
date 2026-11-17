@@ -49,17 +49,24 @@ handlers and the existing default behavior. New policies are explicit and opt-in
 - **Post-0.8 cleanups (in progress):** experiment features moved to
   `benchmarks/`; the large actor and supervision files split; a lint and a
   `model-sync` mapping that keep the Loom-checked cores tied to their Loom tests.
-- **Next release, 0.9: introspection and the attachable console** (design
-  approved and merged, #256, [design](docs/design/introspection.md)):
+- **Next release, 0.9: soundness and introspection.** Soundness (decided
+  2026-11-17: every soundness item that is ready goes into 0.9): the deadline
+  thread runs no user code (#282), Coordinator trace validation (#283),
+  clean exits with a payload (G7), the remaining unchecked guarantees,
+  fuzzer oracles and race-only mutants, and the unified start API (G1, G2,
+  G8; moved from 0.10). The admission package is designed during 0.9 and
+  ships as soon as its design and model pass review. Introspection and the
+  attachable console (design approved and merged, #256,
+  [design](docs/design/introspection.md)):
   `process_info`-style `info()` readable while a handler is wedged,
   `sys:get_state`/`get_status` between turns, supervision-tree and system
   snapshots, structured crash and supervisor reports, the stall watchdog
   (rank 8) and `spawned-ctl attach` on a local Unix socket (gap G23; starts
   with `ActorSystem::new`, read-only by default). Flight recorder (rank 9)
   later.
-- **0.10 designs:** unified start API (rank 5h, approved and merged, #259,
-  [design](docs/design/unified-start.md)); dynamic supervisor (rank 12a),
-  design and TLA+ model in review (#245).
+- **0.10 design:** dynamic supervisor (rank 12a), design and TLA+ model in
+  review (#245). The unified start API (rank 5h, approved and merged, #259,
+  [design](docs/design/unified-start.md)) moved into 0.9.
 - **Process:** every PR merges through GitHub's merge queue with 21 required
   checks, including the simulated suites (`sim`). Robustness features must add
   no cost on the default path (see [Non-goals](#non-goals)).
@@ -105,9 +112,9 @@ Sockets stay with rank 22a; synchronous databases, EVM execution and cryptograph
 1.0 is a promise, not a feature set: the API is stable, every guarantee is checked, and it has been proven in production. Planned order (each release follows the [Priorities](#priorities)):
 
 - **0.8 (released 2026-11-15):** deferred replies and pipe-to-self (rank 11), OTP exit signals, startup and runtime-drop semantics (5e, 5f, 5g), the D1-D3 determinism fixes and an API cleanup (smaller job API, `#[non_exhaustive]` and builders, OTP names such as `send_request`).
-- **0.9: introspection and the attachable console** (design approved, [introspection.md](docs/design/introspection.md)): `process_info`-style `info()` that answers while a handler is wedged, `get_state`/`get_status` between turns, actor listing with labels, supervision-tree and system snapshots, structured crash and supervisor reports, the opt-in stall watchdog (rank 8), and `spawned-ctl attach` on every binary that runs an `ActorSystem`. (The determinism fixes D1-D3 shipped in 0.8.)
-- **0.10: starting and supervising, OTP-complete** (designs approved: [unified-start.md](docs/design/unified-start.md); dynamic supervisor in [#245](https://github.com/lambdaclass/spawned/pull/245)): the unified start API (`spawn`, `start`, `start_link`, `start_monitor` with `StartOptions`, fallible `started()` with `Init`, placement inheritance, typed names), the dynamic supervisor (12a), and supervisor alignment with OTP (budget exhaustion exits `Shutdown`, static `terminate_child`).
-- **0.11:** the admission package designed together: bounded mailboxes (17), byte credits (18), deadlines (19); bounded draining on shutdown (13); the OTP control lane (14); per-actor memory limits (18a).
+- **0.9: soundness and introspection.** Soundness: the deadline thread runs no user code, Coordinator trace validation, `{shutdown, Term}` exits (G7), the unified start API ([unified-start.md](docs/design/unified-start.md): `spawn`, `start`, `start_link`, `start_monitor` with `StartOptions`, fallible `started()` with `Init`, `handle_continue`, placement inheritance, typed names; G1, G2, G8), and closing the remaining semantics, fuzzer and mutation gaps; the admission package designed and modelled (implementation in 0.9 if it is ready, else 0.10). Introspection and the attachable console (design approved, [introspection.md](docs/design/introspection.md)): `process_info`-style `info()` that answers while a handler is wedged, `get_state`/`get_status` between turns, actor listing with labels, supervision-tree and system snapshots, structured crash and supervisor reports, the opt-in stall watchdog (rank 8), and `spawned-ctl attach` on every binary that runs an `ActorSystem`. (The determinism fixes D1-D3 shipped in 0.8.)
+- **0.10: supervising, OTP-complete** (dynamic supervisor in [#245](https://github.com/lambdaclass/spawned/pull/245)): the dynamic supervisor (12a) on 0.9's unified start, and supervisor alignment with OTP (budget exhaustion exits `Shutdown`, static `terminate_child`).
+- **0.11 (or earlier, see 0.9):** the admission package designed together: bounded mailboxes (17), byte credits (18), deadlines (19); bounded draining on shutdown (13); the OTP control lane (14); per-actor memory limits (18a).
 - **1.0:** stabilization.
 
 Releases are kept small: one theme each, so each is quick to review, model,
@@ -263,7 +270,7 @@ From a comparison against OTP 28/29, Elixir 1.20 and gleam_otp 1.3 on 2026-11-11
 | G8 | `start_monitor`, link and monitor on every backend and group, one start-options struct | soundness | 0.9 (unified start) |
 | G9 | Runtime-toggled, rate-limited per-actor message tracing with isolated sessions (`sys:trace`, OTP 27 trace sessions, `recon_trace`) | introspection | 0.10, opt-in |
 | G10 | Per-turn logging context (Logger metadata) and stable event names (`:telemetry`) | introspection | 0.10, opt-in |
-| G11 | Control lane modelled on OTP 28 priority messages (receiver opts in per source) | soundness | 0.10 (rank 14) |
+| G11 | Control lane modelled on OTP 28 priority messages (receiver opts in per source) | soundness | with the admission package (rank 14; designed in 0.9) |
 | G12 | Named, replace-on-set timers and idle timeouts | features | 0.10 (with rank 38) |
 | G13 | `start_supervised` and per-test isolation in `spawned-test` | testing | 0.9 |
 | G14 | Typed, scoped, restart-surviving names | features | 1.0 (rank 12) |

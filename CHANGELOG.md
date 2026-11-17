@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- ROADMAP: 0.9 is now soundness and introspection; the unified start API
+  (G1, G2, G8) and `{shutdown, Term}` exits (G7) move into 0.9, and the
+  admission package is designed during 0.9.
 - Fix the flaky `tla-traces` coverage gate (`LOST coverage: Cohorts
   A|OneForAll|CEnd/complete`): the cohort trace tests now wait for the restart
   round to record `CEnd complete` before shutting down, instead of racing it
