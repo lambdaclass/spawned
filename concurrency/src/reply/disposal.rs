@@ -252,6 +252,7 @@ fn run(pool: &Arc<Pool>) {
 
 /// Contained, so a failing callback ends neither its worker nor the others.
 fn run_item(item: Work) {
+    fail_point!("disposal.item");
     super::registry::contain_entry(item);
 }
 

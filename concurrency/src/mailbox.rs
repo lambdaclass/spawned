@@ -31,35 +31,74 @@ impl DropFailures {
     }
     /// The owner's exit began: hold every later drop until `release`.
     pub(crate) fn hold(&self) {
-        self.held
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get_or_insert_with(Vec::new);
+        // Disposal.tla `Exit`, linearized with the hold checks below.
+        crate::lifecycle_trace::disposal_section(|| {
+            let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
+            if held.is_none() {
+                *held = Some(Vec::new());
+                crate::lifecycle_trace::disposal("Exit", 0, "");
+            }
+        });
     }
     /// Every caller was answered: drop what was held (contained), and drop
     /// at once from now on. Idempotent.
     pub(crate) fn release(&self) {
-        let held = self.held.lock().unwrap_or_else(|p| p.into_inner()).take();
+        // Disposal.tla `Death`: the hold ends.
+        let held = crate::lifecycle_trace::disposal_section(|| {
+            let held = self.held.lock().unwrap_or_else(|p| p.into_inner()).take();
+            if held.is_some() {
+                crate::lifecycle_trace::disposal("Death", 0, "");
+            }
+            held
+        });
         for value in held.into_iter().flatten() {
             self.drop_contained(value);
         }
     }
     /// On the deadline service thread the drop goes to a disposal worker,
-    /// which discards it again there: the hold is re-checked, so a drop
-    /// deferred before the owner's exit still waits for its death point.
+    /// which settles it there ([`settle`](Self::settle)): the hold is
+    /// re-checked, so a drop deferred before the owner's exit still waits for
+    /// its death point.
     pub(crate) fn discard<T: Send + 'static>(self: &Arc<Self>, value: T) {
-        let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(held) = held.as_mut() {
-            // Moved, not dropped: no user code under the lock.
-            held.push(Box::new(value));
-            return;
+        let mut value = Some(value);
+        // One step of Disposal.tla with `Exit` and `Death`: the hold check
+        // and, on the service thread, `Release` (the hand-off).
+        let inline = crate::lifecycle_trace::disposal_section(|| {
+            let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(held) = held.as_mut() {
+                // Moved, not dropped: no user code under the lock.
+                held.push(Box::new(value.take()));
+                return false;
+            }
+            drop(held);
+            if crate::reply::disposal::collecting() {
+                let id = crate::lifecycle_trace::disposal_id();
+                crate::lifecycle_trace::disposal("Release", id, "");
+                let failures = self.clone();
+                let value = value.take();
+                crate::reply::disposal::defer(move || failures.settle(value, id));
+                return false;
+            }
+            true
+        });
+        if inline {
+            self.drop_contained(value);
         }
-        drop(held);
-        if crate::reply::disposal::collecting() {
-            let failures = self.clone();
-            crate::reply::disposal::defer(move || failures.discard(value));
-            return;
-        }
+    }
+    /// A disposal worker's step for a payload the service handed off: held
+    /// if the owner's exit began meanwhile (dropped at its death point),
+    /// else dropped now (Disposal.tla `Drop`).
+    fn settle<T: Send + 'static>(&self, value: T, _id: u64) {
+        let mut value = Some(value);
+        crate::lifecycle_trace::disposal_section(|| {
+            let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(held) = held.as_mut() {
+                held.push(Box::new(value.take()));
+                crate::lifecycle_trace::disposal("Drop", _id, "held");
+            } else {
+                crate::lifecycle_trace::disposal("Drop", _id, "dropped");
+            }
+        });
         self.drop_contained(value);
     }
     /// Drop at once (contained): the mailbox's own items, destroyed after

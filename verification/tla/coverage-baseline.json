@@ -149,5 +149,14 @@
   "A|Join",
   "A|Ordered",
   "A|StopNext"
+ ],
+ "Disposal": [
+  "A|Death",
+  "A|Drop",
+  "A|Exit",
+  "A|Expire",
+  "A|Release",
+  "A|Submit",
+  "A|Wake"
  ]
 }

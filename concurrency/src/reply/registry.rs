@@ -65,8 +65,21 @@ impl<R: Send> Expirable for Slot<R> {
     fn expire(&self, now: u64) {
         if let Some(mut wake) = self.expire_collect(now) {
             wake.notify_parked();
+            // Disposal.tla `Expire` (after the transition and its credit
+            // return) and, on a worker, `Wake`. Compiled out without
+            // `lifecycle-trace`; recorded only on the collecting service.
+            let id = if cfg!(feature = "lifecycle-trace") && super::disposal::collecting() {
+                crate::lifecycle_trace::disposal_id()
+            } else {
+                0
+            };
+            let kind = if wake.is_empty() { "none" } else { "wake" };
+            crate::lifecycle_trace::disposal("Expire", id, kind);
             if !wake.is_empty() {
-                super::disposal::defer(move || wake.run());
+                super::disposal::defer(move || {
+                    crate::lifecycle_trace::disposal("Wake", id, "");
+                    wake.run()
+                });
             }
         }
     }

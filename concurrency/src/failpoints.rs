@@ -80,6 +80,14 @@ pub const SITES: &[Site] = &[
                       answered (tasks and threads).",
     },
     Site {
+        name: "disposal.item",
+        has_error: false,
+        description: "A disposal worker is about to run an item the deadline service \
+                      handed off (a wake-up or a payload drop). Delay lets the owner's \
+                      exit begin first: a payload handed off before it is held until the \
+                      death point, not dropped by the worker.",
+    },
+    Site {
         name: "job.native_worker_unused",
         has_error: false,
         description: "Threads mode: the parked thread of a dropped, unused blocking-job \

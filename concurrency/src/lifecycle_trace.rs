@@ -180,6 +180,32 @@ impl ReplyEvent {
     }
 }
 
+/// One action of `verification/tla/Disposal.tla`: the deadline service's
+/// expiry and hand-off, the disposal workers' steps, and the owner's payload
+/// hold. `Expire` (a slot's transition on the service thread; `x`: `wake` if
+/// it handed off a wake-up, else `none`), `Release` (a payload deferred from
+/// the service thread), `Submit` (a visit's work handed to the pool), `Wake`
+/// (a worker runs a handed-off wake-up), `Drop` (a worker settles a payload;
+/// `x`: `held` or `dropped`), `Exit` (the owner's hold begins) and `Death`
+/// (its hold is released at the death point). `id` numbers the slot or
+/// payload (fresh per Expire/Release; normalized by the checker).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisposalEvent {
+    pub action: &'static str,
+    pub id: u64,
+    pub x: &'static str,
+}
+
+impl DisposalEvent {
+    /// JSON object understood by `verification/tla/trace_check.py`.
+    pub fn to_json(&self) -> String {
+        format!(
+            r#"{{"a":"{}","id":{},"x":"{}"}}"#,
+            self.action, self.id, self.x
+        )
+    }
+}
+
 /// One base-lifecycle action of `verification/tla/Lifecycle.tla`, recorded
 /// for the actors spawned while `record_lifecycle` is on. `t` is the actor
 /// the action belongs to (the target of a signal or message, the caller of
@@ -484,6 +510,66 @@ mod imp {
             lock(&MEMBERS).clear();
             std::mem::take(&mut *lock(&LIFE))
         })
+    }
+
+    // Deadline-service disposal (`Disposal.tla`): one process-wide recording
+    // at a time.
+    static DISPOSAL_ON: AtomicBool = AtomicBool::new(false);
+    static DISPOSAL: Mutex<Vec<super::DisposalEvent>> = Mutex::new(Vec::new());
+
+    /// Start recording disposal events until [`take_disposal`]. Tests that
+    /// record must not run concurrently with each other or with other
+    /// deadline expiries or actor exits in the process.
+    pub fn record_disposal() {
+        atomic(|| {
+            lock(&DISPOSAL).clear();
+            DISPOSAL_ON.store(true, Ordering::Release);
+        });
+    }
+
+    /// Stop recording and return the events in their recorded order.
+    pub fn take_disposal() -> Vec<super::DisposalEvent> {
+        atomic(|| {
+            DISPOSAL_ON.store(false, Ordering::Release);
+            std::mem::take(&mut *lock(&DISPOSAL))
+        })
+    }
+
+    fn disposal_on() -> bool {
+        DISPOSAL_ON.load(Ordering::Acquire)
+    }
+
+    /// Run `f` as one atomic step of the recorded linearization while
+    /// disposal events are recorded (and as is otherwise).
+    pub(crate) fn disposal_section<R>(f: impl FnOnce() -> R) -> R {
+        if disposal_on() {
+            atomic(f)
+        } else {
+            f()
+        }
+    }
+
+    /// A fresh slot or payload number for a disposal event (0 when off).
+    pub(crate) fn disposal_id() -> u64 {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        if disposal_on() {
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        } else {
+            0
+        }
+    }
+
+    /// Record a disposal action (inside the section of the step it names).
+    /// An `id` of 0 (taken while recording was off) is not recorded.
+    pub(crate) fn disposal(action: &'static str, id: u64, x: &'static str) {
+        if !disposal_on() {
+            return;
+        }
+        atomic(|| {
+            if id != 0 || matches!(action, "Submit" | "Exit" | "Death") {
+                lock(&DISPOSAL).push(super::DisposalEvent { action, id, x });
+            }
+        });
     }
 
     /// Whether actor `id` is recorded.
@@ -1082,10 +1168,22 @@ mod imp {
     pub(crate) fn in_actor<T>(_: u64, turn: T) -> T {
         turn
     }
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn disposal(_: &'static str, _: u64, _: &'static str) {}
+    #[inline(always)]
+    pub(crate) fn disposal_section<R>(f: impl FnOnce() -> R) -> R {
+        f()
+    }
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn disposal_id() -> u64 {
+        0
+    }
 }
 
 #[cfg(feature = "lifecycle-trace")]
 pub use imp::{
-    record_lifecycle, recorded, recorded_with, take, take_jobs, take_lifecycle, take_replies,
-    take_tree, watch_deferred,
+    record_disposal, record_lifecycle, recorded, recorded_with, take, take_disposal, take_jobs,
+    take_lifecycle, take_replies, take_tree, watch_deferred,
 };

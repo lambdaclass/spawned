@@ -320,6 +320,10 @@ mod thread_service {
                             }
                         });
                     });
+                    // Disposal.tla `Submit`: the visit's work goes to the pool.
+                    if !released.is_empty() {
+                        crate::lifecycle_trace::disposal("Submit", 0, "");
+                    }
                     super::super::disposal::submit(released);
                     state = lock(service);
                 }

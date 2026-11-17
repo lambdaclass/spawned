@@ -283,6 +283,10 @@ DEFERRED_CONTROLS = [
     ("MCDeferredReplies", "NoReplyFence", "NoReplyAfterDeath"),
     ("MCDeferredReplies", "CallbackBeforeDischarge", "WokenAfterDischarge"),
     ("MCDeferredReplies", "InlineDisposal", "TimelyExpiry"),
+    ("MCDisposal", "InlineDisposal", "TimelyExpiry"),
+    ("MCDisposal", "WakeBeforeTransition", "WakeAfterTransition"),
+    ("MCDisposal", "DropWhileHeld", "NoDropWhileHeld"),
+    ("MCDisposal", "BatchSerial", "TimelyWake"),
     ("MCDeferredJobs", "NoInstanceCheck", "NoLateResult"),
     ("MCDeferredJobs", "NoCancelFence", "NoStaleAfterCancel"),
     ("MCDeferredJobs", "DoubleTerminal", "AtMostOneTerminal"),
@@ -375,6 +379,31 @@ INTROSPECTION_CONTROLS = [
     ("MCIntrospection", "CallbackPanicStops", "CallbackPanicContained"),
     ("MCIntrospection", "AnswerPanicStops", "CallbackPanicContained"),
 ]
+
+
+def disposal_trace_controls(traces, tlc):
+    """Edits of recorded disposal traces that Disposal.tla must reject."""
+    by_name = {t["name"]: t for t in traces if t.get("schema") == "disposal-v1"}
+
+    def wake_before_expire(events):
+        wake = next(i for i, e in enumerate(events) if e["a"] == "Wake")
+        expire = next(i for i, e in enumerate(events)
+                      if e["a"] == "Expire" and e["id"] == events[wake]["id"])
+        events.insert(expire, events.pop(wake))
+    require_rejected(by_name["disposal_expired_callers"], wake_before_expire,
+                     "a wake-up run before its slot's transition", tlc)
+
+    def drop_before_submit(events):
+        drop = next(i for i, e in enumerate(events) if e["a"] == "Drop")
+        submit = next(i for i, e in enumerate(events) if e["a"] == "Submit")
+        events.insert(submit, events.pop(drop))
+    require_rejected(by_name["disposal_released_payloads"], drop_before_submit,
+                     "a payload dropped by a worker before the hand-off", tlc)
+
+    def drop_while_held(events):
+        next(e for e in events if e["a"] == "Drop" and e["x"] == "held")["x"] = "dropped"
+    require_rejected(by_name["disposal_held_until_death"], drop_while_held,
+                     "a handed-off payload dropped while the owner's hold is on", tlc)
 
 
 def reply_trace_controls(traces, tlc):
@@ -800,6 +829,7 @@ def main():
     job_trace_controls(traces, args.tlc)
     coordinator_trace_controls(traces, args.tlc)
     reply_trace_controls(traces, args.tlc)
+    disposal_trace_controls(traces, args.tlc)
     lifecycle_trace_controls(traces, args.tlc)
     for module, fault, invariant in LIFECYCLE_CONTROLS:
         named_fault(module, fault, invariant, args.tlc)

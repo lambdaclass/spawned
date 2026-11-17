@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check recorded lifecycle traces against Supervision.tla (and, by schema,
 Cohorts.tla, NestedSupervision.tla, DeferredJobs.tla, DeferredReplies.tla,
-Lifecycle.tla and Coordinator.tla).
+Disposal.tla, Lifecycle.tla and Coordinator.tla).
 
 Each JSON trace (written by concurrency/tests/supervision_trace.rs with the
 `lifecycle-trace` feature) looks like:
@@ -50,7 +50,7 @@ def tla_event(event, cohort=False):
 def generate(trace, workdir):
     schema = trace.get("schema", "one-for-one-v1")
     if schema not in {"one-for-one-v1", "cohort-v1", "tree-v1", "jobs-v1", "replies-v1",
-                      "lifecycle-v1", "coordinator-v1"}:
+                      "lifecycle-v1", "coordinator-v1", "disposal-v1"}:
         raise ValueError(f"unsupported trace schema: {schema}")
     if schema == "tree-v1":
         return generate_tree(trace, workdir)
@@ -62,6 +62,8 @@ def generate(trace, workdir):
         return generate_lifecycle(trace, workdir)
     if schema == "coordinator-v1":
         return generate_coordinator(trace, workdir)
+    if schema == "disposal-v1":
+        return generate_disposal(trace, workdir)
     cohort = schema == "cohort-v1"
     modules = ("Cohorts.tla", "TraceCohorts.tla") if cohort else MODELS
     for model in modules:
@@ -145,6 +147,50 @@ def generate_replies(trace, workdir):
                   f"    N = {n}\n    BoundA = {int(trace['bound'])}\n"
                   f"    BoundB = {int(trace.get('bound_b', 1))}\n"
                   f"    MaxTime = {clock}\n    MaxWait = {clock}\n    Fault = \"None\"\n"
+                  "    Trace <- TraceLog\n"
+                  "INVARIANT Safety\nINVARIANT TraceIncomplete\n")
+
+
+def generate_disposal(trace, workdir):
+    """The deadline service's hand-off and the disposal workers against
+    Disposal.tla. Expire ids number the requests 1..N, Release ids the
+    payloads 1..P, each in order of first appearance."""
+    for model in ("Disposal.tla", "TraceDisposal.tla"):
+        shutil.copy(os.path.join(HERE, model), workdir)
+    reqs, pays, records = {}, {}, []
+    for e in trace["events"]:
+        a, raw = e["a"], int(e["id"])
+        if a == "Expire":
+            if raw in reqs:
+                raise ValueError(f"a slot expired twice: {e}")
+            reqs[raw] = len(reqs) + 1
+        elif a == "Release":
+            if raw in pays:
+                raise ValueError(f"a payload released twice: {e}")
+            pays[raw] = len(pays) + 1
+        if a in {"Expire", "Wake"}:
+            ident = reqs.get(raw, 0)
+        elif a in {"Release", "Drop"}:
+            ident = pays.get(raw, 0)
+        else:
+            ident = 0
+        if a in {"Wake", "Drop"} and not ident:
+            raise ValueError(f"a worker step for an item never handed off: {e}")
+        records.append("[a |-> {}, id |-> {}, x |-> {}]".format(
+            tla_string(a), ident, tla_string(e["x"])))
+    if not records:
+        raise ValueError("a disposal trace needs at least one event")
+    with open(os.path.join(workdir, "TraceRun.tla"), "w") as out:
+        out.write("---- MODULE TraceRun ----\nEXTENDS TraceDisposal\n"
+                  "TraceBlocking == {}\nTraceLog == <<\n    "
+                  + ",\n    ".join(records) + "\n>>\n====\n")
+    with open(os.path.join(workdir, "TraceRun.cfg"), "w") as out:
+        # Deadlines are chosen by TLC; one tick makes every slot due. One
+        # worker per item, plus one, so no recorded run waits for a worker.
+        out.write("INIT TraceInit\nNEXT TraceNext\nCONSTANTS\n"
+                  f"    N = {len(reqs)}\n    P = {len(pays)}\n    MaxTime = 1\n"
+                  f"    Workers = {len(reqs) + len(pays) + 1}\n"
+                  "    Blocking <- TraceBlocking\n    Fault = \"None\"\n"
                   "    Trace <- TraceLog\n"
                   "INVARIANT Safety\nINVARIANT TraceIncomplete\n")
 
