@@ -412,4 +412,6 @@ impl<A: Actor> ChildSpec<A> {
 }
 
 #[cfg(test)]
+mod guard_tests;
+#[cfg(test)]
 mod policy_tests;

@@ -9,6 +9,15 @@
   Introspection, DynamicSupervisor) stays allowlisted as TLC-only only while
   no code maps to it; the PR that implements it must add its trace
   validation.
+- Kill the meaningful surviving `cargo mutants` in the supervisor
+  (`supervision.rs`, `supervision/*.rs`) with deterministic tests: unit tests
+  in `supervision/guard_tests.rs` for the supersession check of
+  `finish_unless_recovering`, admission closure, stop escalation, start
+  errors, escaped controller failures and the stop-during-round and
+  self-exit kill paths; a failpoint test for a stuck cleanup's late exit; and
+  a simulator seed sweep (`supervision_races`) for a OneForAll child that
+  decides to stop while a recovery round is assigned to it. Test-only; the
+  per-mutant classification is in `docs/TESTING.md`.
 - Fix the flaky `tla-traces` coverage gate (`LOST coverage: Cohorts
   A|OneForAll|CEnd/complete`): the cohort trace tests now wait for the restart
   round to record `CEnd complete` before shutting down, instead of racing it
