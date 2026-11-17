@@ -40,6 +40,7 @@ CONSTANTS
     KillEnabled,      \* an outside kill (ChildHandle::kill) may hit a child
     AdminStopEnabled, \* an administrative stop may hit a child in started()
     ParentCanExit,    \* P may exit (Normal or Panic)
+    ParentKillEnabled,\* P's exit may be a kill (its start waits are abandoned)
     CloseEnabled,     \* G may close (system shutdown)
     OwnerCloseEnabled,\* P's scope may close (its supervisor's shutdown began)
     MaxMsgs,          \* messages others send to each child
@@ -647,7 +648,11 @@ Abandon(c) ==
 \* ParentExitClosesOwner (negative control) closes the gate here.
 PExit ==
     /\ ParentCanExit /\ pst = "run"
-    /\ \E r \in {"Normal", "Panic"} : pst' = "exiting" /\ pwhy' = r
+    \* A kill (or an untrapped signal) also abandons P's pending start waits
+    \* in the code (review #291 item 7; OTP: the caller dies at once): the
+    \* model's Abandon, enabled while P exits.
+    /\ \E r \in {"Normal", "Panic"} \cup (IF ParentKillEnabled THEN {"Killed"} ELSE {}) :
+           pst' = "exiting" /\ pwhy' = r
     /\ IF Fault = "ParentExitClosesOwner" /\ ownerOpen
        THEN ownerOpen' = FALSE /\ closedBy' = "parent"
        ELSE UNCHANGED <<ownerOpen, closedBy>>

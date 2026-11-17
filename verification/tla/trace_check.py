@@ -325,7 +325,7 @@ def generate_start(trace, workdir):
                   "    Explicit <- TraceExplicit\n    ParentPlaces <- TraceParentPlaces\n"
                   f"    Cap = {int(trace.get('cap', 1000))}\n"
                   "    Named = TRUE\n    TimeoutEnabled = TRUE\n    KillEnabled = TRUE\n"
-                  "    AdminStopEnabled = TRUE\n    ParentCanExit = TRUE\n"
+                  "    AdminStopEnabled = TRUE\n    ParentCanExit = TRUE\n    ParentKillEnabled = TRUE\n"
                   "    CloseEnabled = FALSE\n    OwnerCloseEnabled = FALSE\n"
                   f"    MaxMsgs = {sends}\n    ChildCanTrap = TRUE\n"
                   "    UnlinkEnabled = TRUE\n    ScopeEnabled = FALSE\n"

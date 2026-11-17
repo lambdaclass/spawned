@@ -804,7 +804,7 @@ it needs before taking the trace. `negative_checks.py`
 | `MCStart` | per PR | one child (`start_link`, `start_monitor`) of a managed parent that may trap and exit: every init outcome, every notice disposition, abandonment, the cleanup deadline |
 | `MCStartNames` | per PR | two named `start` children in a group with room for both and the parent: lookups, refusals, release, retry |
 | `MCStartCap` | per PR | three children spawned into P's group of three: capacity binds, slots are held until release, a retry gets the slot |
-| `MCStartTimeout` | per PR | one child of each waiting variant, managed or unmanaged parent; the init timer, outside kills (also before D), administrative stops, group closure |
+| `MCStartTimeout` | per PR | one child of each waiting variant, managed or unmanaged parent; the init timer, outside kills (also before D), administrative stops, group closure, a killed parent (its waits abandoned) |
 | `MCStartContinue` | per PR | one child of every variant with every explicit placement, two messages, trapping |
 | `MCStartScope` | per PR | a managed parent and one linked child (owned in `G` or `G2`, or unmanaged), trapping, unlink, owner closure; P's D and publication, the polite Shutdown, the scope deadline; liveness `OwnedScopeFinishes` |
 | `MCStartLive` | per PR | one child of each waiting variant, trapping; liveness `ParentExitReachesChild`, `StartAnswered` |
@@ -841,6 +841,7 @@ it needs before taking the trace. `negative_checks.py`
 | `MCStartTimeout` | `ReadyAfterClose` | `ReadyOnlyWhileOpen` |
 | `MCStartTimeout` | `SkipEscalation` | `KillBeforeDIsKilled` |
 | `MCStartTimeout` | `SplitResolutionD` | `IgnoredExitsNormal` |
+| `MCStartTimeout` | `AdminStopFailsInit` | `ReadyReturnCommitsReady` |
 | `MCStartCap` | `AdmitClosed` | `AdmittedOnlyOpen` |
 | `MCStartCap` | `IgnoreCap` | `CapacityRespected` |
 | `MCStartCap` | `EarlySlotRelease` | `SlotHeldUntilReleased` |

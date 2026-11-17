@@ -1081,3 +1081,75 @@ async fn thread_spawn_failure_after_commit_kills_child() {
     p.request(Stop).await.unwrap();
     p.wait_exit().await;
 }
+
+/// Starts a gated child linked to the parent from the parent's own turn and
+/// reports the start's result.
+type Done = tokio::sync::oneshot::Sender<Result<(), StartError>>;
+struct LinkGated(Mutex<Option<Child>>, Mutex<Option<Done>>);
+impl Message for LinkGated {
+    type Result = ();
+}
+impl Handler<LinkGated> for Parent {
+    async fn handle(&mut self, msg: LinkGated, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
+        reply.reply(());
+        let child = msg.0.lock().unwrap().take().unwrap();
+        let result = child.start_link(ctx).await.map(|_| ());
+        let done = msg.1.lock().unwrap().take();
+        if let Some(done) = done {
+            let _ = done.send(result);
+        }
+    }
+}
+
+/// Review #291 item 7: a non-trapping parent killed while it awaits a
+/// `start_link` does not wait for the child's `started()` (OTP: the caller
+/// dies at once): the wait is abandoned (`ParentExited`), the parent's turn
+/// ends and it dies `Killed`; the child, still in `started()`, holds the
+/// parent's exit and fails its start when `started()` returns.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn parent_killed_while_awaiting_start_link_abandons_the_wait() {
+    let _serial = SERIAL.lock().await;
+    let (p, _) = parent(false).await;
+    lifecycle_trace::record_start_parent(&p.child_handle());
+    let (child, release) = Child::gated(Outcome::Ready);
+    let (done_tx, done) = tokio::sync::oneshot::channel();
+    p.request(LinkGated(
+        Mutex::new(Some(child)),
+        Mutex::new(Some(done_tx)),
+    ))
+    .await
+    .unwrap();
+    until("the child's started()", || count("SStartedBegin") >= 1).await;
+    p.child_handle().kill();
+    let result = tokio::time::timeout(LIMIT, done).await.unwrap().unwrap();
+    assert!(
+        matches!(result, Err(StartError::ParentExited)),
+        "{result:?}"
+    );
+    assert_eq!(
+        tokio::time::timeout(LIMIT, p.wait_exit()).await.unwrap(),
+        ExitReason::Killed,
+        "the parent died without waiting for started()"
+    );
+    release.send(()).unwrap();
+    children_done(1).await;
+    let events = write(
+        "parent_killed_while_awaiting_start_link_abandons_the_wait",
+        "U",
+        false,
+        1000,
+    );
+    has(
+        &events,
+        &[
+            "SBegin:link",
+            "SCommit:U",
+            "SStartedBegin",
+            "PExitBegin:Killed",
+            "SAbandon",
+            "PDie",
+            "SResolve:ready",
+            "SDie:Killed",
+        ],
+    );
+}

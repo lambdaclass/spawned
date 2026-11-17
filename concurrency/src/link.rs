@@ -84,6 +84,10 @@ pub(crate) struct ExitRequest {
     /// A non-ready startup decision fixed the reason (unified start 2.3):
     /// the resolution and D are one step, so nothing changes it any more.
     frozen: bool,
+    /// The `start_link`/`start_monitor` waits of this actor (as a parent):
+    /// an exit begun by a kill or an untrapped exit signal abandons them,
+    /// as in OTP the caller dies at once.
+    waiting_starts: Vec<std::sync::Weak<crate::start::StartupCell>>,
     /// The start-trace role of this instance (0: not recorded).
     #[cfg(feature = "lifecycle-trace")]
     pub(crate) trace: crate::lifecycle_trace::StartRole,
@@ -103,6 +107,37 @@ impl ExitRequest {
     /// are resolved when `started()` returns.
     pub(crate) fn exit_pending(&self) -> bool {
         self.reason.is_some() || self.parent_exit_queued
+    }
+    /// The exit was begun by a kill or an untrapped exit signal: in OTP the
+    /// process is dead at once (Spawned: once its running turn returns).
+    fn exit_by_signal(&self) -> bool {
+        self.killed || (self.reason.is_some() && self.skip_hook)
+    }
+    /// Register a start this actor waits for; `false` if its exit by a
+    /// signal already began (the wait is abandoned at once).
+    pub(crate) fn add_waiting_start(
+        &mut self,
+        cell: std::sync::Weak<crate::start::StartupCell>,
+    ) -> bool {
+        if self.dead || self.exit_by_signal() {
+            return false;
+        }
+        self.waiting_starts.retain(|w| w.strong_count() > 0);
+        self.waiting_starts.push(cell);
+        true
+    }
+    /// The start was answered or abandoned: forget it.
+    pub(crate) fn remove_waiting_start(&mut self, cell: *const crate::start::StartupCell) {
+        self.waiting_starts
+            .retain(|w| w.strong_count() > 0 && w.as_ptr() != cell);
+    }
+    /// The waits to abandon once a signal began this actor's exit.
+    fn take_waiting_starts(&mut self) -> Vec<std::sync::Weak<crate::start::StartupCell>> {
+        if self.exit_by_signal() {
+            std::mem::take(&mut self.waiting_starts)
+        } else {
+            Vec::new()
+        }
     }
     /// What began an exit that skips `stopped()`, for its debug log.
     pub(crate) fn skip_cause(&self) -> &'static str {
@@ -412,8 +447,12 @@ fn apply_signal(
     from_parent: bool,
 ) {
     if origin == Origin::Direct && reason == ExitReason::Kill {
-        if lock_request(&target.request).kill() {
+        let mut request = lock_request(&target.request);
+        if request.kill() {
+            let waits = request.take_waiting_starts();
+            drop(request);
             (target.wake)();
+            abandon_waits(waits);
         }
         return;
     }
@@ -454,8 +493,20 @@ fn apply_signal(
         return;
     }
     if request.untrapped(exit.reason) {
+        let waits = request.take_waiting_starts();
         drop(request);
         (target.wake)();
+        abandon_waits(waits);
+    }
+}
+
+/// The actor's exit by a signal began: its pending start waits are
+/// abandoned (outside its exit-request lock).
+fn abandon_waits(waits: Vec<std::sync::Weak<crate::start::StartupCell>>) {
+    for cell in waits {
+        if let Some(cell) = cell.upgrade() {
+            cell.parent_exit();
+        }
     }
 }
 

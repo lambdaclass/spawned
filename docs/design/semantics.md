@@ -481,7 +481,11 @@ flushed (X2). Each edge has a generation, so a stale
 notice never applies to a later link. `start_link` and `start_monitor`
 commit their edge before the child's `started()`, on every placement, in the
 start's commit; a start through a parent whose exit began is refused
-(`ParentExited`, v0.9).
+(`ParentExited`, v0.9). A waiting parent whose exit a kill or an untrapped
+signal begins abandons its pending start waits (`ParentExited`), so it does
+not wait for the child's `started()` (OTP: the caller dies at once;
+`parent_killed_while_awaiting_start_link_abandons_the_wait`, both modes,
+recorded and validated as a `Start` trace).
 Checked by: `Lifecycle!NoProcIffLate`, `Lifecycle!NoEdgeToDead`, `Lifecycle!CancelFenced` (TLC, `MCLifecycleFence`);
 [`link_fence_loom`][link_fence_loom] (the production link table and monitor
 fence under Loom: `unlink_fences_a_death_notice`, `link_racing_death_gets_exactly_one_notice`,

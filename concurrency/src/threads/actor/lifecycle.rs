@@ -194,6 +194,9 @@ impl<A: Actor> ActorRef<A> {
             result
         });
         let (name, monitor) = committed?;
+        // A waiting start_link/start_monitor: the parent's exit by a signal
+        // abandons the wait (OTP: the caller dies at once).
+        cell.watch_parent();
         let monitor_ref = monitor.map(|(monitor_ref, active)| {
             if let Some(arm) = arm {
                 arm(child_handle.clone(), monitor_ref, active, cell.clone());

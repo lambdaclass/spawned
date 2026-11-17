@@ -15,7 +15,14 @@
   design's precedence table; no failed start runs `stopped()` (also not
   after `ctx.stop()` in `started()`, now `Init::stop`; a behaviour change);
   an administrative stop during `started()` waits for it and runs
-  `stopped()`, as OTP's `gen_server:stop`. Stage 1 is one
+  `stopped()`, as OTP's `gen_server:stop`. A parent killed (or hit by an
+  untrapped signal) while it waits for a `start_link`/`start_monitor` stops
+  waiting at once (`ParentExited`), as OTP's caller dies without waiting
+  for `init/1`. A dispatch or thread-spawn failure after the commit kills
+  the child (`InitExited { Killed }`) instead of a stage-1 error. The init
+  timer runs on the runtime clock in tasks mode (virtual under the
+  simulator) and on one shared thread in threads mode. `registry::register_owned`
+  takes the holder's `ChildHandle` (for `AlreadyStarted { existing }`). Stage 1 is one
   atomic commit (group admission, the parent's link or monitor, the typed
   `Name<A>`); a refusal is never observable. `start_link`/`start_monitor`
   inherit the parent's placement. A failed start consumes a trapping

@@ -936,4 +936,58 @@ mod threads_mode {
             Err(StartError::ParentExited)
         ));
     }
+
+    /// Review #291 item 7 (threads): a parent killed while it blocks in
+    /// `start_link` returns `ParentExited` at once and dies `Killed`; it does
+    /// not wait for the child's `started()` (OTP: the caller dies at once).
+    #[test]
+    fn parent_killed_while_awaiting_start_link_abandons_the_wait() {
+        type Gate = std::sync::mpsc::Receiver<()>;
+        struct Gated(Mutex<Option<Gate>>);
+        impl Actor for Gated {
+            fn started(&mut self, _: &Context<Self>) {
+                if let Some(gate) = self.0.lock().unwrap().take() {
+                    let _ = gate.recv_timeout(Duration::from_secs(10));
+                }
+            }
+        }
+        struct Waiter;
+        impl Actor for Waiter {}
+        type Done = std::sync::mpsc::Sender<Result<(), StartError>>;
+        struct LinkGated(Mutex<Option<(Gated, Done)>>);
+        impl Message for LinkGated {
+            type Result = ();
+        }
+        impl Handler<LinkGated> for Waiter {
+            fn handle(&mut self, msg: LinkGated, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
+                reply.reply(());
+                let (child, done) = msg.0.lock().unwrap().take().unwrap();
+                let _ = done.send(child.start_link(ctx).map(|_| ()));
+            }
+        }
+        let (release, gate) = std::sync::mpsc::channel();
+        let (done_tx, done) = std::sync::mpsc::channel();
+        let p = Waiter.start().unwrap().started().unwrap();
+        p.request(LinkGated(Mutex::new(Some((
+            Gated(Mutex::new(Some(gate))),
+            done_tx,
+        )))))
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        p.child_handle().kill();
+        let result = done
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the wait was abandoned");
+        assert!(
+            matches!(result, Err(StartError::ParentExited)),
+            "{result:?}"
+        );
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while p.child_handle().exit_reason().is_none() {
+            assert!(std::time::Instant::now() < until, "the parent did not die");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(p.child_handle().exit_reason(), Some(ExitReason::Killed));
+        release.send(()).unwrap();
+    }
 }

@@ -289,7 +289,11 @@ termination.
 
 **Links and monitors at start.** `start_link`/`start_monitor` commit the edge
 atomically with the start, before `started()`; a parent whose exit began is
-refused (`ParentExited`). A failed start's `Exit` (trapping parent) or `Down`
+refused (`ParentExited`). A parent killed (or hit by an untrapped exit
+signal) while it waits for the child's `started()` stops waiting at once:
+the start answers `ParentExited` and the parent's turn ends, as in OTP the
+caller dies without waiting for `init/1`; the child gets the parent's exit
+through its link. A failed start's `Exit` (trapping parent) or `Down`
 is consumed by the error; a non-trapping parent still exits on a
 non-`Normal` failure, as the link kills the caller in OTP. An init timeout
 never reaches a waiting parent. The waiting parent's turn is blocked: a

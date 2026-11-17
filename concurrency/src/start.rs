@@ -95,7 +95,12 @@ pub enum StartError {
         existing: Option<ChildHandle>,
     },
     /// `start_link`/`start_monitor` through a `Context` whose actor's exit
-    /// has begun.
+    /// has begun (stage 1: nothing created). Also the answer of a waiting
+    /// `start_link`/`start_monitor` whose caller's exit was begun by a kill
+    /// or an untrapped exit signal while it waited: the wait is abandoned
+    /// (OTP: the caller dies at once, without waiting for the child's
+    /// `init/1`); the child, if created, gets the caller's exit through its
+    /// link or monitor.
     #[error("the parent's exit has begun")]
     ParentExited,
     /// The options are invalid (validated before anything is created).
@@ -362,6 +367,8 @@ struct CellInner {
     diverted_down: Option<DownNotice>,
     /// The monitor waiter has not yet run (its `Down` is not yet built).
     down_pending: bool,
+    /// The waiting parent's exit began by a signal: the wait is abandoned.
+    parent_exited: bool,
     /// The init timer is armed and has not fired.
     timer: Option<Arc<TimerCancel>>,
     /// Trace id of the instance (0 when not recorded).
@@ -457,6 +464,7 @@ impl StartupCell {
                 diverted_link: None,
                 diverted_down: None,
                 down_pending: false,
+                parent_exited: false,
                 timer: None,
                 trace: 0,
                 version: 0,
@@ -480,7 +488,8 @@ impl StartupCell {
         // An observer subscribes before it observes: one that subscribes
         // after this sees the change when it observes.
         if let Some(version) = self.version.get() {
-            version.send_modify(|v| *v = v.wrapping_add(1));
+            let next = version.borrow().wrapping_add(1);
+            version.send_replace(next);
         }
     }
 
@@ -713,19 +722,19 @@ impl StartupCell {
         let commit = self.commit();
         let id = inner.trace;
         let answer = match commit {
-            Commit::Pending => return Observed::Wait(None),
+            Commit::Pending => return self.wait_or_abandon(inner, waiter, None),
             Commit::Ready => Ok(StartOutcome::Started(())),
             _ => {
                 let (pending, reason) = match &inner.published {
                     Some(final_reason) => (None, final_reason.clone()),
-                    None if inner.publishing => return Observed::Wait(None),
+                    None if inner.publishing => return self.wait_or_abandon(inner, waiter, None),
                     None => {
                         let deadline = inner
                             .committed_at
                             .map(|at| at + inner.cleanup)
                             .expect("a commitment has its instant");
                         if Instant::now() < deadline {
-                            return Observed::Wait(Some(deadline));
+                            return self.wait_or_abandon(inner, waiter, Some(deadline));
                         }
                         if !std::mem::replace(&mut inner.deadline_seen, true) {
                             trace::start_emit(id, || trace::StartEvent::new("SDeadline", id));
@@ -777,6 +786,7 @@ impl StartupCell {
                 .f(pending)
         });
         drop(inner);
+        self.unwatch_parent();
         // Consumed: the parent's records of the diverted notices go.
         if let Some(link) = link {
             link.discard();
@@ -785,6 +795,22 @@ impl StartupCell {
             down(false);
         }
         Observed::Answer(answer)
+    }
+
+    /// No answer yet: wait, unless the waiting parent's exit began by a
+    /// signal, which abandons the wait (`ParentExited`).
+    fn wait_or_abandon(
+        &self,
+        inner: MutexGuard<'_, CellInner>,
+        waiter: bool,
+        deadline: Option<Instant>,
+    ) -> Observed {
+        if waiter && inner.parent_exited && inner.waiter == Waiter::Waiting {
+            drop(inner);
+            self.abandon();
+            return Observed::Answer(Err(StartError::ParentExited));
+        }
+        Observed::Wait(deadline)
     }
 
     /// The waiter was dropped unanswered (design 5.4): a diverted notice is
@@ -805,12 +831,57 @@ impl StartupCell {
             || (inner.down_pending && inner.disposition == Some(Disposition::Divert));
         trace::start_emit(id, || trace::StartEvent::new("SAbandon", id).f(handed));
         drop(inner);
+        self.unwatch_parent();
         if let Some(link) = link {
             link.deliver();
         }
         if let Some(down) = down {
             down(true);
         }
+    }
+
+    /// A waiting `start_link`/`start_monitor` registers with its parent: an
+    /// exit of the parent begun by a kill or an untrapped exit signal
+    /// abandons the wait (OTP: the caller dies at once, without waiting for
+    /// the child's `init/1`). Called after stage 1.
+    pub(crate) fn watch_parent(self: &Arc<Self>) {
+        let parent = {
+            let inner = self.lock();
+            if inner.waiter != Waiter::Waiting {
+                return;
+            }
+            match &inner.edge {
+                Some(edge) => edge.parent.clone(),
+                None => return,
+            }
+        };
+        let registered =
+            crate::link::lock_request(&parent.request).add_waiting_start(Arc::downgrade(self));
+        if !registered {
+            self.parent_exit();
+        }
+    }
+
+    /// The answer was taken or the wait abandoned: unregister from the
+    /// parent (no cell lock held).
+    fn unwatch_parent(&self) {
+        let parent = self.lock().edge.as_ref().map(|edge| edge.parent.clone());
+        if let Some(parent) = parent {
+            crate::link::lock_request(&parent.request).remove_waiting_start(self);
+        }
+    }
+
+    /// The waiting parent's exit began by a signal: wake the waiter, which
+    /// abandons the wait unless the answer is ready.
+    pub(crate) fn parent_exit(&self) {
+        {
+            let mut inner = self.lock();
+            if inner.waiter != Waiter::Waiting {
+                return;
+            }
+            inner.parent_exited = true;
+        }
+        self.notify();
     }
 
     /// The start_monitor's waiter ended without a `Down` to dispose (its

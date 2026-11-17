@@ -320,6 +320,9 @@ impl<A: Actor> ActorRef<A> {
         // A refusal applied nothing: the prepared state is dropped (no hook
         // ran, nothing was published or registered).
         let mut committed = committed?;
+        // A waiting start_link/start_monitor: the parent's exit by a signal
+        // abandons the wait (OTP: the caller dies at once).
+        cell.watch_parent();
         let (managed, lease) = match (committed.managed.take(), reserved) {
             (Some((scope, lease)), _) | (None, Some((scope, lease))) => (Some(scope), Some(lease)),
             (None, None) => (None, None),
