@@ -4,12 +4,13 @@ diff --git a/concurrency/src/monitor/fence.rs b/concurrency/src/monitor/fence.rs
 index f7bbaa27..d40d7c7e 100644
 --- a/concurrency/src/monitor/fence.rs
 +++ b/concurrency/src/monitor/fence.rs
-@@ -70,9 +70,8 @@ pub(crate) fn register<K: Hash + Eq, V>(
+@@ -70,10 +70,8 @@ pub(crate) fn register<K: Hash + Eq, V>(
          return Registration::Inert;
      };
      if target_dead() {
 -        late();
 -        entries.insert(key, Entry::Queued);
+-        monitors_added(1);
 -        return Registration::Late;
 +        let _ = late;
 +        return Registration::Inert;

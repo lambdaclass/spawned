@@ -166,6 +166,8 @@ pub(crate) struct Registry {
     discharge: Mutex<Option<Vec<PendingWake>>>,
     #[cfg(all(spawned_sim, feature = "async"))]
     sim: deadline::SimService,
+    /// `spawned_reply_registries_alive`.
+    _alive: crate::instrumentation::Live<crate::instrumentation::gauge::ReplyRegistries>,
 }
 
 fn lock(lists: &Mutex<Lists>) -> std::sync::MutexGuard<'_, Lists> {
@@ -214,6 +216,7 @@ impl Registry {
             } else {
                 deadline::SimService::default()
             },
+            _alive: Default::default(),
         });
         keys()
             .lock()

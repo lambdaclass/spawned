@@ -176,7 +176,7 @@ macro_rules! counters {
         #[derive(Debug, Clone)]
         #[non_exhaustive]
         pub struct Snapshot { $( pub $name: u64, )* pub queue_wait: HistogramSnapshot, pub handler_duration: HistogramSnapshot, pub request_latency: HistogramSnapshot, pub deferred_reply_latency: HistogramSnapshot }
-        pub fn snapshot() -> Snapshot { Snapshot { $( $name: COUNTERS.$name.load(Relaxed), )* queue_wait: QUEUE_WAIT.snapshot(), handler_duration: HANDLER_DURATION.snapshot(), request_latency: REQUEST_LATENCY.snapshot(), deferred_reply_latency: DEFERRED_REPLY_LATENCY.snapshot() } }
+        fn read_snapshot() -> Snapshot { Snapshot { $( $name: COUNTERS.$name.load(Relaxed), )* queue_wait: QUEUE_WAIT.snapshot(), handler_duration: HANDLER_DURATION.snapshot(), request_latency: REQUEST_LATENCY.snapshot(), deferred_reply_latency: DEFERRED_REPLY_LATENCY.snapshot() } }
         fn render_counters(out: &mut String, s: &Snapshot) {
             $(
                 let name = concat!("spawned_", stringify!($name));
@@ -233,7 +233,34 @@ counters!(
     jobs_rejected_total,
     jobs_emits_total,
     jobs_unfinished_at_stop_total,
+    // Retained internal structures (`live`): each returns to its idle
+    // baseline once the work that created it is gone.
+    reply_slots_alive,
+    reply_tokens_alive,
+    reply_registries_alive,
+    pending_replies_entries,
+    deadline_heap_entries,
+    deadline_service_entries,
+    deadline_service_actors,
+    jobs_alive,
+    monitors_alive,
+    link_records_alive,
+    registered_names,
+    timers_alive,
 );
+
+/// Process aggregates (see [`Snapshot`]). The deadline service's sizes are
+/// read here, under its own lock; every other value is an atomic load.
+pub fn snapshot() -> Snapshot {
+    let (entries, actors) = crate::reply::deadline::service_sizes();
+    COUNTERS
+        .deadline_service_entries
+        .store(entries as u64, Relaxed);
+    COUNTERS
+        .deadline_service_actors
+        .store(actors as u64, Relaxed);
+    read_snapshot()
+}
 static QUEUE_WAIT: Histogram = Histogram::new();
 static HANDLER_DURATION: Histogram = Histogram::new();
 static REQUEST_LATENCY: Histogram = Histogram::new();
@@ -364,6 +391,72 @@ pub(crate) mod hooks {
         COUNTERS
             .jobs_unfinished_at_stop_total
             .fetch_add(n as u64, Relaxed);
+    }
+}
+
+/// Retained-structure gauges: a zero-sized [`Live`](live::Live) field in each
+/// structure counts it from construction to drop (no lock, one relaxed
+/// atomic at each end, at points that already allocate or free it).
+pub(crate) mod live {
+    use super::COUNTERS;
+    use crate::instrumentation::gauge::*;
+    use std::marker::PhantomData;
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    pub(crate) trait Gauge {
+        fn gauge() -> &'static AtomicU64;
+    }
+    macro_rules! gauges {
+        ($($marker:ident => $field:ident),* $(,)?) => {$(
+            impl Gauge for $marker {
+                #[inline(always)]
+                fn gauge() -> &'static AtomicU64 {
+                    &COUNTERS.$field
+                }
+            }
+        )*};
+    }
+    gauges!(
+        ReplySlots => reply_slots_alive,
+        ReplyTokens => reply_tokens_alive,
+        ReplyRegistries => reply_registries_alive,
+        PendingEntries => pending_replies_entries,
+        DeadlineEntries => deadline_heap_entries,
+        Jobs => jobs_alive,
+        Monitors => monitors_alive,
+        LinkRecords => link_records_alive,
+        Names => registered_names,
+        Timers => timers_alive,
+    );
+
+    /// One live `G` structure, counted from construction to drop.
+    pub(crate) struct Live<G: Gauge>(PhantomData<fn() -> G>);
+    impl<G: Gauge> Default for Live<G> {
+        #[inline]
+        fn default() -> Self {
+            G::gauge().fetch_add(1, Relaxed);
+            Self(PhantomData)
+        }
+    }
+    impl<G: Gauge> Drop for Live<G> {
+        #[inline]
+        fn drop(&mut self) {
+            G::gauge().fetch_sub(1, Relaxed);
+        }
+    }
+    impl<G: Gauge> std::fmt::Debug for Live<G> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("Live")
+        }
+    }
+    /// Structures not owned by one value (map entries): counted in bulk.
+    #[inline]
+    pub(crate) fn added<G: Gauge>(n: usize) {
+        G::gauge().fetch_add(n as u64, Relaxed);
+    }
+    #[inline]
+    pub(crate) fn removed<G: Gauge>(n: usize) {
+        G::gauge().fetch_sub(n as u64, Relaxed);
     }
 }
 

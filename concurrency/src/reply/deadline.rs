@@ -41,6 +41,8 @@ struct Entry {
     at: u64,
     seq: u64,
     item: Weak<dyn Expirable>,
+    /// `spawned_deadline_heap_entries`, stale entries included.
+    _alive: crate::instrumentation::Live<crate::instrumentation::gauge::DeadlineEntries>,
 }
 impl PartialEq for Entry {
     fn eq(&self, other: &Self) -> bool {
@@ -102,6 +104,7 @@ impl DeadlineHeap {
             at,
             seq: self.seq,
             item,
+            _alive: Default::default(),
         }));
         (earliest, upgraded)
     }
@@ -165,6 +168,14 @@ pub(crate) fn schedule(registry: &Arc<Registry>, at: u64) {
     sim::schedule(registry, at);
     #[cfg(not(all(spawned_sim, feature = "async")))]
     thread_service::schedule(registry, at);
+}
+
+/// The process-wide service's `(queue entries, actors)`: queue entries
+/// include superseded ones not yet compacted. Read on a metrics scrape,
+/// under the service's lock; `(0, 0)` before the service first starts.
+#[cfg(feature = "metrics")]
+pub(crate) fn service_sizes() -> (usize, usize) {
+    thread_service::sizes()
 }
 
 mod thread_service {
@@ -260,6 +271,14 @@ mod thread_service {
         assert!(observed.lock().unwrap().upgrade().is_some());
         drop(cell);
         assert!(observed.lock().unwrap().upgrade().is_none());
+    }
+
+    #[cfg(feature = "metrics")]
+    pub(super) fn sizes() -> (usize, usize) {
+        SERVICE.get().map_or((0, 0), |service| {
+            let state = lock(service);
+            (state.queue.len(), state.actors.len())
+        })
     }
 
     pub(super) fn forget(key: u64) {

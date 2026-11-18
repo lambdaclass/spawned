@@ -24,6 +24,9 @@
 mod sync {
     pub(crate) use loom::sync::{Mutex, MutexGuard};
     pub(crate) use std::sync::{Arc, Weak};
+    pub(crate) type LinkRecordAlive = ();
+    pub(crate) fn monitors_added(_: usize) {}
+    pub(crate) fn monitors_removed(_: usize) {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

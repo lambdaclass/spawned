@@ -2035,6 +2035,7 @@ times.
 | `registry` | `registry::registered().len()` |
 | `actors_live` | harness actor states constructed and not yet dropped (started minus fully stopped) |
 | `actors_active`, `mailbox_depth`, `handlers_active`, `requests_active` | spawned's own `metrics` gauges |
+| `reply_slots_alive` … `timers_alive` | spawned's retained-structure gauges (GUIDE, "Retained internal structures"): reply slots, tokens, `PendingReplies` entries, reply registries, deadline heap and service entries, service owners, jobs, monitors, link records, names, timers |
 | `actors_started`, `scenarios`, `errors` | progress counters (not judged) |
 
 Framework-internal `ActorRef` and `Context` clones are not countable through
@@ -2119,7 +2120,12 @@ gate too; they cannot inherit a passing source check without measurement.
 ```sh
 python3 benchmarks/hotpath.py gate                  # HEAD vs merge base with main
 python3 benchmarks/hotpath.py gate --base origin/main --head origin/my-branch --threshold 3
+python3 benchmarks/hotpath.py gate --features metrics   # both sides with the metrics feature
 ```
+
+CI gates the default build. `--features` builds both sides with extra
+features, for a change whose cost sits behind one (instrumentation under
+`metrics`); run it by hand and quote it in the PR.
 
 Instruction counts miss costs that are not instructions: lock contention,
 extra wake-ups and parking, cache-line transfers. A change that moves work

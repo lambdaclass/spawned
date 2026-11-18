@@ -75,8 +75,12 @@ impl<R: Send + 'static> InsertError<R> {
 /// bounds it): `take` and `insert` are linear in the held entries.
 pub struct PendingReplies<K, R: Send + 'static> {
     cap: usize,
-    tokens: Vec<(K, ReplyTo<R>)>,
+    tokens: Vec<(K, ReplyTo<R>, Counted)>,
 }
+
+/// An entry in `spawned_pending_replies_entries` (terminal, unpurged ones
+/// included).
+type Counted = crate::instrumentation::Live<crate::instrumentation::gauge::PendingEntries>;
 
 impl<K, R: Send + 'static> std::fmt::Debug for PendingReplies<K, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -99,33 +103,36 @@ impl<K: Hash + Eq, R: Send + 'static> PendingReplies<K, R> {
     /// token) or a full table hands the new token back.
     pub fn insert(&mut self, key: K, token: ReplyTo<R>) -> Result<(), InsertError<R>> {
         self.purge();
-        if self.tokens.iter().any(|(k, _)| *k == key) {
+        if self.tokens.iter().any(|(k, _, _)| *k == key) {
             return Err(InsertError::Duplicate(token));
         }
         if self.tokens.len() >= self.cap {
             return Err(InsertError::Full(token));
         }
-        self.tokens.push((key, token));
+        self.tokens.push((key, token, Counted::default()));
         Ok(())
     }
 
     /// Remove and return the live token under `key`; a terminal one is
     /// removed and skipped.
     pub fn take(&mut self, key: &K) -> Option<ReplyTo<R>> {
-        let at = self.tokens.iter().position(|(k, _)| k == key)?;
-        let (_, token) = self.tokens.remove(at);
+        let at = self.tokens.iter().position(|(k, _, _)| k == key)?;
+        let (_, token, _) = self.tokens.remove(at);
         (!token.is_closed()).then_some(token)
     }
 
     /// Remove every terminal token.
     fn purge(&mut self) {
-        self.tokens.retain(|(_, token)| !token.is_closed());
+        self.tokens.retain(|(_, token, _)| !token.is_closed());
     }
 
     /// Live (non-terminal) tokens held: a scan, so a token whose caller
     /// just left no longer counts.
     pub fn len(&self) -> usize {
-        self.tokens.iter().filter(|(_, t)| !t.is_closed()).count()
+        self.tokens
+            .iter()
+            .filter(|(_, t, _)| !t.is_closed())
+            .count()
     }
 
     /// Whether no live token is held.
@@ -138,6 +145,7 @@ impl<K: Hash + Eq, R: Send + 'static> PendingReplies<K, R> {
     pub fn drain(&mut self) -> impl Iterator<Item = (K, ReplyTo<R>)> + '_ {
         self.tokens
             .drain(..)
+            .map(|(key, token, _)| (key, token))
             .filter(|(_, token)| !token.is_closed())
     }
 }

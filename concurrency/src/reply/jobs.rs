@@ -252,6 +252,9 @@ pub(crate) struct JobState {
     /// user payload, destroyed by [`JobSet::dispose_cancelled`] once the
     /// owner's death point answered and woke every caller.
     exit_released: Mutex<Option<ExitReleased>>,
+    /// `spawned_jobs_alive`: from launch until the last reference (run,
+    /// handle, queued message, held result) is gone.
+    _alive: crate::instrumentation::Live<crate::instrumentation::gauge::Jobs>,
 }
 
 /// Payloads an owner's exit took from a job, destroyed after its death point.
@@ -294,6 +297,7 @@ impl JobState {
             emit_wakers: Mutex::new(Vec::new()),
             scheduled: Mutex::new(Vec::new()),
             exit_released: Mutex::new(None),
+            _alive: Default::default(),
         })
     }
 
