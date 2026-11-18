@@ -27,6 +27,9 @@ pub const SERIES: &[&str] = &[
     "link_records_alive",
     "registered_names",
     "timers_alive",
+    "disposal_queue_entries",
+    "disposal_workers_alive",
+    "disposal_workers_idle",
 ];
 
 /// Flat `key = number` lines (valid TOML with dotted keys); `#` comments.
@@ -81,7 +84,7 @@ impl Phase {
 pub struct Sample {
     pub elapsed: f64,
     pub phase: Phase,
-    pub values: [f64; 23],
+    pub values: [f64; 26],
     pub started: u64,
     pub scenarios: u64,
     pub errors: u64,

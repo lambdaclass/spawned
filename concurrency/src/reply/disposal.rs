@@ -240,9 +240,22 @@ struct Pool {
     ready: Condvar,
 }
 
+static POOL: OnceLock<Arc<Pool>> = OnceLock::new();
+
 fn pool() -> &'static Arc<Pool> {
-    static POOL: OnceLock<Arc<Pool>> = OnceLock::new();
     POOL.get_or_init(Default::default)
+}
+
+/// The pool's `(queued items, workers, idle workers)`: workers include one
+/// still starting, idle ones one woken and not yet back under the lock. Read
+/// on a metrics scrape, under the pool's lock; `(0, 0, 0)` before the first
+/// hand-off.
+#[cfg(feature = "metrics")]
+pub(crate) fn pool_sizes() -> (usize, usize, usize) {
+    POOL.get().map_or((0, 0, 0), |pool| {
+        let state = lock(pool);
+        (state.queue.len(), state.workers, state.idle)
+    })
 }
 
 fn lock(pool: &Pool) -> std::sync::MutexGuard<'_, State> {
@@ -291,14 +304,17 @@ pub(crate) fn submit(work: Vec<Item>) {
 fn start_worker(pool: &Arc<Pool>, start: Start) {
     match start {
         Start::No => {}
-        Start::Capped => crate::actor_cleanup::log_safely(|| {
-            tracing::warn!(
-                event = "disposal_workers_capped",
-                max = MAX_WORKERS,
-                "every deadline disposal worker is busy: later wake-ups and \
+        Start::Capped => {
+            crate::instrumentation::hooks::disposal_capped();
+            crate::actor_cleanup::log_safely(|| {
+                tracing::warn!(
+                    event = "disposal_workers_capped",
+                    max = MAX_WORKERS,
+                    "every deadline disposal worker is busy: later wake-ups and \
                  payload drops queue until one returns"
-            );
-        }),
+                );
+            })
+        }
         Start::Yes => {
             let worker = pool.clone();
             let spawned = std::thread::Builder::new()

@@ -247,10 +247,15 @@ counters!(
     link_records_alive,
     registered_names,
     timers_alive,
+    disposal_queue_entries,
+    disposal_workers_alive,
+    disposal_workers_idle,
+    disposal_workers_capped_total,
 );
 
-/// Process aggregates (see [`Snapshot`]). The deadline service's sizes are
-/// read here, under its own lock; every other value is an atomic load.
+/// Process aggregates (see [`Snapshot`]). The deadline service's and the
+/// disposal pool's sizes are read here, each under its own lock; every other
+/// value is an atomic load.
 pub fn snapshot() -> Snapshot {
     let (entries, actors) = crate::reply::deadline::service_sizes();
     COUNTERS
@@ -259,6 +264,14 @@ pub fn snapshot() -> Snapshot {
     COUNTERS
         .deadline_service_actors
         .store(actors as u64, Relaxed);
+    let (queued, workers, idle) = crate::reply::disposal::pool_sizes();
+    COUNTERS
+        .disposal_queue_entries
+        .store(queued as u64, Relaxed);
+    COUNTERS
+        .disposal_workers_alive
+        .store(workers as u64, Relaxed);
+    COUNTERS.disposal_workers_idle.store(idle as u64, Relaxed);
     read_snapshot()
 }
 static QUEUE_WAIT: Histogram = Histogram::new();
@@ -391,6 +404,11 @@ pub(crate) mod hooks {
         COUNTERS
             .jobs_unfinished_at_stop_total
             .fetch_add(n as u64, Relaxed);
+    }
+    /// Every disposal worker was busy at the cap (counted once per episode,
+    /// like the `disposal_workers_capped` warning).
+    pub(crate) fn disposal_capped() {
+        COUNTERS.disposal_workers_capped_total.fetch_add(1, Relaxed);
     }
 }
 
