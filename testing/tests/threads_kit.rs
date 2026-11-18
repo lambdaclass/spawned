@@ -162,7 +162,10 @@ impl Handler<Ping> for Idle {
 
 #[test]
 fn native_exit_injection() {
-    for reason in [ExitReason::Shutdown, ExitReason::Panic("injected".into())] {
+    for reason in [
+        ExitReason::Shutdown(None),
+        ExitReason::Panic("injected".into()),
+    ] {
         let actor = Idle.start();
         settle(&actor, Ping, WAIT);
         faults::exit(&actor.child_handle(), reason.clone());
@@ -292,8 +295,8 @@ fn native_panic_injection_into_an_exited_target_is_a_no_op() {
     let actor = Idle.start();
     actor
         .child_handle()
-        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
-    assert_eq!(join_within(&actor, WAIT), ExitReason::Shutdown);
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown(None));
+    assert_eq!(join_within(&actor, WAIT), ExitReason::Shutdown(None));
     // A signal to an actor past its death point is dropped.
     faults::exit(&actor.child_handle(), ExitReason::Panic("late".into()));
 }
@@ -425,13 +428,13 @@ fn kill_stops_a_trapping_target_and_other_signals_are_trapped() {
     assert_eq!(join_within(&observer, WAIT), ExitReason::Normal);
     let target = Idle.start();
     target.context().trap_exit(true);
-    faults::exit(&target.child_handle(), ExitReason::Shutdown);
+    faults::exit(&target.child_handle(), ExitReason::Shutdown(None));
     settle(&target, Ping, WAIT);
     assert_eq!(target.child_handle().exit_reason(), None);
     target
         .child_handle()
-        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
-    assert_eq!(join_within(&target, WAIT), ExitReason::Shutdown);
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown(None));
+    assert_eq!(join_within(&target, WAIT), ExitReason::Shutdown(None));
 }
 
 /// `in_actor` runs a closure in one of the actor's turns, after the messages

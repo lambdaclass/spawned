@@ -482,7 +482,7 @@ impl ActorObservation {
         COUNTERS.actors_active.fetch_sub(1, Relaxed);
         match reason {
             ExitReason::Normal => &COUNTERS.actors_exited_normal_total,
-            ExitReason::Shutdown => &COUNTERS.actors_exited_shutdown_total,
+            ExitReason::Shutdown(_) => &COUNTERS.actors_exited_shutdown_total,
             ExitReason::Panic(_) => &COUNTERS.actors_exited_panic_total,
             ExitReason::Kill => &COUNTERS.actors_exited_kill_total,
             ExitReason::Killed => &COUNTERS.actors_exited_killed_total,

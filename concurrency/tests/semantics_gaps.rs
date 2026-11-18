@@ -51,7 +51,7 @@ impl Message for Boom {
 fn reasons() -> Vec<Option<ExitReason>> {
     vec![
         Some(ExitReason::Normal),
-        Some(ExitReason::Shutdown),
+        Some(ExitReason::Shutdown(None)),
         Some(ExitReason::Kill),
         Some(ExitReason::Panic("chosen".into())),
         None,
@@ -536,7 +536,7 @@ mod tasks {
         assert!(supervisor.shutdown(LIMIT).await.complete);
         assert_eq!(
             new.child_handle().wait_exit_async().await,
-            ExitReason::Shutdown
+            ExitReason::Shutdown(None)
         );
         assert!(system.shutdown(LIMIT).await.complete);
     }
@@ -1864,7 +1864,7 @@ mod tasks_contract {
         let report = system.shutdown(LIMIT).await;
         assert!(report.complete, "S6: unowned work held up shutdown");
         assert_eq!(thread_done.load(Ordering::SeqCst), 0, "thread was joined");
-        assert_eq!(actor.wait_exit().await, ExitReason::Shutdown);
+        assert_eq!(actor.wait_exit().await, ExitReason::Shutdown(None));
         drop(group);
         drop(system);
         let deadline = tokio::time::Instant::now() + LIMIT;
@@ -2439,7 +2439,7 @@ mod supervision_contract {
         // `Shutdown`, then every remaining actor the parent's kill; a
         // trapping actor that finishes its parent exit first ends `Shutdown`.
         assert!(
-            matches!(earlier_reason, ExitReason::Shutdown | ExitReason::Killed),
+            matches!(earlier_reason, ExitReason::Shutdown(_) | ExitReason::Killed),
             "{earlier_reason:?}"
         );
         assert!(later.child_handle().is_alive());
@@ -2448,7 +2448,7 @@ mod supervision_contract {
         // before its death point supersedes its reason (X4).
         let later_reason = timeout(LIMIT, later.wait_exit()).await.unwrap();
         assert!(
-            matches!(later_reason, ExitReason::Shutdown | ExitReason::Killed),
+            matches!(later_reason, ExitReason::Shutdown(_) | ExitReason::Killed),
             "{later_reason:?}"
         );
     }
@@ -2487,7 +2487,8 @@ impl Message for StopSelf {
 /// non-trapping linked actor, which then publishes it (X3).
 fn linked_reasons() -> Vec<ExitReason> {
     vec![
-        ExitReason::Shutdown,
+        ExitReason::Shutdown(None),
+        ExitReason::shutdown_with("peer drained"),
         ExitReason::Kill,
         ExitReason::Killed,
         ExitReason::Panic("peer crashed".into()),
@@ -2519,7 +2520,8 @@ const CLEANUPS: [Cleanup; 4] = [
 fn requested_reasons() -> Vec<ExitReason> {
     vec![
         ExitReason::Normal,
-        ExitReason::Shutdown,
+        ExitReason::Shutdown(None),
+        ExitReason::shutdown_with("chosen"),
         ExitReason::Kill,
         ExitReason::Panic("chosen".into()),
     ]
@@ -2527,10 +2529,10 @@ fn requested_reasons() -> Vec<ExitReason> {
 
 /// A different reason to request second.
 fn other_reason(first: &ExitReason) -> ExitReason {
-    if *first == ExitReason::Shutdown {
+    if first.is_shutdown() {
         ExitReason::Normal
     } else {
-        ExitReason::Shutdown
+        ExitReason::Shutdown(None)
     }
 }
 

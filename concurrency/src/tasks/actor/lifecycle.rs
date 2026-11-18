@@ -378,7 +378,7 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
     let trace_id = ctx.shared.id.raw();
     if let Some(scope) = &ctx.shared.managed {
         if !scope.can_start() {
-            scope.stop(ExitReason::Shutdown);
+            scope.stop(ExitReason::Shutdown(None));
             return;
         }
     }
@@ -420,7 +420,7 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
     fail_point!("actor.after_started_before_ready", async);
     if let Some(scope) = &ctx.shared.managed {
         if !scope.mark_ready() {
-            scope.stop(ExitReason::Shutdown);
+            scope.stop(ExitReason::Shutdown(None));
         }
     }
 

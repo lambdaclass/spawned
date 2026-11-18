@@ -77,11 +77,11 @@ fn main() {
     spawned_concurrency::threads::send_after(Duration::from_millis(5), observer.context(), Tick);
     counter
         .child_handle()
-        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
-    assert_eq!(counter.wait_exit(), ExitReason::Shutdown);
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown(None));
+    assert_eq!(counter.wait_exit(), ExitReason::Shutdown(None));
     assert_eq!(
         spawned_rt::threads::block_on(counter.child_handle().wait_exit_async()),
-        ExitReason::Shutdown
+        ExitReason::Shutdown(None)
     );
     let limit = std::time::Instant::now() + Duration::from_secs(3);
     while events.load(Ordering::SeqCst) < 2 {
@@ -100,9 +100,9 @@ fn main() {
     first.context().link(&second.child_handle());
     second
         .child_handle()
-        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
-    assert_eq!(first.wait_exit(), ExitReason::Shutdown);
-    assert_eq!(second.wait_exit(), ExitReason::Shutdown);
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown(None));
+    assert_eq!(first.wait_exit(), ExitReason::Shutdown(None));
+    assert_eq!(second.wait_exit(), ExitReason::Shutdown(None));
     #[cfg(feature = "metrics")]
     {
         let metrics = spawned_concurrency::metrics::snapshot();

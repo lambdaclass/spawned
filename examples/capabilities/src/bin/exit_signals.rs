@@ -149,8 +149,11 @@ async fn main() {
     plain.child_handle().exit(ExitReason::Normal);
     plain.request(Sync).await.unwrap();
     assert!(plain.child_handle().is_alive(), "exit(Normal) is ignored");
-    plain.child_handle().exit(ExitReason::Shutdown);
-    assert_eq!(ended(&plain.child_handle()).await, ExitReason::Shutdown);
+    plain.child_handle().exit(ExitReason::Shutdown(None));
+    assert_eq!(
+        ended(&plain.child_handle()).await,
+        ExitReason::Shutdown(None)
+    );
     assert!(
         seen.take().is_empty(),
         "an untrapped signal skips stopped()"
@@ -167,9 +170,17 @@ async fn main() {
         .request(Watch(target.child_handle()))
         .await
         .unwrap();
-    target.child_handle().exit(ExitReason::Shutdown);
+    target.child_handle().exit(ExitReason::Shutdown(None));
+    // A clean exit can carry why (OTP `{shutdown, Term}`); it is trapped and
+    // propagated exactly like a bare Shutdown, with the full reason.
+    target
+        .child_handle()
+        .exit(ExitReason::shutdown_with("draining"));
     target.request(Sync).await.unwrap();
-    assert_eq!(target_seen.take(), vec!["Exit Shutdown"]);
+    assert_eq!(
+        target_seen.take(),
+        vec!["Exit Shutdown(None)", "Exit Shutdown(Some(\"draining\"))"]
+    );
     target.child_handle().kill();
     assert_eq!(ended(&target.child_handle()).await, ExitReason::Killed);
     assert!(target_seen.take().is_empty(), "a kill skips stopped()");
@@ -179,7 +190,7 @@ async fn main() {
     let mut notices = observer_seen.take();
     notices.sort();
     assert_eq!(notices, vec!["Down Killed", "Exit Killed"]);
-    println!("trapped Exit(Shutdown); kill() ended a trapping actor Killed; peers saw Killed");
+    println!("trapped Exit(Shutdown) with and without a payload; kill() ended a trapping actor Killed; peers saw Killed");
 
     // 3. Past its death point an actor is gone: link and monitor get NoProc
     //    (one notice each), try_link returns Err(NoProc), sends fail NoProc.
@@ -232,7 +243,7 @@ async fn main() {
     worker.send(Work(2)).unwrap();
     let handle = worker.child_handle();
     assert!(supervisor.shutdown(LIMIT).await.complete);
-    assert_eq!(ended(&handle).await, ExitReason::Shutdown);
+    assert_eq!(ended(&handle).await, ExitReason::Shutdown(None));
     assert_eq!(
         child_seen.take(),
         vec![

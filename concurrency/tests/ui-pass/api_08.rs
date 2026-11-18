@@ -31,7 +31,7 @@ fn requests(actor: &ActorRef<Counter>, recipient: &Recipient<Get>) -> Result<(),
     let _: Deadline = rx.deadline();
     let _response: Response<u32> = Response::from(actor.send_request(Get, DEFAULT_REQUEST_TIMEOUT));
     let _ctx: Context<Counter> = actor.context();
-    actor.child_handle().stop_with_reason(ExitReason::Shutdown);
+    actor.child_handle().stop_with_reason(ExitReason::Shutdown(None));
     Ok(())
 }
 

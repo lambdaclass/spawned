@@ -82,6 +82,15 @@
   not outlive it, checked by an end-of-run probe). The minimized bug-15 input
   is kept as the regression `fuzz/tests/down_after_demonitor.rs`. Test-only:
   no library change.
+- **Breaking (0.9):** clean exits can carry a payload, OTP's
+  `{shutdown, Term}` (roadmap G7). `ExitReason::Shutdown` becomes
+  `Shutdown(Option<Arc<str>>)`; build the payload form with
+  `ExitReason::shutdown_with(why)` and pass it to `stop_with_reason` or
+  `exit`. Restarts, crash metrics, link propagation, `trap_exit` and the TLA+
+  trace classes treat it exactly like `Shutdown`; `Down`, `Exit`, `join()`
+  and `ChildSnapshot::last_exit` carry the full reason. New `is_shutdown()`
+  and `shutdown_payload()` helpers; `ExitReason` now derives `Eq`; its size
+  is unchanged (24 bytes). See docs/MIGRATION.md, "0.8 to 0.9".
 - Fix the flaky `tla-traces` coverage gate (`LOST coverage: Cohorts
   A|OneForAll|CEnd/complete`): the cohort trace tests now wait for the restart
   round to record `CEnd complete` before shutting down, instead of racing it

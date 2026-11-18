@@ -197,7 +197,7 @@ request!(Demonitor(MonitorRef) -> (), |_this, msg, ctx| ctx.demonitor(msg.0));
 request!(Note() -> (), |this, _msg, _ctx| this.note("note"));
 request!(NoteThenExit(ActorRef<Node>) -> (), |_this, msg, ctx| {
     msg.0.send(Note()).unwrap();
-    ctx.stop_with_reason(ExitReason::Shutdown);
+    ctx.stop_with_reason(ExitReason::Shutdown(None));
 });
 
 /// A request whose handler panics.
@@ -311,8 +311,8 @@ async fn untrapped_signal_skips_stopped() {
     a1.request(Sync()).await.unwrap();
     a1.child_handle().exit(ExitReason::Normal);
     a1.request(Sync()).await.unwrap();
-    a1.child_handle().exit(ExitReason::Shutdown);
-    assert_eq!(exit_of(&a1).await, ExitReason::Shutdown);
+    a1.child_handle().exit(ExitReason::Shutdown(None));
+    assert_eq!(exit_of(&a1).await, ExitReason::Shutdown(None));
     assert!(!logged(&log).contains(&"stopped".to_string()));
     let events = write("untrapped_signal");
     has(
@@ -339,8 +339,8 @@ async fn trapped_exit_reaches_exit_received() {
     let a2 = Node::new(&log).start();
     a1.request(Sync()).await.unwrap();
     a2.request(Sync()).await.unwrap();
-    a1.child_handle().exit(ExitReason::Shutdown);
-    wait_for(&log, "exit:Shutdown").await;
+    a1.child_handle().exit(ExitReason::Shutdown(None));
+    wait_for(&log, "exit:Shutdown(None)").await;
     a2.context().exit(&a1.child_handle(), ExitReason::Kill);
     // The second signal was a kill: untrappable, a1 ends Killed.
     assert_eq!(exit_of(&a1).await, ExitReason::Killed);
@@ -371,8 +371,8 @@ async fn trapped_exit_then_stop() {
     let log = Log::default();
     let a1 = Node::trapping(&log).start();
     a1.request(Sync()).await.unwrap();
-    a1.child_handle().exit(ExitReason::Shutdown);
-    wait_for(&log, "exit:Shutdown").await;
+    a1.child_handle().exit(ExitReason::Shutdown(None));
+    wait_for(&log, "exit:Shutdown(None)").await;
     a1.child_handle().stop();
     assert_eq!(exit_of(&a1).await, ExitReason::Normal);
     assert!(logged(&log).contains(&"stopped".to_string()));
@@ -464,12 +464,12 @@ async fn unlink_fences_a_notice_taken_at_death() {
     let a2 = Node::holding_drop(gate).start_with_backend(Backend::Thread);
     a1.request(Link(a2.child_handle())).await.unwrap();
     a2.request(Sync()).await.unwrap();
-    a2.context().stop_with_reason(ExitReason::Shutdown);
+    a2.context().stop_with_reason(ExitReason::Shutdown(None));
     // Past D (requests get NoProc), destruction held: not yet published.
     past_death(&a2).await;
     a1.request(Unlink(a2.child_handle())).await.unwrap();
     release.send(()).unwrap();
-    assert_eq!(exit_of(&a2).await, ExitReason::Shutdown);
+    assert_eq!(exit_of(&a2).await, ExitReason::Shutdown(None));
     a1.request(Sync()).await.unwrap();
     assert!(
         !logged(&log).iter().any(|e| e.starts_with("exit:")),
@@ -550,8 +550,9 @@ async fn monitor_delivers_the_final_reason() {
     let a1 = Node::new(&log).start();
     let a2 = Node::new(&Log::default()).start();
     a1.request(Monitor(a2.child_handle())).await.unwrap();
-    a2.child_handle().stop_with_reason(ExitReason::Shutdown);
-    wait_for(&log, "down:Shutdown").await;
+    a2.child_handle()
+        .stop_with_reason(ExitReason::Shutdown(None));
+    wait_for(&log, "down:Shutdown(None)").await;
     a1.child_handle().stop();
     exit_of(&a1).await;
     let events = write("monitor_down");
@@ -581,8 +582,9 @@ async fn parent_exit_ends_a_trapping_child_through_stopped() {
     a1.request(Sync()).await.unwrap();
     let a2 = Node::trapping(&log).start_linked(&a1.context());
     a2.request(Sync()).await.unwrap();
-    a1.child_handle().stop_with_reason(ExitReason::Shutdown);
-    assert_eq!(exit_of(&a2).await, ExitReason::Shutdown);
+    a1.child_handle()
+        .stop_with_reason(ExitReason::Shutdown(None));
+    assert_eq!(exit_of(&a2).await, ExitReason::Shutdown(None));
     assert!(logged(&log).contains(&"stopped".to_string()));
     assert!(!logged(&log).iter().any(|e| e.starts_with("exit:")));
     let events = write("parent_exit");
@@ -690,9 +692,9 @@ fn threads_trapped_exit_then_kill() {
     let log = Log::default();
     let a1 = Native(log.clone()).start();
     a1.request(Ping).unwrap();
-    a1.child_handle().exit(ExitReason::Shutdown);
+    a1.child_handle().exit(ExitReason::Shutdown(None));
     a1.request(Ping).unwrap();
-    assert_eq!(logged(&log), ["exit:Shutdown"]);
+    assert_eq!(logged(&log), ["exit:Shutdown(None)"]);
     a1.child_handle().kill();
     assert_eq!(a1.child_handle().wait_exit_blocking(), ExitReason::Killed);
     assert!(!logged(&log).contains(&"stopped".to_string()));
@@ -725,9 +727,9 @@ async fn message_then_death_notice() {
     a1.request(Sync()).await.unwrap();
     a2.request(Link(a1.child_handle())).await.unwrap();
     a2.request(NoteThenExit(a1.clone())).await.unwrap();
-    assert_eq!(exit_of(&a2).await, ExitReason::Shutdown);
-    wait_for(&log, "exit:Shutdown").await;
-    assert_eq!(logged(&log), ["note", "exit:Shutdown"]);
+    assert_eq!(exit_of(&a2).await, ExitReason::Shutdown(None));
+    wait_for(&log, "exit:Shutdown(None)").await;
+    assert_eq!(logged(&log), ["note", "exit:Shutdown(None)"]);
     a1.child_handle().stop();
     assert_eq!(exit_of(&a1).await, ExitReason::Normal);
     let (id1, id2) = (a1.id().to_string(), a2.id().to_string());
@@ -823,7 +825,7 @@ impl DirectForwarder {
     #[request_handler]
     async fn forward(&mut self, _msg: ForwardNow, ctx: &Context<Self>) {
         self.0.send(Note()).unwrap();
-        ctx.stop_with_reason(ExitReason::Shutdown);
+        ctx.stop_with_reason(ExitReason::Shutdown(None));
     }
 }
 
@@ -838,7 +840,7 @@ async fn direct_dispatch_preserves_causal_sender_and_lifecycle_trace() {
     let sender = DirectForwarder(peer.clone()).start();
     sender.request(ForwardNow).await.unwrap();
     peer.request(Sync()).await.unwrap();
-    assert_eq!(exit_of(&sender).await, ExitReason::Shutdown);
+    assert_eq!(exit_of(&sender).await, ExitReason::Shutdown(None));
     peer.context().stop();
     assert_eq!(exit_of(&peer).await, ExitReason::Normal);
     let events = lifecycle_trace::take_lifecycle();

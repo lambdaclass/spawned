@@ -201,8 +201,8 @@ fn default_exit_received_keeps_a_trapping_actor_alive() {
                 assert!(trapper.exit_reason().is_none());
                 trapper
                     .child_handle()
-                    .stop_with_reason(crate::ExitReason::Shutdown);
-                assert_eq!(trapper.wait_exit().await, ExitReason::Shutdown);
+                    .stop_with_reason(crate::ExitReason::Shutdown(None));
+                assert_eq!(trapper.wait_exit().await, ExitReason::Shutdown(None));
             });
         },
     );

@@ -20,7 +20,7 @@ fn reasons() -> [ExitReason; 3] {
     [
         ExitReason::Kill,
         ExitReason::Panic("reported failure".into()),
-        ExitReason::Shutdown,
+        ExitReason::Shutdown(None),
     ]
 }
 macro_rules! actors {

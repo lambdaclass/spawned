@@ -201,8 +201,8 @@ fn default_exit_received_keeps_a_trapping_actor_alive() {
             assert!(trapper.exit_reason().is_none());
             trapper
                 .child_handle()
-                .stop_with_reason(crate::ExitReason::Shutdown);
-            assert_eq!(trapper.wait_exit(), ExitReason::Shutdown);
+                .stop_with_reason(crate::ExitReason::Shutdown(None));
+            assert_eq!(trapper.wait_exit(), ExitReason::Shutdown(None));
         },
     );
 }
@@ -227,7 +227,7 @@ fn unlink_prevents_signal_delivery() {
             assert!(trapper.exit_reason().is_none());
             trapper
                 .child_handle()
-                .stop_with_reason(crate::ExitReason::Shutdown);
+                .stop_with_reason(crate::ExitReason::Shutdown(None));
             trapper.join();
         },
     );
@@ -273,7 +273,7 @@ fn opposite_links_between_the_same_pair_do_not_deadlock() {
             for actor in [a, b] {
                 actor
                     .child_handle()
-                    .stop_with_reason(crate::ExitReason::Shutdown);
+                    .stop_with_reason(crate::ExitReason::Shutdown(None));
                 actor.join();
             }
         },
