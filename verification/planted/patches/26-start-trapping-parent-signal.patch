@@ -1,8 +1,8 @@
 diff --git a/concurrency/src/start.rs b/concurrency/src/start.rs
-index 42725a76..5399cc3f 100644
+index e169bf32..c2ee47ac 100644
 --- a/concurrency/src/start.rs
 +++ b/concurrency/src/start.rs
-@@ -951,7 +951,7 @@ fn dispose(
+@@ -959,7 +959,7 @@ fn dispose(
      match waiter {
          Waiter::Waiting => match kind {
              EdgeKind::Monitor => Disposition::Divert,

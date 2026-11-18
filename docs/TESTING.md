@@ -1559,7 +1559,7 @@ python3 -m unittest scripts/tests/test_model_sync.py            # self-tests and
 Mutation testing breaks one operator at a time. To measure whether the stack
 catches the bugs a reviewer would actually miss, 24 realistic bugs were written
 (plus 10 for the 0.9 unified start, patches 25-34: the init timer, the
-notice disposition table, the reported reason, the held administrative stop,
+notice disposition table, the answer after publication, the held administrative stop,
 held signals, the stage-1 parent check, the decision precedence and row 9)
 by hand (`verification/planted/patches/`, one patch each, listed in
 `INDEX.tsv`) and each was run, alone, against six layers:

@@ -25,8 +25,8 @@ id	name	file	bug
 24	sys-targets-unsorted	system.rs	System shutdown stops all standalone actors before all trees, ignoring admission order
 25	start-timer-overrides-ready	start.rs	The init timer commits TimedOut over a Ready commitment (kills a ready child)
 26	start-trapping-parent-signal	start.rs	A waiting trapping parent gets the failed start's link notice delivered instead of diverted to the answer
-27	start-normal-notice-delivered	start.rs	A Normal failed-start notice to a waiting non-trapping parent is delivered instead of dropped
-28	start-reports-requested-reason	start.rs	A post-publication answer reports the requested reason, not the final one (a kill after D lost)
+27	start-failed-down-delivered	start.rs	A failed start_monitor's Down reaches the waiting parent instead of being consumed by the error
+28	start-answer-before-publication	start.rs	A failed start is answered at its decision, before the child's publication (state not yet dropped)
 29	start-admin-stop-lost	link.rs	An administrative stop held during started() is discarded when the start commits ready
 30	start-admin-stop-fails-init	link.rs	An administrative stop during started() fails the start without stopped() (revision 3's row 3)
 31	start-trapping-fails-on-signal	link.rs	A trapping child fails its start on a held non-Normal signal instead of queueing it

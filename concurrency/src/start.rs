@@ -1094,6 +1094,7 @@ pub(crate) fn spawn_init_timer_async(
         let sleep = std::pin::pin!(spawned_rt::tasks::sleep(after));
         let cancelled = std::pin::pin!(theirs.cancelled());
         if let futures::future::Either::Left(_) = futures::future::select(sleep, cancelled).await {
+            fail_point!("start.init_timer_fire", async);
             fire_init_timer(&cell, &handle);
         }
     }));
@@ -1120,7 +1121,13 @@ pub(crate) fn spawn_init_timer(cell: &Arc<StartupCell>, handle: ChildHandle, aft
         .queue
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .insert(key, Box::new(move || fire_init_timer(&cell, &handle)));
+        .insert(
+            key,
+            Box::new(move || {
+                fail_point!("start.init_timer_fire");
+                fire_init_timer(&cell, &handle)
+            }),
+        );
     timers.wake.notify_one();
     cancel.on_cancel(Box::new(move || {
         let removed = timers

@@ -1194,3 +1194,44 @@ async fn init_stop_with_shutdown_payload() {
     p.request(Stop).await.unwrap();
     p.wait_exit().await;
 }
+
+/// A child whose `started()` fails and whose destructor is slow.
+struct SlowDropChild;
+impl Actor for SlowDropChild {
+    async fn started(&mut self, _: &Context<Self>) -> Result<(), String> {
+        Err("no config".into())
+    }
+}
+impl Drop for SlowDropChild {
+    fn drop(&mut self) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A failed start_link is answered after the child's publication, even
+/// with a slow destructor and the waiter on another worker (design 5.5;
+/// the model's `FailureAfterPublication`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_start_answers_after_a_slow_drop() {
+    let _serial = SERIAL.lock().await;
+    let (p, _) = parent(true).await;
+    lifecycle_trace::record_start_parent(&p.child_handle());
+    let result = SlowDropChild.start_link(&p.context()).await;
+    assert!(
+        matches!(result, Err(StartError::InitFailed { pending: None, .. })),
+        "{result:?}"
+    );
+    children_done(1).await;
+    let events = write("failed_start_answers_after_a_slow_drop", "U", true, 1000);
+    has(
+        &events,
+        &[
+            "SResolve:error",
+            "SDie:Normal",
+            "SPublish:divert",
+            "SAnswer:failed",
+        ],
+    );
+    p.request(Stop).await.unwrap();
+    p.wait_exit().await;
+}

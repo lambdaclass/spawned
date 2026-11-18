@@ -197,6 +197,12 @@ pub const SITES: &[Site] = &[
                       start answers `InitExited { Killed }`.",
     },
     Site {
+        name: "start.init_timer_fire",
+        has_error: false,
+        description: "The init timer expired and is about to reach the startup cell. \
+                      Delay lets the child commit ready first: the timer must lose.",
+    },
+    Site {
         name: "actor.thread_spawn",
         has_error: true,
         description: "OS thread spawn of a committed thread-backed actor. Error models \

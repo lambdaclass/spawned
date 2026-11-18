@@ -1,5 +1,5 @@
 diff --git a/concurrency/src/start.rs b/concurrency/src/start.rs
-index 42725a76..fbcc311e 100644
+index e169bf32..1a3571a7 100644
 --- a/concurrency/src/start.rs
 +++ b/concurrency/src/start.rs
 @@ -611,7 +611,7 @@ impl StartupCell {

@@ -1,0 +1,12 @@
+diff --git a/concurrency/src/start.rs b/concurrency/src/start.rs
+index e169bf32..7729d0b9 100644
+--- a/concurrency/src/start.rs
++++ b/concurrency/src/start.rs
+@@ -727,6 +727,7 @@ impl StartupCell {
+             _ => {
+                 let (pending, reason) = match &inner.published {
+                     Some(final_reason) => (None, final_reason.clone()),
++                    None if inner.requested.is_some() => (None, inner.requested.clone().unwrap()),
+                     None if inner.publishing => return self.wait_or_abandon(inner, waiter, None),
+                     None => {
+                         let deadline = inner
