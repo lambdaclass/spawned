@@ -278,6 +278,9 @@ impl Recorder {
             m.link_records_alive as f64,
             m.registered_names as f64,
             m.timers_alive as f64,
+            m.disposal_queue_entries as f64,
+            m.disposal_workers_alive as f64,
+            m.disposal_workers_idle as f64,
         ];
         debug_assert_eq!(values.len(), SERIES.len());
         let sample = Sample {

@@ -84,6 +84,8 @@ mod disabled {
         pub(crate) fn job_emitted() {}
         #[inline(always)]
         pub(crate) fn jobs_unfinished(_: usize) {}
+        #[inline(always)]
+        pub(crate) fn disposal_capped() {}
     }
 
     /// Retained-structure gauges: zero-sized, no-op guards without `metrics`.

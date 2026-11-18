@@ -37,6 +37,15 @@
   its baseline (`tests/metrics_retained.rs`), which doubles as a leak test.
   `timers_alive` is how the threads-mode timer callback leak above was
   found.
+- `metrics`: the disposal worker pool's gauges, `spawned_disposal_queue_entries`,
+  `disposal_workers_alive` and `disposal_workers_idle` (read at scrape under
+  the pool's lock), and the counter `spawned_disposal_workers_capped_total`
+  (times all 64 workers were busy, once per episode, beside the existing
+  warning). Compiled out without the feature; no change on the hand-off path
+  otherwise. A test expires deadlines in both backends with blocking and
+  non-blocking disposal and checks the queue drains and every worker retires
+  after its keep-alive (`disposal.keep_alive` failpoint with `failpoints`).
+  The soak harness judges the three gauges.
 - Fix the flaky `supervision::transient_startup_timeout_retries_after_actual_cleanup`
   (a 20 ms startup deadline raced the fast starts on a loaded host, which also
   made cargo-mutants report surviving mutants as caught): the replacement's

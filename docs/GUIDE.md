@@ -1631,8 +1631,9 @@ that climbs with uptime while the actor and request counts stay flat points
 at a leak (or an application that holds framework objects), with no heap
 profiling build. Each one is counted where its structure is created and
 destroyed (a zero-sized field in the structure: one relaxed atomic at each
-end, no lock), except the deadline service's two sizes, read at scrape under
-the service's own lock. All of them are compiled out without the feature.
+end, no lock), except the deadline service's two sizes and the disposal
+pool's three, read at scrape under the service's or the pool's own lock. All
+of them are compiled out without the feature.
 
 | Gauge (`spawned_*`) | Counts | Returns to baseline when |
 |---|---|---|
@@ -1648,14 +1649,21 @@ the service's own lock. All of them are compiled out without the feature.
 | `link_records_alive` | Link records (two per link, one per pending late `NoProc` notice), including records taken at a death point until their notices are delivered. | Links are removed or either end exits. |
 | `registered_names` | Names in the global registry (`registry::register`, `register_owned`, `ctx.register_name`). | Names are unregistered (managed names: when the owner's cleanup ends). |
 | `timers_alive` | `send_after` / `send_interval` timers whose task or thread is still running (with it, in `threads` mode, its callback registrations on the actor's and its own stop tokens). | Timers fire or are cancelled, or the actor stops. |
+| `disposal_queue_entries` | Items the deadline service handed to the disposal workers (wake-ups and payload drops an expiry released) not yet taken by a worker. Above zero for long only while every worker is busy at the cap. | Workers take them. |
+| `disposal_workers_alive` | Disposal worker threads, busy or idle (a starting one included). At most 64. | Idle workers retire after their 10 s keep-alive. |
+| `disposal_workers_idle` | Disposal workers waiting for work. | Idle workers retire after their keep-alive. |
+
+`spawned_disposal_workers_capped_total` counts the times every one of the 64
+disposal workers was busy when more work arrived (once per episode, with the
+`disposal_workers_capped` warning): wake-ups and payload drops queued behind
+blocked callbacks. A rising count means user wakers or destructors block.
 
 Gauges are process-wide sums and never labelled. They have idle baselines
 above zero (the detached registry, registered names an application keeps, an
-interval timer): compare against the same process at rest, or alert on
-growth. Process-wide one-time structures (the deadline-service thread, the
-global registry map) are not counted. The disposal worker pool proposed with
-the deadline-service fix (#282) will add its queue length and worker count
-here when it lands.
+interval timer, disposal workers within their keep-alive): compare against
+the same process at rest, or alert on growth. Process-wide one-time
+structures (the deadline-service thread, the global registry map) are not
+counted.
 
 ### Caller and raw receiver boundaries
 

@@ -512,10 +512,269 @@ fn threads_timers_do_not_accumulate_on_a_running_actor() {
 #[test]
 fn retained_gauges_are_exported() {
     let text = metrics::render_prometheus();
-    for (name, _) in GAUGES {
+    for (name, _) in GAUGES.iter().chain(DISPOSAL) {
         assert!(
             text.contains(&format!("# TYPE spawned_{name} gauge\n")),
             "spawned_{name} is not exported as a gauge"
         );
     }
+    assert!(
+        text.contains("# TYPE spawned_disposal_workers_capped_total counter\n"),
+        "spawned_disposal_workers_capped_total is not exported as a counter"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// disposal pool
+// ---------------------------------------------------------------------------
+
+/// The disposal pool's gauges. Kept out of `GAUGES`: idle workers outlive
+/// the work that started them by their keep-alive (10 s), so the other tests
+/// do not wait for them.
+const DISPOSAL: &[Gauge] = &[
+    ("disposal_queue_entries", |s| s.disposal_queue_entries),
+    ("disposal_workers_alive", |s| s.disposal_workers_alive),
+    ("disposal_workers_idle", |s| s.disposal_workers_idle),
+];
+
+fn read_disposal() -> Vec<u64> {
+    let s = metrics::snapshot();
+    DISPOSAL.iter().map(|(_, g)| g(&s)).collect()
+}
+
+/// Wait (bounded by `limit`) until no item is queued and every worker has
+/// retired, the pool's resting state.
+fn disposal_pool_rests(limit: Duration, what: &str) {
+    let end = Instant::now() + limit;
+    loop {
+        let now = read_disposal();
+        if now == [0, 0, 0] {
+            return;
+        }
+        assert!(
+            Instant::now() < end,
+            "{what}: disposal pool did not drain and retire within {limit:?}: {:?}",
+            DISPOSAL
+                .iter()
+                .map(|(n, _)| *n)
+                .zip(now)
+                .collect::<Vec<_>>()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Requests that expire while their callers wait: the deadline service hands
+/// each caller's wake-up to a disposal worker (non-blocking items).
+const EXPIRE: Duration = Duration::from_millis(30);
+
+/// A message whose destructor blocks for a while: discarded on the deadline
+/// service, it occupies a disposal worker (a blocking item).
+struct Slow(Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>);
+impl Message for Slow {
+    type Result = ();
+}
+impl Drop for Slow {
+    fn drop(&mut self) {
+        if let Some(dropped) = self.0.take() {
+            std::thread::sleep(Duration::from_millis(50));
+            dropped.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+/// Start a blocking job whose deadline (20 ms) passes before its scheduled
+/// `Slow` emit (40 ms): the service discards the emit and its destructor
+/// runs on a disposal worker.
+struct StallJob(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+impl Message for StallJob {
+    type Result = ();
+}
+const JOB_DEADLINE: Duration = Duration::from_millis(20);
+const EMIT_AFTER: Duration = Duration::from_millis(40);
+const JOB_RUNS: Duration = Duration::from_millis(100);
+
+#[derive(Default)]
+struct AsyncExpirer(Vec<spawned_concurrency::ReplyTo<u64>>);
+impl tasks::Actor for AsyncExpirer {}
+impl tasks::Handler<Park> for AsyncExpirer {
+    async fn handle(&mut self, _: Park, reply: PendingReply<'_, u64>, _: &tasks::Context<Self>) {
+        self.0.push(reply.defer().unwrap());
+    }
+}
+impl tasks::Handler<StallJob> for AsyncExpirer {
+    async fn handle(
+        &mut self,
+        StallJob(dropped): StallJob,
+        reply: PendingReply<'_, ()>,
+        ctx: &tasks::Context<Self>,
+    ) {
+        ctx.pipe_blocking(
+            tasks::JobOptions::new().deadline(JOB_DEADLINE),
+            move |job| {
+                let at = tasks::Instant::now() + EMIT_AFTER;
+                job.emit_at_blocking(at, Slow(Some(dropped))).unwrap();
+                std::thread::sleep(JOB_RUNS);
+            },
+            |_: tasks::JobOutcome<()>| JobDone,
+        )
+        .unwrap();
+        reply.reply(());
+    }
+}
+impl tasks::Handler<Slow> for AsyncExpirer {
+    async fn handle(&mut self, mut msg: Slow, r: PendingReply<'_, ()>, _: &tasks::Context<Self>) {
+        msg.0 = None; // delivered, not discarded: not the scenario
+        r.reply(());
+    }
+}
+impl tasks::Handler<JobDone> for AsyncExpirer {
+    async fn handle(&mut self, _: JobDone, r: PendingReply<'_, ()>, _: &tasks::Context<Self>) {
+        r.reply(());
+    }
+}
+
+async fn async_expiry(dropped: std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use tasks::ActorStart;
+    let owner = AsyncExpirer::default().start();
+    owner.request(StallJob(dropped)).await.unwrap();
+    let expiring: Vec<_> = (0..3)
+        .map(|_| owner.send_request(Park, Deadline::after(EXPIRE)).unwrap())
+        .collect();
+    for rx in expiring {
+        assert!(matches!(
+            rx.await,
+            Err(spawned_concurrency::ActorError::RequestTimeout)
+        ));
+    }
+    tokio::time::sleep(JOB_RUNS).await;
+    owner.context().stop();
+    owner.join().await;
+}
+
+#[derive(Default)]
+struct NativeExpirer(Vec<spawned_concurrency::ReplyTo<u64>>);
+impl threads::Actor for NativeExpirer {}
+impl threads::Handler<Park> for NativeExpirer {
+    fn handle(&mut self, _: Park, reply: PendingReply<'_, u64>, _: &threads::Context<Self>) {
+        self.0.push(reply.defer().unwrap());
+    }
+}
+impl threads::Handler<StallJob> for NativeExpirer {
+    fn handle(
+        &mut self,
+        StallJob(dropped): StallJob,
+        reply: PendingReply<'_, ()>,
+        ctx: &threads::Context<Self>,
+    ) {
+        ctx.pipe_blocking(
+            threads::JobOptions::new().deadline(JOB_DEADLINE),
+            move |job| {
+                let at = threads::Instant::now() + EMIT_AFTER;
+                job.emit_at_blocking(at, Slow(Some(dropped))).unwrap();
+                std::thread::sleep(JOB_RUNS);
+            },
+            |_: threads::JobOutcome<()>| JobDone,
+        )
+        .unwrap();
+        reply.reply(());
+    }
+}
+impl threads::Handler<Slow> for NativeExpirer {
+    fn handle(&mut self, mut msg: Slow, r: PendingReply<'_, ()>, _: &threads::Context<Self>) {
+        msg.0 = None;
+        r.reply(());
+    }
+}
+impl threads::Handler<JobDone> for NativeExpirer {
+    fn handle(&mut self, _: JobDone, r: PendingReply<'_, ()>, _: &threads::Context<Self>) {
+        r.reply(());
+    }
+}
+
+fn native_expiry(dropped: std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use threads::ActorStart;
+    let owner = NativeExpirer::default().start();
+    owner.request(StallJob(dropped)).unwrap();
+    let expiring: Vec<_> = (0..3)
+        .map(|_| owner.send_request(Park, Deadline::after(EXPIRE)).unwrap())
+        .collect();
+    for rx in expiring {
+        assert!(matches!(
+            rx.recv(),
+            Err(spawned_concurrency::ActorError::RequestTimeout)
+        ));
+    }
+    std::thread::sleep(JOB_RUNS);
+    owner.context().stop();
+    owner.join();
+}
+
+/// Expiring deadlines in both backends hand non-blocking items (waiting
+/// callers' wake-ups) and blocking ones (a discarded emit whose destructor
+/// sleeps) to the disposal workers: the pool's gauges rise, then the queue
+/// drains and every worker retires after its keep-alive. With `failpoints`
+/// the keep-alive is shortened (`disposal.keep_alive`); without, the wait
+/// covers the real 10 s.
+#[test]
+fn disposal_pool_gauges_return_to_baseline() {
+    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    #[cfg(feature = "failpoints")]
+    let _scenario = {
+        use spawned_concurrency::failpoints::{self, Action, FailPoint, FailScenario};
+        let scenario = FailScenario::setup();
+        failpoints::configure("disposal.keep_alive", FailPoint::new(Action::Error)).unwrap();
+        scenario
+    };
+    // A worker already waiting keeps the keep-alive it started with.
+    let keep_alive = Duration::from_secs(20);
+    disposal_pool_rests(keep_alive, "before the churn");
+    let capped_before = metrics::snapshot().disposal_workers_capped_total;
+
+    let rt = runtime();
+    let dropped = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let peak = Mutex::new(vec![0u64; DISPOSAL.len()]);
+    let done = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                let now = read_disposal();
+                let mut peak = peak.lock().unwrap();
+                for (p, n) in peak.iter_mut().zip(now) {
+                    *p = (*p).max(n);
+                }
+                drop(peak);
+                std::thread::sleep(Duration::from_micros(200));
+            }
+        });
+        for _ in 0..2 {
+            rt.block_on(futures::future::join_all(
+                (0..ACTORS).map(|_| async_expiry(dropped.clone())),
+            ));
+            std::thread::scope(|scope| {
+                for _ in 0..ACTORS {
+                    let dropped = dropped.clone();
+                    scope.spawn(move || native_expiry(dropped));
+                }
+            });
+        }
+        // Every blocking item ran (its destructor counted itself).
+        let end = Instant::now() + Duration::from_secs(10);
+        while dropped.load(std::sync::atomic::Ordering::SeqCst) < 4 * ACTORS {
+            assert!(Instant::now() < end, "a discarded emit was never dropped");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    let peak = peak.into_inner().unwrap();
+    assert!(
+        peak[1] >= 2,
+        "blocking items ran on fewer than two workers: peak {peak:?}"
+    );
+    assert!(peak[2] >= 1, "no worker was ever idle: peak {peak:?}");
+    disposal_pool_rests(keep_alive, "after the churn");
+    // Far below the cap: never hit.
+    assert_eq!(
+        metrics::snapshot().disposal_workers_capped_total,
+        capped_before
+    );
 }

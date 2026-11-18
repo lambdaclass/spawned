@@ -40,6 +40,9 @@ trend.monitors_alive = 10
 trend.link_records_alive = 10
 trend.registered_names = 10
 trend.timers_alive = 10
+trend.disposal_queue_entries = 10
+trend.disposal_workers_alive = 10
+trend.disposal_workers_idle = 10
 
 # Minimum growth: a trend also needs slope x steady-window hours above this
 # many units (MiB for rss_mb and heap_mb) to fail. Bounded pools (Tokio's
@@ -70,6 +73,9 @@ growth.monitors_alive = 5
 growth.link_records_alive = 5
 growth.registered_names = 5
 growth.timers_alive = 5
+growth.disposal_queue_entries = 5
+growth.disposal_workers_alive = 5
+growth.disposal_workers_idle = 5
 
 # Quiesce: after the workload stops and the long-lived ActorSystem shuts
 # down, each series must return to within `slack` of its baseline (sampled
@@ -98,3 +104,7 @@ quiesce.monitors_alive = 0
 quiesce.link_records_alive = 0
 quiesce.registered_names = 0
 quiesce.timers_alive = 0
+# Idle disposal workers retire after their 10 s keep-alive, within the timeout.
+quiesce.disposal_queue_entries = 0
+quiesce.disposal_workers_alive = 0
+quiesce.disposal_workers_idle = 0
