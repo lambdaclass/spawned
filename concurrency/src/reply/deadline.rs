@@ -27,14 +27,14 @@ use std::sync::{Arc, Weak};
 pub(crate) trait Expirable: Send + Sync {
     /// The current deadline while the item is pending, else `None`.
     fn pending_deadline(&self) -> Option<u64>;
-    /// The deadline passed (`now >= deadline`): expire the item.
-    fn expire(&self, now: u64);
-    /// Drop the service's reference after the visit. It may be the last:
-    /// an item whose last drop can run user code hands that drop off
-    /// ([`super::disposal`]); others drop in place, with no hand-off.
-    fn dispose(self: Arc<Self>) {
-        drop(self);
-    }
+    /// Service a popped entry: if `due` (its deadline passed, `now >=
+    /// deadline`), expire it. Returns whether dropping the last reference
+    /// could still run user code (an unread reply): the service hands such a
+    /// drop off ([`super::disposal`]) and drops the others in place, with no
+    /// hand-off. Job entries route their user payloads through the owner's
+    /// drop sink (deferred there), so they return `false`. One method, not
+    /// two: each is instantiated per reply type in the caller's crate.
+    fn expire(&self, now: u64, due: bool) -> bool;
 }
 
 struct Entry {

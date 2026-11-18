@@ -54,26 +54,21 @@ pub(crate) trait Closeable: Send + Sync {
 /// with the wake-up its close collected, if it closed it.
 type PendingWake = (Arc<dyn Closeable>, Option<Wake>);
 
-impl<R: Send + 'static> Expirable for Slot<R> {
-    /// Only a `REPLIED` slot can hold a value (an unread reply, user code
-    /// when destroyed), so only its drop is handed off, and that of a slot
-    /// not yet terminal (a reply still `WRITING` may store one). Any other
-    /// terminal state is final and holds no value: dropped in place.
-    fn dispose(self: Arc<Self>) {
-        if !self.is_terminal()
-            || Terminal::of(super::slot::state(self.word())) == Some(Terminal::Replied)
-        {
-            super::disposal::defer_drop(self);
-        }
-    }
+impl<R: Send> Expirable for Slot<R> {
     fn pending_deadline(&self) -> Option<u64> {
         let deadline = self.deadline();
         (!self.is_terminal() && deadline != NEVER).then_some(deadline)
     }
     /// The transition and credit return happen here; a parked blocking
     /// receiver is unparked here too (no user code); the wakers are handed
-    /// to a disposal worker when this runs on the deadline thread.
-    fn expire(&self, now: u64) {
+    /// to a disposal worker when this runs on the deadline thread. Only a
+    /// `REPLIED` slot can hold a value (an unread reply, user code when
+    /// destroyed), or one not yet terminal (a reply still `WRITING` may
+    /// store one); any other terminal state is final and holds none.
+    fn expire(&self, now: u64, due: bool) -> bool {
+        if !due {
+            return may_hold_value(self);
+        }
         if let Some(mut wake) = self.expire_collect(now) {
             wake.notify_parked();
             // Disposal.tla `Expire`: after the transition and its credit
@@ -94,7 +89,24 @@ impl<R: Send + 'static> Expirable for Slot<R> {
             };
             crate::lifecycle_trace::disposal("Expire", 0, item, request, kind);
         }
+        may_hold_value(self)
     }
+}
+
+/// Whether dropping `slot`'s last reference could run user code: it is
+/// `REPLIED` (an unread value) or not yet terminal.
+/// Not generic (one copy, in this crate): only the slot's word is read.
+#[inline(never)]
+fn may_hold_word(word: u64) -> bool {
+    let state = super::slot::state(word);
+    match Terminal::of(state) {
+        None => true,
+        Some(terminal) => terminal == Terminal::Replied,
+    }
+}
+
+fn may_hold_value<R>(slot: &Slot<R>) -> bool {
+    may_hold_word(slot.word())
 }
 
 impl<R: Send> Closeable for Slot<R> {
@@ -336,11 +348,14 @@ impl Registry {
         let due = lock(&self.lists).deadlines.due(now);
         for item in due {
             contain_entry(|| {
-                if item.pending_deadline().is_some_and(|d| d <= now) {
-                    item.expire(now);
+                let due = item.pending_deadline().is_some_and(|d| d <= now);
+                // Possibly the last reference: handed off only if dropping
+                // it could run user code (see `Expirable::expire`).
+                if item.expire(now, due) {
+                    super::disposal::defer_drop(item);
+                } else {
+                    drop(item);
                 }
-                // Possibly the last reference (see `Expirable::dispose`).
-                item.dispose();
             });
         }
         lock(&self.lists).deadlines.earliest()
@@ -876,8 +891,11 @@ mod tests {
                 fn pending_deadline(&self) -> Option<u64> {
                     Some(self.0)
                 }
-                fn expire(&self, _: u64) {
-                    let _ = self.1.send(());
+                fn expire(&self, _: u64, due: bool) -> bool {
+                    if due {
+                        let _ = self.1.send(());
+                    }
+                    false
                 }
             }
             assert!(spawned_rt::tasks::Handle::try_current().is_err());

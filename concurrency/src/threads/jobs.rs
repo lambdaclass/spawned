@@ -499,7 +499,7 @@ impl<A: Actor> Context<A> {
         // The run owns it; the heap only refers to it.
         let _ = run.deadline.set(deadline.clone());
         if at <= now_ticks() {
-            deadline.expire(at);
+            deadline.expire(at, true);
         } else {
             let item: Weak<dyn Expirable> = Arc::downgrade(&deadline) as Weak<dyn Expirable>;
             self.shared.replies.track(at, item);

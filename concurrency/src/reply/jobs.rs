@@ -1012,11 +1012,14 @@ impl Expirable for JobDeadline {
     fn pending_deadline(&self) -> Option<u64> {
         self.state.core.is_pending().then_some(self.at)
     }
-    fn expire(&self, _now: u64) {
-        let notify = lock(&self.notify).take();
-        if let Some(notify) = notify {
-            notify();
+    fn expire(&self, _now: u64, due: bool) -> bool {
+        if due {
+            let notify = lock(&self.notify).take();
+            if let Some(notify) = notify {
+                notify();
+            }
         }
+        false
     }
 }
 
@@ -1131,13 +1134,17 @@ impl Expirable for ScheduledEmit {
     fn pending_deadline(&self) -> Option<u64> {
         lock(&self.send).is_some().then_some(self.at)
     }
-    fn expire(&self, _now: u64) {
+    fn expire(&self, _now: u64, due: bool) -> bool {
+        if !due {
+            return false;
+        }
         fail_point!("job.emit_due");
         if let Some(job) = self.job.upgrade() {
             self.settle(&job, true);
             // Possibly the last reference (its other scheduled emits).
             super::disposal::defer_drop_arc(job);
         }
+        false
     }
 }
 
