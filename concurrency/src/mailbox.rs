@@ -31,27 +31,85 @@ impl DropFailures {
     }
     /// The owner's exit began: hold every later drop until `release`.
     pub(crate) fn hold(&self) {
-        self.held
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get_or_insert_with(Vec::new);
+        // Disposal.tla `Exit`, linearized with the hold checks below.
+        crate::lifecycle_trace::disposal_section(|| {
+            let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
+            if held.is_none() {
+                *held = Some(Vec::new());
+                crate::lifecycle_trace::disposal("Exit", 0, 0, 0, "");
+            }
+        });
     }
     /// Every caller was answered: drop what was held (contained), and drop
     /// at once from now on. Idempotent.
     pub(crate) fn release(&self) {
-        let held = self.held.lock().unwrap_or_else(|p| p.into_inner()).take();
+        // Disposal.tla `Death`: the hold ends.
+        let held = crate::lifecycle_trace::disposal_section(|| {
+            let held = self.held.lock().unwrap_or_else(|p| p.into_inner()).take();
+            if held.is_some() {
+                crate::lifecycle_trace::disposal("Death", 0, 0, 0, "");
+            }
+            held
+        });
         for value in held.into_iter().flatten() {
             self.drop_contained(value);
         }
     }
-    pub(crate) fn discard<T: Send + 'static>(&self, value: T) {
-        let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(held) = held.as_mut() {
-            // Moved, not dropped: no user code under the lock.
-            held.push(Box::new(value));
-            return;
+    /// On the deadline service thread the drop goes to a disposal worker,
+    /// which settles it there ([`settle`](Self::settle)): the hold is
+    /// re-checked, so a drop deferred before the owner's exit still waits for
+    /// its death point.
+    pub(crate) fn discard<T: Send + 'static>(self: &Arc<Self>, value: T) {
+        let mut value = Some(value);
+        // One step of Disposal.tla with `Exit` and `Death`: the hold check
+        // and, on the service thread, `Release` (the hand-off, recorded as
+        // `Defer` with `x: drop`).
+        let inline = crate::lifecycle_trace::disposal_section(|| {
+            let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(held) = held.as_mut() {
+                // Moved, not dropped: no user code under the lock.
+                held.push(Box::new(value.take()));
+                return false;
+            }
+            drop(held);
+            if crate::reply::disposal::collecting() {
+                let failures = self.clone();
+                let value = value.take();
+                crate::reply::disposal::defer_as("drop", move || failures.settle(value));
+                return false;
+            }
+            true
+        });
+        if inline {
+            self.drop_contained(value);
         }
-        drop(held);
+    }
+    /// [`discard`](Self::discard) of an optional payload: nothing to dispose
+    /// of (and no hand-off) when it is `None`.
+    #[inline]
+    pub(crate) fn discard_some<T: Send + 'static>(self: &Arc<Self>, value: Option<T>) {
+        if let Some(value) = value {
+            self.discard(value);
+        }
+    }
+    /// A disposal worker's step for a payload the service handed off
+    /// (Disposal.tla `Settle`, then the destructor until `Done`): held if
+    /// the owner's exit began meanwhile (dropped at its death point), else
+    /// dropped now. A drop decided before the exit is pre-exit work and may
+    /// still run while the exit proceeds; the exit never waits for it
+    /// (deferred-replies.md §5).
+    fn settle<T: Send + 'static>(&self, value: T) {
+        let mut value = Some(value);
+        let (w, item) = crate::reply::disposal::current();
+        crate::lifecycle_trace::disposal_section(|| {
+            let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(held) = held.as_mut() {
+                held.push(Box::new(value.take()));
+                crate::lifecycle_trace::disposal("Settle", w, item, 0, "held");
+            } else {
+                crate::lifecycle_trace::disposal("Settle", w, item, 0, "dropped");
+            }
+        });
         self.drop_contained(value);
     }
     /// Drop at once (contained): the mailbox's own items, destroyed after

@@ -695,12 +695,15 @@ Rules (the [design](design/deferred-replies.md) has the full contract):
   added later can be answered).
 
 **Deadline-service progress.** Managed and unmanaged actors share a service
-thread for token/job deadlines and scheduled job emits. Expiry can run user
-wakers and payload destructors there; a blocking callback delays other
-actors' heap-driven expiry too. Keep these callbacks short and nonblocking.
-Ordinary `request()`/`request_with_timeout()`/`Response` timers and the
-`send_after`/`send_interval` drivers are separate. This is a scheduling
-limitation, not a hard real-time deadline guarantee.
+thread for token/job deadlines and scheduled job emits. It only decides
+expiry and returns credits; the wakers and payload destructors an expiry
+releases (a caller's waker, a discarded emit, a displaced job result, a
+`done` closure's captures) run on separate disposal workers, so a blocking
+destructor or waker in one actor does not delay another actor's deadlines.
+They still occupy a worker (at most 64), so keep them short. Ordinary
+`request()`/`request_with_timeout()`/`Response` timers and the
+`send_after`/`send_interval` drivers are separate. Deadlines are not a hard
+real-time guarantee.
 
 **Answering with a reason.** The framework's errors (`ReplyDropped`,
 `ActorStopped`, `Overloaded`, `RequestTimeout`) say what happened to the

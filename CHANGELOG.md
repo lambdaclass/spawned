@@ -97,6 +97,26 @@
   (the selection trace missed it in 24 of 30 runs). New
   `lifecycle_trace::recorded_with` test helper.
 
+- Keep user code off the shared deadline-service thread (the known 0.8
+  limitation). The thread still decides expiry and returns credits, but the
+  wakers and payload destructors an expiry releases (a caller's waker, a
+  discarded scheduled emit, a displaced job result, a `done` closure and its
+  captures) now run on an elastic pool of disposal workers, one item at a
+  time, so a blocking destructor or waker no longer delays other actors'
+  deadlines or other callers of the same actor. A payload handed off still
+  waits for its owner's death point (R6). No cost
+  on requests that do not expire. New regression tests (tasks and threads),
+  a Loom case for the handed-off wake-up, an `InlineDisposal` negative
+  control in `DeferredReplies.tla`, and a new trace-validated model,
+  `Disposal.tla` (expiry and hand-off, per-item queueing, the pool's start
+  rule, idle count and cap, worker wake-ups after the transition, two-step
+  payload drops held until the death point), validated against traces that
+  record every hand-off and worker step (`disposal_trace`, with
+  `disposal.item`, `disposal.keep_alive` and `disposal.batch_serial`
+  failpoints; the last records a control trace from code with the
+  shared-batch bug, which must be rejected) and five negative controls.
+  Empty payloads are no longer handed off, and a due entry is dropped in
+  place unless it may hold an unread reply.
 - Regenerate the 11 planted-bug patches (04, 10-17, 19, 20) that no longer
   applied, each planting the same fault where the code now lives, and check in
   the required `model-sync` job that every planted patch still applies.

@@ -336,15 +336,19 @@ impl Wake {
     };
     /// Wake a parked blocking receiver (no user code). Done first, so a
     /// parked `recv()` never waits behind an arbitrary waker.
-    fn notify_parked(&mut self) {
+    pub(crate) fn notify_parked(&mut self) {
         if std::mem::take(&mut self.parked) {
             if let Some(waker) = self.waker.take() {
                 waker.wake();
             }
         }
     }
+    /// Nothing left to run: no waker and no watchers.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.waker.is_none() && self.watchers.is_empty()
+    }
     #[inline]
-    fn run(self) {
+    pub(crate) fn run(self) {
         if let Some(waker) = self.waker {
             waker.wake();
         }
@@ -545,10 +549,15 @@ impl<R> Slot<R> {
     /// [`run_wake`](Self::run_wake) once a whole batch is closed, so no
     /// waker (executor or user code) runs between two closes.
     pub(crate) fn close_collect(&self) -> Option<Wake> {
+        self.terminate_collect(STOPPED)
+    }
+
+    /// `OPEN -> target` with its credit return; the wake-up is returned.
+    fn terminate_collect(&self, target: u64) -> Option<Wake> {
         let (old, new) = self
             .cas::<()>(None, |w| {
                 if state(w) == OPEN {
-                    Ok(with_state(w, STOPPED))
+                    Ok(with_state(w, target))
                 } else {
                     Err(())
                 }
@@ -611,6 +620,19 @@ impl<R> Slot<R> {
         } else {
             false
         }
+    }
+
+    /// The deadline service's `[deadline]` check: the same `OPEN -> TIMED_OUT`
+    /// transition and credit return as [`check_deadline`](Self::check_deadline),
+    /// but the wake-up (a caller's waker, the token's watchers: executor or
+    /// user code) is returned for the caller to run elsewhere. `None` when
+    /// the deadline has not passed or another transition won.
+    pub(crate) fn expire_collect(&self, now: u64) -> Option<Wake> {
+        let deadline = self.deadline();
+        if deadline == NEVER || now < deadline {
+            return None;
+        }
+        self.terminate_collect(TIMED_OUT)
     }
 
     /// `is_closed()`: not `OPEN`, or past its deadline (then expired).

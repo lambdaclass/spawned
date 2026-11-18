@@ -39,13 +39,13 @@ handlers and the existing default behavior. New policies are explicit and opt-in
   performance campaign against 0.7.3, paired four-hour soaks and the full
   Lifecycle models (evidence attached to the GitHub release). Ethrex and
   Ethlambda pin 0.8.0 in their draft PRs and run it on 24-hour canaries.
-- **Deadline-service follow-up (known 0.8 limit):** separate user payload
-  disposal from shared deadline bookkeeping, with no default-path cost.
-  Acceptance: block a job result destructor in actor A while actor B's
-  unpolled token/raw deadline expires and returns its credit. Keep
-  foreign-waker progress assumptions explicit; never make exit wait for a
-  pre-exit destructor that can wait for the owner's callers. The current
-  scheduling limit is documented in the guide.
+- **Deadline-service follow-up (done, unreleased):** the shared deadline
+  thread only decides expiry; wakers and payload destructors go to an elastic
+  disposal pool, with no default-path cost. A blocking destructor or waker in
+  actor A no longer delays actor B's token, raw or job deadlines
+  (`concurrency/tests/deadline_service.rs`, tasks and threads). The remaining
+  assumption (the owner's own executor wake runs on the service thread) is in
+  `docs/design/deferred-replies.md` §2.
 - **Post-0.8 cleanups (in progress):** experiment features moved to
   `benchmarks/`; the large actor and supervision files split; a lint and a
   `model-sync` mapping that keep the Loom-checked cores tied to their Loom tests.
