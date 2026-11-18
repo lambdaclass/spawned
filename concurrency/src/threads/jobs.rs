@@ -49,7 +49,7 @@ where
         // The credit returns at dispatch (or here, when fenced).
         drop(credit);
         if fenced {
-            ctx.sender.failures().discard(msg);
+            ctx.shared.sender.failures().discard(msg);
             return;
         }
         actor.handle(msg, PendingReply::detached(), ctx);
@@ -82,7 +82,7 @@ where
         if job.fenced(ctx.id(), kind) {
             // Fenced: `done` and its captures (a linked token) drop in the
             // turn, by the drop rules.
-            ctx.sender.failures().discard((done, outcome));
+            ctx.shared.sender.failures().discard((done, outcome));
             return;
         }
         let msg = done(outcome);
@@ -126,11 +126,11 @@ where
     /// Take the terminal notification and enqueue `(done, outcome)`.
     fn notify(&self, outcome: JobOutcome<T>) {
         let end = end_of(&outcome);
-        let outcome = Contained::new(outcome, self.ctx.sender.failures());
+        let outcome = Contained::new(outcome, self.ctx.shared.sender.failures());
         let (_, unsent) = self.state.notify(end, || self.enqueue_terminal(outcome));
         // A refused terminal message (`done` and the outcome) may drop on
         // the deadline service thread: contained.
-        self.ctx.sender.failures().discard(unsent);
+        self.ctx.shared.sender.failures().discard(unsent);
     }
 
     fn enqueue_terminal(&self, outcome: Contained<JobOutcome<T>>) -> Option<MailboxItem<A>> {
@@ -148,6 +148,7 @@ where
             outcome,
         });
         self.ctx
+            .shared
             .sender
             .send(MailboxItem::Message(envelope))
             .err()
@@ -161,8 +162,10 @@ where
     fn finish(self: &Arc<Self>, outcome: JobOutcome<T>, hold: Box<dyn Send>) {
         *self.hold.lock().unwrap_or_else(|p| p.into_inner()) = Some(hold);
         let end = end_of(&outcome);
-        let outcome =
-            std::cell::Cell::new(Some(Contained::new(outcome, self.ctx.sender.failures())));
+        let outcome = std::cell::Cell::new(Some(Contained::new(
+            outcome,
+            self.ctx.shared.sender.failures(),
+        )));
         let unsent = self.state.finish(
             end,
             || self.enqueue_terminal(outcome.take()?),
@@ -178,7 +181,7 @@ where
                 })
             },
         );
-        self.ctx.sender.failures().discard(unsent);
+        self.ctx.shared.sender.failures().discard(unsent);
     }
 }
 
@@ -191,7 +194,7 @@ impl<A: Actor, T: 'static, M: 'static> Drop for Run<A, T, M> {
             .get_mut()
             .unwrap_or_else(|p| p.into_inner())
             .take();
-        self.ctx.sender.failures().discard(done);
+        self.ctx.shared.sender.failures().discard(done);
     }
 }
 
@@ -213,7 +216,7 @@ enum Hold<R: Send + 'static> {
 struct NativeSlot<A: Actor>(Context<A>);
 impl<A: Actor> Drop for NativeSlot<A> {
     fn drop(&mut self) {
-        self.0.jobs.release_native();
+        self.0.shared.jobs.release_native();
     }
 }
 
@@ -221,7 +224,7 @@ impl<A: Actor> Drop for NativeSlot<A> {
 struct Ended<A: Actor>(Context<A>, Arc<JobState>);
 impl<A: Actor> Drop for Ended<A> {
     fn drop(&mut self) {
-        self.0.jobs.ended(&self.1);
+        self.0.shared.jobs.ended(&self.1);
     }
 }
 
@@ -289,7 +292,8 @@ impl<A: Actor> JobCtx<A> {
         let ctx = self.ctx.clone();
         let send: SendScheduled = Box::new(move || {
             let envelope: Box<dyn Envelope<A> + Send> = Box::new(EmitEnvelope { msg, credit });
-            ctx.sender
+            ctx.shared
+                .sender
                 .send(MailboxItem::Message(envelope))
                 .map_err(|refused| Box::new(refused.0) as Box<dyn Send>)
         });
@@ -297,8 +301,8 @@ impl<A: Actor> JobCtx<A> {
             &self.state,
             spawned_rt::time::to_ticks(at),
             send,
-            self.ctx.sender.failures(),
-            |at, item| self.ctx.replies.track(at, item),
+            self.ctx.shared.sender.failures(),
+            |at, item| self.ctx.shared.replies.track(at, item),
         )
     }
 
@@ -308,15 +312,15 @@ impl<A: Actor> JobCtx<A> {
         M: Message,
     {
         let credit = EmitCredit(self.state.clone());
-        let msg = Contained::new(msg, self.ctx.sender.failures());
+        let msg = Contained::new(msg, self.ctx.shared.sender.failures());
         self.state
             .enqueue_emit(|| {
                 let msg = msg.into_inner().expect("the emit owns its message");
                 let envelope: Box<dyn Envelope<A> + Send> = Box::new(EmitEnvelope { msg, credit });
-                self.ctx.sender.send(MailboxItem::Message(envelope))
+                self.ctx.shared.sender.send(MailboxItem::Message(envelope))
             })
             .map_err(|(gone, unsent)| {
-                self.ctx.sender.failures().discard(unsent);
+                self.ctx.shared.sender.failures().discard(unsent);
                 gone
             })
     }
@@ -381,7 +385,7 @@ impl<A: Actor> BlockingJobPermit<A> {
         let state = JobState::new(ctx.id(), opts.emit_credits);
         // Refused once the owner began exiting, in one step with the exit's
         // close of admission (see `admit_job`).
-        if ctx.replies.is_exiting() || !ctx.admit_job(&state, &opts) {
+        if ctx.shared.replies.is_exiting() || !ctx.admit_job(&state, &opts) {
             drop((work, done, worker, credit));
             state.never_started();
             return JobHandle::new(state);
@@ -404,21 +408,22 @@ impl<A: Actor> Context<A> {
     /// with that close, so an admitted job is always cancelled (and joined)
     /// by the owner's exit.
     fn admit_job(&self, state: &Arc<JobState>, opts: &JobOptions) -> bool {
-        self.jobs
+        self.shared
+            .jobs
             .admit(state, opts.key.clone(), opts.deadline.is_some())
     }
 
     fn reserve_credit(&self) -> Result<JobCredit, PipeError> {
-        if self.replies.is_exiting() {
+        if self.shared.replies.is_exiting() {
             return Err(PipeError::OwnerStopping);
         }
-        JobCredit::reserve(&self.replies).ok_or(PipeError::Overloaded)
+        JobCredit::reserve(&self.shared.replies).ok_or(PipeError::Overloaded)
     }
 
     /// Reserve a native slot and spawn its thread, parked until the job is
     /// spawned. A spawn failure releases the slot.
     fn spawn_worker(&self) -> Result<NativeWorker<A>, PipeError> {
-        if !self.jobs.reserve_native() {
+        if !self.shared.jobs.reserve_native() {
             return Err(PipeError::NativeBudget);
         }
         let native = NativeSlot(self.clone());
@@ -492,7 +497,7 @@ impl<A: Actor> Context<A> {
             deadline.expire(at);
         } else {
             let item: Weak<dyn Expirable> = Arc::downgrade(&deadline) as Weak<dyn Expirable>;
-            self.replies.track(at, item);
+            self.shared.replies.track(at, item);
         }
     }
 
@@ -628,7 +633,7 @@ impl<A: Actor> Context<A> {
         if token.owner() != self.id() {
             return Err(PipeReplyError::WrongOwner(token));
         }
-        if self.replies.is_exiting() {
+        if self.shared.replies.is_exiting() {
             return Err(PipeReplyError::Failed {
                 token,
                 error: PipeError::OwnerStopping,
@@ -721,7 +726,7 @@ mod tests {
     fn refused_job_payload_panics_are_contained() {
         let owner = Owner.start();
         let ctx = owner.context();
-        let failures = ctx.sender.failures();
+        let failures = ctx.shared.sender.failures();
         for finish in [false, true] {
             let state = JobState::new(owner.id(), 1);
             state.cancel();
@@ -764,7 +769,7 @@ mod tests {
         for action in ["cancel", "deadline", "replace", "owner_exit"] {
             let owner = Owner.start();
             let ctx = owner.context();
-            let failures = ctx.sender.failures();
+            let failures = ctx.shared.sender.failures();
             let set = crate::reply::jobs::JobSet::new(owner.id(), 1);
             let state = JobState::new(owner.id(), 1);
             assert!(set.admit(&state, Some("held".into()), false));

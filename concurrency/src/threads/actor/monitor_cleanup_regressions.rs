@@ -17,13 +17,13 @@ fn closed_monitor_table_rejects_late_registration() {
             let observer = Idle.start();
             let target = Idle.start();
             // Model cleanup during an unexpected unwind before token cancellation.
-            drop(MonitorCleanup(observer.monitors.clone()));
+            drop(MonitorCleanup(observer.shared.monitors.clone()));
             let child = target.child_handle();
             let waiter = child.lifetime_probe();
             observer.context().monitor(&child);
             drop(child);
             assert_eq!(waiter.strong_count(), 0);
-            assert!(observer.monitors.lock().unwrap().is_none());
+            assert!(observer.shared.monitors.lock().unwrap().is_none());
             observer.child_handle().stop();
             target.child_handle().stop();
             observer.join();

@@ -104,6 +104,12 @@
   Loom-checked cores, and `model-sync` now requires a PR changing such a core to
   update its Loom harness (`[loom.*]` in `verification/model-map.toml`) or carry
   the `no-model-change` waiver.
+- Threads mode: `ActorRef` and `Context` share one `Arc<ActorShared<A>>`, as
+  tasks mode does, instead of inlining thirteen fields each (one word per
+  handle, one reference-count increment per clone; step 0 of the 0.9
+  introspection design). No API or behaviour change. Callgrind Ir/op against
+  `main`: threads request +0.9–1.0% (gate ≤ 3%), tasks gated paths −0.1 to
+  −0.3%, threads handle clone −91%; threads handles shrink from 128 to 8 bytes.
 
 ## 0.8.0 — 2026-11-15
 
