@@ -72,14 +72,67 @@ where
 
 type CancelCallback = Box<dyn FnOnce() + Send>;
 
+/// Registered callbacks: a slab, so a [`CancelRegistration`] removes its own
+/// entry in O(1). Each entry carries its registration's sequence number,
+/// which tells it apart from a later entry reusing the slot and keeps the
+/// firing order the registration order.
+#[derive(Default)]
+struct Callbacks {
+    slots: Vec<Option<(u64, CancelCallback)>>,
+    free: Vec<usize>,
+    next: u64,
+    live: usize,
+}
+
+impl Callbacks {
+    fn insert(&mut self, callback: CancelCallback) -> (usize, u64) {
+        let seq = self.next;
+        self.next += 1;
+        let entry = Some((seq, callback));
+        let index = match self.free.pop() {
+            Some(index) => {
+                self.slots[index] = entry;
+                index
+            }
+            None => {
+                self.slots.push(entry);
+                self.slots.len() - 1
+            }
+        };
+        self.live += 1;
+        (index, seq)
+    }
+
+    fn remove(&mut self, index: usize, seq: u64) -> Option<CancelCallback> {
+        let slot = self.slots.get_mut(index)?;
+        if !matches!(slot, Some((s, _)) if *s == seq) {
+            return None;
+        }
+        let (_, callback) = slot.take()?;
+        self.free.push(index);
+        self.live -= 1;
+        Some(callback)
+    }
+
+    /// Every registered callback, in registration order.
+    fn drain(&mut self) -> Vec<CancelCallback> {
+        let mut entries: Vec<_> = self.slots.drain(..).flatten().collect();
+        self.free.clear();
+        self.live = 0;
+        entries.sort_unstable_by_key(|(seq, _)| *seq);
+        entries.into_iter().map(|(_, callback)| callback).collect()
+    }
+}
+
 /// A token that can be used to signal cancellation.
 ///
-/// Supports registering callbacks via `on_cancel()` that fire when
-/// the token is cancelled, enabling efficient waiting patterns.
+/// Supports registering callbacks that fire when the token is cancelled:
+/// `on_cancel()` keeps its callback until then; `register_on_cancel()`
+/// removes it when the returned registration is dropped.
 #[derive(Clone)]
 pub struct CancellationToken {
     is_cancelled: Arc<AtomicBool>,
-    callbacks: Arc<Mutex<Vec<CancelCallback>>>,
+    callbacks: Arc<Mutex<Callbacks>>,
 }
 
 impl std::fmt::Debug for CancellationToken {
@@ -100,7 +153,7 @@ impl CancellationToken {
     pub fn new() -> Self {
         CancellationToken {
             is_cancelled: Arc::new(false.into()),
-            callbacks: Arc::new(Mutex::new(Vec::new())),
+            callbacks: Arc::new(Mutex::new(Callbacks::default())),
         }
     }
 
@@ -111,12 +164,11 @@ impl CancellationToken {
     pub fn cancel(&self) {
         self.is_cancelled.store(true, Ordering::SeqCst);
         // Fire all registered callbacks
-        let callbacks: Vec<_> = self
+        let callbacks = self
             .callbacks
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .drain(..)
-            .collect();
+            .drain();
         for cb in callbacks {
             cb();
         }
@@ -127,17 +179,80 @@ impl CancellationToken {
     ///
     /// This method is thread-safe: the callback is guaranteed to fire exactly
     /// once, either immediately (if already cancelled) or when `cancel()` is called.
+    /// It is kept until then: when the callback's purpose can end first (a
+    /// timer that fires), use [`register_on_cancel`](Self::register_on_cancel).
     pub fn on_cancel(&self, callback: CancelCallback) {
+        if let Err(callback) = self.insert(callback) {
+            callback();
+        }
+    }
+
+    /// Like [`on_cancel`](Self::on_cancel), but dropping the returned
+    /// registration removes the callback (O(1)) unless `cancel()` already
+    /// took it, so a long-lived token can serve any number of short-lived
+    /// waiters without retaining their callbacks.
+    ///
+    /// Once the drop returns the callback will not start; if `cancel()` took
+    /// it first, it runs (or is running) on the cancelling thread.
+    pub fn register_on_cancel(&self, callback: CancelCallback) -> CancelRegistration {
+        match self.insert(callback) {
+            Ok((index, seq)) => CancelRegistration {
+                entry: Some((self.callbacks.clone(), index, seq)),
+            },
+            Err(callback) => {
+                callback();
+                CancelRegistration { entry: None }
+            }
+        }
+    }
+
+    /// Callbacks registered and not yet fired or unregistered.
+    pub fn callbacks_registered(&self) -> usize {
+        self.callbacks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .live
+    }
+
+    /// Store `callback` (its slot and sequence number), or hand it back when
+    /// the token is already cancelled.
+    fn insert(&self, callback: CancelCallback) -> Result<(usize, u64), CancelCallback> {
         // Hold the lock while checking is_cancelled to avoid a race with cancel().
         // cancel() sets the flag BEFORE acquiring the lock, so if we see
         // is_cancelled=false while holding the lock, cancel() hasn't drained
         // callbacks yet and will drain ours after we release the lock.
         let mut callbacks = self.callbacks.lock().unwrap_or_else(|e| e.into_inner());
         if self.is_cancelled() {
-            drop(callbacks);
-            callback();
-        } else {
-            callbacks.push(callback);
+            return Err(callback);
+        }
+        Ok(callbacks.insert(callback))
+    }
+}
+
+/// A callback registered with [`CancellationToken::register_on_cancel`].
+/// Dropping it unregisters the callback unless `cancel()` already took it.
+#[must_use = "dropping the registration unregisters the callback"]
+pub struct CancelRegistration {
+    entry: Option<(Arc<Mutex<Callbacks>>, usize, u64)>,
+}
+
+impl std::fmt::Debug for CancelRegistration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CancelRegistration")
+            .field("registered", &self.entry.is_some())
+            .finish()
+    }
+}
+
+impl Drop for CancelRegistration {
+    fn drop(&mut self) {
+        if let Some((callbacks, index, seq)) = self.entry.take() {
+            let removed = callbacks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(index, seq);
+            // The callback's captures are dropped outside the lock.
+            drop(removed);
         }
     }
 }
@@ -271,5 +386,104 @@ mod parking_tests {
         let value = result.expect("inner executor consumed the outer wake");
         worker.join().unwrap();
         assert_eq!(value, 42);
+    }
+}
+
+#[cfg(all(test, not(spawned_loom)))]
+mod cancel_registration_tests {
+    use super::CancellationToken;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    #[test]
+    fn dropped_registrations_are_removed_and_slots_reused() {
+        let token = CancellationToken::new();
+        let fired = Arc::new(AtomicUsize::new(0));
+        for _ in 0..1000 {
+            let f = fired.clone();
+            let registration = token.register_on_cancel(Box::new(move || {
+                f.fetch_add(1, Ordering::SeqCst);
+            }));
+            assert_eq!(token.callbacks_registered(), 1);
+            drop(registration);
+        }
+        assert_eq!(token.callbacks_registered(), 0);
+        assert_eq!(
+            token.callbacks.lock().unwrap().slots.len(),
+            1,
+            "slot reused"
+        );
+        assert_eq!(Arc::strong_count(&fired), 1, "callbacks dropped");
+        token.cancel();
+        assert_eq!(fired.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn callbacks_fire_in_registration_order_across_reused_slots() {
+        let token = CancellationToken::new();
+        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let push = |n| {
+            let order = order.clone();
+            Box::new(move || order.lock().unwrap().push(n)) as Box<dyn FnOnce() + Send>
+        };
+        let a = token.register_on_cancel(push(0));
+        token.on_cancel(push(1));
+        drop(a);
+        let _c = token.register_on_cancel(push(2)); // reuses slot 0
+        token.on_cancel(push(3));
+        token.cancel();
+        assert_eq!(*order.lock().unwrap(), vec![1, 2, 3]);
+    }
+
+    /// Unregistering from many threads while the token is cancelled: every
+    /// callback runs at most once, every kept one exactly once, and nothing
+    /// stays registered.
+    #[test]
+    fn unregister_racing_cancel_stress() {
+        for _ in 0..20 {
+            let token = CancellationToken::new();
+            let workers: Vec<_> = (0..8)
+                .map(|_| {
+                    let token = token.clone();
+                    std::thread::spawn(move || {
+                        let mut kept = Vec::new();
+                        let mut dropped = Vec::new();
+                        for i in 0..2000 {
+                            let count = Arc::new(AtomicUsize::new(0));
+                            let c = count.clone();
+                            let registration = token.register_on_cancel(Box::new(move || {
+                                c.fetch_add(1, Ordering::SeqCst);
+                            }));
+                            if i % 50 == 0 {
+                                kept.push((registration, count));
+                            } else {
+                                drop(registration);
+                                // A callback `cancel()` already took may
+                                // still run (and drop) on its thread.
+                                assert!(count.load(Ordering::SeqCst) <= 1);
+                                dropped.push(count);
+                            }
+                        }
+                        (kept, dropped)
+                    })
+                })
+                .collect();
+            std::thread::yield_now();
+            token.cancel();
+            for worker in workers {
+                let (kept, dropped) = worker.join().unwrap();
+                for (registration, count) in kept {
+                    assert_eq!(count.load(Ordering::SeqCst), 1, "kept callback");
+                    drop(registration);
+                }
+                // `cancel()` has returned: every callback it took ran and was
+                // dropped; every unregistered one was dropped by its drop.
+                for count in dropped {
+                    assert!(count.load(Ordering::SeqCst) <= 1);
+                    assert_eq!(Arc::strong_count(&count), 1, "callback leaked");
+                }
+            }
+            assert_eq!(token.callbacks_registered(), 0);
+        }
     }
 }
