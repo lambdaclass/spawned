@@ -293,10 +293,10 @@ async fn monitor_release_probe(world: &World) {
     if !world.lock().violations.is_empty() {
         return;
     }
-    let target = Probe.start();
+    let target = Probe.spawn();
     rt::sleep(Duration::from_millis(10)).await;
     let alone = sim::stats().tasks;
-    let observer = Probe.start();
+    let observer = Probe.spawn();
     observer.context().monitor(&target.child_handle());
     observer.child_handle().stop();
     if rt::timeout(LONG, observer.wait_exit()).await.is_err() {
@@ -1872,7 +1872,7 @@ impl Driver {
             .map(|a| (a.aref.id(), a.instance, a.aref.child_handle().exit_reason()))
             .collect();
         for (id, instance, exit) in standalone {
-            let (may_stop, panicked, started_panicked) = {
+            let (may_stop, panicked, _started_panicked) = {
                 let s = self.world.lock();
                 (
                     s.may_stop.contains(&id),
