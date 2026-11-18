@@ -8,7 +8,7 @@ use std::fmt::Display;
 use std::marker::PhantomData;
 
 /// What `started()` returns (OTP `init/1`'s results); see the tasks-mode
-/// [`Init`](crate::tasks::Init) for the table. No failed start runs
+/// `Init` (`spawned_concurrency::tasks::Init`) for the table. No failed start runs
 /// `stopped()`.
 #[must_use]
 pub struct Init<A: Actor> {

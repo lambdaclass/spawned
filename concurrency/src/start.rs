@@ -40,7 +40,7 @@ use std::time::Duration;
 pub enum StartOutcome<T> {
     /// `started()` returned ready (or a continuation).
     Started(T),
-    /// `started()` returned [`Init::ignore`](crate::tasks::Init::ignore): the
+    /// `started()` returned `Init::ignore()`: the
     /// actor ended `Normal` without becoming ready.
     Ignored { pending: Option<ChildHandle> },
 }
