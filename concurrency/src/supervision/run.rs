@@ -619,7 +619,7 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
             generation
         });
         let Some(generation) = generation else {
-            scope.stop(ExitReason::Shutdown);
+            scope.stop(ExitReason::Shutdown(None));
             drop(lease);
             if core.gate.is_open() {
                 continue;
@@ -867,7 +867,7 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                 trace::reason(exit)
             }
         };
-        scope.stop(exit.clone().unwrap_or(ExitReason::Shutdown));
+        scope.stop(exit.clone().unwrap_or(ExitReason::Shutdown(None)));
         view.change(|v| {
             v.current = None;
             v.snapshot.last_exit = exit.clone();

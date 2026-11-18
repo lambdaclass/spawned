@@ -266,7 +266,7 @@ From a comparison against OTP 28/29, Elixir 1.20 and gleam_otp 1.3 on 2026-11-11
 | G4 | Actor listing, labels (OTP 27 `set_label`) and tree snapshots (`which_children`/`count_children` everywhere) | introspection | 0.9 |
 | G5 | Structured crash and supervisor reports (last message type, label, parent chain, mailbox length) | introspection | 0.9 |
 | G6 | `terminate_child`, `restart_child`, `delete_child` on static supervisors | features (OTP alignment) | 0.9 |
-| G7 | Clean exits that carry a payload (`{shutdown, Term}`) | soundness | 0.9 |
+| G7 | **Implemented (#287).** Clean exits that carry a payload (`{shutdown, Term}`): `ExitReason::Shutdown(Option<Arc<str>>)`, treated as `Shutdown` by every policy | soundness | 0.9 |
 | G8 | `start_monitor`, link and monitor on every backend and group, one start-options struct | soundness | 0.9 (unified start) |
 | G9 | Runtime-toggled, rate-limited per-actor message tracing with isolated sessions (`sys:trace`, OTP 27 trace sessions, `recon_trace`) | introspection | 0.10, opt-in |
 | G10 | Per-turn logging context (Logger metadata) and stable event names (`:telemetry`) | introspection | 0.10, opt-in |

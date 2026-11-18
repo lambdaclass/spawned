@@ -348,12 +348,13 @@ fixed-size records). The 0.10 work (rank 5c monitors, rank 9 recorder, full
 | deferred, jobs | 0.8 credit pool (load), job set (its lock) | already |
 
 **Threads-mode parity.** In the reviewed tree, `threads::ActorRef` and
-`threads::Context` inline their fields (several `Arc`s) instead of sharing one
-`Arc<ActorShared<A>>` as tasks mode does since 0.7.2. Step 0 of the
-implementation consolidates threads mode onto `Arc<ActorShared<A>>` (one word
-per handle, one reference-count increment per clone), so both modes get the
-same fields at the same cost. That step stands on its own and is measured
-before any introspection field is added.
+`threads::Context` inlined their fields (several `Arc`s) instead of sharing one
+`Arc<ActorShared<A>>` as tasks mode does since 0.7.2. Step 0 (done, PR #284)
+consolidated threads mode onto `Arc<ActorShared<A>>` (one word per handle, one
+reference-count increment per clone), so both modes get the same fields at the
+same cost. Measured on its own: a handle clone fell from 187 to 17
+instructions; a threads request rose 1.0% (one more pointer hop per field
+read), inside the 3% gate.
 
 ### Actor and system tables (`console` or `introspection`)
 
@@ -1405,7 +1406,7 @@ observed for 9.8 s in `info()` and `ShutdownReport`.
 
 ## Implementation order
 
-0. Threads mode onto `Arc<ActorShared<A>>`, measured on its own.
+0. Threads mode onto `Arc<ActorShared<A>>`, measured on its own (done, #284).
 1. Tier 0: metadata and labels, `info()`, trees with the shared types, crash
    and supervisor events, `StatusEnvelope`, `get_state`/`get_status`,
    `Inspect`, `ActorError::CallbackFailed`.

@@ -461,12 +461,12 @@ async fn monitor_and_link_setup_requests_are_cancel_safe() {
                     assert_eq!(registered, usize::from(n > 0), "{op}: N={n}");
                     target
                         .child_handle()
-                        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
+                        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown(None));
                     assert_eq!(
                         spawned_rt::tasks::timeout(LIMIT, target.wait_exit())
                             .await
                             .unwrap(),
-                        ExitReason::Shutdown
+                        ExitReason::Shutdown(None)
                     );
                     let counters = fx.counters.clone();
                     let delivered = move || {
@@ -718,7 +718,10 @@ async fn supervisor_shutdown_and_child_waits_are_cancel_safe() {
                             spawned_rt::tasks::timeout(LIMIT, supervisor.join())
                                 .await
                                 .unwrap_or_else(|_| panic!("{op}: N={n} tree wedged"));
-                            assert_eq!(within!(first.wait_exit()).await, ExitReason::Shutdown);
+                            assert_eq!(
+                                within!(first.wait_exit()).await,
+                                ExitReason::Shutdown(None)
+                            );
                             outcome.finished()
                         }
                         1 => {
@@ -794,7 +797,7 @@ async fn system_shutdown_is_cancel_safe() {
                 if n > 0 {
                     assert!(report.complete, "{op}: N={n}");
                     assert!(fx.group.as_ref().unwrap().is_closed());
-                    assert_eq!(within!(actor.wait_exit()).await, ExitReason::Shutdown);
+                    assert_eq!(within!(actor.wait_exit()).await, ExitReason::Shutdown(None));
                     assert!(!registry::registered().contains(&name), "{op}: leaked name");
                 }
                 fx.finish(&[&actor]).await;

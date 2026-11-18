@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- CI reliability: drop `magic-nix-cache-action` (its GitHub Actions cache
+  backend failed runs with FlakeHub authentication, cache-service and SSL
+  errors); give TLC 75% of RAM (`TLC_HEAP`) so liveness checking no longer runs
+  out of the JVM's default heap. Client-compat now warns, in the job summary,
+  when a client's graph holds a second spawned version. The PR template asks
+  for an independent review of concurrency changes and trace-validated models.
+- `#[actor]` marks the generated await-free dispatch
+  (`__spawned_handle_immediate`) `#[inline]`. Since the module split (#278)
+  the compiler had stopped inlining it into the envelope, adding 22
+  instructions per `send` (+3.6% over 0.8.0 on `async_ct_send_*`, +0.4% to
+  +1.2% on the async request benchmarks). With the hint every gated async
+  benchmark is below 0.8.0 (send -3.4%, requests -0.6% to -0.9%).
+- Fixed: in `threads` mode every `send_after` / `send_interval` left a
+  callback (and its wake-up channel) on the actor's stop token until the actor
+  stopped, so a long-lived threads actor that kept arming timers grew without
+  bound. `spawned_rt::threads::CancellationToken` gains
+  `register_on_cancel`, whose `CancelRegistration` removes the callback in
+  O(1) when dropped (callbacks still fire in registration order), and
+  `callbacks_registered`; the timer thread now holds its registrations and
+  drops them when it fires or is cancelled. Tasks-mode timers were not
+  affected (Tokio removes a cancellation waiter when its future is dropped).
 - Fix the flaky `supervision::transient_startup_timeout_retries_after_actual_cleanup`
   (a 20 ms startup deadline raced the fast starts on a loaded host, which also
   made cargo-mutants report surviving mutants as caught): the replacement's
@@ -80,7 +101,30 @@
   runtime release; compiled out otherwise). New `coordinator_trace` test,
   `TraceCoordinator.tla`, seven trace negative controls and a coverage floor
   of 9 of 9 action keys; `Coordinator` is no longer TLC-only.
+- Check the last three partially checked guarantees of the semantics
+  contract, so every one of the 50 now has a check that fails if it breaks:
+  L3 (reason precedence through `stopped()` and destructor panics, every
+  requested reason, both modes and every placement), L7 (an exiting
+  observer's monitors are cancelled before its exit is published) and X7 (a
+  non-trapping linked stop waits for the running handler and discards the
+  queue). Each check was shown to fail under local mutations of the code.
 
+- Three new scenario-fuzzer oracles, so the fuzzer now catches planted bugs
+  15, 17 and 22, which it used to miss: X2 (no `Down` handled after
+  `demonitor` returned), T2 (a `send_interval` starts no round after its
+  actor's exit is published) and L7 (an exited observer's monitor waiter does
+  not outlive it, checked by an end-of-run probe). The minimized bug-15 input
+  is kept as the regression `fuzz/tests/down_after_demonitor.rs`. Test-only:
+  no library change.
+- **Breaking (0.9):** clean exits can carry a payload, OTP's
+  `{shutdown, Term}` (roadmap G7). `ExitReason::Shutdown` becomes
+  `Shutdown(Option<Arc<str>>)`; build the payload form with
+  `ExitReason::shutdown_with(why)` and pass it to `stop_with_reason` or
+  `exit`. Restarts, crash metrics, link propagation, `trap_exit` and the TLA+
+  trace classes treat it exactly like `Shutdown`; `Down`, `Exit`, `join()`
+  and `ChildSnapshot::last_exit` carry the full reason. New `is_shutdown()`
+  and `shutdown_payload()` helpers; `ExitReason` now derives `Eq`; its size
+  is unchanged (24 bytes). See docs/MIGRATION.md, "0.8 to 0.9".
 - Fix the flaky `tla-traces` coverage gate (`LOST coverage: Cohorts
   A|OneForAll|CEnd/complete`): the cohort trace tests now wait for the restart
   round to record `CEnd complete` before shutting down, instead of racing it
@@ -112,6 +156,12 @@
   Loom-checked cores, and `model-sync` now requires a PR changing such a core to
   update its Loom harness (`[loom.*]` in `verification/model-map.toml`) or carry
   the `no-model-change` waiver.
+- Threads mode: `ActorRef` and `Context` share one `Arc<ActorShared<A>>`, as
+  tasks mode does, instead of inlining thirteen fields each (one word per
+  handle, one reference-count increment per clone; step 0 of the 0.9
+  introspection design). No API or behaviour change. Callgrind Ir/op against
+  `main`: threads request +0.9–1.0% (gate ≤ 3%), tasks gated paths −0.1 to
+  −0.3%, threads handle clone −91%; threads handles shrink from 128 to 8 bytes.
 
 ## 0.8.0 — 2026-11-15
 

@@ -316,7 +316,7 @@ mod cancellation_tests {
                 hook.started(&context_owner.context()).await;
                 assert!(*cleanup.done.borrow());
                 assert!(cleanup.failure.lock().unwrap().is_none());
-                scope.stop(ExitReason::Shutdown);
+                scope.stop(ExitReason::Shutdown(None));
                 release.send(()).unwrap();
                 blocker.await.unwrap();
                 context_owner.child_handle().wait_exit_async().await;

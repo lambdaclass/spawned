@@ -316,7 +316,7 @@ pub(crate) fn life_reason(reason: &crate::ExitReason) -> &'static str {
     use crate::ExitReason;
     match reason {
         ExitReason::Normal => "Normal",
-        ExitReason::Shutdown => "Shutdown",
+        ExitReason::Shutdown(_) => "Shutdown",
         ExitReason::Panic(_) => "Panic",
         ExitReason::Kill => "Kill",
         ExitReason::Killed => "Killed",
@@ -338,7 +338,7 @@ pub(crate) fn reason(reason: Option<&crate::ExitReason>) -> &'static str {
     match reason {
         None => "none",
         Some(ExitReason::Normal) => "Normal",
-        Some(ExitReason::Shutdown) => "Shutdown",
+        Some(ExitReason::Shutdown(_)) => "Shutdown",
         Some(ExitReason::Panic(_)) => "Panic",
         Some(ExitReason::Kill) => "Kill",
         // Supervision.tla has one class per restart behaviour: Killed and

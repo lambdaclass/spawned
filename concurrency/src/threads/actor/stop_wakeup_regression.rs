@@ -63,27 +63,29 @@ fn cancellation_wakes_the_real_blocking_receive_boundary() {
                 new_linked_exit_reason(),
             );
             let ctx = Context {
-                id,
-                sender: tx.clone(),
-                cancellation_token: token.clone(),
-                completion,
-                monitors: Arc::new(Mutex::new(Some(HashMap::new()))),
-                trap_exit: trap.clone(),
-                links: new_link_table(),
-                linked_reason: request.clone(),
-                signal: signal_target::<_>(
+                shared: Arc::new(ActorShared {
                     id,
-                    None,
-                    &tx,
-                    trap.clone(),
-                    request.clone(),
-                    token.clone(),
-                    crate::start::StartupCell::new(),
-                ),
-                mailbox: crate::instrumentation::Mailbox::default(),
-                replies: Registry::new_native(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
-                jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
-                cleaned: Arc::default(),
+                    sender: tx.clone(),
+                    cancellation_token: token.clone(),
+                    completion,
+                    monitors: Arc::new(Mutex::new(Some(HashMap::new()))),
+                    trap_exit: trap.clone(),
+                    links: new_link_table(),
+                    linked_reason: request.clone(),
+                    signal: signal_target::<_>(
+                        id,
+                        None,
+                        &tx,
+                        trap.clone(),
+                        request.clone(),
+                        token.clone(),
+                        crate::start::StartupCell::new(),
+                    ),
+                    mailbox: crate::instrumentation::Mailbox::default(),
+                    replies: Registry::new_native(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
+                    jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
+                    cleaned: Arc::default(),
+                }),
             };
             let (entered_tx, entered) = mpsc::channel();
             let (stopped_tx, stopped) = mpsc::channel();
@@ -149,7 +151,7 @@ fn every_stop_route_wakes_an_idle_thread() {
                 match route {
                     0 => actor.context().stop(),
                     1 => actor.child_handle().stop(),
-                    2 => actor.cancellation_token.cancel(),
+                    2 => actor.shared.cancellation_token.cancel(),
                     _ => failing.as_ref().unwrap().send(Crash).unwrap(),
                 }
                 if route == 3 {

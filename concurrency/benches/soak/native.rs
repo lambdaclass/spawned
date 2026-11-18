@@ -284,9 +284,14 @@ fn finish(actor: &ActorRef<NWorker>, rng: &mut Rng) -> R {
             );
         }
         1 => {
-            actor.child_handle().stop_with_reason(ExitReason::Shutdown);
+            actor
+                .child_handle()
+                .stop_with_reason(ExitReason::Shutdown(None));
             let reason = exit(actor)?;
-            ensure!(reason == ExitReason::Shutdown, "shutdown exit {reason:?}");
+            ensure!(
+                reason == ExitReason::Shutdown(None),
+                "shutdown exit {reason:?}"
+            );
         }
         _ => {
             actor.child_handle().stop();

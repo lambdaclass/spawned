@@ -121,7 +121,37 @@ The flags combine with protocols: `#[actor(protocol = P, allow_shared_state)]`.
 
 Call `ctx.stop()` from inside a handler or lifecycle hook. This cancels the actor's internal token, causing the message loop to exit after the current handler finishes.
 
-From outside, use the actor's `ChildHandle` (`actor_ref.child_handle()`): `stop()` exits `Normal` and `stop_with_reason(reason)` picks the reason (`stop_with_reason(ExitReason::Shutdown)` for a shutdown). All are cooperative: the running handler finishes and `stopped()` runs. They ignore `trap_exit`. `ActorRef` itself has no stop method; an explicit shutdown message in your protocol also works.
+From outside, use the actor's `ChildHandle` (`actor_ref.child_handle()`): `stop()` exits `Normal` and `stop_with_reason(reason)` picks the reason (`stop_with_reason(ExitReason::Shutdown(None))` for a shutdown). All are cooperative: the running handler finishes and `stopped()` runs. They ignore `trap_exit`. `ActorRef` itself has no stop method; an explicit shutdown message in your protocol also works.
+
+### Clean exits with a payload (v0.9)
+
+A clean stop can say why, as OTP's `{shutdown, Term}`:
+
+```rust
+ctx.stop_with_reason(ExitReason::shutdown_with("peer disconnected: TooManyPeers"));
+```
+
+`ExitReason::Shutdown(Option<Arc<str>>)` holds the optional explanation:
+`Shutdown(None)` is the bare `shutdown`, `Shutdown(Some(why))` (built with
+`ExitReason::shutdown_with(why)`) the payload form. The payload only explains
+the stop; every policy treats both forms exactly alike:
+
+- a Transient or Temporary child is not restarted (`is_abnormal()` is false);
+- it is not logged or counted as a crash (the `actors_exited_shutdown_total`
+  metric counts it);
+- as an exit signal or link notice it ends a non-trapping actor with the same
+  full reason, without `stopped()`, and a trapping actor receives it in
+  `Exit`;
+- `Down`, `Exit`, `join()`/`wait_exit`, `ActorError::ActorStopped` and the
+  supervisor's `ChildSnapshot::last_exit` carry the full reason.
+
+Match the class with `ExitReason::Shutdown(_)` or `reason.is_shutdown()`, and
+read the payload with `reason.shutdown_payload()`. A pattern
+`ExitReason::Shutdown(None)` matches only the bare form. Cloning the reason
+into many `Down` and `Exit` messages copies a reference count, and
+`ExitReason` stays 24 bytes. The payload is text, like `Panic(String)`; encode
+structured causes into it, or send them to the observer as a message before
+stopping.
 
 Stopping discards messages still queued: once the stop is observed no further message is handled, and queued requests fail with `ActorStopped(reason)`, the actor's final exit reason.
 
@@ -964,7 +994,7 @@ pub enum ActorError {
 | `ReplyDropped` | `false` | `false` | `false` | `None` |
 | `Overloaded` | `false` | `false` | `true` | `None` |
 
-`target_gone()`: retrying the same reference cannot succeed (look the actor up again; a supervisor may have restarted it). `is_transient()`: retrying the same target may succeed. `ReplyDropped` is neither: the actor is alive but its handler chose not to answer (a handler that means "not now, try again" answers `reply.overloaded()`, which is transient; a caller whose protocol retries dropped requests matches `ReplyDropped` explicitly). `ExitReason::is_abnormal()` is `false` only for `Normal` and `Shutdown` (`Killed` and `NoProc` are abnormal).
+`target_gone()`: retrying the same reference cannot succeed (look the actor up again; a supervisor may have restarted it). `is_transient()`: retrying the same target may succeed. `ReplyDropped` is neither: the actor is alive but its handler chose not to answer (a handler that means "not now, try again" answers `reply.overloaded()`, which is transient; a caller whose protocol retries dropped requests matches `ReplyDropped` explicitly). `ExitReason::is_abnormal()` is `false` only for `Normal` and `Shutdown(_)`, with or without a payload (`Killed` and `NoProc` are abnormal).
 
 ---
 
@@ -1009,7 +1039,7 @@ Wraps standard library primitives:
 | `spawn(f)` | Spawn an OS thread |
 | `sleep(duration)` | Block the current thread |
 | `JoinHandle` | Handle to a spawned thread |
-| `CancellationToken` | Cooperative cancellation with callback support via `on_cancel()` |
+| `CancellationToken` | Cooperative cancellation with callback support: `on_cancel()` keeps a callback until cancellation; `register_on_cancel()` returns a `CancelRegistration` whose drop removes it (for waiters that finish first, such as timers) |
 | `mpsc` | Multi-producer, single-consumer channel (wraps `std::sync::mpsc`) |
 | `oneshot` | Single-use channel (wraps `std::sync::mpsc`) |
 | `ctrl_c()` | Returns a closure that blocks until Ctrl+C. Supports multiple subscribers. |
@@ -1386,7 +1416,7 @@ Supervision emits structured `tracing` events: `restart_scheduled` and
 at WARN. Fields include `child`, `generation`, `reason` and an available error.
 Enable an application tracing subscriber to collect them; Spawned installs none.
 
-| Restart mode while supervisor is running | Normal / Shutdown | Panic / Kill / Killed / NoProc |
+| Restart mode while supervisor is running | Normal / Shutdown (with or without a payload) | Panic / Kill / Killed / NoProc |
 |---|---|---|
 | Permanent (default) | Restart | Restart |
 | Transient | Stay stopped | Restart |
@@ -1416,7 +1446,8 @@ Drop implementation or an unfinished send. This relies on unwinding:
 `panic=abort`, an aborting panic hook, or multiple panicking fields in the same
 user value cannot be recovered by the envelope boundary.
 
-`ctx.stop_with_reason(ExitReason::Shutdown)` requests a cooperative shutdown;
+`ctx.stop_with_reason(ExitReason::Shutdown(None))` requests a cooperative shutdown
+(`ExitReason::shutdown_with(why)` adds a payload, treated the same);
 `ExitReason::Kill` requests an abnormal exit without panicking. Both modes finish
 the current handler and run `stopped()`. The first stop's reason wins over later
 stops; a panic, a kill or an untrapped exit signal before the death point still

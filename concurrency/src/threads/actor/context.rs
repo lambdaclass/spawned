@@ -5,19 +5,7 @@ impl<A: Actor> Context<A> {
     /// The `Context` of `actor_ref`'s actor (public as `ActorRef::context`).
     pub(crate) fn from_ref(actor_ref: &ActorRef<A>) -> Self {
         Self {
-            id: actor_ref.id,
-            sender: actor_ref.sender.clone(),
-            cancellation_token: actor_ref.cancellation_token.clone(),
-            completion: actor_ref.completion.clone(),
-            monitors: actor_ref.monitors.clone(),
-            trap_exit: actor_ref.trap_exit.clone(),
-            links: actor_ref.links.clone(),
-            linked_reason: actor_ref.linked_reason.clone(),
-            signal: actor_ref.signal.clone(),
-            mailbox: actor_ref.mailbox.clone(),
-            replies: actor_ref.replies.clone(),
-            jobs: actor_ref.jobs.clone(),
-            cleaned: actor_ref.cleaned.clone(),
+            shared: actor_ref.shared.clone(),
         }
     }
 
@@ -26,7 +14,7 @@ impl<A: Actor> Context<A> {
     /// Concurrent observations are approximate; no registry or actor labels.
     #[cfg(feature = "metrics")]
     pub fn mailbox_depth(&self) -> u64 {
-        self.mailbox.depth()
+        self.shared.mailbox.depth()
     }
 
     /// Deferred-reply credits in use by this instance: live deferred
@@ -34,12 +22,12 @@ impl<A: Actor> Context<A> {
     /// Experimental in 0.8 (for tests and diagnostics; the `metrics`
     /// feature exports the same count): it may change before 1.0.
     pub fn deferred_outstanding(&self) -> usize {
-        self.replies.outstanding()
+        self.shared.replies.outstanding()
     }
 
     /// The actor's unique identity.
     pub fn id(&self) -> ActorId {
-        self.id
+        self.shared.id
     }
 
     /// Self-exit: the current handler finishes, then `stopped()` is called
@@ -55,16 +43,16 @@ impl<A: Actor> Context<A> {
     /// a panic (in the handler or `stopped()`) with `Panic`. `Kill` stays
     /// `Kill` and propagates over links as `Kill` (trappable).
     pub fn stop_with_reason(&self, reason: ExitReason) {
-        link::stop_with_reason(self.id, &self.linked_reason, reason, || {
-            self.cancellation_token.cancel()
+        link::stop_with_reason(self.shared.id, &self.shared.linked_reason, reason, || {
+            self.shared.cancellation_token.cancel()
         });
     }
 
     /// A parent exit being dispatched: normal termination with its reason
     /// (part of the model's `Dispatch`, so not recorded as a stop).
     pub(super) fn parent_exit(&self, reason: ExitReason) {
-        link::request_stop(&self.linked_reason, reason, || {
-            self.cancellation_token.cancel()
+        link::request_stop(&self.shared.linked_reason, reason, || {
+            self.shared.cancellation_token.cancel()
         });
     }
 
@@ -78,14 +66,14 @@ impl<A: Actor> Context<A> {
         // Held until delivered: the death point waits for it, so a signal
         // sent before death precedes the death notices (and none is sent
         // after it).
-        let Some(_sending) = self.replies.signal_permit() else {
+        let Some(_sending) = self.shared.replies.signal_permit() else {
             return;
         };
-        if link::lock_request(&self.linked_reason).is_dead() {
+        if link::lock_request(&self.shared.linked_reason).is_dead() {
             return;
         }
         fail_point!("actor.exit_before_deliver");
-        target.exit_from(self.id, reason, false);
+        target.exit_from(self.shared.id, reason, false);
     }
 
     /// Send a fire-and-forget message to this actor.
@@ -95,9 +83,9 @@ impl<A: Actor> Context<A> {
         M: Message,
     {
         enqueue(
-            &self.sender,
-            &self.mailbox,
-            &self.replies,
+            &self.shared.sender,
+            &self.shared.mailbox,
+            &self.shared.replies,
             msg,
             SlotHandle::detached(),
         )
@@ -134,8 +122,14 @@ impl<A: Actor> Context<A> {
         A: Handler<M>,
         M: Message,
     {
-        let (slot, rx) = reply_slot(deadline, Some(&self.replies), raw);
-        enqueue(&self.sender, &self.mailbox, &self.replies, msg, slot)?;
+        let (slot, rx) = reply_slot(deadline, Some(&self.shared.replies), raw);
+        enqueue(
+            &self.shared.sender,
+            &self.shared.mailbox,
+            &self.shared.replies,
+            msg,
+            slot,
+        )?;
         Ok(rx)
     }
 
@@ -181,19 +175,7 @@ impl<A: Actor> Context<A> {
     /// Get an `ActorRef<A>` from this context.
     pub fn actor_ref(&self) -> ActorRef<A> {
         ActorRef {
-            id: self.id,
-            sender: self.sender.clone(),
-            cancellation_token: self.cancellation_token.clone(),
-            completion: self.completion.clone(),
-            monitors: self.monitors.clone(),
-            trap_exit: self.trap_exit.clone(),
-            links: self.links.clone(),
-            linked_reason: self.linked_reason.clone(),
-            signal: self.signal.clone(),
-            mailbox: self.mailbox.clone(),
-            replies: self.replies.clone(),
-            jobs: self.jobs.clone(),
-            cleaned: self.cleaned.clone(),
+            shared: self.shared.clone(),
         }
     }
 
@@ -226,7 +208,7 @@ impl<A: Actor> Context<A> {
         let monitor_ref = MonitorRef::next();
         let active = spawned_rt::sync::CancellationToken::new();
 
-        let observer = self.id.raw();
+        let observer = self.shared.id.raw();
         let registered = crate::lifecycle_trace::life_section(observer, || {
             let event = |x| {
                 crate::lifecycle_trace::LifeEvent::new("Monitor", observer)
@@ -235,14 +217,14 @@ impl<A: Actor> Context<A> {
                     .x(x)
             };
             crate::monitor::fence::register(
-                &self.monitors,
+                &self.shared.monitors,
                 monitor_ref,
                 active.clone(),
                 // The token check makes registration inert once shutdown
                 // starts. The closed table serializes registration with exit
                 // cleanup, even on paths that unwind before cancelling the
                 // owner token.
-                || self.cancellation_token.is_cancelled(),
+                || self.shared.cancellation_token.is_cancelled(),
                 // Linearised against the target's death point (E4): past it
                 // the only notice is NoProc, delivered under the observer's
                 // lock.
@@ -258,9 +240,9 @@ impl<A: Actor> Context<A> {
                             .o("late")
                     });
                     let _ = enqueue_down(
-                        &self.sender,
-                        &self.mailbox,
-                        &self.replies,
+                        &self.shared.sender,
+                        &self.shared.mailbox,
+                        &self.shared.replies,
                         Down {
                             monitor_ref,
                             actor: target.id(),
@@ -290,9 +272,9 @@ impl<A: Actor> Context<A> {
     ) where
         A: Handler<Down>,
     {
-        let observer = self.id.raw();
+        let observer = self.shared.id.raw();
         let actor_ref = self.actor_ref();
-        let monitors = self.monitors.clone();
+        let monitors = self.shared.monitors.clone();
         let registration = crate::monitor::MonitorRegistration(monitors.clone(), monitor_ref);
 
         let mut watch = crate::start::DownWatch(cell);
@@ -334,9 +316,9 @@ impl<A: Actor> Context<A> {
                             &reason,
                             || {
                                 let _ = enqueue_down(
-                                    &actor_ref.sender,
-                                    &actor_ref.mailbox,
-                                    &actor_ref.replies,
+                                    &actor_ref.shared.sender,
+                                    &actor_ref.shared.mailbox,
+                                    &actor_ref.shared.replies,
                                     Down {
                                         monitor_ref,
                                         actor: target.id(),
@@ -375,12 +357,12 @@ impl<A: Actor> Context<A> {
     /// This actor as the parent of a `start_link`/`start_monitor`.
     pub(super) fn parent_parts(&self) -> ParentParts {
         ParentParts {
-            id: self.id,
-            signal: self.signal.clone(),
-            links: self.links.clone(),
-            request: self.linked_reason.clone(),
-            monitors: self.monitors.clone(),
-            token: self.cancellation_token.clone(),
+            id: self.shared.id,
+            signal: self.shared.signal.clone(),
+            links: self.shared.links.clone(),
+            request: self.shared.linked_reason.clone(),
+            monitors: self.shared.monitors.clone(),
+            token: self.shared.cancellation_token.clone(),
         }
     }
 
@@ -391,9 +373,9 @@ impl<A: Actor> Context<A> {
     /// in the mailbox is skipped. Demonitoring an unknown, delivered or
     /// already cancelled monitor does nothing.
     pub fn demonitor(&self, monitor_ref: MonitorRef) {
-        let observer = self.id.raw();
+        let observer = self.shared.id.raw();
         let active = crate::lifecycle_trace::life_section(observer, || {
-            crate::monitor::fence::demonitor(&self.monitors, &monitor_ref, || {
+            crate::monitor::fence::demonitor(&self.shared.monitors, &monitor_ref, || {
                 crate::lifecycle_trace::life_emit(observer, || {
                     crate::lifecycle_trace::LifeEvent::new("Demonitor", observer)
                         .m(monitor_ref.raw())
@@ -424,8 +406,8 @@ impl<A: Actor> Context<A> {
     /// [`Actor::exit_received`]: Actor::exit_received
     pub fn link(&self, target: &ChildHandle) {
         link::register_link(
-            &self.signal,
-            &self.links,
+            &self.shared.signal,
+            &self.shared.links,
             target.signal_target(),
             target.links(),
             false,
@@ -438,8 +420,8 @@ impl<A: Actor> Context<A> {
     /// an exit racing this call can linearize after the link attempt.
     pub fn try_link(&self, target: &ChildHandle) -> Result<(), NoProc> {
         match link::register_link(
-            &self.signal,
-            &self.links,
+            &self.shared.signal,
+            &self.shared.links,
             target.signal_target(),
             target.links(),
             true,
@@ -452,7 +434,12 @@ impl<A: Actor> Context<A> {
     /// Remove a link. A fence (OTP `unlink/1`): once it returns, the link has
     /// no further effect on this actor; an `Exit` already queued stays.
     pub fn unlink(&self, target: &ChildHandle) {
-        link::unregister_link(self.id, &self.links, target.id(), target.links());
+        link::unregister_link(
+            self.shared.id,
+            &self.shared.links,
+            target.id(),
+            target.links(),
+        );
     }
 
     /// Whether this actor's exit has begun or a signal that will end it is
@@ -477,7 +464,7 @@ impl<A: Actor> Context<A> {
     /// Advisory: a signal can arrive right after it returns `false`. It
     /// takes the actor's exit-request lock; nothing is added per message.
     pub fn exit_pending(&self) -> bool {
-        link::lock_request(&self.linked_reason).exit_pending()
+        link::lock_request(&self.shared.linked_reason).exit_pending()
     }
 
     /// Control how exit signals (link notices and `exit` signals) are
@@ -492,10 +479,10 @@ impl<A: Actor> Context<A> {
     /// trapping actor normally, through `stopped()`. Signals that arrive while
     /// `started()` runs are resolved when it returns.
     pub fn trap_exit(&self, enabled: bool) {
-        let id = self.id.raw();
+        let id = self.shared.id.raw();
         crate::lifecycle_trace::life_section(id, || {
             // Recorded only when it changes (the model's SetTrap).
-            if self.trap_exit.swap(enabled, Ordering::AcqRel) != enabled {
+            if self.shared.trap_exit.swap(enabled, Ordering::AcqRel) != enabled {
                 crate::lifecycle_trace::life_emit(id, || {
                     crate::lifecycle_trace::LifeEvent::new("Trap", id)
                         .x(crate::lifecycle_trace::flag(enabled))
@@ -505,7 +492,7 @@ impl<A: Actor> Context<A> {
     }
 
     pub(crate) fn cancellation_token(&self) -> CancellationToken {
-        self.cancellation_token.clone()
+        self.shared.cancellation_token.clone()
     }
 }
 

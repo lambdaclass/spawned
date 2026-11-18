@@ -276,7 +276,11 @@ Checked by: `Lifecycle!KilledFromKill`, `Lifecycle!LateSignalWins` (TLC);
 [`context_exit`][context_exit] (both modes), `src/link.rs::tests::reason_precedence_until_death`,
 `src/link_regression_tests.rs::late_link_failure_relabels_an_already_requested_normal_stop`,
 [`otp_exit_signals`][otp_exit_signals]`::tasks_mode::{late_signal_replaces_the_requested_reason, kill_during_stopped_supersedes_and_panic_does_not_replace_it}`;
-[`exit_signals_sim`][exit_signals_sim]`::{kill_races_stopped, late_signal_races_the_death_point}`.
+[`exit_signals_sim`][exit_signals_sim]`::{kill_races_stopped, late_signal_races_the_death_point}`;
+[`semantics_gaps`][semantics_gaps]`::{native,tasks}_partial::stop_reason_precedence_through_cleanup`
+(every requested reason, from `ctx` and from a `ChildHandle`, on every
+placement: a second request, a panic in `stopped()`, a kill then a panic in
+`stopped()`, a state destructor panic after D).
 
 **L4. Exit reasons.** Every actor publishes exactly one `ExitReason`
 (`#[non_exhaustive]`):
@@ -284,7 +288,8 @@ Checked by: `Lifecycle!KilledFromKill`, `Lifecycle!LateSignalWins` (TLC);
 | Reason | Arises from |
 |---|---|
 | `Normal` | `ctx.stop()`, `ChildHandle::stop()`, a parent's `Normal` exit to a trapping child |
-| `Shutdown` | `stop_with_reason(Shutdown)`, supervisor or system shutdown, an exit signal or link notice with `Shutdown` (non-trapping) |
+| `Shutdown(None)` | `stop_with_reason(Shutdown(None))`, supervisor or system shutdown, an exit signal or link notice with `Shutdown(None)` (non-trapping) |
+| `Shutdown(Some(why))` | OTP `{shutdown, Term}` (v0.9, G7): `stop_with_reason(ExitReason::shutdown_with(why))`, an exit signal or link notice with it (non-trapping) |
 | `Panic(msg)` | a panic in `started()` (`"panic in started(): .."`), a handler, `exit_received` or `Down` handler (`"panic in handler: .."`), `stopped()` (`"panic in stopped(): .."`); an exit signal or link notice with `Panic` |
 | `Kill` | `stop_with_reason(Kill)` (a stop, not a kill), a `Kill` link notice (non-trapping) |
 | `Killed` | `ChildHandle::kill()`, `exit(Kill)`, a supervisor's or system's kill escalation, a `Killed` link notice; the runtime dropping the actor unless a non-`Normal` reason was requested |
@@ -292,11 +297,23 @@ Checked by: `Lifecycle!KilledFromKill`, `Lifecycle!LateSignalWins` (TLC);
 
 `is_abnormal()` is true for `Panic`, `Kill`, `Killed` and `NoProc`.
 Destructor panics after the death point do not change the reason (L6).
+
+The `Shutdown` payload (an `Arc<str>`) only explains the stop, as OTP's
+`{shutdown, Term}`: every rule that names `Shutdown` in this contract (the
+restart table V1, link and signal handling X3, the metrics class, the
+trace and model class `Shutdown`) applies to `Shutdown(_)`, with or without a
+payload. `Down`, `Exit`, `join()`/`wait_exit`, `ActorStopped` and
+`ChildSnapshot::last_exit` carry the full reason; a non-trapping linked actor
+ends with the same full reason. A supervisor's or system's own shutdown sends
+`Shutdown(None)`.
 Checked by: [`exit_signal_matrix`][exit_signal_matrix], [`context_exit`][context_exit],
 [`otp_exit_signals`][otp_exit_signals], [`panic_safety`][panic_safety],
 `src/link_regression_tests.rs::never_polled_actor_propagates_runtime_shutdown_to_peer`,
 [`exit_reason`][ex_exit_reason], [`native_lifecycle`][ex_native_lifecycle] and
-[`exit_signals`][ex_exit_signals] examples.
+[`exit_signals`][ex_exit_signals] examples; the payload form:
+[`shutdown_payload`][shutdown_payload] (both modes: `join`, `Down`, trapped
+`Exit`, an untrapped linked peer, exit signals, metrics),
+`src/error.rs::tests::{shutdown_payload_helpers, exit_reason_is_abnormal_classification, exit_reason_size_is_unchanged}`.
 
 **L5. Panics in hooks.** A panic in `started()` stops the actor without calling
 `stopped()` and without handling any message. A panic in a handler loses that
@@ -335,8 +352,11 @@ Checked by: [`shutdown_publication`][shutdown_publication],
 `src/link_regression_tests.rs::never_polled_completion_waits_for_actor_payload_destruction`,
 [`actor_scenarios`][actor_scenarios] (post-exit requests),
 [`semantics_gaps`][semantics_gaps]`::{native,tasks}_contract::stop_window_accepts_then_discards_and_releases_before_join`,
-[`sim_ordering::stop_discards_queue_before_publishing_exit_{pct,dfs}`][sim_ordering]. Not yet checked:
-outgoing monitors cancelled before publication.
+[`sim_ordering::stop_discards_queue_before_publishing_exit_{pct,dfs}`][sim_ordering];
+outgoing monitors cancelled before publication:
+`src/tasks/actor/monitor_cleanup_regressions.rs::observer_cancels_its_monitors_before_publishing_its_exit`
+(the cleanup is shared with threads mode); the fuzz L7 probe also checks that an
+exited observer's waiters are released while the target lives on.
 
 **L8. Start (v0.9).** Stage 1 runs in the start call: the options are
 validated and the instance prepared privately, then one commit, under the lock
@@ -424,7 +444,9 @@ is in dispatch; the window is cross-thread, so a failpoint, not the
 simulator, reaches it);
 `link::tests::link_from_an_exiting_or_dead_caller_is_inert`,
 [`otp_exit_signals::tasks_mode::link_from_a_dead_actor_is_inert`][otp_exit_signals],
-`closed_monitor_table_rejects_late_registration`, [`leaks::monitor_waiters_released_on_demonitor_owner_exit_and_target_exit`][leaks].
+`closed_monitor_table_rejects_late_registration`, [`leaks::monitor_waiters_released_on_demonitor_owner_exit_and_target_exit`][leaks],
+the fuzz X2 (flush) oracle (no `Down` handled after the driver's `demonitor`
+returned).
 
 **X3. Exit signals and link propagation.** An exit signal
 (`ChildHandle::exit`, `ctx.exit`, `kill`) or a linked actor's death notice is
@@ -541,13 +563,16 @@ Checked by: [`semantics_gaps`][semantics_gaps]`::{native,tasks}::exit_and_down_f
 (every reason including a real panic, all three tasks backends),
 [`sim_ordering::exit_and_down_follow_the_last_message_{pct,dfs}`][sim_ordering] (a stop racing the
 source's sends, noise at the observer, PCT and bounded DFS), the fuzz X7 oracle,
-[`exit_signal_matrix`][exit_signal_matrix] (delivery).
+[`exit_signal_matrix`][exit_signal_matrix] (delivery);
+the non-trapping linked stop:
+[`semantics_gaps`][semantics_gaps]`::{native,tasks}_partial::linked_stop_waits_for_the_running_handler_and_discards_the_queue`
+(every non-`Normal` peer reason, on every placement).
 
 ## 6. Supervision
 
 **V1. Restart table.** While the supervisor is open:
 
-| Mode | `Normal` / `Shutdown` exit | `Panic` / `Kill` / `Killed` / `NoProc` exit, or a cleanup failure |
+| Mode | `Normal` / `Shutdown(_)` exit | `Panic` / `Kill` / `Killed` / `NoProc` exit, or a cleanup failure |
 |---|---|---|
 | Permanent (default) | restart | restart |
 | Transient | stay stopped | restart |
@@ -560,7 +585,9 @@ Supervisor or system shutdown
 suppresses every restart. Stopping a Permanent child from outside restarts it.
 Checked by: `Supervision!RestartFollowsPolicy`, `Supervision!TemporaryStartsOnce` (`MCSupervisionTemporary`),
 `Cohorts!TemporaryStartsOnce`; [`supervision::restart_modes_distinguish_normal_shutdown_and_panic`][supervision],
-[`supervisor_policies`][supervisor_policies] (generated scripts), [`supervision_trace`][supervision_trace].
+[`supervisor_policies`][supervisor_policies] (generated scripts), [`supervision_trace`][supervision_trace];
+a `Shutdown` with a payload: [`supervision::restart_modes_distinguish_normal_shutdown_and_panic`][supervision],
+[`shutdown_payload`][shutdown_payload]`::tasks_mode::{async_group,thread_group}_restart_table_treats_payload_as_shutdown`.
 
 **V2. Strategies.** OneForOne replaces the failed child; OneForAll the whole
 cohort; RestForOne the child and every later-declared sibling. The affected
@@ -790,7 +817,8 @@ delay: each tick waits `period` after the previous send, so ticks drift and
 missed time is never caught up in a burst.
 Checked by: `src/{tasks,threads}/timer_tests.rs::test_send_interval_and_cancellation`,
 [`semantics_gaps`][semantics_gaps]`::tasks::send_interval_is_fixed_delay_and_never_catches_up` (paused time,
-one jump of 3.5 periods). threads timers use real time and are
+one jump of 3.5 periods), the fuzz T2 (stop) oracle (no round after the
+actor's exit is published). threads timers use real time and are
 checked by construction only.
 
 **T3. Timers belong to one instance.** A timer targets the instance whose
@@ -933,6 +961,7 @@ remaining differences of the exit-signal design are listed in
 | Panics are caught only with unwinding (P2) | Process crashes are always isolated | Rust-forced: `panic = "abort"` and a panicking panic hook end the process |
 | No per-actor memory accounting | `max_heap_size` | Rust-forced (no per-actor heap); opt-in size hook proposed, rank 18a |
 | One `Handler<M>` per message type; no selective or catch-all receive; `ExitReason` is a closed enum | Any term, selective `receive` | Rust types add strictness; unhandled message types are compile errors |
+| `{shutdown, Term}` carries a text payload: `Shutdown(Some(Arc<str>))` | `Term` is any term | Rust types add strictness (v0.9, G7): a typed `Any` payload would lose `Eq` and `Debug` on the reason; the class and every policy match OTP |
 | Single process, no distribution | Location-transparent pids | Out of scope until a remote transport (rank 22a and later) |
 | Unbounded mailboxes (D5) | Unbounded | Same today; Spawned adds opt-in bounds (rank 17) and byte credits (rank 18) |
 
@@ -971,6 +1000,7 @@ See the [ranked backlog](../../ROADMAP.md#ranked-backlog).
 [context_exit]: ../../concurrency/tests/context_exit.rs
 [cross_backend]: ../../concurrency/tests/cross_backend.rs
 [otp_exit_signals]: ../../concurrency/tests/otp_exit_signals.rs
+[shutdown_payload]: ../../concurrency/tests/shutdown_payload.rs
 [exit_signals_sim]: ../../concurrency/tests/exit_signals_sim.rs
 [link_fence_loom]: ../../concurrency/tests/link_fence_loom.rs
 [lifecycle_trace]: ../../concurrency/tests/lifecycle_trace.rs

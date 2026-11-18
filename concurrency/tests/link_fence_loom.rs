@@ -202,7 +202,7 @@ fn link_racing_death_gets_exactly_one_notice() {
             let (a, b) = (Arc::new(Actor::new(1)), Arc::new(Actor::new(2)));
             let dying = {
                 let a = a.clone();
-                spawn(move || die(&a, ExitReason::Shutdown, &[]))
+                spawn(move || die(&a, ExitReason::Shutdown(None), &[]))
             };
             let outcome = link(&b, &a, 1, try_only);
             dying.join().unwrap();
@@ -213,7 +213,7 @@ fn link_racing_death_gets_exactly_one_notice() {
                     vec![Notice {
                         from: a.id(),
                         gen: 1,
-                        reason: ExitReason::Shutdown
+                        reason: ExitReason::Shutdown(None)
                     }]
                 ),
                 LinkOutcome::NoProc if try_only => assert!(log.is_empty()),
@@ -322,7 +322,7 @@ fn mutual_death_delivers_at_most_one_notice() {
             let a = a.clone();
             spawn(move || die(&a, ExitReason::Panic, &[1]))
         };
-        die(&b, ExitReason::Shutdown, &[1]);
+        die(&b, ExitReason::Shutdown(None), &[1]);
         dying.join().unwrap();
         assert!(a.log().len() + b.log().len() <= 1);
         assert_eq!(a.records() + b.records(), 0);
@@ -344,7 +344,7 @@ fn start_edge_commit_races_parent_exit_begin() {
             let (parent, exiting) = (parent.clone(), exiting.clone());
             spawn(move || {
                 *exiting.lock().unwrap() = true;
-                die(&parent, ExitReason::Shutdown, &[]);
+                die(&parent, ExitReason::Shutdown(None), &[]);
             })
         };
         let installed = table::install_start_edge(
@@ -362,7 +362,7 @@ fn start_edge_commit_races_parent_exit_begin() {
                 vec![Notice {
                     from: parent.id(),
                     gen: 1,
-                    reason: ExitReason::Shutdown
+                    reason: ExitReason::Shutdown(None)
                 }]
             );
         } else {

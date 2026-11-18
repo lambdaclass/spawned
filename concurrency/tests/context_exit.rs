@@ -31,7 +31,7 @@ fn native_explicit_exit_is_cooperative_and_first_reason_wins() {
             reply.reply(());
         }
     }
-    for reason in [ExitReason::Shutdown, ExitReason::Kill] {
+    for reason in [ExitReason::Shutdown(None), ExitReason::Kill] {
         let cleaned = Arc::new(AtomicBool::new(false));
         let actor = Worker(cleaned.clone()).spawn();
         actor.request(Exit(reason.clone())).unwrap();
@@ -67,7 +67,7 @@ async fn async_explicit_exit_is_cooperative_and_first_reason_wins() {
             reply.reply(());
         }
     }
-    for reason in [ExitReason::Shutdown, ExitReason::Kill] {
+    for reason in [ExitReason::Shutdown(None), ExitReason::Kill] {
         let cleaned = Arc::new(AtomicBool::new(false));
         let actor = Worker(cleaned.clone()).spawn();
         actor.request(Exit(reason.clone())).await.unwrap();

@@ -650,7 +650,7 @@ impl Handler<Burst> for Source {
                 yield_now().await;
             }
             match burst.end {
-                End::SelfStop => ctx.stop_with_reason(ExitReason::Shutdown),
+                End::SelfStop => ctx.stop_with_reason(ExitReason::Shutdown(None)),
                 End::Panic => panic!("source panicked"),
                 End::External => {}
             }
@@ -727,7 +727,7 @@ async fn exit_after_last_message_body(end: End) {
     assert_eq!(notices[exit], Notice::Exit(reason.clone()), "{notices:?}");
     assert_eq!(notices[down], Notice::Down(reason.clone()), "{notices:?}");
     match end {
-        End::SelfStop => assert_eq!(reason, ExitReason::Shutdown),
+        End::SelfStop => assert_eq!(reason, ExitReason::Shutdown(None)),
         End::Panic => assert!(matches!(reason, ExitReason::Panic(_)), "{reason:?}"),
         End::External => assert_eq!(reason, ExitReason::Normal),
     }

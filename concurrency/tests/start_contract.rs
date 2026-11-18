@@ -93,7 +93,7 @@ mod tasks_mode {
                 Then::Error => Init::error("bad config"),
                 Then::Ignore => Init::ignore(),
                 Then::Panic => panic!("init panic"),
-                Then::Stop => Init::stop(ExitReason::Shutdown),
+                Then::Stop => Init::stop(ExitReason::Shutdown(None)),
                 Then::CtxStop => {
                     ctx.stop();
                     Init::ready()
@@ -215,7 +215,7 @@ mod tasks_mode {
                     (
                         Then::Stop,
                         Err(StartError::InitExited {
-                            reason: ExitReason::Shutdown,
+                            reason: ExitReason::Shutdown(None),
                             pending: None,
                         }),
                     ) => {}
@@ -734,7 +734,7 @@ mod threads_mode {
                 Then::Error => Init::error("bad config"),
                 Then::Ignore => Init::ignore(),
                 Then::Panic => panic!("init panic"),
-                Then::Stop => Init::stop(ExitReason::Shutdown),
+                Then::Stop => Init::stop(ExitReason::Shutdown(None)),
                 Then::CtxStop => {
                     ctx.stop();
                     Init::ready()
@@ -837,7 +837,7 @@ mod threads_mode {
                         | (
                             Then::Stop,
                             Err(StartError::InitExited {
-                                reason: ExitReason::Shutdown,
+                                reason: ExitReason::Shutdown(None),
                                 pending: None,
                             }),
                         )

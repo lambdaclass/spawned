@@ -265,7 +265,7 @@ impl<A: Actor> ChildControl for View<A> {
         slot.stop.cancel();
         let scope = system::lock(&self.data).scope.clone();
         if let Some(scope) = scope {
-            scope.signal_parent(ExitReason::Shutdown);
+            scope.signal_parent(ExitReason::Shutdown(None));
         }
     }
     fn snapshot(&self) -> ChildSnapshot {
@@ -279,7 +279,7 @@ impl<A: Actor> ChildControl for View<A> {
         if let Some(scope) = scope {
             scope.close_admission();
             if constructing {
-                scope.stop(ExitReason::Shutdown);
+                scope.stop(ExitReason::Shutdown(None));
             }
         }
         self.changed.send_modify(|n| *n = n.wrapping_add(1));
@@ -292,7 +292,7 @@ impl<A: Actor> ChildControl for View<A> {
     fn stop(&self) {
         self.stop_turn.cancel();
         if let Some(scope) = system::lock(&self.data).scope.clone() {
-            scope.signal_parent(ExitReason::Shutdown);
+            scope.signal_parent(ExitReason::Shutdown(None));
         }
     }
     fn done(&self) -> watch::Receiver<bool> {

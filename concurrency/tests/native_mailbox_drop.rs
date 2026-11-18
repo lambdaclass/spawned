@@ -81,7 +81,7 @@ fn native_drop_child() {
     }
     for reason in [
         ExitReason::Normal,
-        ExitReason::Shutdown,
+        ExitReason::Shutdown(None),
         ExitReason::Kill,
         ExitReason::Panic("linked failure".into()),
     ] {

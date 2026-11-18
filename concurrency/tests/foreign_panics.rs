@@ -599,8 +599,8 @@ fn panic_hook_child() {
         assert_eq!(actor.ping(&env), 7);
         actor
             .child()
-            .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
-        assert_eq!(env.wait_exit(&actor.child()), ExitReason::Shutdown);
+            .stop_with_reason(spawned_concurrency::ExitReason::Shutdown(None));
+        assert_eq!(env.wait_exit(&actor.child()), ExitReason::Shutdown(None));
         env.finish();
     }
     println!("{DONE}");

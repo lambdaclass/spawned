@@ -399,7 +399,7 @@ pub(super) fn wait<A: Actor>(
     actor: &ActorRef<A>,
     waiter: bool,
 ) -> Result<StartOutcome<()>, StartError> {
-    let cell = actor.signal.startup.clone();
+    let cell = actor.shared.signal.startup.clone();
     loop {
         let seen = cell.version();
         match cell.observe(waiter, || actor.child_handle()) {

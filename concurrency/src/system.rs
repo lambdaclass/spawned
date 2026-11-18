@@ -542,7 +542,7 @@ impl SystemInner {
                             // The system is a standalone actor's parent: its
                             // Shutdown is a parent exit signal (E3).
                             scope.set_cleanup_timeout(remaining);
-                            scope.signal_parent(ExitReason::Shutdown);
+                            scope.signal_parent(ExitReason::Shutdown(None));
                             trace.stop_next(scope.id);
                             let joined = rt::timeout(remaining, scope.joined()).await.is_ok();
                             trace.joined(scope.id, joined);
@@ -560,7 +560,7 @@ impl SystemInner {
                     if expired {
                         scope.kill();
                     } else {
-                        scope.signal_parent(ExitReason::Shutdown);
+                        scope.signal_parent(ExitReason::Shutdown(None));
                     }
                 }
                 trace.ordered_end(expired);
@@ -632,7 +632,7 @@ impl SystemInner {
                 for scope in scopes.iter().rev() {
                     if let Err(payload) =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            scope.stop(ExitReason::Shutdown)
+                            scope.stop(ExitReason::Shutdown(None))
                         }))
                     {
                         let message = crate::error::panic_message(&*payload);

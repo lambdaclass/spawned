@@ -878,7 +878,7 @@ mod tests {
         assert_eq!(registry.external_count(), 0);
         registry.end_turn(true);
         registry.exiting();
-        registry.seal(&ExitReason::Shutdown);
+        registry.seal(&ExitReason::Shutdown(None));
         registry.close();
         assert_eq!(terminal_of(&slot), Some(Terminal::Stopped));
         assert_eq!(registry.outstanding(), 0);
@@ -912,11 +912,11 @@ mod tests {
         let exiting = deferred(&registry, NEVER);
         registry.dropped(exiting.clone());
         assert!(!unwound.is_terminal() && !exiting.is_terminal());
-        registry.seal(&ExitReason::Shutdown);
+        registry.seal(&ExitReason::Shutdown(None));
         assert_eq!(registry.close(), 2);
         assert_eq!(terminal_of(&unwound), Some(Terminal::Stopped));
         assert_eq!(terminal_of(&exiting), Some(Terminal::Stopped));
-        assert_eq!(registry.final_reason(), Some(&ExitReason::Shutdown));
+        assert_eq!(registry.final_reason(), Some(&ExitReason::Shutdown(None)));
         // Past the death point a drop answers at once.
         let late = Arc::new(Slot::<u32>::new(NEVER));
         registry.dropped(late.clone());

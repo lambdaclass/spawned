@@ -247,7 +247,7 @@ struct Clocked {
 }
 impl Actor for Clocked {}
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Fired;
 impl Message for Fired {
     type Result = ();
@@ -372,6 +372,57 @@ pub fn threads_send_interval_is_fixed_delay_while_the_actor_stalls() {
                     pair[1].duration_since(pair[0])
                 );
             }
+            actor.child_handle().stop();
+            actor.join();
+        },
+    );
+}
+
+/// A long-lived actor's stop token keeps no callback for a timer that fired
+/// or was cancelled: each `send_after`/`send_interval` used to leave one on
+/// it until the actor stopped, so an actor re-arming timers grew without
+/// bound.
+#[test]
+pub fn threads_timers_release_their_stop_token_callbacks_while_the_actor_runs() {
+    crate::test_wait::bounded(
+        concat!(
+            module_path!(),
+            "::threads_timers_release_their_stop_token_callbacks_while_the_actor_runs"
+        ),
+        move || {
+            let handled = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let actor = Clocked {
+                handled: handled.clone(),
+                stall: None,
+            }
+            .spawn();
+            let token = actor.context().cancellation_token();
+            let baseline = token.callbacks_registered();
+            let fired = 50;
+            for _ in 0..fired {
+                let _timer = send_after(Duration::from_millis(1), actor.context(), Fired);
+            }
+            let long = Duration::from_secs(3600);
+            let mut cancelled: Vec<_> = (0..50)
+                .map(|_| send_after(long, actor.context(), Fired))
+                .collect();
+            cancelled.extend((0..10).map(|_| send_interval(long, actor.context(), Fired)));
+            assert!(token.callbacks_registered() >= baseline + cancelled.len());
+            for timer in &cancelled {
+                timer.cancellation_token.cancel();
+            }
+            assert!(
+                wait_for(|| handled.lock().unwrap().len(), |n| *n >= fired) >= fired,
+                "timers never fired"
+            );
+            let left = wait_for(|| token.callbacks_registered(), |n| *n == baseline);
+            assert_eq!(
+                left,
+                baseline,
+                "the running actor's stop token kept {} timer callbacks",
+                left - baseline
+            );
+            assert!(!token.is_cancelled(), "the actor is still running");
             actor.child_handle().stop();
             actor.join();
         },

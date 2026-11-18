@@ -459,7 +459,7 @@ impl<A: Actor> Runner for TypedRunner<A> {
                 });
                 let scope = system::lock(&view.data).scope.clone();
                 if let Some(scope) = scope {
-                    scope.stop(ExitReason::Shutdown);
+                    scope.stop(ExitReason::Shutdown(None));
                     scope.joined().await;
                 }
                 view.finish(true);

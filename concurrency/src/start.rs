@@ -1202,15 +1202,15 @@ mod parent_exit_tests {
     fn a_decided_start_is_answered_not_abandoned() {
         let cell = StartupCell::new();
         cell.prepare(true, None, Duration::from_secs(5), 0);
-        cell.fail_at_death(&ExitReason::Shutdown);
-        let _ = cell.publish(&ExitReason::Shutdown, None);
+        cell.fail_at_death(&ExitReason::Shutdown(None));
+        let _ = cell.publish(&ExitReason::Shutdown(None), None);
         cell.parent_exit();
         assert!(matches!(cell.observe(true, no_handle), Observed::Wait(_)));
-        cell.published(&ExitReason::Shutdown);
+        cell.published(&ExitReason::Shutdown(None));
         assert!(matches!(
             cell.observe(true, no_handle),
             Observed::Answer(Err(StartError::InitExited {
-                reason: ExitReason::Shutdown,
+                reason: ExitReason::Shutdown(None),
                 pending: None
             }))
         ));

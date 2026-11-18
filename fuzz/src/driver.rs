@@ -5,7 +5,8 @@
 
 use crate::scenario::*;
 use crate::world::{
-    factory_call, factory_outcome, now, Act, Do, Outcome, SupInst, TimerRec, Worker, World,
+    factory_call, factory_outcome, now, Act, Do, Outcome, SupInst, TimerRec, TimerTag, Worker,
+    World,
 };
 use spawned_concurrency::{
     registry,
@@ -15,8 +16,10 @@ use spawned_concurrency::{
         SupervisorSpec, SupervisorStrategy,
     },
     system::{ActorSystem, ExecutionGroup, ShutdownReport},
-    tasks::{send_after, send_interval, ActorRef, ActorStart, TimerHandle},
-    ActorError, ActorId, ChildHandle, ExitReason,
+    tasks::{
+        send_after, send_interval, Actor, ActorRef, ActorStart, Context, Handler, TimerHandle,
+    },
+    ActorError, ActorId, ChildHandle, Down, ExitReason, PendingReply,
 };
 use spawned_rt::tasks::{self as rt, sim, JoinHandle};
 use std::{
@@ -182,6 +185,7 @@ pub async fn run_body(scenario: Scenario, seed: u64) {
         }
     }
     leaks(&world, baseline).await;
+    monitor_release_probe(&world).await;
     budget_checks(&world);
     crate::oracles::check(&world);
     let violations = std::mem::take(&mut world.lock().violations);
@@ -255,10 +259,65 @@ async fn leaks(world: &World, baseline: usize) {
     }
 }
 
+/// A bare actor for [`monitor_release_probe`].
+struct Probe;
+impl Actor for Probe {}
+impl Handler<Down> for Probe {
+    async fn handle(&mut self, _: Down, reply: PendingReply<'_, ()>, _: &Context<Self>) {
+        reply.reply(());
+    }
+}
+
+/// Wait (bounded, in virtual time) until at most `tasks` simulated tasks are
+/// left; the count reached.
+async fn settle_tasks(tasks: usize) -> usize {
+    let start = now();
+    let mut i = 0u64;
+    while sim::stats().tasks > tasks && now() - start < Duration::from_secs(1) {
+        i += 1;
+        if i.is_multiple_of(100) {
+            rt::sleep(Duration::from_millis(10)).await;
+        } else {
+            sim::yield_now().await;
+        }
+    }
+    sim::stats().tasks
+}
+
+/// L7 (bug 17): an exiting observer cancels its outgoing monitor waiters
+/// before its exit is published, so none outlives it while the target lives
+/// on. Run after the leak checks, in the emptied world, where nothing else
+/// spawns or ends tasks: the observer's exit must take the task count back
+/// to what it was before the observer existed.
+async fn monitor_release_probe(world: &World) {
+    if !world.lock().violations.is_empty() {
+        return;
+    }
+    let target = Probe.start();
+    rt::sleep(Duration::from_millis(10)).await;
+    let alone = sim::stats().tasks;
+    let observer = Probe.start();
+    observer.context().monitor(&target.child_handle());
+    observer.child_handle().stop();
+    if rt::timeout(LONG, observer.wait_exit()).await.is_err() {
+        world.violate("L3: an actor did not exit after stop", "probe".into());
+        return;
+    }
+    let left = settle_tasks(alone).await;
+    if left > alone {
+        world.violate(
+            "L7: an exited observer's monitor waiter outlived it",
+            format!("{left} tasks, {alone} before the observer, target alive"),
+        );
+    }
+    target.child_handle().stop();
+    let _ = rt::timeout(LONG, target.wait_exit()).await;
+}
+
 fn reason(r: Reason) -> ExitReason {
     match r {
         Reason::Normal => ExitReason::Normal,
-        Reason::Shutdown => ExitReason::Shutdown,
+        Reason::Shutdown => ExitReason::Shutdown(None),
         Reason::Kill => ExitReason::Kill,
         Reason::Panic => ExitReason::Panic("fuzz: injected stop".into()),
     }
@@ -589,7 +648,7 @@ impl Driver {
                 let msg = Do {
                     nonce: self.next_nonce(),
                     lane: 0,
-                    timer: 0,
+                    timer: None,
                     act,
                 };
                 let _ = if via_recipient {
@@ -617,7 +676,7 @@ impl Driver {
                 let msg = Do {
                     nonce,
                     lane,
-                    timer: 0,
+                    timer: None,
                     act,
                 };
                 let request = async move {
@@ -742,7 +801,7 @@ impl Driver {
                 }
                 match r {
                     Reason::Normal => handle.stop(),
-                    Reason::Shutdown => handle.stop_with_reason(ExitReason::Shutdown),
+                    Reason::Shutdown => handle.stop_with_reason(ExitReason::Shutdown(None)),
                     r => handle.stop_with_reason(reason(r)),
                 }
             }
@@ -784,13 +843,18 @@ impl Driver {
                         interval,
                         cancelled: None,
                         handled: 0,
+                        target: aref.child_handle(),
+                        clones: 0,
                     });
                     s.timers.len() - 1
                 };
                 let msg = Do {
                     nonce: 0,
                     lane: 0,
-                    timer: 1 + id,
+                    timer: Some(TimerTag {
+                        world: self.world.clone(),
+                        index: id,
+                    }),
                     act,
                 };
                 let timer = if interval {
@@ -832,7 +896,7 @@ impl Driver {
                 let msg = Do {
                     nonce: self.next_nonce(),
                     lane: 0,
-                    timer: 0,
+                    timer: None,
                     act,
                 };
                 drop(aref.send_request(msg, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT));
@@ -1085,7 +1149,7 @@ impl Driver {
                 let _ = aref.send(Do {
                     nonce,
                     lane: 0,
-                    timer: 0,
+                    timer: None,
                     act: Act::Panic,
                 });
             }
@@ -1551,7 +1615,7 @@ impl Driver {
         let msg = Do {
             nonce,
             lane: 0,
-            timer: 0,
+            timer: None,
             act: Act::Noop,
         };
         match aref
@@ -1829,13 +1893,8 @@ impl Driver {
             // during `terminate` kills with its own reason). The only
             // non-abnormal reason a signal can carry is `Shutdown`.
             let trapping = self.traps.get(&id).is_some_and(|t| t.0);
-            let late_shutdown = exit == ExitReason::Shutdown && !trapping;
-            // 0.9 (semantics L9): an administrative stop that arrived while
-            // started() ran outranks its panic (row 3 over row 4), so the
-            // start fails with the stop's reason.
-            let stop_outranks_init_panic =
-                started_panicked && self.requested.get(&id) == Some(&exit);
-            if panicked && !exit.is_abnormal() && !late_shutdown && !stop_outranks_init_panic {
+            let late_shutdown = exit == ExitReason::Shutdown(None) && !trapping;
+            if panicked && !exit.is_abnormal() && !late_shutdown {
                 self.violate(
                     "L4: an actor that panicked exited with a non-abnormal reason",
                     format!("w{instance} {exit:?}"),

@@ -119,7 +119,7 @@ async fn one_for_one_uses_fresh_state_same_group_and_instance_bound_refs() {
     assert!(supervisor.shutdown(LIMIT).await.complete);
     assert_eq!(
         new.child_handle().wait_exit_async().await,
-        ExitReason::Shutdown
+        ExitReason::Shutdown(None)
     );
     assert!(system.shutdown(LIMIT).await.complete);
 }
@@ -133,7 +133,9 @@ async fn restart_modes_distinguish_normal_shutdown_and_panic() {
     ] {
         for exit in [
             ExitReason::Normal,
-            ExitReason::Shutdown,
+            ExitReason::Shutdown(None),
+            // OTP `{shutdown, Term}`: restarts exactly as a bare Shutdown (G7).
+            ExitReason::shutdown_with("drained"),
             ExitReason::Panic(String::new()),
         ] {
             let abnormal = exit.is_abnormal();
@@ -151,9 +153,9 @@ async fn restart_modes_distinguish_normal_shutdown_and_panic() {
             let generation = child.snapshot().generation;
             match &exit {
                 ExitReason::Normal => old.child_handle().stop(),
-                ExitReason::Shutdown => old
-                    .child_handle()
-                    .stop_with_reason(spawned_concurrency::ExitReason::Shutdown),
+                shutdown @ ExitReason::Shutdown(_) => {
+                    old.child_handle().stop_with_reason(shutdown.clone())
+                }
                 _ => assert!(old.request(Crash).await.is_err()),
             }
             // The child really exited with the reason under test.
@@ -213,7 +215,7 @@ async fn restart_budget_is_shared_between_siblings_and_exhaustion_closes_tree() 
     assert_eq!(a.snapshot().generation, 2);
     assert_eq!(
         b2.child_handle().wait_exit_async().await,
-        ExitReason::Shutdown
+        ExitReason::Shutdown(None)
     );
     assert!(system.shutdown(LIMIT).await.complete);
 }
@@ -863,7 +865,7 @@ async fn stuck_supervisor_does_not_prevent_earlier_standalone_shutdown_after_sys
             .await
             .unwrap();
         assert!(
-            matches!(reason, ExitReason::Shutdown | ExitReason::Killed),
+            matches!(reason, ExitReason::Shutdown(_) | ExitReason::Killed),
             "{reason:?}"
         );
     }
@@ -932,7 +934,7 @@ impl Handler<Crash> for ExitOnceDuringRestart {
 /// (`normal_pre_ready_exit_records_real_cause_and_fails_transient_startup`).
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn transient_replacement_exiting_before_readiness_is_retried() {
-    for reason in [ExitReason::Normal, ExitReason::Shutdown] {
+    for reason in [ExitReason::Normal, ExitReason::Shutdown(None)] {
         let system = ActorSystem::new().unwrap();
         let group = system.async_group("replacement-start-exit", 1).unwrap();
         let mut tree = system.supervisor(config(5)).unwrap();
@@ -976,7 +978,7 @@ async fn shutdown_pre_ready_exit_fails_transient_startup() {
         .add(
             ChildSpec::new("self-shutdown", &group, |_| async {
                 Ok::<_, String>(ExitOnceDuringRestart {
-                    exit: Some(ExitReason::Shutdown),
+                    exit: Some(ExitReason::Shutdown(None)),
                 })
             })
             .restart(RestartMode::Transient),
@@ -989,7 +991,7 @@ async fn shutdown_pre_ready_exit_fails_transient_startup() {
     assert!(system.shutdown(LIMIT).await.complete);
     let snapshot = child.snapshot();
     assert_eq!(snapshot.generation, 1);
-    assert_eq!(snapshot.last_exit, Some(ExitReason::Shutdown));
+    assert_eq!(snapshot.last_exit, Some(ExitReason::Shutdown(None)));
 }
 
 /// Failed replacements consume the restart budget like failed factories:
@@ -998,7 +1000,7 @@ async fn shutdown_pre_ready_exit_fails_transient_startup() {
 /// fails with an exhausted budget.
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_replacements_exhaust_the_restart_budget_exactly() {
-    for reason in [ExitReason::Normal, ExitReason::Shutdown] {
+    for reason in [ExitReason::Normal, ExitReason::Shutdown(None)] {
         let system = ActorSystem::new().unwrap();
         let group = system.async_group("replacement-budget", 1).unwrap();
         let mut policy = config(3);
@@ -1125,7 +1127,7 @@ async fn transient_startup_timeout_retries_after_actual_cleanup() {
         .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 3);
     assert_eq!(child.snapshot().generation, 3);
-    assert_eq!(child.snapshot().last_exit, Some(ExitReason::Shutdown));
+    assert_eq!(child.snapshot().last_exit, Some(ExitReason::Shutdown(None)));
     assert!(child.current().is_ok());
     assert!(supervisor.shutdown(LIMIT).await.complete);
     assert!(system.shutdown(LIMIT).await.complete);
@@ -1171,7 +1173,7 @@ async fn supervisor_report_deadline_signals_remaining_siblings() {
         spawned_rt::tasks::timeout(LIMIT, actor.wait_exit())
             .await
             .unwrap(),
-        ExitReason::Shutdown
+        ExitReason::Shutdown(None)
     );
     release.send(()).unwrap();
     assert!(supervisor.shutdown(LIMIT).await.complete);
@@ -1386,7 +1388,7 @@ async fn system_deadline_signals_remaining_supervised_siblings() {
     // or by the grace-expiry kill (E3), whichever reaches it first (on one
     // CPU the shutdown can).
     assert!(
-        matches!(reason, ExitReason::Killed | ExitReason::Shutdown),
+        matches!(reason, ExitReason::Killed | ExitReason::Shutdown(_)),
         "{reason:?}"
     );
     release.send(()).unwrap();

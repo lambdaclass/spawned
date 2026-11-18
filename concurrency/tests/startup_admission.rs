@@ -105,7 +105,7 @@ async fn managed_actor_stopped_before_first_poll_starts_then_stops() {
         .collect();
     actor
         .child_handle()
-        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown(None));
     release.send(()).unwrap();
     spawned_rt::tasks::timeout(LIMIT, blocker.join())
         .await
@@ -115,7 +115,7 @@ async fn managed_actor_stopped_before_first_poll_starts_then_stops() {
         spawned_rt::tasks::timeout(LIMIT, actor.wait_exit())
             .await
             .unwrap(),
-        ExitReason::Shutdown
+        ExitReason::Shutdown(None)
     );
     assert!(matches!(
         spawned_rt::tasks::timeout(LIMIT, actor.ready())
@@ -148,12 +148,12 @@ async fn actor_stopped_before_first_poll_keeps_both_hooks() {
     let actor = Probe(counts.clone()).spawn(); // this runtime has not yielded
     actor
         .child_handle()
-        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown(None));
     assert_eq!(
         spawned_rt::tasks::timeout(LIMIT, actor.wait_exit())
             .await
             .unwrap(),
-        ExitReason::Shutdown
+        ExitReason::Shutdown(None)
     );
     assert_eq!(counts.started.load(Ordering::SeqCst), 1);
     assert_eq!(counts.stopped.load(Ordering::SeqCst), 1);

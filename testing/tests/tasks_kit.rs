@@ -272,7 +272,7 @@ async fn exit_injects_every_reason() {
     // Exact exit_signal/2 semantics: the target ends with the signal's reason,
     // a kill ends it Killed.
     for (reason, expected) in [
-        (ExitReason::Shutdown, ExitReason::Shutdown),
+        (ExitReason::Shutdown(None), ExitReason::Shutdown(None)),
         (
             ExitReason::Panic("injected".into()),
             ExitReason::Panic("injected".into()),
@@ -618,13 +618,13 @@ async fn kill_stops_a_trapping_target_and_other_signals_are_trapped() {
     // Any other signal to a trapping target is queued as an Exit.
     let target = Counter(Arc::default()).spawn();
     target.context().trap_exit(true);
-    faults::exit(&target.child_handle(), ExitReason::Shutdown);
+    faults::exit(&target.child_handle(), ExitReason::Shutdown(None));
     assert_eq!(settle(&target, Get, WAIT).await, 0);
     assert_eq!(target.child_handle().exit_reason(), None);
     target
         .child_handle()
-        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
-    assert_eq!(join_within(&target, WAIT).await, ExitReason::Shutdown);
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown(None));
+    assert_eq!(join_within(&target, WAIT).await, ExitReason::Shutdown(None));
 }
 
 /// `in_actor` runs a closure in one of the actor's turns, after the messages

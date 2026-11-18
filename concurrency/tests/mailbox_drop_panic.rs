@@ -307,7 +307,7 @@ fn abandoned_receiver_child() {
         }
         // A committed stop on a never-polled startup must also survive a
         // panicking actor-state destructor and two queued destructor failures.
-        for committed in [ExitReason::Shutdown, ExitReason::Kill] {
+        for committed in [ExitReason::Shutdown(None), ExitReason::Kill] {
             let owner = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -333,7 +333,7 @@ fn abandoned_receiver_child() {
         for (managed, state_panics) in [(false, false), (false, true), (true, false), (true, true)]
         {
             for committed in [
-                ExitReason::Shutdown,
+                ExitReason::Shutdown(None),
                 ExitReason::Kill,
                 ExitReason::Panic("linked peer cause".into()),
             ] {

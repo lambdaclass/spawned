@@ -141,7 +141,10 @@ async fn completed_turn_is_not_reported_while_helper_cleanup_remains() {
         .unwrap()
         .unwrap();
     // The actor completes a turn and exits, but the helper retains its scope.
-    actor.request(Quit(ExitReason::Shutdown)).await.unwrap();
+    actor
+        .request(Quit(ExitReason::Shutdown(None)))
+        .await
+        .unwrap();
     spawned_rt::tasks::timeout(LIMIT, actor.join())
         .await
         .unwrap();
@@ -158,7 +161,7 @@ async fn completed_turn_is_not_reported_while_helper_cleanup_remains() {
     assert!(report
         .exits
         .iter()
-        .any(|e| e.id == actor.id() && e.reason == ExitReason::Shutdown));
+        .any(|e| e.id == actor.id() && e.reason == ExitReason::Shutdown(None)));
     release.send(()).unwrap();
     within!(helper.join()).await.unwrap();
     assert!(report.wait(LIMIT).await.complete);

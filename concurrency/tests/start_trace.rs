@@ -166,6 +166,7 @@ enum Outcome {
     Ignore,
     Panic,
     StopShutdown,
+    StopPayload,
 }
 
 /// A child whose `started()` may wait on a gate, then returns `outcome`.
@@ -202,7 +203,8 @@ impl Actor for Child {
             Outcome::Error => Init::error("no config"),
             Outcome::Ignore => Init::ignore(),
             Outcome::Panic => panic!("child fails in started()"),
-            Outcome::StopShutdown => Init::stop(ExitReason::Shutdown),
+            Outcome::StopShutdown => Init::stop(ExitReason::Shutdown(None)),
+            Outcome::StopPayload => Init::stop(ExitReason::shutdown_with("no backend")),
         }
     }
 }
@@ -381,13 +383,13 @@ async fn link_stop_in_started_ends_nontrapping_parent() {
         matches!(
             result,
             Err(StartError::InitExited {
-                reason: ExitReason::Shutdown,
+                reason: ExitReason::Shutdown(None),
                 pending: None
             })
         ),
         "{result:?}"
     );
-    assert_eq!(p.wait_exit().await, ExitReason::Shutdown);
+    assert_eq!(p.wait_exit().await, ExitReason::Shutdown(None));
     children_done(1).await;
     until("P's publication", || count("PPublish") >= 1).await;
     let events = write(
@@ -634,7 +636,7 @@ async fn kill_and_admin_stop_during_started() {
     let starting = child.start();
     let handle = starting.actor_ref().unwrap().child_handle();
     until("started() began", || count("SStartedBegin") >= 2).await;
-    handle.stop_with_reason(ExitReason::Shutdown);
+    handle.stop_with_reason(ExitReason::Shutdown(None));
     release.send(()).unwrap();
     // OTP gen_server:stop: the stop waits for started(); the start succeeds,
     // then the actor exits with the stop's reason through stopped().
@@ -642,7 +644,7 @@ async fn kill_and_admin_stop_during_started() {
         Ok(StartOutcome::Started(child)) => child,
         other => panic!("{other:?}"),
     };
-    assert_eq!(child.wait_exit().await, ExitReason::Shutdown);
+    assert_eq!(child.wait_exit().await, ExitReason::Shutdown(None));
     children_done(2).await;
     let events = write("kill_and_admin_stop_during_started", "U", false, 1000);
     has(
@@ -1155,4 +1157,40 @@ async fn parent_killed_while_awaiting_start_link_abandons_the_wait() {
             "SDie:Killed",
         ],
     );
+}
+
+/// `{shutdown, Term}` (G7): `Init::stop(shutdown_with(..))` fails the start
+/// with the full reason, and the start trace classes it as `Shutdown`
+/// (the model's `stopS`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn init_stop_with_shutdown_payload() {
+    let _serial = SERIAL.lock().await;
+    let (p, _) = parent(true).await;
+    lifecycle_trace::record_start_parent(&p.child_handle());
+    let result = Child::new(Outcome::StopPayload)
+        .start_link(&p.context())
+        .await;
+    match &result {
+        Err(StartError::InitExited {
+            reason,
+            pending: None,
+        }) => {
+            assert!(reason.is_shutdown());
+            assert_eq!(reason.shutdown_payload(), Some("no backend"));
+        }
+        other => panic!("{other:?}"),
+    }
+    children_done(1).await;
+    let events = write("init_stop_with_shutdown_payload", "U", true, 1000);
+    has(
+        &events,
+        &[
+            "SResolve:stopS",
+            "SDie:Shutdown",
+            "SPublish:divert",
+            "SAnswer:failed",
+        ],
+    );
+    p.request(Stop).await.unwrap();
+    p.wait_exit().await;
 }

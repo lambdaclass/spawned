@@ -347,7 +347,7 @@ impl ExitRequest {
                     Row::Ignore
                 }
                 Returned::Ready | Returned::NotBegun if !open => {
-                    self.reason = Some(ExitReason::Shutdown);
+                    self.reason = Some(ExitReason::Shutdown(None));
                     Row::Closed
                 }
                 Returned::Ready | Returned::NotBegun => Row::Ready,
@@ -1111,16 +1111,16 @@ mod tests {
         deliver_signal(&t, from, ExitReason::Normal, Origin::Direct, false);
         assert_eq!(lock_request(&t.request).reason(), None);
         // Any other reason begins exit without stopped().
-        deliver_signal(&t, from, ExitReason::Shutdown, Origin::Direct, false);
+        deliver_signal(&t, from, ExitReason::Shutdown(None), Origin::Direct, false);
         assert_eq!(
             lock_request(&t.request).reason(),
-            Some(&ExitReason::Shutdown)
+            Some(&ExitReason::Shutdown(None))
         );
         assert!(!lock_request(&t.request).begin_hook());
         // Trapping: queued as Exit, nothing committed.
         let t = target(&seen);
         t.trap.store(true, Ordering::Release);
-        deliver_signal(&t, from, ExitReason::Shutdown, Origin::Direct, false);
+        deliver_signal(&t, from, ExitReason::Shutdown(None), Origin::Direct, false);
         assert_eq!(lock_request(&t.request).reason(), None);
         // A Kill signal is untrappable and ends Killed; a Kill link notice is trappable.
         deliver_signal(&t, from, ExitReason::Kill, Origin::Link, false);
@@ -1136,7 +1136,7 @@ mod tests {
         // Trapping: a peer's Exit is not pending; a parent's signal is.
         let t = target(&seen);
         t.trap.store(true, Ordering::Release);
-        deliver_signal(&t, from, ExitReason::Shutdown, Origin::Link, false);
+        deliver_signal(&t, from, ExitReason::Shutdown(None), Origin::Link, false);
         assert!(!pending(&t));
         deliver_signal(&t, from, ExitReason::Normal, Origin::Direct, true);
         assert!(pending(&t));
@@ -1145,7 +1145,7 @@ mod tests {
         let t = target(&seen);
         deliver_signal(&t, from, ExitReason::Normal, Origin::Direct, true);
         assert!(!pending(&t));
-        deliver_signal(&t, from, ExitReason::Shutdown, Origin::Direct, false);
+        deliver_signal(&t, from, ExitReason::Shutdown(None), Origin::Direct, false);
         assert!(pending(&t));
         // Phase 0: held signals count when started() returns.
         let t = target(&seen);
@@ -1157,7 +1157,7 @@ mod tests {
         let t = target(&seen);
         lock_request(&t.request).begin_starting();
         deliver_signal(&t, from, ExitReason::Normal, Origin::Direct, true);
-        deliver_signal(&t, from, ExitReason::Shutdown, Origin::Direct, false);
+        deliver_signal(&t, from, ExitReason::Shutdown(None), Origin::Direct, false);
         lock_request(&t.request).end_starting(false);
         assert!(pending(&t), "a held untrapped signal begins exit");
         let t = target(&seen);
@@ -1178,8 +1178,8 @@ mod tests {
                 // a kill supersedes it and nothing replaces Killed.
                 let mut r = ExitRequest::default();
                 assert!(r.request(ExitReason::Normal));
-                assert!(r.untrapped(ExitReason::Shutdown));
-                assert_eq!(r.reason(), Some(&ExitReason::Shutdown));
+                assert!(r.untrapped(ExitReason::Shutdown(None)));
+                assert_eq!(r.reason(), Some(&ExitReason::Shutdown(None)));
                 assert!(
                     r.begin_hook(),
                     "a late signal does not skip a self-exit's stopped()"
@@ -1188,17 +1188,17 @@ mod tests {
                 assert_eq!(r.reason(), Some(&ExitReason::Panic("stopped".into())));
                 assert!(r.kill());
                 r.panic(ExitReason::Panic("after kill".into()));
-                assert!(!r.untrapped(ExitReason::Shutdown));
+                assert!(!r.untrapped(ExitReason::Shutdown(None)));
                 assert!(r.request(ExitReason::Normal));
                 assert_eq!(r.die(), ExitReason::Killed);
-                assert!(!r.kill() && !r.untrapped(ExitReason::Shutdown));
+                assert!(!r.kill() && !r.untrapped(ExitReason::Shutdown(None)));
                 // Runtime drop: Killed unless a non-Normal reason was requested.
                 let mut r = ExitRequest::default();
                 r.request(ExitReason::Normal);
                 assert_eq!(r.runtime_drop(), ExitReason::Killed);
                 let mut r = ExitRequest::default();
-                r.request(ExitReason::Shutdown);
-                assert_eq!(r.runtime_drop(), ExitReason::Shutdown);
+                r.request(ExitReason::Shutdown(None));
+                assert_eq!(r.runtime_drop(), ExitReason::Shutdown(None));
                 // Review #291 item 8: a non-ready startup decision froze the
                 // reason (Init::error: Normal); a runtime drop before D keeps it.
                 let mut r = ExitRequest::default();

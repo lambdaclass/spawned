@@ -811,14 +811,14 @@ fn end(env: &Env, actor: &Ref, ending: Ending) -> ExitReason {
             actor.request(Cmd::Boom),
             Err(ActorError::ActorStopped(ExitReason::Panic(_)))
         )),
-        Ending::Shutdown => child.stop_with_reason(spawned_concurrency::ExitReason::Shutdown),
+        Ending::Shutdown => child.stop_with_reason(spawned_concurrency::ExitReason::Shutdown(None)),
     }
     env.wait_exit(&child)
 }
 fn expected_reason(ending: Ending) -> ExitReason {
     match ending {
         Ending::Stop => ExitReason::Normal,
-        Ending::Shutdown => ExitReason::Shutdown,
+        Ending::Shutdown => ExitReason::Shutdown(None),
         Ending::Panic => ExitReason::Panic("panic in handler: cross-backend injected panic".into()),
     }
 }
@@ -1306,7 +1306,7 @@ proptest! {
         order.extend((100..100 + sup_children).rev());
         order.extend((0..before).rev());
         prop_assert_eq!(&outcome.order, &order);
-        prop_assert!(outcome.exits.iter().all(|r| *r == ExitReason::Shutdown));
+        prop_assert!(outcome.exits.iter().all(|r| *r == ExitReason::Shutdown(None)));
         prop_assert!(outcome.complete);
     }
 }

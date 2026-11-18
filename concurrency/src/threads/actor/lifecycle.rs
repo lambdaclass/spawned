@@ -80,16 +80,16 @@ impl<A: Actor> ActorRef<A> {
             cell.clone(),
         );
 
-        let actor_ref = ActorRef {
+        let shared = Arc::new(ActorShared {
             id,
-            sender: tx.clone(),
+            sender: tx,
             cancellation_token: cancellation_token.clone(),
-            completion: completion.clone(),
-            monitors: monitors.clone(),
-            trap_exit: trap_exit.clone(),
+            completion,
+            monitors,
+            trap_exit,
             links: links.clone(),
             linked_reason: linked_reason.clone(),
-            signal: signal.clone(),
+            signal,
             mailbox: crate::instrumentation::Mailbox::default(),
             replies: Registry::new_native(
                 id,
@@ -103,6 +103,9 @@ impl<A: Actor> ActorRef<A> {
                     .unwrap_or_else(crate::reply::jobs::default_max_native_jobs),
             )),
             cleaned: Arc::default(),
+        });
+        let actor_ref = ActorRef {
+            shared: shared.clone(),
         };
         let child_handle = actor_ref.child_handle();
 
@@ -133,8 +136,12 @@ impl<A: Actor> ActorRef<A> {
                 match &verb {
                     Verb::Link(p) => {
                         let mut inner = Ok(None);
-                        let installed =
-                            link::install_start_edge(&p.signal, &p.links, &signal, &links, || {
+                        let installed = link::install_start_edge(
+                            &p.signal,
+                            &p.links,
+                            &actor_ref.shared.signal,
+                            &links,
+                            || {
                                 let request = link::lock_request(&p.request);
                                 if request.reason().is_some() || request.is_dead() {
                                     trace::commit_point(Some("parentexited"));
@@ -145,7 +152,8 @@ impl<A: Actor> ActorRef<A> {
                                     trace::commit_point(None);
                                 }
                                 inner.is_ok()
-                            });
+                            },
+                        );
                         match (installed, inner) {
                             (_, Err(error)) => Err(error),
                             (false, Ok(_)) => Err(StartError::ParentExited),
@@ -204,21 +212,7 @@ impl<A: Actor> ActorRef<A> {
             monitor_ref
         });
 
-        let ctx = Context {
-            id,
-            sender: tx,
-            cancellation_token: cancellation_token.clone(),
-            completion: actor_ref.completion.clone(),
-            monitors,
-            trap_exit,
-            links: links.clone(),
-            linked_reason: linked_reason.clone(),
-            signal,
-            mailbox: actor_ref.mailbox.clone(),
-            replies: actor_ref.replies.clone(),
-            jobs: actor_ref.jobs.clone(),
-            cleaned: actor_ref.cleaned.clone(),
-        };
+        let ctx = Context { shared };
 
         // Recorded from here: the start_link link is the model's initial one.
         crate::lifecycle_trace::life_spawn(id.raw(), link_parent.map_or(0, |p| p.raw()));
@@ -231,13 +225,13 @@ impl<A: Actor> ActorRef<A> {
             id,
             links,
             linked_reason,
-            actor_ref.monitors.clone(),
+            actor_ref.shared.monitors.clone(),
             completion_tx,
             move || cleanup_token.cancel(),
         )
-        .with_mailbox_failures(actor_ref.sender.failures())
-        .with_replies(actor_ref.replies.clone())
-        .with_jobs(actor_ref.jobs.clone())
+        .with_mailbox_failures(actor_ref.shared.sender.failures())
+        .with_replies(actor_ref.shared.replies.clone())
+        .with_jobs(actor_ref.shared.jobs.clone())
         .with_startup(cell, link_parent)
         .with_name(name);
         let startup = crate::actor_cleanup::ActorStartup::new(
@@ -245,13 +239,13 @@ impl<A: Actor> ActorRef<A> {
             cleanup,
             discharge_startup::<A>,
         );
-        let replies = actor_ref.replies.clone();
-        let jobs = actor_ref.jobs.clone();
-        let cleaned = crate::reply::jobs::CleanedGuard(actor_ref.cleaned.clone());
+        let replies = actor_ref.shared.replies.clone();
+        let jobs = actor_ref.shared.jobs.clone();
+        let cleaned = crate::reply::jobs::CleanedGuard(actor_ref.shared.cleaned.clone());
         let body = move || {
             let _cleaned = cleaned;
             let ((mut actor, ctx, mut rx, cancellation_token), mut cleanup) = startup.into_parts();
-            let request = ctx.linked_reason.clone();
+            let request = ctx.shared.linked_reason.clone();
             let discarded = match catch_unwind(AssertUnwindSafe(|| {
                 run_actor(&mut actor, ctx, &mut rx, cancellation_token)
             })) {
@@ -343,10 +337,10 @@ pub(super) fn run_actor_receiving<A: Actor>(
     cancellation_token: CancellationToken,
 ) -> Option<Box<dyn Envelope<A> + Send>> {
     let mut discarded = None;
-    let request = ctx.linked_reason.clone();
-    let trace_id = ctx.id.raw();
-    let _monitor_cleanup = MonitorCleanup(ctx.monitors.clone());
-    let cell = ctx.signal.startup.clone();
+    let request = ctx.shared.linked_reason.clone();
+    let trace_id = ctx.shared.id.raw();
+    let _monitor_cleanup = MonitorCleanup(ctx.shared.monitors.clone());
+    let cell = ctx.shared.signal.startup.clone();
     // A kill or the init timer before started() began: it is not run.
     let early = crate::lifecycle_trace::start_section(|| {
         let killed = link::lock_request(&request).killed_early()
@@ -382,7 +376,7 @@ pub(super) fn run_actor_receiving<A: Actor>(
     };
     // The startup decision (design 2.3) and the readiness commit (5.1),
     // under the exit-request and cell locks. No failed start runs stopped().
-    let trapping = ctx.trap_exit.load(Ordering::Acquire);
+    let trapping = ctx.shared.trap_exit.load(Ordering::Acquire);
     let continued = continuation.is_some();
     let row = crate::lifecycle_trace::start_section(|| {
         crate::lifecycle_trace::life_section(trace_id, || {
@@ -410,7 +404,7 @@ pub(super) fn run_actor_receiving<A: Actor>(
         if let (crate::start::Returned::Error(cause), false) =
             (&returned, row == crate::start::Row::Error)
         {
-            let id = ctx.id;
+            let id = ctx.shared.id;
             crate::actor_cleanup::log_safely(|| {
                 tracing::debug!(actor = %id, cause, ?row, "init error superseded by a higher-precedence exit");
             });
@@ -429,11 +423,11 @@ pub(super) fn run_actor_receiving<A: Actor>(
             crate::lifecycle_trace::start_emit(c, || {
                 crate::lifecycle_trace::StartEvent::new("SContinue", c)
             });
-            ctx.replies.begin_turn();
+            ctx.shared.replies.begin_turn();
             let result = catch_unwind(AssertUnwindSafe(|| {
                 crate::lifecycle_trace::with_actor(trace_id, || envelope.handle(actor, &ctx));
             }));
-            ctx.replies.end_turn(result.is_err());
+            ctx.shared.replies.end_turn(result.is_err());
             if let Err(panic) = result {
                 let msg = panic_message(&*panic);
                 crate::actor_cleanup::log_safely(|| {
@@ -488,13 +482,13 @@ pub(super) fn run_actor_receiving<A: Actor>(
                     let observation = envelope
                         .observation()
                         .map(|observation| observation.begin());
-                    ctx.replies.begin_turn();
+                    ctx.shared.replies.begin_turn();
                     let result = catch_unwind(AssertUnwindSafe(|| {
                         crate::lifecycle_trace::with_actor(trace_id, || {
                             envelope.handle(actor, &ctx)
                         });
                     }));
-                    ctx.replies.end_turn(result.is_err());
+                    ctx.shared.replies.end_turn(result.is_err());
                     #[cfg(feature = "metrics")]
                     if let Some(observation) = observation {
                         observation.finish(result.is_err());
@@ -522,10 +516,10 @@ pub(super) fn run_actor_receiving<A: Actor>(
     }
 
     cancellation_token.cancel();
-    ctx.replies.exiting();
+    ctx.shared.replies.exiting();
     // Payload drops are held until every caller is answered (DropFailures).
-    ctx.sender.failures().hold();
-    ctx.jobs.cancel_all();
+    ctx.shared.sender.failures().hold();
+    ctx.shared.jobs.cancel_all();
     // stopped() is skipped when a kill, an untrapped exit signal or link
     // notice began the exit (decision 2); one that already began finishes.
     let (run_hook, skipped) = crate::lifecycle_trace::life_section(trace_id, || {
@@ -544,7 +538,7 @@ pub(super) fn run_actor_receiving<A: Actor>(
     });
     if let Some((cause, reason)) = skipped {
         crate::actor_cleanup::log_stopped_skipped(
-            ctx.id,
+            ctx.shared.id,
             std::any::type_name::<A>(),
             cause,
             reason.as_ref(),

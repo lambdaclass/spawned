@@ -637,6 +637,12 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
                                 let _ = #reply_name.reply(self.#method_name(#msg_name, #ctx_name).await);
                             }
 
+                            // Inlined into the envelope's dispatch with the
+                            // handler body and reply(); left to the heuristics,
+                            // whether that happens depends on how the crate is
+                            // split into modules (+3.6% instructions per send
+                            // after #278).
+                            #[inline]
                             fn __spawned_handle_immediate<#turn_lifetime>(
                                 &mut self,
                                 #msg_name: #msg_ty,

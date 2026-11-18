@@ -87,7 +87,7 @@ fn borrowed_groups_join_owned_work_and_leave_the_runtime_and_ambient_tasks_alive
             assert!(!report.complete);
             assert_eq!(
                 actor.child_handle().exit_reason(),
-                Some(ExitReason::Shutdown)
+                Some(ExitReason::Shutdown(None))
             );
             release.send(()).unwrap();
             tokio::time::timeout(LIMIT, helper.join())

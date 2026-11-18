@@ -144,8 +144,11 @@ async fn main() {
         .on::<rates_protocol::Rate>(|_| 7)
         .spawn();
     assert_eq!(native.rate("X".into()).unwrap(), 7);
-    faults::exit(&native.child_handle(), ExitReason::Shutdown);
-    assert_eq!(native_kit::join_within(&native, WAIT), ExitReason::Shutdown);
+    faults::exit(&native.child_handle(), ExitReason::Shutdown(None));
+    assert_eq!(
+        native_kit::join_within(&native, WAIT),
+        ExitReason::Shutdown(None)
+    );
     rates.assert_no_unexpected();
 
     println!("Mocks, probes and injected faults verified without touching production code.");

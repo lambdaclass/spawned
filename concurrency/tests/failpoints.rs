@@ -293,7 +293,7 @@ async fn ready_generation_discarded_before_publication_is_never_current() {
     let reason = tokio::time::timeout(LIMIT, handles[1].wait_exit_async())
         .await
         .unwrap();
-    assert_eq!(reason, ExitReason::Shutdown);
+    assert_eq!(reason, ExitReason::Shutdown(None));
     assert_eq!(child.snapshot().generation, 3);
     assert!(tree.shutdown(LIMIT).await.complete);
     assert!(system.shutdown(LIMIT).await.complete);
@@ -1161,7 +1161,7 @@ async fn an_exit_signal_is_not_overtaken_by_its_senders_death_notice() {
     .unwrap();
     let ctx = sender.context();
     let target = recorder.child_handle();
-    let helper = std::thread::spawn(move || ctx.exit(&target, ExitReason::Shutdown));
+    let helper = std::thread::spawn(move || ctx.exit(&target, ExitReason::Shutdown(None)));
     reached("actor.exit_before_deliver", 1).await;
     // The sender dies while its helper's signal is in flight.
     sender.context().stop();
@@ -1183,7 +1183,7 @@ async fn an_exit_signal_is_not_overtaken_by_its_senders_death_notice() {
         .collect();
     assert_eq!(
         reasons,
-        [ExitReason::Shutdown, ExitReason::Normal],
+        [ExitReason::Shutdown(None), ExitReason::Normal],
         "the death notice overtook the sender's own signal"
     );
     recorder.context().stop();
@@ -1704,7 +1704,7 @@ mod native {
         .unwrap();
         let ctx = sender.context();
         let target = recorder.child_handle();
-        let helper = std::thread::spawn(move || ctx.exit(&target, ExitReason::Shutdown));
+        let helper = std::thread::spawn(move || ctx.exit(&target, ExitReason::Shutdown(None)));
         let began = Instant::now();
         while failpoints::stats("actor.exit_before_deliver").hits < 1 {
             assert!(began.elapsed() < LIMIT);
@@ -1722,7 +1722,7 @@ mod native {
         helper.join().unwrap();
         assert_eq!(
             *seen.lock().unwrap(),
-            [ExitReason::Shutdown, ExitReason::Normal],
+            [ExitReason::Shutdown(None), ExitReason::Normal],
             "the death notice overtook the sender's own signal"
         );
         recorder.context().stop();

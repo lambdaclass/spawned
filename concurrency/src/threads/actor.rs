@@ -99,8 +99,15 @@ pub trait Handler<M: Message>: Actor {
 /// Handle passed to every handler and lifecycle hook, providing access to the
 /// actor's mailbox and lifecycle controls.
 ///
-/// Clone is cheap — it clones the inner channel sender and cancellation token.
+/// Clone is cheap: one reference-count increment on the actor's shared state.
 pub struct Context<A: Actor> {
+    shared: Arc<ActorShared<A>>,
+}
+
+/// State shared by every `Context` and `ActorRef` of one actor, as in tasks
+/// mode: the handles stay one pointer wide and cloning one is a single
+/// reference-count increment.
+struct ActorShared<A: Actor> {
     id: ActorId,
     sender: mpsc::Sender<MailboxItem<A>>,
     cancellation_token: CancellationToken,
@@ -109,29 +116,22 @@ pub struct Context<A: Actor> {
     trap_exit: TrapExitFlag,
     links: LinkTable,
     linked_reason: LinkedExitReason,
+    /// This instance as the target of exit signals and link notices.
     signal: Arc<SignalTarget>,
     mailbox: crate::instrumentation::Mailbox,
+    /// This instance's reply registry: deferred tokens, credits, turn phase.
     replies: Arc<Registry>,
+    /// This instance's pipe-to-self jobs.
     jobs: Arc<crate::reply::jobs::JobSet>,
+    /// Set when cleanup completes (death plus the bounded job join); `join()`
+    /// waits for it.
     cleaned: Arc<crate::reply::jobs::Cleaned>,
 }
 
 impl<A: Actor> Clone for Context<A> {
     fn clone(&self) -> Self {
         Self {
-            id: self.id,
-            sender: self.sender.clone(),
-            cancellation_token: self.cancellation_token.clone(),
-            completion: self.completion.clone(),
-            monitors: self.monitors.clone(),
-            trap_exit: self.trap_exit.clone(),
-            links: self.links.clone(),
-            linked_reason: self.linked_reason.clone(),
-            signal: self.signal.clone(),
-            mailbox: self.mailbox.clone(),
-            replies: self.replies.clone(),
-            jobs: self.jobs.clone(),
-            cleaned: self.cleaned.clone(),
+            shared: self.shared.clone(),
         }
     }
 }
@@ -201,19 +201,7 @@ pub fn request<M: Message>(
 /// To stop the actor, send an explicit shutdown message through your protocol,
 /// or call [`Context::stop`] from within a handler.
 pub struct ActorRef<A: Actor> {
-    id: ActorId,
-    sender: mpsc::Sender<MailboxItem<A>>,
-    cancellation_token: CancellationToken,
-    completion: spawned_rt::sync::watch::Receiver<Option<ExitReason>>,
-    monitors: MonitorTable,
-    trap_exit: TrapExitFlag,
-    links: LinkTable,
-    linked_reason: LinkedExitReason,
-    signal: Arc<SignalTarget>,
-    mailbox: crate::instrumentation::Mailbox,
-    replies: Arc<Registry>,
-    jobs: Arc<crate::reply::jobs::JobSet>,
-    cleaned: Arc<crate::reply::jobs::Cleaned>,
+    shared: Arc<ActorShared<A>>,
 }
 
 impl<A: Actor> Debug for ActorRef<A> {
@@ -225,19 +213,7 @@ impl<A: Actor> Debug for ActorRef<A> {
 impl<A: Actor> Clone for ActorRef<A> {
     fn clone(&self) -> Self {
         Self {
-            id: self.id,
-            sender: self.sender.clone(),
-            cancellation_token: self.cancellation_token.clone(),
-            completion: self.completion.clone(),
-            monitors: self.monitors.clone(),
-            trap_exit: self.trap_exit.clone(),
-            links: self.links.clone(),
-            linked_reason: self.linked_reason.clone(),
-            signal: self.signal.clone(),
-            mailbox: self.mailbox.clone(),
-            replies: self.replies.clone(),
-            jobs: self.jobs.clone(),
-            cleaned: self.cleaned.clone(),
+            shared: self.shared.clone(),
         }
     }
 }

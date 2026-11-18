@@ -1,14 +1,14 @@
-Planted bug 14 (exit-shutdown-reports-normal): An administrative Shutdown stop (ChildHandle::stop_with_reason(Shutdown); `shutdown()` before 0.8) commits Normal
+Planted bug 14 (exit-shutdown-reports-normal): An administrative Shutdown stop (ChildHandle::stop_with_reason(Shutdown(_)); `shutdown()` before 0.8) commits Normal
 
 diff --git a/concurrency/src/child_handle.rs b/concurrency/src/child_handle.rs
-index 6ab2bc7f..107c69c9 100644
+index 3b94d213..1ac963ad 100644
 --- a/concurrency/src/child_handle.rs
 +++ b/concurrency/src/child_handle.rs
 @@ -170,6 +170,11 @@ impl ChildHandle {
      /// runs. `stop_with_reason(Kill)` ends `Kill`; use [`kill`](Self::kill)
      /// for the untrappable kill signal that ends `Killed`.
      pub fn stop_with_reason(&self, reason: ExitReason) {
-+        let reason = if reason == ExitReason::Shutdown {
++        let reason = if reason.is_shutdown() {
 +            ExitReason::Normal
 +        } else {
 +            reason

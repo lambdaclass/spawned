@@ -233,7 +233,8 @@ Each entry gives:
   - Applications (ethrex `ActorStopped` → `exit(2)`) must encode why they stopped elsewhere.
 - **Why:**
   - Without it, a clean "peer disconnected: TooManyPeers" exit must be `Shutdown` (losing the cause) or abnormal (restarting a Transient child and logging a crash).
-  - The 0.8 design already makes `ExitReason` `#[non_exhaustive]`, so the variant can be added later without breaking callers.
+  - The 0.8 design already makes `ExitReason` `#[non_exhaustive]`, so a variant could be added without breaking callers.
+- **Decision (0.9):** the payload lives in `Shutdown(Option<Arc<str>>)`, not in a separate `ShutdownWith` variant. A separate variant would compile in every caller that matches `ExitReason::Shutdown` and silently send payload exits to the wildcard arm (an abnormal-looking path); one variant makes the compiler flag every class check. `Arc<str>` keeps the reason `Clone + Eq + Debug + Display`, clones as a reference count into many `Down`/`Exit` messages and keeps `size_of::<ExitReason>()` at 24 bytes; an opaque `Arc<dyn Any>` payload would lose `Eq` and readable `Debug`. Text matches `Panic(String)`.
 - **Tier:** soundness / OTP fidelity. **Target:** 0.9.
 - **Cost:** yes.
 - **Overlap:** new. `otp-exit-signals.md` E5 lists "any term (`{shutdown, Term}`)" as a T-difference but does not add it.
