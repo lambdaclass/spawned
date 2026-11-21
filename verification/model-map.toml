@@ -221,6 +221,36 @@ design_only = true
 reason = "introspection v1 design model (0.9); process_info, get_state, the watchdog's fenced kill and the console are not implemented"
 tracking = "trace validation is part of implementing introspection v1 (design: PR #256; event table in docs/design/introspection.md)"
 
+[models.Admission]
+# Admission package design model (ranks 17, 18, 19, 14/G11; 0.9 design);
+# no code yet. One bounded mailbox on a (shared) weighted credit pool, FIFO
+# hand-off to waiters, skip_expired, the priority lane and the death point.
+files = [
+    "verification/tla/Admission.tla",
+    "verification/tla/MCAdmission.*",
+    "verification/tla/MCAdmissionOversize.*",
+    "verification/tla/MCAdmissionLive.*",
+    "verification/tla/TraceAdmission.tla",
+]
+code = []
+[models.Admission.tlc_only]
+design_only = true
+reason = "admission package design model; bounded mailboxes, credit pools, skip_expired and the priority lane are not implemented"
+tracking = "trace validation is part of implementing the admission package (design: docs/design/admission.md, event table in section 12)"
+
+[models.AdmissionCycle]
+# Cyclic sends between two bounded mailboxes: handler sends that wait
+# under a deadline (or never wait) always end their turn (design section 7).
+files = [
+    "verification/tla/AdmissionCycle.tla",
+    "verification/tla/MCAdmissionCycle.*",
+]
+code = []
+[models.AdmissionCycle.tlc_only]
+design_only = true
+reason = "admission package design model (cycles); bounded mailboxes are not implemented"
+tracking = "checked by the admission package's simulator cycle tests once implemented (docs/design/admission.md section 13); no trace events of its own"
+
 # Loom harnesses. Each tests/*_loom.rs that compiles a production core with
 # `#[path]` (against Loom's types, through the core's `sync` shim) is a model
 # of that core too: a PR changing a core under `code` must also change (not
