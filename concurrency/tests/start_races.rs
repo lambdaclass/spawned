@@ -76,7 +76,7 @@ async fn kill_outranks_a_held_signal_during_started() {
     let starting = child.start();
     let handle = starting.actor_ref().unwrap().child_handle();
     entered.await.unwrap();
-    handle.exit(ExitReason::Shutdown);
+    handle.exit(ExitReason::Shutdown(None));
     handle.kill();
     release.send(()).unwrap();
     let result = starting.await;
@@ -200,7 +200,7 @@ async fn ready_after_the_group_closed_fails_the_start() {
         matches!(
             result,
             Err(StartError::InitExited {
-                reason: ExitReason::Shutdown,
+                reason: ExitReason::Shutdown(None),
                 pending: None
             })
         ),
