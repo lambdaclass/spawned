@@ -1,9 +1,0 @@
-/Users/unbalancedparen/projects/spawned/.claude/worktrees/agent-a24af4fd6a3fbee26/examples/thread_only/target/debug/deps/futures_executor-bdafea587a535990.d: /Users/unbalancedparen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-executor-0.3.31/src/lib.rs /Users/unbalancedparen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-executor-0.3.31/src/local_pool.rs /Users/unbalancedparen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-executor-0.3.31/src/enter.rs
-
-/Users/unbalancedparen/projects/spawned/.claude/worktrees/agent-a24af4fd6a3fbee26/examples/thread_only/target/debug/deps/libfutures_executor-bdafea587a535990.rlib: /Users/unbalancedparen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-executor-0.3.31/src/lib.rs /Users/unbalancedparen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-executor-0.3.31/src/local_pool.rs /Users/unbalancedparen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-executor-0.3.31/src/enter.rs
-
-/Users/unbalancedparen/projects/spawned/.claude/worktrees/agent-a24af4fd6a3fbee26/examples/thread_only/target/debug/deps/libfutures_executor-bdafea587a535990.rmeta: /Users/unbalancedparen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-executor-0.3.31/src/lib.rs /Users/unbalancedparen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-executor-0.3.31/src/local_pool.rs /Users/unbalancedparen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-executor-0.3.31/src/enter.rs
-
-/Users/unbalancedparen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-executor-0.3.31/src/lib.rs:
-/Users/unbalancedparen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-executor-0.3.31/src/local_pool.rs:
-/Users/unbalancedparen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-executor-0.3.31/src/enter.rs:

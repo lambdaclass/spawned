@@ -257,9 +257,11 @@ async fn async_pair(round: usize, i: usize) {
     } else {
         (&peer, &worker)
     };
-    first.context().stop();
+    // An administrative stop (not the actor's own ctx.stop(), which inside a
+    // started() still running is Init::stop: no stopped(), so no unregister).
+    first.child_handle().stop();
     first.join().await;
-    second.context().stop();
+    second.child_handle().stop();
     second.join().await;
     assert!(orphan.await.is_err());
 }
@@ -375,9 +377,11 @@ fn native_pair(round: usize, i: usize) {
     } else {
         (&peer, &worker)
     };
-    first.context().stop();
+    // An administrative stop (not the actor's own ctx.stop(), which inside a
+    // started() still running is Init::stop: no stopped(), so no unregister).
+    first.child_handle().stop();
     first.join();
-    second.context().stop();
+    second.child_handle().stop();
     second.join();
     assert!(orphan.recv().is_err());
 }

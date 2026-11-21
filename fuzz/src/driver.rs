@@ -1872,7 +1872,7 @@ impl Driver {
             .map(|a| (a.aref.id(), a.instance, a.aref.child_handle().exit_reason()))
             .collect();
         for (id, instance, exit) in standalone {
-            let (may_stop, panicked, _started_panicked) = {
+            let (may_stop, panicked, started_panicked) = {
                 let s = self.world.lock();
                 (
                     s.may_stop.contains(&id),
@@ -1894,7 +1894,13 @@ impl Driver {
             // non-abnormal reason a signal can carry is `Shutdown`.
             let trapping = self.traps.get(&id).is_some_and(|t| t.0);
             let late_shutdown = exit == ExitReason::Shutdown(None) && !trapping;
-            if panicked && !exit.is_abnormal() && !late_shutdown {
+            // 0.9 (design 2.3): an untrapped exit signal held while started()
+            // ran outranks its panic (row 3 over row 4: in OTP the signal
+            // kills the initialising process first). The trap flag that
+            // counts is the one read when started() returned, which a later
+            // TrapExit op may have changed, so any shutdown is accepted here.
+            let held_signal_wins = started_panicked && exit.is_shutdown();
+            if panicked && !exit.is_abnormal() && !late_shutdown && !held_signal_wins {
                 self.violate(
                     "L4: an actor that panicked exited with a non-abnormal reason",
                     format!("w{instance} {exit:?}"),
