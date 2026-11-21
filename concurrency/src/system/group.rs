@@ -137,9 +137,7 @@ impl GroupInner {
                                         let message = crate::error::panic_message(&*payload);
                                         crate::mailbox::dispose_panic(payload);
                                         crate::actor_cleanup::log_safely(|| {
-                                            tracing::error!(
-                                                "native actor root unwound: {message}"
-                                            );
+                                            tracing::error!("native actor root unwound: {message}");
                                         });
                                     }
                                 }
