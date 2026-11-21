@@ -534,6 +534,7 @@ dependencies = [
  "spawned-concurrency",
  "spawned-macros",
  "spawned-rt",
+ "tracing",
 ]
 
 [[package]]

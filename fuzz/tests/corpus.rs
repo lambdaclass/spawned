@@ -5,13 +5,14 @@
 //! cd fuzz && RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" cargo test --test corpus
 //! ```
 //!
-//! `SPAWNED_FUZZ_RANDOM=n` sets the number of generated inputs (default 64).
+//! `SPAWNED_FUZZ_RANDOM=n` sets the number of generated inputs (default 64),
+//! decoded as the fuzz target does (with fault-injection steps).
 #![cfg(spawned_sim)]
 
-use spawned_fuzz::{decode, execute, last_details};
+use spawned_fuzz::{decode_as, execute, last_details, Format};
 
-fn check(name: &str, bytes: &[u8]) -> bool {
-    let Some(scenario) = decode(bytes) else {
+fn check(name: &str, bytes: &[u8], format: Format) -> bool {
+    let Some(scenario) = decode_as(bytes, format) else {
         return true;
     };
     let run = execute(&scenario, None);
@@ -48,7 +49,11 @@ fn seed_corpus_passes() {
     let mut failed = 0;
     for path in &entries {
         let bytes = std::fs::read(path).unwrap();
-        if !check(&path.display().to_string(), &bytes) {
+        // Seeds are base-format inputs; the fuzz target reads them with
+        // fault steps, so run both decodings.
+        if !check(&path.display().to_string(), &bytes, Format::Base)
+            || !check(&format!("{} (faults)", path.display()), &bytes, Format::Faults)
+        {
             failed += 1;
         }
     }
@@ -74,7 +79,7 @@ fn generated_inputs_pass() {
                 state as u8
             })
             .collect();
-        if !check(&format!("generated input {i}"), &bytes) {
+        if !check(&format!("generated input {i}"), &bytes, Format::Faults) {
             failed += 1;
         }
     }
