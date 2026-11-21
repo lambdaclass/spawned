@@ -2152,8 +2152,8 @@ the soak began, on the process that ran the whole window. The run FAILs on:
 | fault injection | an expected restart or give-up was not logged, or the API did not come back |
 | panics outside injected faults | any panic line in a candidate log, excluding the fault-phase process after the phase began |
 | unexpected exits | the candidate exited without being stopped (the run stops early) |
-| RSS drift | paired: candidate RSS slope more than 10 MB/h above the control's; alone: above 25 MB/h |
-| fd slope | paired: candidate fd slope more than 5/h above the control's; alone: above 5/h |
+| RSS drift | paired: candidate RSS slope more than 10 MB/h (or 10% of the control's slope, if larger) above the control's; alone: above 25 MB/h |
+| fd slope | paired: candidate fd slope more than 5/h (or 10% of the control's) above the control's; alone: above 5/h |
 | sync distance | under 99% of samples within 2 slots (ethlambda) or 2 blocks behind the CL (ethrex), unless within 1 point of the control |
 | API answers | under 99% of samples |
 | spawned counters | any `messages_rejected` or `handlers_panicked` (fault process excluded), or any `requests_timed_out` in the soak window; missing spawned metrics fail too |

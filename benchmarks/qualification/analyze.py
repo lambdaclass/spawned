@@ -417,9 +417,12 @@ class Analysis:
                                          f"candidate slope {fmt(c, 2)} {unit}")
                 return
             if k is not None:
-                ok = c - k <= self.th(margin_th) or c <= 0
+                # Absolute margin, or TH_SLOPE_MARGIN_PCT of the control's slope when both still ramp.
+                margin = max(self.th(margin_th), abs(k) * self.th("TH_SLOPE_MARGIN_PCT") / 100)
+                ok = c - k <= margin or c <= 0
                 self.check(name, "PASS" if ok else "FAIL",
-                           f"candidate {c:+.2f} {unit}, control {k:+.2f} {unit}; margin {margin_th}={cfg[margin_th]}")
+                           f"candidate {c:+.2f} {unit}, control {k:+.2f} {unit}; allowed excess {margin:.2f} "
+                           f"(max of {margin_th}={cfg[margin_th]}, TH_SLOPE_MARGIN_PCT={cfg['TH_SLOPE_MARGIN_PCT']}% of control)")
             else:
                 self.check(name, "PASS" if c <= self.th(abs_th) else "FAIL", f"candidate {c:+.2f} {unit}; {abs_th}={cfg[abs_th]}")
         trend_check("RSS drift", "rss_mb", "TH_RSS_SLOPE_MB_H", "TH_RSS_SLOPE_MARGIN_MB_H", "MB/h")

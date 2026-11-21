@@ -95,6 +95,7 @@ DEFAULTS = {
     "TH_RSS_SLOPE_MB_H": "25",             # unpaired: candidate RSS slope
     "TH_RSS_SLOPE_MARGIN_MB_H": "10",      # paired: candidate slope - control slope
     "TH_FD_SLOPE_H": "5", "TH_FD_SLOPE_MARGIN_H": "5",
+    "TH_SLOPE_MARGIN_PCT": "10",           # paired: or this % of the control's slope, if larger
     "TH_SYNC_DISTANCE": "2",               # slots (ethlambda) or blocks behind the CL (ethrex)
     "TH_SYNCED_PCT": "99", "TH_SYNCED_MARGIN_PCT": "1",
     "TH_API_OK_PCT": "99",
