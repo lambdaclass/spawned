@@ -43,7 +43,9 @@
   at three intervals, like the round coordinator's. The model gains
   `CleanupKill`/`StopExited` and `StuckOnlyAfterKill`, which also covers the
   supervisor's wait. It is checked by two model faults, a `shutdown_kill`
-  trace scenario (which found the code bug) and two recorded-trace controls.
+  trace scenario (which found the code bug), two recorded-trace controls, a
+  `#[sim_test]` (`collateral_kill::shutdown_kills_a_stopped_child_without_failing_the_tree`)
+  and planted bug 36.
 - Release qualification harness, `benchmarks/qualification/`: the client
   canaries and the ethrex memory run, consolidated from the hand-built 0.7.x
   and 0.8.0 runs into one parameterised, manual-only harness. It builds a

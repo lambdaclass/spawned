@@ -548,8 +548,10 @@ Checked by: `Supervision!AtMostOneGeneration`, `Cohorts!AtMostOneGeneration`,
 (the kill at `shutdown_timeout`); for a supervisor stop turn,
 `Supervision!StuckOnlyAfterKill` (`CleanupKill`/`StopExited`, trace-validated
 by [`supervision_trace`][supervision_trace]`::trace_shutdown_kills_child_at_shutdown_timeout`
-and `trace_shutdown_deadline_with_slow_stop`, with a model fault and two
-recorded-trace controls in `negative_checks.py`); for a OneForAll/RestForOne round's stop,
+and `trace_shutdown_deadline_with_slow_stop`, with two model faults and two
+recorded-trace controls in `negative_checks.py`) and
+[`collateral_kill`][collateral_kill]`::shutdown_kills_a_stopped_child_without_failing_the_tree`
+(the shutdown loop's backstop; planted bug 36); for a OneForAll/RestForOne round's stop,
 `Cohorts!StuckOnlyAfterKill` (`CKill`/`CStuck`, trace-validated by
 [`cohort_trace`][cohort_trace]`::trace_collateral_child_killed_or_stuck`, with
 a model fault and two recorded-trace controls in `negative_checks.py`) and

@@ -3,7 +3,9 @@
 //! is killed (`Killed`, design E3), and its slot is stuck (failing the tree)
 //! only if it also misses a second `shutdown_timeout` after the kill. Also
 //! for a trapping child, which queues the round's parent exit signal behind
-//! its held turn: its deadline still starts at the round's stop.
+//! its held turn: its deadline still starts at the round's stop. The same
+//! holds for a OneForOne supervisor's shutdown, whose own wait is a
+//! backstop beyond the kill.
 //!
 //! The collateral child's handler awaits a release that the test controls
 //! (it cannot be preempted, L3), so the timing of the kill and of the
@@ -219,5 +221,60 @@ async fn collateral_child_is_stuck_only_after_the_kill_and_a_second_interval() {
             );
             assert_eq!(reason, ExitReason::Killed, "{strategy:?} trap={trap}");
         }
+    }
+}
+
+/// The same in a supervisor's shutdown (OneForOne): a stopped child released
+/// after the kill, within the second interval, ends `Killed` and the
+/// shutdown completes without failing the tree. The shutdown loop's own wait
+/// used to give up at one `shutdown_timeout`, racing the kill. A trapping
+/// child queues the shutdown behind its held turn; its deadline still starts
+/// at the stop turn.
+#[spawned_concurrency::sim_test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_kills_a_stopped_child_without_failing_the_tree() {
+    for trap in [false, true] {
+        let system = ActorSystem::new().unwrap();
+        let group = system.async_group("shutdown-kill", 2).unwrap();
+        let mut builder = system
+            .supervisor(config(SupervisorStrategy::OneForOne))
+            .unwrap();
+        let (release, gate) = oneshot::channel();
+        let gate: Gate = Arc::new(Mutex::new(Some(gate)));
+        let held = builder
+            .add(
+                ChildSpec::new("held", &group, move |_| {
+                    let gate = gate.clone();
+                    async move { Ok::<_, String>(Worker { gate, trap }) }
+                })
+                .shutdown_timeout(SHUTDOWN),
+            )
+            .unwrap();
+        let supervisor = builder.start().await.unwrap();
+        let actor = held.wait_ready().await.unwrap();
+        let handle = actor.child_handle();
+        let (entered, holding) = oneshot::channel();
+        actor.send(Hold(entered)).unwrap();
+        spawned_rt::tasks::timeout(LIMIT, holding)
+            .await
+            .expect("the held turn never began")
+            .unwrap();
+        let releaser = spawned_rt::tasks::spawn(async move {
+            // After the kill, before the second interval ends.
+            spawned_rt::tasks::sleep(SHUTDOWN * 3 / 2).await;
+            let _ = release.send(());
+        });
+        let report = supervisor.shutdown(LIMIT).await;
+        let _ = releaser.await;
+        assert!(report.complete, "trap={trap}");
+        assert_eq!(
+            supervisor.failure(),
+            None,
+            "trap={trap}: the shutdown gave up before the kill"
+        );
+        let reason = spawned_rt::tasks::timeout(LIMIT, handle.wait_exit_async())
+            .await
+            .expect("the held child never exited");
+        assert_eq!(reason, ExitReason::Killed, "trap={trap}");
+        assert!(system.shutdown(LIMIT).await.complete, "trap={trap}");
     }
 }

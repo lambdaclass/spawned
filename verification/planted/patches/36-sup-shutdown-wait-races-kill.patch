@@ -1,0 +1,15 @@
+Planted bug 36 (sup-shutdown-wait-races-kill): the supervisor's shutdown loop gives up on a stopped child at one shutdown_timeout, racing the controller's kill, and fails the tree (V3)
+
+diff --git a/concurrency/src/supervision/run.rs b/concurrency/src/supervision/run.rs
+index 14518832..ebdf806f 100644
+--- a/concurrency/src/supervision/run.rs
++++ b/concurrency/src/supervision/run.rs
+@@ -190,7 +190,7 @@ pub(super) async fn run_supervisor_body(
+         // V3: the controller kills at shutdown_timeout and is stuck only
+         // after a second interval; this wait is a backstop beyond both (the
+         // round coordinator's too), so the tree is not failed before the kill.
+-        let backstop = child.shutdown_timeout().saturating_mul(3);
++        let backstop = child.shutdown_timeout();
+         let finished = rt::timeout(backstop, system::wait_true(child.done()))
+             .await
+             .is_ok();
