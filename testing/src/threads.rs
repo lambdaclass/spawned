@@ -7,7 +7,7 @@ use crate::shared::SETTLE_TIMEOUT;
 use spawned_concurrency::error::ActorError;
 use spawned_concurrency::message::Message;
 use spawned_concurrency::threads::{
-    Actor, ActorRef, ActorStart, Context, Handler, Receiver, Recipient,
+    Actor, ActorRef, ActorStart, Context, Handler, Init, Receiver, Recipient,
 };
 use spawned_concurrency::{ChildHandle, ExitReason};
 use spawned_concurrency::{Deadline, PendingReply, ReplyReceiver};
@@ -22,6 +22,23 @@ use std::time::{Duration, Instant};
 pub struct Mock {
     rules: Rules,
     inbox: Arc<Inbox>,
+    start: StartHooks,
+}
+
+/// The mock's start behaviour (`on_started`, `start_delay`, `drop_flag`).
+#[derive(Default)]
+struct StartHooks {
+    on_started: Option<Box<dyn FnOnce(&Context<Mock>) -> Init<Mock> + Send>>,
+    delay: Option<Duration>,
+    drop_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+}
+
+impl Drop for Mock {
+    fn drop(&mut self) {
+        if let Some(flag) = &self.start.drop_flag {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
 }
 
 impl Default for Mock {
@@ -49,7 +66,18 @@ impl Mock {
     }
 }
 
-impl Actor for Mock {}
+impl Actor for Mock {
+    #[allow(refining_impl_trait)] // returns an `Init`
+    fn started(&mut self, ctx: &Context<Self>) -> Init<Self> {
+        if let Some(delay) = self.start.delay {
+            std::thread::sleep(delay);
+        }
+        match self.start.on_started.take() {
+            Some(init) => init(ctx),
+            None => Init::ready(),
+        }
+    }
+}
 
 impl<M: Message> Handler<M> for Mock {
     fn handle(&mut self, msg: M, reply: PendingReply<'_, M::Result>, _: &Context<Self>) {

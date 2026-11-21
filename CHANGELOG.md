@@ -93,6 +93,10 @@
   arms); the model releases a group slot at scope completion, as the code
   does. Not yet: scope ownership (S8), supervisor `ignore` and
   `ChildSpec::options`.
+- Test kit: `Mock::on_started`, `start_delay`, `drop_flag` (unified start
+  design 10) to test code that starts a dependency. Ten unified-start
+  planted bugs (`verification/planted/patches/25-34`); the runner's trace
+  layer also records the lifecycle and start traces.
 
 - `model-sync`: a design-only TLA+ model (`design_only = true`: Start,
   Introspection, DynamicSupervisor) stays allowlisted as TLC-only only while

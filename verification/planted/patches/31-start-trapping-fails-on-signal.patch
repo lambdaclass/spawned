@@ -1,0 +1,13 @@
+diff --git a/concurrency/src/link.rs b/concurrency/src/link.rs
+index 5add5c2a..92c36109 100644
+--- a/concurrency/src/link.rs
++++ b/concurrency/src/link.rs
+@@ -312,7 +312,7 @@ impl ExitRequest {
+         // Row 3: the first held non-Normal signal to a non-trapping child.
+         // (An administrative stop is not a row: it is applied after a ready
+         // commitment, below.)
+-        let row3 = if trapping {
++        let row3 = if false {
+             None
+         } else {
+             held.iter().find(|r| **r != ExitReason::Normal).cloned()

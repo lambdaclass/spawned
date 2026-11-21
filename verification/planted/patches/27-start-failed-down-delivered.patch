@@ -1,0 +1,13 @@
+diff --git a/concurrency/src/start.rs b/concurrency/src/start.rs
+index e169bf32..8567bc58 100644
+--- a/concurrency/src/start.rs
++++ b/concurrency/src/start.rs
+@@ -958,7 +958,7 @@ fn dispose(
+     }
+     match waiter {
+         Waiter::Waiting => match kind {
+-            EdgeKind::Monitor => Disposition::Divert,
++            EdgeKind::Monitor => Disposition::Deliver,
+             EdgeKind::Link if trapping || commit == Commit::TimedOut => Disposition::Divert,
+             // A non-trapping parent: applied if non-Normal (OTP: the link
+             // kills the caller); a Normal one is ignored, so it is dropped
