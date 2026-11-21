@@ -22,7 +22,9 @@
   one and writes it as a regression test (`fuzz/tests/campaign_*.rs`, its
   input and shrunk tape), and keeps a `cmin`-reduced corpus for the next
   campaign. A manual item of the release checklist (docs/TESTING.md); never
-  scheduled.
+  scheduled. Its first run (2.5 h, 40 million executions) found no framework
+  bug and one wrong oracle (L4 trusted a `trap_exit` made on an exited
+  actor), fixed with the regression `untrapped_shutdown_after_late_trap`.
 - CI reliability: drop `magic-nix-cache-action` (its GitHub Actions cache
   backend failed runs with FlakeHub authentication, cache-service and SSL
   errors); give TLC 75% of RAM (`TLC_HEAP`) so liveness checking no longer runs
