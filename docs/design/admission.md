@@ -31,7 +31,7 @@ TLC-only until the code exists.
 - [14. Client impact](#14-client-impact)
 - [15. Alternatives considered](#15-alternatives-considered)
 - [16. Release: 0.9 or 0.10](#16-release-09-or-010)
-- [17. Open questions for the maintainer](#17-open-questions-for-the-maintainer)
+- [17. Decisions](#17-decisions-maintainer-2026-11-21)
 
 ## Summary
 
@@ -46,7 +46,7 @@ TLC-only until the code exists.
 | 7 | **The death point releases everything.** At D, request waiters get `ActorStopped(final reason)`, send waiters get `NoProc` with their message back, and every credit the instance holds returns to its pool. | A crash loop on a shared pool cannot leak capacity. This extends D3, D4 and R1 to waiters. |
 | 8 | **Stale work is skipped only on opt-in, and only if nobody can be answered.** `#[request_handler(skip_expired)]` skips a request whose reply slot is already closed (the caller timed out or left), and `send_expiring` skips a send past its deadline. | OTP dispatches expired calls; the deferred-replies design already chose opt-in (rank 19). |
 | 9 | **The priority lane is opt-in in two steps, as OTP 28.** The actor type enables the lane (`#[actor(priority_lane)]`); the receiver then marks sources as priority: a priority recipient (OTP's priority alias), a priority monitor and a priority link. A valve dispatches one ordinary item after `burst` priority turns in a row. | Senders cannot impose priority, as in OTP. The valve is the bound ROADMAP rank 14 asks for: priority must not starve user work. |
-| 10 | **Inherited deadlines are explicit in v1.** Use `reply.deadline()` with `Deadline::min`; propagating a turn's deadline automatically is left as an open question. | Automatic propagation needs a lookup on every request, which the default path cannot pay for. |
+| 10 | **Inherited deadlines are explicit in v1.** Use `reply.deadline()` with `Deadline::min`; propagating a turn's deadline automatically waits for the cancel-scope design (§17, decision 3). | Automatic propagation needs a lookup on every request, which the default path cannot pay for. |
 
 ## 1. The problem
 
@@ -887,7 +887,7 @@ place keep compiling. `Message::weight` is a provided method.
   the mailbox is full. Whether pausing the libp2p swarm is acceptable
   must be measured on the canary. The fallback is a listener that uses
   `try_send` and counts what it drops; that variant of `spawn_listener` is
-  open question 6.
+  not in v1 (§17, decision 6).
 - **The five validation semaphores and their `Ignore(Overloaded)`
   verdicts** bound compute, not input. They stay until the compute pool
   (rank 11b), which shares this design's "reject at once" rule.
@@ -913,7 +913,7 @@ each adoption is a behaviour change to review: senders must handle
 | First-fit hand-off | Better throughput for mixed weights, but it starves heavy messages (`FirstFit` violates `NoOvertaking`). |
 | Release credits at the end of the turn | It would bound the in-turn item too, but a handler awaiting a reply from an actor that needs to send back to it would hold credits across the await. Release at dequeue matches OTP's message-queue length. |
 | Strict OTP priority (no valve) | ROADMAP rank 14 requires no starvation. `burst = u32::MAX` remains available. |
-| Ambient deadline inheritance | A task-local or `Context` lookup on every request (open question 3). |
+| Ambient deadline inheritance | A task-local or `Context` lookup on every request (§17, decision 3). |
 | Skip expired by default | Not OTP; the deferred-replies design decided opt-in. |
 
 ## 16. Release: 0.9 or 0.10
@@ -923,7 +923,7 @@ implementation moves to 0.10.** The reasons:
 
 1. **Process.** The ROADMAP's rule for features that touch admission
    requires two independent reviews (different tools or people), each
-   finding resolved, and the maintainer settling the open questions
+   finding resolved, and the maintainer settling the open questions (settled in §17)
    before any code. This is revision 1 with no review yet. The 0.8 and
    0.9 designs each took three rounds.
 2. **Dependencies in flight.** The per-start options extend unified
@@ -939,46 +939,38 @@ implementation moves to 0.10.** The reasons:
    memory. The dynamic supervisor (0.10) shares only the "reject with a
    typed error" pattern.
 
-One piece could ship in 0.9 if the maintainer wants an early win:
-`skip_expired` alone (A9). It is a macro attribute plus an existing slot
-compare-and-swap, with no hot-path change, no new storage and no
-dependency on #291. See open question 1.
+One piece ships in 0.9: `skip_expired` alone (A9). It is a macro
+attribute plus an existing slot compare-and-swap, with no hot-path
+change, no new storage and no dependency on #291 (decision 1 in §17).
 
 Rank 13 (draining) and rank 18a (memory limits) stay in 0.11 on top of
 this, as the ROADMAP lists them.
 
-## 17. Open questions for the maintainer
+## 17. Decisions (maintainer, 2026-11-21)
 
-1. **Ship `skip_expired` (A9) in 0.9 on its own?** Recommended only if
-   the 0.9 schedule has room; it is independent of the rest.
-2. **`MailboxFull` as a new `ActorError` variant, or reuse `Overloaded`?**
-   This design adds `MailboxFull` because "never admitted" is a stronger
-   statement than "rejected at a bound". `Overloaded` today can also mean
-   the handler ran and answered `overloaded()`. Reusing it means one less
-   variant, at the cost of that distinction.
-3. **Automatic deadline inheritance** (rank 19's "inherited monotonic
-   deadlines"). It is explicit in v1. Automatic inheritance (a request
-   sent from a turn gets `min(own, turn's deadline)`) needs a lookup on
-   every request. Is it acceptable behind a feature flag, given that
-   features unify across the dependency graph, or should it wait for the
-   cancel-scope design (rank 15a), which owns deadline inheritance?
-4. **The valve's default.** `burst = 64` here. OTP is strict
-   (`u32::MAX`). The ROADMAP's "cannot starve user work" argues for a
-   finite default.
-5. **Self-sends on a full own mailbox** fail with `MailboxFull`, so a
-   handler cannot grow its own queue past the bound. OTP self-sends never
-   fail. Should a turn be allowed one self-send of slack instead?
-6. **A `spawn_listener` variant that drops instead of waiting**
-   (`spawn_listener_lossy`, with a drop counter), for streams where
-   pausing the source is worse than losing items (the ethlambda swarm
-   case). Add it in v1 or wait for rank 33's streams?
-7. **Priority on the parent link.** It is excluded in v1, which keeps V9.
-   OTP 28 allows `link(.., [priority])` on any link. Is a priority parent
-   link (fast shutdown past a backlog) wanted?
-8. **Per-type compile-time kind.** A type is bounded or not, and only the
-   size and pool vary per start. Is any user known to need the same actor
-   type bounded in one place and unbounded in another? The unified start
-   design reserved a run-time `mailbox(..)`.
+1. **`skip_expired` (A9) ships in 0.9 on its own.** It is independent
+   of the rest, off the hot path and needs no new storage. It lands with
+   its part of the trace events, so the model is trace-validated for
+   what exists.
+2. **`MailboxFull` is a new `ActorError` variant.** "Never admitted"
+   must stay distinguishable from a handler that ran and answered
+   `overloaded()`.
+3. **No automatic deadline inheritance in v1.** Deadlines stay explicit.
+   Inheritance belongs to the cancel-scope design (rank 15a), which can
+   make it free; a feature flag would unify across the graph and put a
+   lookup on every request.
+4. **The valve's default is `burst = 64`**, configurable. A finite
+   default keeps the "cannot starve user work" guarantee; `u32::MAX`
+   gives OTP's strict order for those who want it.
+5. **Self-sends get no slack.** A self-send on a full own mailbox fails
+   with `MailboxFull` like any other `send`. One rule is easier to reason
+   about and to model than a per-turn allowance.
+6. **No lossy listener in v1.** It waits for rank 33's streams, or for a
+   concrete request from ethlambda.
+7. **No priority parent link in v1.** V9 is kept unchanged.
+8. **Bounded-or-not is fixed per actor type in v1.** The run-time
+   `mailbox(..)` start option that unified start reserved stays reserved
+   until a user needs the same type both ways.
 
 [actor_cleanup.rs]: ../../concurrency/src/actor_cleanup.rs
 [No performance hit]: ../../ROADMAP.md#non-goals
