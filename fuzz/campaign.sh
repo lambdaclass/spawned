@@ -9,7 +9,9 @@
 # do not stop the campaign), and samples the latest `cov:`/`ft:`/`exec/s`
 # line once a minute into OUT_DIR/coverage.csv.
 # Crashes land in OUT_DIR/artifacts, their decision tapes in OUT_DIR/tapes.
-# Never scheduled: run it by hand (or from the workflow_dispatch job).
+# FUZZ_CORPUS names an earlier campaign's minimized corpus to start from as
+# well (release-campaign.sh keeps one). Never scheduled: run it by hand (or
+# from the workflow_dispatch job).
 set -euo pipefail
 
 seconds=${1:-3600}
@@ -20,6 +22,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 
 mkdir -p "$out"/corpus "$out"/artifacts "$out"/tapes "$out"/logs
 cp -n "$here"/seeds/* "$out"/corpus/ 2>/dev/null || true
+if [[ -n ${FUZZ_CORPUS:-} && -d $FUZZ_CORPUS ]]; then
+    cp -n "$FUZZ_CORPUS"/* "$out"/corpus/ 2>/dev/null || true
+fi
 cd "$here"
 export RUSTFLAGS="${RUSTFLAGS:-} --cfg spawned_sim --cfg tokio_unstable"
 export SPAWNED_FUZZ_TAPE_DIR="$out/tapes"
