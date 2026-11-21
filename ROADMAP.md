@@ -140,7 +140,7 @@ What 1.0 requires:
 3. **Production-safe defaults:** the 0.11 admission package; 1.0 does not ship with only unbounded mailboxes.
 4. **Introspection complete:** `spawned-top` (30), the flight recorder (9) and causal tracing (28) on top of 0.9's introspection v1.
 5. **Determinism complete for spawned itself:** nothing in spawned escapes the simulator; a CI check that the same seed gives identical traces; a versioned decision-tape format, so a tape saved on 1.0 replays on any 1.x.
-6. **Release gates run every time:** a soak run, the benchmark regression gate, a long fuzzer campaign, a mutation-score target on the core modules, and the planted-bug matrix catching every planted bug.
+6. **Release gates run every time:** a soak run, the benchmark regression gate, a long fuzzer campaign (`fuzz/release-campaign.sh`, four hours by hand on fede; [docs/TESTING.md](docs/TESTING.md#release-fuzz-campaign)), a mutation-score target on the core modules, and the planted-bug matrix catching every planted bug.
 7. **Production proof:** Ethrex and Ethlambda running the 1.0 candidate on testnet canaries for several weeks with no incident attributed to Spawned; an external review of the semantics contract and the models.
 8. **Documentation:** the GUIDE complete, every feature with an example in both modes, a cookbook (connection per peer, worker pools, timeouts, graceful shutdown), and MIGRATION for every version.
 
