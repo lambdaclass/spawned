@@ -2208,7 +2208,11 @@ queue). Wall-clock numbers on shared runners are too noisy, so the gate counts
 instructions with callgrind. Each benchmark runs at two sizes (2,000 and 6,000
 operations); instructions per operation is the difference divided by the
 extra operations, so process start, runtime and actor setup cancel, and the
-gate takes the median over run pairs. Only deterministic benchmarks are
+gate takes the median over run pairs. Every measured binary is built with one
+codegen unit: with the default sixteen, how generic code is split across
+units changes with unrelated code size, and with it which futures are
+inlined, which moved the same workload by up to ±5% between builds (more
+than the budget). Only deterministic benchmarks are
 gated: the async ones on a Tokio current-thread runtime (`async_ct_*`: burst,
 sequential and 16-task `request()`, `send` from one and two producer tasks;
 identical counts run to run, three pairs) and threads-mode sequential
