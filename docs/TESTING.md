@@ -2113,9 +2113,11 @@ the host scheduler decides how the requester and the actor interleave, and
 how often they spin, park and wake. On an idle machine, such as the CI
 runner, a woken thread finds a free CPU at once and the count repeats (run
 pairs within 0.05%). Under load it does not: on fede (load average 40-80 on
-30 CPUs) run pairs spread 5-6%. Across ten gates there, the change against
-an identical base stayed within -1.1% to +1.5% with a median of three
-pairs, and within -0.4% to +1.1% with the median of nine the gate now uses.
+30 CPUs) run pairs spread 5-6%. In twenty gates there (two sets of ten)
+the median of nine pairs the gate now uses kept the change against an
+identical base within -0.8% to +1.4% and against v0.8.0 within -0.2% to
++1.6%. On the same samples the old median of three reached +3.8% against
+the release, a false failure.
 Two other fixes were tried and rejected. The minimum over runs, on the
 theory that contention only adds instructions, moved -1.6% to +3.5%, one
 false failure: the noise is in both sizes, so the difference of the minima

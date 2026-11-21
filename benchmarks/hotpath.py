@@ -141,10 +141,9 @@ def per_op(binary, name, small, large, reps, csv=None, label=""):
     """Instructions per operation: the median over run pairs of
     (instructions at `large` - at `small`) / extra operations, and the pairs.
 
-    The two-thread benchmark gets more pairs (`--contended-reps`): across ten
+    The two-thread benchmark gets more pairs (`--contended-reps`): in twenty
     gates on a heavily loaded host its change against an identical base
-    stayed within -0.4% to +1.1% with nine pairs, against -1.1% to +1.5%
-    with three. The minimum is not a stable estimate: the noise is in both
+    stayed within -0.8% to +1.4% with nine pairs; three reached +3.8%. The minimum is not a stable estimate: the noise is in both
     sizes, so the difference of the minima moved -1.6% to +3.5%.
     """
     runs = {small: [], large: []}
