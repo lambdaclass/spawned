@@ -1,13 +1,13 @@
 Planted bug 27 (handler-panic-log-unguarded): The handler-panic diagnostic calls the tracing subscriber unguarded, so a panicking subscriber unwinds the lifecycle and skips stopped()
 
 diff --git a/concurrency/src/tasks/actor/lifecycle.rs b/concurrency/src/tasks/actor/lifecycle.rs
-index e487ea0f..9f948e0f 100644
+index c4d3764f..8474b2c6 100644
 --- a/concurrency/src/tasks/actor/lifecycle.rs
 +++ b/concurrency/src/tasks/actor/lifecycle.rs
-@@ -536,9 +536,7 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
-                 }
-                 if let Err(panic) = result {
+@@ -540,9 +540,7 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
                      let msg = panic_message(&*panic);
+                     // The payload is user code too: its destructor may panic (L6).
+                     crate::mailbox::dispose_panic(panic);
 -                    crate::actor_cleanup::log_safely(|| {
 -                        tracing::error!("Panic in message handler: {msg}");
 -                    });
