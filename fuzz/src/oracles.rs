@@ -148,11 +148,18 @@ fn restart_justified(
             if own {
                 continue;
             }
+            // Collateral of an upstream sibling's round: the sibling's attempt
+            // ended after `prev` began, or the sibling was restarted after
+            // `prev` began. The second covers a sibling that died while the
+            // supervisor was still starting `prev` in an earlier round (OTP
+            // handles that `EXIT` after the round, and a later child started
+            // since is terminated and restarted with it).
             let collateral = slots.iter().enumerate().any(|(k, other)| {
                 upstream(sup.strategy, j, k)
                     && other.iter().any(|c| {
                         c.seq < next.seq
-                            && ended(s, c).is_some_and(|e| e > prev.seq && e < next.seq)
+                            && (c.seq > prev.seq
+                                || ended(s, c).is_some_and(|e| e > prev.seq && e < next.seq))
                     })
             });
             if !collateral {
