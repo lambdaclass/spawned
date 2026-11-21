@@ -1604,7 +1604,7 @@ python3 -m unittest scripts/tests/test_model_sync.py            # self-tests and
 ## Planted-bug sensitivity
 
 Mutation testing breaks one operator at a time. To measure whether the stack
-catches the bugs a reviewer would actually miss, 24 realistic bugs were written
+catches the bugs a reviewer would actually miss, 27 realistic bugs were written
 by hand (`verification/planted/patches/`, one patch each, listed in
 `INDEX.tsv`) and each was run, alone, against six layers:
 
@@ -1750,6 +1750,17 @@ Now all 24 are caught by at least one layer and every bug by at least two
 | 15 | Fuzzer **X2** (flush): no `Down` is handled after the driver's `demonitor` of it returned; the minimized input is the regression `down_after_demonitor` | F, C, T (was none in the matrix; see below) |
 | 17 | Fuzzer **L7** (monitor waiters): after the leak checks, an observer that exits while monitoring a live target leaves the task count where it was before the observer started. A fixed end-of-run probe, so every input catches it | F, C, T, S (was T, S) |
 | 22 | Fuzzer **T2** (stop): a `send_interval` task starts no round after its actor's exit is published (the harness counts clones of the timer message) | F, C, T, S (was T, S) |
+
+**Panic-injection bugs (25-27).** Three patches plant containment bugs on
+the paths the [panic injection](#panic-injection) reaches, each run against
+C and F (600 s) on the injection branch with the payload-disposal fix (#309),
+after a clean baseline (C and F missed, 636,000 executions):
+
+| Bug | Planted fault | C (s) | F (s, oracle) |
+|---|---|---|---|
+| 25 | A payload destroyed after the death point (queued message, discarded job result or callback) is dropped without containment | - | 9 (L6: not recorded as a cleanup failure) |
+| 26 | A fenced job terminal drops `done` and its result in the owner's turn | - | 269 (M: an actor stopped without any cause) |
+| 27 | The handler-panic diagnostic calls the subscriber unguarded (a panicking subscriber skips `stopped()`) | 30 (`exploding_panic_payload_keeps_stopped`) | 3 (L5: `stopped()` did not run after a handler panic) |
 
 Bug 15 used to be unobservable: before 0.8 `demonitor` was best-effort ("the
 message may still arrive"), so a `Down` after it returned was allowed. Since
