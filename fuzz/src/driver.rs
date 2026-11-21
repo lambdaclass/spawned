@@ -789,6 +789,13 @@ impl Driver {
             }
             Op::TrapExit { who, on } => {
                 let Some(aref) = self.pick(who) else { return };
+                // On an exited actor the call is inert; on one whose exit
+                // began it may or may not decide a later signal (one that
+                // arrives during `stopped()`). Either way the driver no
+                // longer knows the flag a signal saw: not predicted.
+                if aref.child_handle().exit_reason().is_some() || aref.context().exit_pending() {
+                    self.world.lock().uncertain.insert(aref.id());
+                }
                 aref.context().trap_exit(on);
                 self.traps.insert(aref.id(), (on, self.op));
             }
@@ -1882,7 +1889,10 @@ impl Driver {
             // (semantics.md L4, `Lifecycle!LateSignalWins`; OTP: a signal
             // during `terminate` kills with its own reason). The only
             // non-abnormal reason a signal can carry is `Shutdown`.
-            let trapping = self.traps.get(&id).is_some_and(|t| t.0);
+            // Only a trap flag the driver set while the actor ran is known
+            // (a handler's `Trap`, or a call on an exiting actor, is not).
+            let trapping = self.traps.get(&id).is_some_and(|t| t.0)
+                && !self.world.lock().uncertain.contains(&id);
             let late_shutdown = exit == ExitReason::Shutdown(None) && !trapping;
             if panicked && !exit.is_abnormal() && !late_shutdown {
                 self.violate(
