@@ -46,6 +46,15 @@
   non-blocking disposal and checks the queue drains and every worker retires
   after its keep-alive (`disposal.keep_alive` failpoint with `failpoints`).
   The soak harness judges the three gauges.
+- `perf-gate` also holds every PR to a cumulative budget: the head may grow
+  at most 3% instructions per operation over the last release tag
+  (`git describe --match 'v*'`), not only over its merge base, so small
+  per-PR regressions cannot add up across a release cycle. The job summary
+  table shows release, base and head with both changes. The release binary
+  is built once per release and cached (`hotpath.py build-release` on pushes
+  to main). `threads_request_seq`, whose thread
+  interleaving varies on a loaded host, takes the median of nine run pairs
+  instead of three.
 - Fix the flaky `supervision::transient_startup_timeout_retries_after_actual_cleanup`
   (a 20 ms startup deadline raced the fast starts on a loaded host, which also
   made cargo-mutants report surviving mutants as caught): the replacement's
