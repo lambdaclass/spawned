@@ -66,9 +66,10 @@ pub(crate) struct ActorCleanup<C: Fn()> {
     discharged: bool,
     /// The instance, for its `spawned::crash` report.
     report: Option<std::sync::Arc<crate::link::SignalTarget>>,
-    /// An abnormal reason the actor produced itself: reported once every
-    /// obligation is answered (a subscriber is user code).
-    crash: Option<ExitReason>,
+    /// The final reason was not imposed by a signal, a kill or a runtime
+    /// drop: if it is abnormal, it is reported once every obligation is
+    /// answered (a subscriber is user code).
+    own_reason: bool,
 }
 impl<C: Fn()> ActorCleanup<C> {
     pub(crate) fn new(
@@ -95,7 +96,7 @@ impl<C: Fn()> ActorCleanup<C> {
             skip_log: None,
             discharged: false,
             report: None,
-            crash: None,
+            own_reason: false,
         }
     }
     /// Emit the `spawned::crash` report for this instance (introspection).
@@ -166,7 +167,7 @@ impl<C: Fn()> ActorCleanup<C> {
         }
         let id = self.id.raw();
         let mut skipped = false;
-        let mut crashed = false;
+        let mut own_reason = false;
         let reason = trace::life_section(id, || {
             let mut request = crate::link::lock_request(&self.cause);
             let reason = if dropped {
@@ -175,9 +176,9 @@ impl<C: Fn()> ActorCleanup<C> {
             } else {
                 request.die()
             };
-            // OTP's proc_lib crash report: an abnormal reason the actor
-            // produced itself, not one a signal, kill or drop imposed.
-            crashed = !dropped && reason.is_abnormal() && !request.is_signalled();
+            // OTP's proc_lib crash report: for a reason the actor produced
+            // itself, not one a signal, kill or drop imposed.
+            own_reason = !dropped && !request.is_signalled();
             drop(request);
             trace::life_emit(id, || {
                 trace::LifeEvent::new(if dropped { "Drop" } else { "Die" }, id)
@@ -188,9 +189,7 @@ impl<C: Fn()> ActorCleanup<C> {
         if skipped {
             self.skip_log = Some(reason.clone());
         }
-        if crashed && self.report.is_some() {
-            self.crash = Some(reason.clone());
-        }
+        self.own_reason = own_reason;
         fail_point!("actor.at_death");
         // Every open deferred reply (and every exit-pending one) is answered
         // with the final reason, before any destructor runs. Their wake-ups
@@ -237,13 +236,8 @@ impl<C: Fn()> ActorCleanup<C> {
         if let Some(reason) = self.skip_log.take() {
             log_stopped_skipped(self.id, "", "runtime_drop", Some(&reason));
         }
-        if let (Some(reason), Some(signal)) = (self.crash.take(), &self.report) {
-            let links = self
-                .notices
-                .as_ref()
-                .map(crate::link::LinkNotices::peers)
-                .unwrap_or_default();
-            crate::introspection::crash_report(signal, &reason, &links);
+        if self.own_reason {
+            self.crash_report();
         }
         // Payloads the exit's job cancellation released: destroyed only now.
         if let Some(jobs) = &self.jobs {
@@ -252,6 +246,25 @@ impl<C: Fn()> ActorCleanup<C> {
         if let Some(failures) = &self.failures {
             failures.release();
         }
+    }
+    /// The `spawned::crash` report, if the final reason is abnormal. Out of
+    /// line and cold: the death path's code stays as small as it was.
+    #[cold]
+    #[inline(never)]
+    fn crash_report(&mut self) {
+        self.own_reason = false;
+        let (Some(signal), Some(reason)) = (&self.report, &self.reason) else {
+            return;
+        };
+        if !reason.is_abnormal() {
+            return;
+        }
+        let links = self
+            .notices
+            .as_ref()
+            .map(crate::link::LinkNotices::peers)
+            .unwrap_or_default();
+        crate::introspection::crash_report(signal, reason, &links);
     }
     fn close(&mut self, reason: ExitReason) -> ExitReason {
         let replies = self.replies.as_deref();
