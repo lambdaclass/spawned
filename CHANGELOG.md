@@ -17,6 +17,12 @@
   codegen unit, so instruction counts follow the code rather than how generic
   code is partitioned across units (which moved `async_ct_burst` by about
   +2.6% between v0.8.0 and main with no change on its path).
+- Release fuzz campaign: `fuzz/release-campaign.sh` fuzzes for hours (default
+  4 h, 8 workers), replays and groups every failure, minimizes each distinct
+  one and writes it as a regression test (`fuzz/tests/campaign_*.rs`, its
+  input and shrunk tape), and keeps a `cmin`-reduced corpus for the next
+  campaign. A manual item of the release checklist (docs/TESTING.md); never
+  scheduled.
 - CI reliability: drop `magic-nix-cache-action` (its GitHub Actions cache
   backend failed runs with FlakeHub authentication, cache-service and SSL
   errors); give TLC 75% of RAM (`TLC_HEAP`) so liveness checking no longer runs
