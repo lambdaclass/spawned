@@ -625,7 +625,14 @@ stuck. A child that exits on its own is stuck if its cleanup misses
 stuck slot fails the supervisor and nothing replaces it. The supervisor's own
 wait for a stopped child, in shutdown or a round, is a backstop at three
 `shutdown_timeout`s, beyond the kill and the second interval, so it never
-gives up on (and fails the tree for) a child before the kill.
+gives up on (and fails the tree for) a child before the kill. Failing the
+supervisor on a stuck slot is a deliberate deviation from OTP, where `brutal_kill` ends the process at once and the
+supervisor carries on (ROADMAP rank 13): Rust cannot preempt a task or thread
+stuck in non-cooperative code, so "killed" only takes effect when the code
+returns (L3), and a slot whose cleanup never finishes cannot be reused
+without overlapping generations. The supervisor reports it as
+`shutdown_error` with action `stuck` (I10); a child its stop did end after
+the kill is `shutdown_error` with action `killed`.
 Checked by: `Supervision!AtMostOneGeneration`, `Cohorts!AtMostOneGeneration`,
 `NestedSupervision!AtMostOneGeneration`; [`supervision::cleanup_deadline_escalates_without_overlapping_a_live_generation`][supervision],
 `repeated_crash_producer_and_shutdown_races_never_overlap_generations`,
@@ -985,6 +992,7 @@ remaining differences of the exit-signal design are listed in
 | Initial startup retried a Permanent or Transient child whose factory failed, panicked or timed out (V7), within the budget | `start_link` aborts on any child start error | Aligned in v0.8 (rank 5f, #240): any first-start failure fails `start()` |
 | v0.7 reported a runtime-dropped actor as `Kill` (tasks) or `Panic("unexpected framework panic")` (threads) | No counterpart | v0.8 (rank 5g, #240): `Killed` in both modes (X6) |
 | Stop is cooperative: a running handler or blocking call is never interrupted (L3) | `kill` ends a process at once | Rust-forced: Rust cannot preempt or kill a thread |
+| A child whose cleanup misses its shutdown time makes its slot stuck and fails the supervisor (V3), reported as `shutdown_error` action `stuck` | `brutal_kill` ends it and the supervisor continues | Rust-forced: a stuck task or thread cannot be ended from outside; reusing its slot would overlap generations (ROADMAP rank 13) |
 | Panics are caught only with unwinding (P2) | Process crashes are always isolated | Rust-forced: `panic = "abort"` and a panicking panic hook end the process |
 | No per-actor memory accounting | `max_heap_size` | Rust-forced (no per-actor heap); opt-in size hook proposed, rank 18a |
 | One `Handler<M>` per message type; no selective or catch-all receive; `ExitReason` is a closed enum | Any term, selective `receive` | Rust types add strictness; unhandled message types are compile errors |
@@ -1133,8 +1141,9 @@ a supervisor-ordered stop or a clean exit is not reported; its `action` is
 decided by the restart budget, so it is never `restart` when the intensity
 limit stops the supervisor), `child_restarted` (INFO), `start_failed`,
 `restart_intensity_reached` and `shutdown_error` (ERROR; a child that missed
-its shutdown time: `killed` at the supervisor's stop, `stuck` in a
-OneForAll/RestForOne round, which fails the tree instead, S2). A nested
+its shutdown time: `killed` when the supervisor's stop ended it, `stuck`
+when a OneForAll/RestForOne round gives up on it; a stuck slot fails the
+tree instead of OTP's `brutal_kill`, a Rust-forced deviation, see V3). A nested
 supervisor instance not ready yet expands to `Unavailable(Starting)`. Sessions come with a later step.
 Checked by: [`crash_reports`][crash_reports] (both modes:
 `handler_panic_is_reported_with_the_contract_fields`,

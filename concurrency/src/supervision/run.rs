@@ -310,7 +310,7 @@ pub(super) async fn run_recoveries(core: Arc<Core>) {
                 _ => {
                     // OTP's `shutdown_error`: the collateral child missed its
                     // shutdown time. It is not killed here: the round fails
-                    // the tree (S2), whose stop then kills what remains.
+                    // the tree instead of OTP's brutal_kill (semantics V3, Rust-forced).
                     let snapshot = child.snapshot();
                     core.report(
                         tracing::Level::ERROR,

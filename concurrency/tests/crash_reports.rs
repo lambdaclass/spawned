@@ -554,7 +554,7 @@ mod supervisor_reports {
         let error = event(&reports, "shutdown_error");
         assert_eq!(error[0].0, tracing::Level::ERROR);
         assert_eq!(error[0].1["child"], "slow");
-        // The round gives up on it (the tree fails, S2) instead of killing.
+        // The round gives up on it (the tree fails, V3) instead of killing.
         assert_eq!(error[0].1["action"], "stuck");
         let _ = system.shutdown(LIMIT).await;
     }

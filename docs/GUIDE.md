@@ -1760,6 +1760,12 @@ child that missed its shutdown time: `killed` when the supervisor stops it,
 fields `supervisor`, `system`, `child`, `generation`, `reason`,
 `restarts_in_window`, `max_restarts`, `window_ms`, `action`.
 
+A `stuck` child is where Spawned differs from OTP on purpose: OTP's
+`brutal_kill` ends a process that ignores its shutdown and the supervisor
+carries on, but Rust cannot preempt a task or thread stuck in code that never
+yields, so a slot whose cleanup never finishes fails the supervisor instead
+of being reused (semantics V3).
+
 ### Crash reports
 
 An actor that ends with an abnormal reason it produced itself (a panic in
