@@ -619,7 +619,7 @@ impl Env {
                     peers,
                     interval: None,
                 }
-                .start(),
+                .spawn(),
             )
         } else {
             let peers = peers
@@ -636,14 +636,19 @@ impl Env {
             };
             let _entered = handle.enter();
             let actor = match self.placement {
-                Placement::TasksAsync => node.start_with_backend(Backend::Async),
-                Placement::TasksBlocking => node.start_with_backend(Backend::Blocking),
-                Placement::TasksThread => node.start_with_backend(Backend::Thread),
+                Placement::TasksAsync => node.with_options(Backend::Async).spawn().unwrap(),
+                Placement::TasksBlocking => node.with_options(Backend::Blocking).spawn().unwrap(),
+                Placement::TasksThread => node.with_options(Backend::Thread).spawn().unwrap(),
                 _ => {
-                    let actor = self.group.as_ref().unwrap().start(node).unwrap();
+                    let actor = node
+                        .with_options(self.group.as_ref().unwrap())
+                        .spawn()
+                        .unwrap();
                     self.bounded(actor.ready())
                         .expect("managed actor readiness timed out")
-                        .unwrap();
+                        .unwrap()
+                        .started()
+                        .expect("started");
                     actor
                 }
             };
@@ -1387,12 +1392,12 @@ mod early_stop {
     }
 }
 
-/// The intended contract for an actor stopped before its first poll (GUIDE.md,
-/// "Startup"): a managed actor whose admission closes before `started()` begins
-/// skips both hooks and drops its state; legacy unmanaged tasks actors and
-/// threads actors retain their existing behavior of running `started()` then
-/// `stopped()`. All report Normal and every actor's state is dropped exactly
-/// once. Listed as an allowed difference in TESTING.md.
+/// The contract for an actor stopped (`ChildHandle::stop`) before its first
+/// poll, on every placement: as OTP's `gen_server:stop`, the stop waits for
+/// `started()`; the start commits ready, then the actor exits `Normal`
+/// through `stopped()` (v0.9, unified start 2.3). Only an admission that
+/// closes before `started()` begins (group or system shutdown) skips both
+/// hooks (`startup_admission`). Every state is dropped exactly once.
 // Not simulated: compares Tokio, Thread, Blocking and native placements.
 #[cfg(not(spawned_sim))]
 #[test]
@@ -1406,7 +1411,7 @@ fn stop_before_first_poll_follows_managed_and_legacy_contract() {
     let hooks = Recorder::new();
     let actor = {
         let _entered = rt.enter();
-        spawned_concurrency::tasks::ActorStart::start(Hooks(hooks.clone()))
+        spawned_concurrency::tasks::ActorStart::spawn(Hooks(hooks.clone()))
     };
     actor.child_handle().stop();
     let reason = rt.block_on(async { tokio::time::timeout(LIMIT, actor.wait_exit()).await });
@@ -1417,13 +1422,13 @@ fn stop_before_first_poll_follows_managed_and_legacy_contract() {
 
     // Legacy threads mode: no admission check either.
     let hooks = Recorder::new();
-    let actor = spawned_concurrency::threads::ActorStart::start(Hooks(hooks.clone()));
+    let actor = spawned_concurrency::threads::ActorStart::spawn(Hooks(hooks.clone()));
     actor.child_handle().stop();
     assert_eq!(actor.wait_exit(), ExitReason::Normal);
     assert_eq!(hooks.wait_until(LIMIT, "threads drop", done), legacy);
 
     // Managed: the group's single worker is blocked, so the actor is admitted
-    // but not yet polled when it is stopped. Neither hook runs; state drops.
+    // but not yet polled when it is stopped. The stop waits for started().
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
@@ -1432,10 +1437,15 @@ fn stop_before_first_poll_follows_managed_and_legacy_contract() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("early-stop", 1).unwrap();
     let blocker_hooks = Recorder::new();
-    let blocker = group.start(Hooks(blocker_hooks.clone())).unwrap();
+    let blocker =
+        spawned_concurrency::tasks::ActorStart::with_options(Hooks(blocker_hooks.clone()), &group)
+            .spawn()
+            .unwrap();
     rt.block_on(async { tokio::time::timeout(LIMIT, blocker.ready()).await })
         .unwrap()
-        .unwrap();
+        .unwrap()
+        .started()
+        .expect("started");
     let (release, wait) = std::sync::mpsc::channel();
     let (entered, blocked) = std::sync::mpsc::channel();
     blocker
@@ -1443,12 +1453,14 @@ fn stop_before_first_poll_follows_managed_and_legacy_contract() {
         .unwrap();
     blocked.recv_timeout(LIMIT).unwrap();
     let hooks = Recorder::new();
-    let actor = group.start(Hooks(hooks.clone())).unwrap();
+    let actor = spawned_concurrency::tasks::ActorStart::with_options(Hooks(hooks.clone()), &group)
+        .spawn()
+        .unwrap();
     actor.child_handle().stop();
     release.send(()).unwrap();
     let reason = rt.block_on(async { tokio::time::timeout(LIMIT, actor.wait_exit()).await });
     assert_eq!(reason.unwrap(), ExitReason::Normal);
-    assert_eq!(hooks.wait_until(LIMIT, "managed drop", done), ["dropped"]);
+    assert_eq!(hooks.wait_until(LIMIT, "managed drop", done), legacy);
     let report = rt.block_on(system.shutdown(LIMIT));
     assert!(report.complete);
 }

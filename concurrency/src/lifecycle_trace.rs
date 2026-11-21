@@ -275,6 +275,71 @@ impl LifeEvent {
     }
 }
 
+/// One action of `verification/tla/Start.tla` (unified start, design
+/// 16.2), recorded for the starts made while `record_start` is on. `c` is
+/// the child (an `ActorId` number, normalized by the checker; 0 for an
+/// action of the parent, a group or a lookup miss); `x`, `y`, `z` and `f`
+/// are the action's parameters (see `TraceStart.tla`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartEvent {
+    pub action: &'static str,
+    pub c: u64,
+    pub x: &'static str,
+    pub y: &'static str,
+    pub z: &'static str,
+    pub f: bool,
+}
+
+impl StartEvent {
+    #[allow(dead_code)] // recording is compiled out without the feature
+    pub(crate) fn new(action: &'static str, c: u64) -> Self {
+        Self {
+            action,
+            c,
+            x: "",
+            y: "",
+            z: "",
+            f: false,
+        }
+    }
+    #[allow(dead_code)]
+    pub(crate) fn x(mut self, x: &'static str) -> Self {
+        self.x = x;
+        self
+    }
+    #[allow(dead_code)]
+    pub(crate) fn y(mut self, y: &'static str) -> Self {
+        self.y = y;
+        self
+    }
+    #[allow(dead_code)]
+    pub(crate) fn z(mut self, z: &'static str) -> Self {
+        self.z = z;
+        self
+    }
+    #[allow(dead_code)]
+    pub(crate) fn f(mut self, f: bool) -> Self {
+        self.f = f;
+        self
+    }
+    /// JSON object understood by `verification/tla/trace_check.py`.
+    pub fn to_json(&self) -> String {
+        format!(
+            r#"{{"a":"{}","c":{},"x":"{}","y":"{}","z":"{}","f":{}}}"#,
+            self.action, self.c, self.x, self.y, self.z, self.f
+        )
+    }
+}
+
+/// An instance's role in the start trace.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum StartRole {
+    #[default]
+    None,
+    Child(u64),
+    Parent,
+}
+
 /// Model name of an exit reason (`Lifecycle.tla` `Reasons`).
 #[allow(dead_code)] // recording is compiled out without the feature
 pub(crate) fn life_reason(reason: &crate::ExitReason) -> &'static str {
@@ -614,11 +679,20 @@ mod imp {
     /// keyed by the actor whose locks it takes first, and nested sections use
     /// the same key, so the section is always the outermost lock.
     pub(crate) fn life_section<R>(id: u64, f: impl FnOnce() -> R) -> R {
-        if life_traced(id) {
+        // Also for the start trace's actors: a message's admission (`SSend`)
+        // and its dispatch (`SHandle`) are then one step each of the same
+        // linearization (the item is receivable only after `SSend`).
+        if life_traced(id) || start_member(id) {
             atomic(f)
         } else {
             f()
         }
+    }
+
+    /// Whether `id` is the start trace's parent or one of its children.
+    fn start_member(id: u64) -> bool {
+        start_on()
+            && (START_PARENT.load(Ordering::Acquire) == id || lock(&START_KIDS).contains(&id))
     }
 
     /// Record an event of actor `t` (inside its section).
@@ -638,6 +712,225 @@ mod imp {
             lock(&MEMBERS).insert(id);
             lock(&LIFE).push(super::LifeEvent::new("Spawn", id).s(parent));
         });
+    }
+
+    // Unified start (`Start.tla`): one process-wide recording at a time, of
+    // the starts made while it is on and of their parent P. Events are
+    // pushed under the lock of the state they describe (a leaf push);
+    // multi-lock steps run in the trace section (`start_section`).
+    static START_ON: AtomicBool = AtomicBool::new(false);
+    static START_PARENT: AtomicU64 = AtomicU64::new(0);
+    static START_KIDS: Mutex<std::collections::BTreeSet<u64>> =
+        Mutex::new(std::collections::BTreeSet::new());
+    static START: Mutex<Vec<super::StartEvent>> = Mutex::new(Vec::new());
+    thread_local! {
+        /// A child's notice is being applied to P (the model's Deliver).
+        static IN_NOTICE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Start recording the unified-start events of every start made from
+    /// now on, with `parent` (an `ActorId` number, 0 for none) as the
+    /// model's P. Tests that record must not run concurrently.
+    pub fn record_start(parent: u64) {
+        atomic(|| {
+            lock(&START_KIDS).clear();
+            lock(&START).clear();
+            START_PARENT.store(parent, Ordering::Release);
+            START_ON.store(true, Ordering::Release);
+        });
+    }
+
+    /// Stop recording and return the events in their recorded order.
+    pub fn take_start() -> Vec<super::StartEvent> {
+        atomic(|| {
+            START_ON.store(false, Ordering::Release);
+            START_PARENT.store(0, Ordering::Release);
+            lock(&START_KIDS).clear();
+            std::mem::take(&mut *lock(&START))
+        })
+    }
+
+    /// How many recorded events named `action` (with `x`, if non-empty) the
+    /// start trace holds (lets a test wait for an ordering point).
+    pub fn start_count(action: &str, x: &str) -> usize {
+        lock(&START)
+            .iter()
+            .filter(|e| e.action == action && (x.is_empty() || e.x == x))
+            .count()
+    }
+
+    pub(crate) fn start_on() -> bool {
+        START_ON.load(Ordering::Acquire)
+    }
+
+    /// A start begins: its child `id` is recorded from now on.
+    pub(crate) fn start_child(id: u64) -> u64 {
+        if !start_on() {
+            return 0;
+        }
+        lock(&START_KIDS).insert(id);
+        id
+    }
+
+    thread_local! {
+        /// The stage-1 commit in progress on this thread: (child, placement,
+        /// already recorded).
+        static COMMIT: std::cell::Cell<(u64, &'static str, bool)> =
+            const { std::cell::Cell::new((0, "", false)) };
+    }
+
+    /// A start's stage-1 commit begins on this thread. Its `SCommit` or
+    /// `SRefuse` is recorded at the decision point ([`commit_point`]),
+    /// under the innermost lock held there (the registry for a named start,
+    /// else the parent's exit request or the group), so it is ordered with
+    /// `SReleaseName`, `SLookup` and `SReleaseSlot`, recorded under the same
+    /// locks.
+    pub(crate) fn commit_begin(c: u64, placement: &'static str) {
+        COMMIT.set((c, placement, false));
+    }
+
+    /// The commit is decided here: `None` committed, `Some(refusal)` refused.
+    /// Only the first decision of a commit is recorded.
+    pub(crate) fn commit_point(refusal: Option<&'static str>) {
+        let (c, placement, done) = COMMIT.get();
+        if c == 0 || done {
+            return;
+        }
+        COMMIT.set((c, placement, true));
+        start_emit(c, || match refusal {
+            None => super::StartEvent::new("SCommit", c).x(placement),
+            Some(refusal) => super::StartEvent::new("SRefuse", c).x(refusal),
+        });
+    }
+
+    /// The commit returned: records its decision if no lock holder did (a
+    /// start with no shared lock to order against), and ends it.
+    pub(crate) fn commit_end(refusal: Option<&'static str>) {
+        commit_point(refusal);
+        COMMIT.set((0, "", false));
+    }
+
+    /// `id` if it is a recorded child, else 0.
+    pub(crate) fn start_child_of(id: u64) -> u64 {
+        if start_on() && lock(&START_KIDS).contains(&id) {
+            id
+        } else {
+            0
+        }
+    }
+
+    /// Start recording the unified-start events with `parent` as the
+    /// model's P (its exit begin, death point and publication are recorded
+    /// as `PExitBegin`, `PDie` and `PPublish`). Tests that record must not run
+    /// concurrently.
+    pub fn record_start_parent(parent: &crate::ChildHandle) {
+        crate::link::lock_request(&parent.signal_target().request).trace = super::StartRole::Parent;
+        record_start(parent.id().raw());
+    }
+
+    /// Record an event of recorded child `c` (0: not recorded).
+    pub(crate) fn start_emit(c: u64, event: impl FnOnce() -> super::StartEvent) {
+        if c != 0 && start_on() {
+            lock(&START).push(event());
+        }
+    }
+
+    /// Record an event of the parent, a group or the environment.
+    pub(crate) fn start_emit_env(event: impl FnOnce() -> super::StartEvent) {
+        if start_on() {
+            lock(&START).push(event());
+        }
+    }
+
+    /// Run `f` as one step of the start trace's linearization when
+    /// recording (it must not await, and no framework lock may be held).
+    pub(crate) fn start_section<R>(f: impl FnOnce() -> R) -> R {
+        if start_on() {
+            atomic(f)
+        } else {
+            f()
+        }
+    }
+
+    pub(crate) fn start_admin(role: super::StartRole) {
+        if let super::StartRole::Child(c) = role {
+            start_emit(c, || super::StartEvent::new("SAdminStop", c));
+        }
+    }
+
+    pub(crate) fn start_kill(role: super::StartRole, _starting: bool) {
+        if let super::StartRole::Child(c) = role {
+            start_emit(c, || super::StartEvent::new("SKill", c));
+        }
+    }
+
+    pub(crate) fn start_exit(role: super::StartRole, reason: &crate::ExitReason) {
+        match role {
+            super::StartRole::Child(c) => start_emit(c, || {
+                super::StartEvent::new("SExit", c).x(super::life_reason(reason))
+            }),
+            super::StartRole::Parent if !IN_NOTICE.with(Cell::get) => start_emit_env(|| {
+                super::StartEvent::new("PExitBegin", 0).x(super::life_reason(reason))
+            }),
+            _ => {}
+        }
+    }
+
+    pub(crate) fn start_die(role: super::StartRole, reason: &crate::ExitReason, frozen: bool) {
+        match role {
+            super::StartRole::Child(c) => start_emit(c, || {
+                super::StartEvent::new("SDie", c)
+                    .x(super::life_reason(reason))
+                    .f(frozen)
+            }),
+            super::StartRole::Parent => start_emit_env(|| super::StartEvent::new("PDie", 0)),
+            super::StartRole::None => {}
+        }
+    }
+
+    /// A recorded child's run loop took a message of kind `kind` (`Handle`;
+    /// exit envelopes are recorded by the exit they begin).
+    pub(crate) fn start_dispatch(id: u64, kind: &'static str) {
+        if matches!(kind, "req" | "msg") {
+            let c = start_child_of(id);
+            start_emit(c, || super::StartEvent::new("SHandle", c));
+        }
+    }
+
+    /// A recorded child unlinked from P (`ChildUnlink`).
+    pub(crate) fn start_unlink(own: u64, peer: u64) {
+        if start_on() && START_PARENT.load(Ordering::Acquire) == peer {
+            let c = start_child_of(own);
+            start_emit(c, || super::StartEvent::new("SUnlink", c));
+        }
+    }
+
+    /// A child's notice to P is applied or enqueued (the model's Deliver):
+    /// P's own exit that it begins is part of that step.
+    pub(crate) fn start_notice<R>(
+        receiver: u64,
+        from: u64,
+        kind: &'static str,
+        reason: &crate::ExitReason,
+        f: impl FnOnce() -> R,
+    ) -> R {
+        if !start_on() || START_PARENT.load(Ordering::Acquire) != receiver {
+            return f();
+        }
+        let c = if lock(&START_KIDS).contains(&from) {
+            from
+        } else {
+            0
+        };
+        start_emit(c, || {
+            super::StartEvent::new("PNotice", c)
+                .x(kind)
+                .z(super::life_reason(reason))
+        });
+        let previous = IN_NOTICE.with(|n| n.replace(true));
+        let result = f();
+        IN_NOTICE.with(|n| n.set(previous));
+        result
     }
 
     /// The model's mailbox item kind of a message of type `M`.
@@ -663,6 +956,10 @@ mod imp {
                 .s(if admitted { from } else { 0 })
                 .x(if admitted { "queued" } else { "noproc" })
         });
+        if admitted {
+            let c = start_child_of(owner);
+            start_emit(c, || super::StartEvent::new("SSend", c));
+        }
     }
 
     /// The recorded actor whose turn (or hook) is sending a plain message
@@ -1202,6 +1499,52 @@ mod imp {
     }
     #[allow(dead_code)]
     #[inline(always)]
+    pub(crate) fn start_on() -> bool {
+        false
+    }
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn start_child(_: u64) -> u64 {
+        0
+    }
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn commit_begin(_: u64, _: &'static str) {}
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn commit_point(_: Option<&'static str>) {}
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn commit_end(_: Option<&'static str>) {}
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn start_child_of(_: u64) -> u64 {
+        0
+    }
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn start_emit(_: u64, _: impl FnOnce() -> super::StartEvent) {}
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn start_emit_env(_: impl FnOnce() -> super::StartEvent) {}
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn start_section<R>(f: impl FnOnce() -> R) -> R {
+        f()
+    }
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn start_notice<R>(
+        _: u64,
+        _: u64,
+        _: &'static str,
+        _: &crate::ExitReason,
+        f: impl FnOnce() -> R,
+    ) -> R {
+        f()
+    }
+    #[allow(dead_code)]
+    #[inline(always)]
     pub(crate) fn disposal(_: &'static str, _: u64, _: u64, _: u64, _: &'static str) {}
     #[inline(always)]
     pub(crate) fn disposal_section<R>(f: impl FnOnce() -> R) -> R {
@@ -1216,6 +1559,7 @@ mod imp {
 
 #[cfg(feature = "lifecycle-trace")]
 pub use imp::{
-    record_disposal, record_lifecycle, recorded, recorded_with, take, take_disposal, take_jobs,
-    take_lifecycle, take_replies, take_tree, watch_deferred,
+    record_disposal, record_lifecycle, record_start, record_start_parent, recorded, recorded_with,
+    start_count, take, take_disposal, take_jobs, take_lifecycle, take_replies, take_start,
+    take_tree, watch_deferred,
 };

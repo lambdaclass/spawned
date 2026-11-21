@@ -28,12 +28,12 @@ impl Handler<Location> for Worker {
 async fn main() {
     let system = ActorSystem::new().unwrap();
     let native = system.thread_group("blocking-roots", 2).unwrap();
-    let a = Worker.start_on(&native).unwrap();
-    let b = Worker.start_on(&native).unwrap();
-    a.ready().await.unwrap();
-    b.ready().await.unwrap();
+    let a = Worker.with_options(&native).spawn().unwrap();
+    let b = Worker.with_options(&native).spawn().unwrap();
+    a.ready().await.unwrap().started().expect("started");
+    b.ready().await.unwrap().started().expect("started");
     assert!(
-        Worker.start_on(&native).is_err(),
+        Worker.with_options(&native).spawn().is_err(),
         "capacity is two live scopes"
     );
     println!("native actor: {:?}", a.request(Location).await.unwrap());
@@ -55,8 +55,11 @@ async fn main() {
             .collect();
         let pipeline = system.pinned_group("pipeline", cpus.clone()).unwrap();
         for (index, cpu) in cpus.iter().enumerate() {
-            let stage = Worker.start_on(&pipeline.shard(index).unwrap()).unwrap();
-            stage.ready().await.unwrap();
+            let stage = Worker
+                .with_options(&pipeline.shard(index).unwrap())
+                .spawn()
+                .unwrap();
+            stage.ready().await.unwrap().started().expect("started");
             let location = stage.request(Location).await.unwrap();
             assert_eq!(location.1, Some(*cpu));
             println!("pinned stage {index}: {location:?}");

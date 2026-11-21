@@ -40,8 +40,8 @@ mod asynchronous {
         }
     }
     pub async fn run() {
-        let first = Counter::<1>(0).start();
-        let second = Counter::<2>(0).start();
+        let first = Counter::<1>(0).spawn();
+        let second = Counter::<2>(0).spawn();
         let recipients: Vec<Recipient<Item>> = vec![first.recipient(), second.recipient()];
         for member in &recipients {
             member.send(Item(1)).unwrap();
@@ -124,8 +124,8 @@ mod synchronous {
         }
     }
     pub async fn run() {
-        let first = Counter::<1>(0).start();
-        let second = Counter::<2>(0).start();
+        let first = Counter::<1>(0).spawn();
+        let second = Counter::<2>(0).spawn();
         let recipients: Vec<Recipient<Item>> = vec![first.recipient(), second.recipient()];
         for member in &recipients {
             member.send(Item(1)).unwrap();

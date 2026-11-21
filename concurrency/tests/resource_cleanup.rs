@@ -63,7 +63,9 @@ fn timers_release_payloads_on_actor_exit() {
     ] {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let _entered = rt.enter();
-        let actor = tasks::ActorStart::start_with_backend(Sink, backend);
+        let actor = tasks::ActorStart::with_options(Sink, backend)
+            .spawn()
+            .unwrap();
         let probe = Arc::new(());
         let weak = Arc::downgrade(&probe);
         let once = tasks::send_after(
@@ -78,7 +80,7 @@ fn timers_release_payloads_on_actor_exit() {
         released(&weak);
         drop((once, interval));
     }
-    let actor = threads::ActorStart::start(Sink);
+    let actor = threads::ActorStart::spawn(Sink);
     let probe = Arc::new(());
     let weak = Arc::downgrade(&probe);
     let once = threads::send_after(
@@ -105,7 +107,9 @@ fn pending_async_listener_is_dropped_on_actor_exit() {
     ] {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let actor = tasks::ActorStart::start_with_backend(Sink, backend);
+            let actor = tasks::ActorStart::with_options(Sink, backend)
+                .spawn()
+                .unwrap();
             let probe = Arc::new(());
             let weak = Arc::downgrade(&probe);
             let stream = futures::stream::unfold(probe, |probe| async move {
@@ -133,7 +137,7 @@ fn cancelled_thread_exit_wait_does_not_occupy_blocking_pool() {
         .enable_all()
         .build()
         .unwrap();
-    let actor = threads::ActorStart::start(Sink);
+    let actor = threads::ActorStart::spawn(Sink);
     let child = actor.child_handle();
     let available = rt.block_on(async {
         assert!(
@@ -158,7 +162,7 @@ fn cancelled_thread_exit_wait_does_not_occupy_blocking_pool() {
 #[test]
 fn thread_exit_waits_work_inside_futures_executor() {
     for already_exited in [false, true] {
-        let actor = threads::ActorStart::start(Sink);
+        let actor = threads::ActorStart::spawn(Sink);
         let child = actor.child_handle();
         child.stop();
         if already_exited {

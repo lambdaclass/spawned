@@ -172,7 +172,7 @@ mod tasks_mode {
                 _state: inert(),
                 parked: Vec::new(),
             }
-            .start();
+            .spawn();
             let caller = Arc::new(Mutex::new(None));
             let answered = Arc::new(AtomicBool::new(false));
             let payload = WaitsForAnswer {
@@ -270,7 +270,7 @@ mod tasks_mode {
                 _state: inert(),
                 parked: Vec::new(),
             }
-            .start();
+            .spawn();
             let turn_caller = actor
                 .send_request(Hang(payload, entered_tx), never)
                 .unwrap();
@@ -331,7 +331,7 @@ mod tasks_mode {
             _state: inert(),
             parked: Vec::new(),
         }
-        .start();
+        .spawn();
         let (unblock, blocked) = mpsc::channel();
         let (entered_tx, entered) = mpsc::channel();
         actor.send(Block(blocked, entered_tx)).unwrap();
@@ -394,7 +394,7 @@ mod tasks_mode {
             _state: inert(),
             parked: Vec::new(),
         }
-        .start();
+        .spawn();
         let (tokens, token) = mpsc::channel();
         let receiver = actor
             .send_request(HandOut(tokens), spawned_concurrency::Deadline::Never)
@@ -488,7 +488,7 @@ mod tasks_mode {
             _state: inert(),
             parked: Vec::new(),
         }
-        .start();
+        .spawn();
         let (export, exported) = mpsc::channel();
         runtime.block_on(actor.request(ExportJob(export))).unwrap();
         let job = exported.recv_timeout(LIMIT).unwrap();
@@ -556,7 +556,7 @@ mod tasks_mode {
             _state: inert(),
             parked: Vec::new(),
         }
-        .start();
+        .spawn();
         let (unblock, blocked) = mpsc::channel();
         let (entered_tx, entered) = mpsc::channel();
         actor.send(Block(blocked, entered_tx)).unwrap();
@@ -606,7 +606,7 @@ mod tasks_mode {
                 _state: state,
                 parked: Vec::new(),
             }
-            .start()
+            .spawn()
         };
         let mut queued = actor
             .send_request(
@@ -640,7 +640,7 @@ mod tasks_mode {
                 _state: state,
                 parked: Vec::new(),
             }
-            .start();
+            .spawn();
             let parked = actor
                 .send_request(Park, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
                 .unwrap();
@@ -690,7 +690,7 @@ mod threads_mode {
         use spawned_concurrency::threads::JobOptions;
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::{Arc, Mutex};
-        let actor = Owner.start();
+        let actor = Owner.spawn();
         let caller = Arc::new(Mutex::new(None));
         let answered = Arc::new(AtomicBool::new(false));
         let payload = WaitsForAnswer {
@@ -734,7 +734,7 @@ mod threads_mode {
     /// Review P0 (Codex 1), threads mode.
     #[test]
     fn queued_requests_are_answered_before_payload_destructors() {
-        let actor = Owner.start();
+        let actor = Owner.spawn();
         let (unblock, blocked) = mpsc::channel();
         let (entered_tx, entered) = mpsc::channel();
         actor.send(Block(blocked, entered_tx)).unwrap();
@@ -851,7 +851,7 @@ mod subscriber_after_discharge {
         // Never polled: dropping the runtime drops it before `stopped()`.
         let actor = {
             let _guard = runtime.enter();
-            Idle.start()
+            Idle.spawn()
         };
         let queued = actor
             .send_request(Queued(inert()), spawned_concurrency::Deadline::Never)

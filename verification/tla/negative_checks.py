@@ -333,6 +333,7 @@ START_CONTROLS = [
     ("MCStartTimeout", "ReadyAfterClose", "ReadyOnlyWhileOpen"),
     ("MCStartTimeout", "SkipEscalation", "KillBeforeDIsKilled"),
     ("MCStartTimeout", "SplitResolutionD", "IgnoredExitsNormal"),
+    ("MCStartTimeout", "AdminStopFailsInit", "ReadyReturnCommitsReady"),
     ("MCStartCap", "AdmitClosed", "AdmittedOnlyOpen"),
     ("MCStartCap", "IgnoreCap", "CapacityRespected"),
     ("MCStartCap", "EarlySlotRelease", "SlotHeldUntilReleased"),
@@ -357,6 +358,152 @@ def start_controls(tlc):
         named_fault(module, fault, invariant, tlc)
     for module, fault, prop in START_TEMPORAL_CONTROLS:
         named_temporal(module, fault, prop, tlc)
+
+
+def start_trace_controls(traces, tlc):
+    """Edits of recorded unified-start traces that Start.tla must reject
+    (design 16.2): each reintroduces a bug the start protocol excludes."""
+    by_name = {t["name"]: t for t in traces if t.get("schema") == "start-v1"}
+
+    def at(events, action, x=None, after=0, nth=1):
+        hits = [i for i, e in enumerate(events)
+                if i >= after and e["a"] == action and (x is None or e["x"] == x)]
+        return hits[nth - 1]
+
+    def move(events, src, dst):
+        events.insert(dst, events.pop(src))
+
+    def commit_after_started(events):
+        move(events, at(events, "SCommit"), at(events, "SStartedBegin"))
+    require_rejected(by_name["start_link_ready_then_stop"], commit_after_started,
+                     "edge committed after started() began", tlc)
+
+    def overlapping_names(events):
+        refused = events[at(events, "SRefuse", "already")]
+        refused["a"], refused["x"] = "SCommit", "U"
+    require_rejected(by_name["start_named_start_clash_and_release"], overlapping_names,
+                     "two children hold one name", tlc)
+
+    def release_after_competitor(events):
+        release = at(events, "SReleaseName")
+        competitor = at(events, "SCommit", after=release, nth=1)
+        move(events, release, competitor)
+    require_rejected(by_name["start_named_start_clash_and_release"], release_after_competitor,
+                     "name released after a competing commit of it", tlc)
+
+    def slot_before_publish(events):
+        move(events, at(events, "SReleaseSlot"), at(events, "SPublish"))
+    require_rejected(by_name["start_inherited_thread_group_capacity"], slot_before_publish,
+                     "slot released before publication", tlc)
+
+    def notice_without_delivery(events):
+        c = events[at(events, "SAnswer")]["c"]
+        events.append({"a": "PNotice", "c": c, "x": "monitor", "y": "", "z": "Normal", "f": False})
+    require_rejected(by_name["start_monitor_error_consumes_down"], notice_without_delivery,
+                     "Down of a failed start_monitor delivered", tlc)
+
+    def second_notice(events):
+        notice = at(events, "PNotice")
+        events.insert(notice + 1, dict(events[notice]))
+    require_rejected(by_name["start_link_ready_then_stop"], second_notice,
+                     "one notice delivered twice", tlc)
+
+    def managed_as_unmanaged(events):
+        events[at(events, "SCommit", "G")]["x"] = "U"
+    require_rejected(by_name["start_inherited_thread_group_capacity"], managed_as_unmanaged,
+                     "linked child not in its parent's group", tlc)
+
+    def exit_after_error(events):
+        answer = events[at(events, "SAnswer", "failed")]
+        events.append({"a": "PNotice", "c": answer["c"], "x": "link", "y": "",
+                       "z": "Panic", "f": False})
+    require_rejected(by_name["start_link_panic_in_started_trapping_parent"], exit_after_error,
+                     "Exit to a trapping parent after the start's error", tlc)
+
+    def answer_before_publication(events):
+        move(events, at(events, "SAnswer", "failed"), at(events, "SPublish"))
+    require_rejected(by_name["start_monitor_error_consumes_down"], answer_before_publication,
+                     "error answered before publication without a deadline", tlc)
+
+    def timer_after_ready(events):
+        resolved = at(events, "SResolve", "ready")
+        c = events[resolved]["c"]
+        events.insert(resolved + 1, {"a": "STimer", "c": c, "x": "won", "y": "", "z": "",
+                                     "f": False})
+    require_rejected(by_name["start_link_ready_then_stop"], timer_after_ready,
+                     "init timer wins after a ready commitment", tlc)
+
+    def requested_reason_reported(events):
+        events[at(events, "SAnswer", "failed")]["z"] = "Normal"
+    require_rejected(by_name["start_kill_and_admin_stop_during_started"],
+                     requested_reason_reported,
+                     "answer reports a reason other than the final Killed", tlc)
+
+    def admin_stop_fails_start(events):
+        # Revision 3's row 3: a stop during started() failed the start.
+        stop = at(events, "SAdminStop")
+        answer = events[at(events, "SAnswer", "ok", after=stop)]
+        answer["x"], answer["z"] = "failed", "Shutdown"
+    require_rejected(by_name["start_kill_and_admin_stop_during_started"],
+                     admin_stop_fails_start,
+                     "an administrative stop during started() fails the start", tlc)
+
+    def resolve_ignores_return(events):
+        # Review #291 item 2a: started() returned ready, yet the start
+        # resolved as an error (the decision must follow the return).
+        events[at(events, "SResolve", "error")]["x"] = "ready"
+    require_rejected(by_name["start_monitor_error_consumes_down"],
+                     resolve_ignores_return,
+                     "a ready return resolved as an error", tlc)
+
+    def deliver_as_drop(events):
+        # Review #291 item 2b/2c: the Normal notice owed to P is dropped.
+        events[at(events, "SPublish", "deliver")]["x"] = "drop"
+        del events[at(events, "PNotice")]
+    require_rejected(by_name["start_link_ready_then_stop"], deliver_as_drop,
+                     "a delivered notice recorded as dropped (and never delivered)", tlc)
+
+    def notice_never_delivered(events):
+        # Item 2c: the log ends with the notice disposed but not delivered.
+        del events[at(events, "PNotice")]
+    require_rejected(by_name["start_link_ready_then_stop"], notice_never_delivered,
+                     "a disposed notice never delivered to the live P", tlc)
+
+    def dispatch_failure_answered_ready(events):
+        # Review #291 item 1: the committed child the dispatch lost must
+        # resolve killed; a waiter answered `ok` with no ready child is wrong.
+        events[at(events, "SAnswer", "failed")]["x"] = "ok"
+    require_rejected(by_name["start_dispatch_failure_after_commit_kills_child"],
+                     dispatch_failure_answered_ready,
+                     "a lost dispatch answers the start ok", tlc)
+
+    def dispatch_failure_unkilled(events):
+        del events[at(events, "SKill")]
+    require_rejected(by_name["start_dispatch_failure_after_commit_kills_child"],
+                     dispatch_failure_unkilled,
+                     "a lost dispatch resolves killed without a kill", tlc)
+
+    def abandon_drops_diverted(events):
+        events[at(events, "SAbandon")]["f"] = False
+    require_rejected(by_name["start_abandon_after_publication_hands_on_exit"],
+                     abandon_drops_diverted, "abandoned wait drops the diverted Exit", tlc)
+
+    def continuation_after_message(events):
+        move(events, at(events, "SContinue"), at(events, "SHandle") + 1)
+    require_rejected(by_name["start_continuation_precedes_queued_messages"],
+                     continuation_after_message, "a message handled before the continuation", tlc)
+
+    def stopped_after_failed_init(events):
+        # v0.8: a ctx.stop in started() was a ready start that then exited.
+        resolved = events[at(events, "SResolve", "stopS")]
+        resolved["x"], resolved["y"], resolved["z"] = "ready", "ready", ""
+    require_rejected(by_name["start_link_stop_in_started_ends_nontrapping_parent"],
+                     stopped_after_failed_init, "Init::stop answered as a ready start", tlc)
+
+    def pending_without_deadline(events):
+        events.pop(at(events, "SDeadline"))
+    require_rejected(by_name["start_stuck_ignore_answers_pending"], pending_without_deadline,
+                     "pending answer before the cleanup deadline", tlc)
 
 INTROSPECTION_CONTROLS = [
     ("MCIntrospection", "CheckThenAct", "NoChargeFinishedTurn"),
@@ -853,6 +1000,7 @@ def main():
     reply_trace_controls(traces, args.tlc)
     disposal_trace_controls(traces, args.tlc, args.traces)
     lifecycle_trace_controls(traces, args.tlc)
+    start_trace_controls(traces, args.tlc)
     for module, fault, invariant in LIFECYCLE_CONTROLS:
         named_fault(module, fault, invariant, args.tlc)
     for module, fault, invariant in INTROSPECTION_CONTROLS:

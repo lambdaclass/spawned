@@ -693,10 +693,11 @@ fn main() {
                     "blocking" => tasks::Backend::Blocking,
                     _ => tasks::Backend::Thread,
                 };
-                Target::Tasks(tasks::ActorStart::start_with_backend(
-                    Sink::new(&config, address),
-                    backend,
-                ))
+                Target::Tasks(
+                    tasks::ActorStart::with_options(Sink::new(&config, address), backend)
+                        .spawn()
+                        .expect("spawn"),
+                )
             }
             "threads" => Target::Threads(threads::ActorStart::start(Sink::new(&config, address))),
             "tokio" => {

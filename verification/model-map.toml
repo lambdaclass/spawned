@@ -196,17 +196,33 @@ reason = "rank 12a design model; the dynamic supervisor is not implemented"
 tracking = "trace validation is part of implementing rank 12a (design: PR #245)"
 
 [models.Start]
-# Unified start API design model (0.9, rank 5h, PR #259); no code yet.
+# Unified start (0.9, rank 5h; design docs/design/unified-start.md): stage 1
+# (prepare, the atomic commit: group admission, the parent's edge, the
+# name), the startup decision and readiness commit, the startup cell and
+# its waiter, notice disposition at publication, abandonment, the init
+# timer, continuations, typed names, placement inheritance. Scope ownership
+# (S8) is not implemented yet: its actions have no events.
 files = [
     "verification/tla/Start.tla",
     "verification/tla/MCStart*",
     "verification/tla/TraceStart.tla",
 ]
-code = []
-[models.Start.tlc_only]
-design_only = true
-reason = "0.9 unified start design model; the unified start API is not implemented"
-tracking = "trace validation is part of implementing the unified start API, design PR #259"
+code = [
+    "concurrency/src/start.rs",
+    "concurrency/src/tasks/actor.rs",
+    "concurrency/src/tasks/actor/**",
+    "concurrency/src/threads/actor.rs",
+    "concurrency/src/threads/actor/**",
+    "concurrency/src/link.rs",
+    "concurrency/src/link/table.rs",
+    "concurrency/src/child_handle.rs",
+    "concurrency/src/actor_cleanup.rs",
+    "concurrency/src/registry.rs",
+    "concurrency/src/system.rs",
+    "concurrency/src/system/group.rs",
+    "concurrency/src/lifecycle_trace.rs",
+]
+coverage_floor = 28   # of 28 trace-spec arms (trace_coverage.py STATIC)
 
 [models.Introspection]
 # Introspection v1 design model (PR #256, 0.9); no code yet.
@@ -334,6 +350,23 @@ EarlyFire = "fault device only (Fault = EarlyNotify: links and monitors fire whe
 [trace.translated]
 Spawn = { into = [], why = "trace_check.py numbers actors from Spawn events" }
 Send = { into = ["Request", "Enqueue", "Send"], why = "trace_check.py splits a Send from outside code into Request and Enqueue, and keeps one from a recorded actor as the model's Send" }
+
+[[trace]]
+struct = "StartEvent"
+emitters = [
+    { call = '\bStartEvent::new\(', arg = 0 },
+]
+specs = ["verification/tla/TraceStart.tla"]
+[trace.unlogged]
+OwnerClose = "scope ownership (S8) is not implemented: no owner gate closes"
+ScopeDeadline = "scope ownership (S8) is not implemented: no scope deadline"
+GenDone = "scope ownership (S8) is not implemented: no generation end"
+GClose = "group closure is outside the start traces (a closed group's refusal is a stage-1 Closed)"
+WorkDoneP = "P's owned work has no event; TraceStart.tla takes it silently"
+RegisterFirst = "fault device (SplitCommit) only"
+CommitRest = "fault device (SplitCommit) only"
+LateLink = "fault device (LinkAfterStarted) only"
+LateRelease = "fault device (LateUnregister) only"
 
 [[trace]]
 struct = "JobEvent"

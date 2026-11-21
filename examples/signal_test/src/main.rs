@@ -73,22 +73,40 @@ fn main() {
             "async" => {
                 tracing::info!("Using Backend::Async");
                 (
-                    TickingActor::new("async-1").start_with_backend(Backend::Async),
-                    TickingActor::new("async-2").start_with_backend(Backend::Async),
+                    TickingActor::new("async-1")
+                        .with_options(Backend::Async)
+                        .spawn()
+                        .unwrap(),
+                    TickingActor::new("async-2")
+                        .with_options(Backend::Async)
+                        .spawn()
+                        .unwrap(),
                 )
             }
             "blocking" => {
                 tracing::info!("Using Backend::Blocking");
                 (
-                    TickingActor::new("blocking-1").start_with_backend(Backend::Blocking),
-                    TickingActor::new("blocking-2").start_with_backend(Backend::Blocking),
+                    TickingActor::new("blocking-1")
+                        .with_options(Backend::Blocking)
+                        .spawn()
+                        .unwrap(),
+                    TickingActor::new("blocking-2")
+                        .with_options(Backend::Blocking)
+                        .spawn()
+                        .unwrap(),
                 )
             }
             "thread" => {
                 tracing::info!("Using Backend::Thread");
                 (
-                    TickingActor::new("thread-1").start_with_backend(Backend::Thread),
-                    TickingActor::new("thread-2").start_with_backend(Backend::Thread),
+                    TickingActor::new("thread-1")
+                        .with_options(Backend::Thread)
+                        .spawn()
+                        .unwrap(),
+                    TickingActor::new("thread-2")
+                        .with_options(Backend::Thread)
+                        .spawn()
+                        .unwrap(),
                 )
             }
             _ => {

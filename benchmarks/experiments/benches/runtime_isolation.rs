@@ -138,7 +138,7 @@ mod linux {
             counts: counts.clone(),
             handled: 0,
         }
-        .start()
+        .spawn()
     }
     fn affine(n: usize) -> (u64, u64) {
         let (mut a, mut b) = (1u64, 0u64);

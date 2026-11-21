@@ -11,12 +11,12 @@ use std::time::Duration;
 
 fn main() {
     rt::run(async {
-        let producer = Producer { consumer: None }.start();
+        let producer = Producer { consumer: None }.spawn();
 
         let consumer = Consumer {
             producer: producer.to_pong_receiver_ref(),
         }
-        .start();
+        .spawn();
 
         producer
             .send(SetConsumer(consumer.to_ping_receiver_ref()))

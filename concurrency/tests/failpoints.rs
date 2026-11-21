@@ -545,10 +545,18 @@ async fn slow_system_coordinator_reports_then_completes() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("fp-system", 2).unwrap();
     let started = Started::default();
-    let a = group.start(Worker::new(&started)).unwrap();
-    let b = group.start(Worker::new(&started)).unwrap();
-    within!(a.ready()).await.unwrap();
-    within!(b.ready()).await.unwrap();
+    let a = Worker::new(&started).with_options(&group).spawn().unwrap();
+    let b = Worker::new(&started).with_options(&group).spawn().unwrap();
+    within!(a.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
+    within!(b.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
     let report = system.shutdown(Duration::from_millis(50)).await;
     assert!(!report.complete);
     let report = report.wait(LIMIT).await;
@@ -574,18 +582,24 @@ async fn failed_group_start_rolls_back_and_frees_the_name() {
     let group = system.async_group("fp-group", 2).unwrap();
     let threads = system.thread_group("fp-threads", 2).unwrap();
     let started = Started::default();
-    group
-        .start(Worker::new(&started))
+    Worker::new(&started)
+        .with_options(&group)
+        .spawn()
         .unwrap()
         .ready()
         .await
-        .unwrap();
-    threads
-        .start(Worker::new(&started))
+        .unwrap()
+        .started()
+        .expect("started");
+    Worker::new(&started)
+        .with_options(&threads)
+        .spawn()
         .unwrap()
         .ready()
         .await
-        .unwrap();
+        .unwrap()
+        .started()
+        .expect("started");
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
@@ -597,8 +611,8 @@ async fn placement_failure_is_reported_and_fails_the_supervisor() {
     let started = Started::default();
     failpoints::configure("system.reserve", FailPoint::new(Action::Error).times(1)).unwrap();
     assert!(matches!(
-        group.start(Worker::new(&started)),
-        Err(SystemError::Capacity)
+        Worker::new(&started).with_options(&group).spawn(),
+        Err(spawned_concurrency::StartError::Capacity)
     ));
     failpoints::configure("system.reserve", Action::Error).unwrap();
     let mut tree = system.supervisor(config(5)).unwrap();
@@ -621,12 +635,15 @@ async fn placement_failure_is_reported_and_fails_the_supervisor() {
     assert_eq!(child.snapshot().state, ChildState::Failed);
     assert_eq!(child.snapshot().generation, 0);
     failpoints::remove("system.reserve");
-    group
-        .start(Worker::new(&started))
+    Worker::new(&started)
+        .with_options(&group)
+        .spawn()
         .unwrap()
         .ready()
         .await
-        .unwrap();
+        .unwrap()
+        .started()
+        .expect("started");
     assert!(started.handles().len() == 1);
     assert!(system.shutdown(LIMIT).await.complete);
 }
@@ -647,7 +664,7 @@ async fn registration_racing_shutdown_leaves_no_entry() {
     let mut worker = Worker::new(&started);
     worker.name = Some("fp-register-race");
     let registration = worker.registration.clone();
-    let actor = group.start(worker).unwrap();
+    let actor = worker.with_options(&group).spawn().unwrap();
     reached("registry.before_register", 1).await;
     assert!(system.shutdown(LIMIT).await.complete);
     assert_eq!(*registration.lock().unwrap(), Some(false));
@@ -665,7 +682,15 @@ async fn injected_registration_error_leaves_no_entry() {
     let mut worker = Worker::new(&started);
     worker.name = Some("fp-register-error");
     let registration = worker.registration.clone();
-    group.start(worker).unwrap().ready().await.unwrap();
+    worker
+        .with_options(&group)
+        .spawn()
+        .unwrap()
+        .ready()
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
     assert_eq!(*registration.lock().unwrap(), Some(false));
     assert!(registry::whereis::<ActorRef<Worker>>("fp-register-error").is_none());
     assert!(system.shutdown(LIMIT).await.complete);
@@ -781,8 +806,8 @@ async fn peer_exit_during_link_install_still_propagates() {
     )
     .unwrap();
     let (downs, _) = tokio::sync::mpsc::unbounded_channel();
-    let linker = Linker { downs }.start();
-    let target = Worker::new(&Started::default()).start();
+    let linker = Linker { downs }.spawn();
+    let target = Worker::new(&Started::default()).spawn();
     linker.send(LinkTo(target.child_handle())).unwrap();
     reached("link.before_install", 1).await;
     target.send(Crash).unwrap();
@@ -803,8 +828,8 @@ async fn target_exit_during_monitor_install_delivers_noproc() {
     )
     .unwrap();
     let (downs, mut received) = tokio::sync::mpsc::unbounded_channel();
-    let watcher = Linker { downs }.start();
-    let target = Worker::new(&Started::default()).start();
+    let watcher = Linker { downs }.spawn();
+    let target = Worker::new(&Started::default()).spawn();
     watcher.send(Watch(target.child_handle())).unwrap();
     reached("monitor.before_install", 1).await;
     target.send(Crash).unwrap();
@@ -826,7 +851,7 @@ async fn target_exit_during_monitor_install_delivers_noproc() {
 async fn injected_started_panic_is_an_abnormal_exit_seen_by_monitors() {
     let _scenario = FailScenario::setup();
     let (downs, mut received) = tokio::sync::mpsc::unbounded_channel();
-    let watcher = Linker { downs }.start();
+    let watcher = Linker { downs }.spawn();
     // The watcher must be past started() before the site is armed.
     watcher.request(Ping).await.unwrap();
     failpoints::configure(
@@ -835,7 +860,7 @@ async fn injected_started_panic_is_an_abnormal_exit_seen_by_monitors() {
     )
     .unwrap();
     let started = Started::default();
-    let target = Worker::new(&started).start();
+    let target = Worker::new(&started).spawn();
     watcher.send(Watch(target.child_handle())).unwrap();
     match within!(target.wait_exit()).await {
         ExitReason::Panic(message) => assert!(message.contains("actor.before_started")),
@@ -866,7 +891,10 @@ async fn readiness_racing_shutdown_is_not_published() {
     .unwrap();
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("fp-ready", 1).unwrap();
-    let actor = group.start(Worker::new(&Started::default())).unwrap();
+    let actor = Worker::new(&Started::default())
+        .with_options(&group)
+        .spawn()
+        .unwrap();
     reached("actor.after_started_before_ready", 1).await;
     assert!(system.shutdown(LIMIT).await.complete);
     assert!(within!(actor.ready()).await.is_err());
@@ -885,8 +913,12 @@ async fn slow_stopped_reports_at_deadline_then_completes() {
     let group = system.async_group("fp-stopped", 1).unwrap();
     let mut worker = Worker::new(&Started::default());
     worker.trap = true;
-    let actor = group.start(worker).unwrap();
-    within!(actor.ready()).await.unwrap();
+    let actor = worker.with_options(&group).spawn().unwrap();
+    within!(actor.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
     let report = system.shutdown(Duration::from_millis(100)).await;
     assert!(!report.complete);
     assert_eq!(report.unfinished_actors, [actor.id()]);
@@ -975,8 +1007,15 @@ async fn system_shutdown_coordinator_panic_is_reported_and_contained() {
     .unwrap();
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("fp-gap-system", 1).unwrap();
-    let actor = group.start(Worker::new(&Started::default())).unwrap();
-    within!(actor.ready()).await.unwrap();
+    let actor = Worker::new(&Started::default())
+        .with_options(&group)
+        .spawn()
+        .unwrap();
+    within!(actor.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
     let report = system.shutdown(LIMIT).await;
     assert!(report.complete);
     assert!(
@@ -1028,7 +1067,7 @@ impl Handler<Ping> for Holder {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn no_reply_succeeds_after_noproc_is_observable() {
     let _scenario = FailScenario::setup();
-    let holder = Holder.start();
+    let holder = Holder.spawn();
     let (tokens, token) = std::sync::mpsc::channel();
     let caller = holder
         .send_request(Hold(tokens), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
@@ -1108,9 +1147,9 @@ impl Handler<LinkTo> for SignalSender {
 async fn an_exit_signal_is_not_overtaken_by_its_senders_death_notice() {
     let _scenario = FailScenario::setup();
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let recorder = Recorder(seen.clone()).start();
+    let recorder = Recorder(seen.clone()).spawn();
     recorder.request(Ping).await.unwrap(); // trapping now
-    let sender = SignalSender.start();
+    let sender = SignalSender.spawn();
     sender
         .request(LinkTo(recorder.child_handle()))
         .await
@@ -1201,8 +1240,8 @@ impl Actor for Quiet {}
 async fn demonitor_flushes_a_down_in_dispatch() {
     let _scenario = FailScenario::setup();
     let handled = Arc::new(AtomicUsize::new(0));
-    let observer = Observer(handled.clone()).start();
-    let target = Quiet.start();
+    let observer = Observer(handled.clone()).spawn();
+    let target = Quiet.spawn();
     let monitor = observer
         .request(WatchDown(target.child_handle()))
         .await
@@ -1309,7 +1348,7 @@ impl Handler<Answer> for Discharger {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unread_reply_is_destroyed_after_every_caller_is_answered() {
     let _scenario = FailScenario::setup();
-    let actor = Discharger.start();
+    let actor = Discharger.spawn();
     let caller: SharedReceiver = Arc::default();
     let answered = Arc::new(AtomicUsize::new(0));
     let unread = actor
@@ -1369,7 +1408,7 @@ async fn parked_receivers_wake_before_any_waker() {
         }
     }
     let _scenario = FailScenario::setup();
-    let actor = Discharger.start();
+    let actor = Discharger.spawn();
     let (release, gate) = std::sync::mpsc::channel();
     let (entered_tx, entered) = std::sync::mpsc::channel();
     actor.send(Gate(gate, entered_tx)).unwrap();
@@ -1503,7 +1542,7 @@ async fn emit_due_during_exit_is_destroyed_after_every_caller_is_answered() {
     let _scenario = FailScenario::setup();
     let (stop_release, stop_gate) = std::sync::mpsc::channel();
     let (stopping_tx, stopping) = std::sync::mpsc::channel();
-    let actor = SlowStop(stop_gate, stopping_tx).start();
+    let actor = SlowStop(stop_gate, stopping_tx).spawn();
     let caller: SharedReceiver = Arc::default();
     let answered = Arc::new(AtomicUsize::new(0));
     let (started_tx, started) = std::sync::mpsc::channel();
@@ -1591,7 +1630,7 @@ mod native {
     #[test]
     fn no_reply_succeeds_after_noproc_is_observable() {
         let _scenario = FailScenario::setup();
-        let holder = NativeHolder.start();
+        let holder = NativeHolder.spawn();
         let (tokens, token) = std::sync::mpsc::channel();
         let caller = holder
             .send_request(Hold(tokens), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
@@ -1655,8 +1694,8 @@ mod native {
     fn an_exit_signal_is_not_overtaken_by_its_senders_death_notice() {
         let _scenario = FailScenario::setup();
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let recorder = NativeRecorder(seen.clone()).start();
-        let sender = NativeSender.start();
+        let recorder = NativeRecorder(seen.clone()).spawn();
+        let sender = NativeSender.spawn();
         sender.request(LinkTo(recorder.child_handle())).unwrap();
         failpoints::configure(
             "actor.exit_before_deliver",
@@ -1712,7 +1751,7 @@ mod native {
             FailPoint::new(Action::Panic).times(1),
         )
         .unwrap();
-        let actor = Target.start();
+        let actor = Target.spawn();
         match actor.wait_exit() {
             ExitReason::Panic(message) => assert!(message.contains("actor.before_started")),
             other => panic!("expected panic exit, got {other:?}"),
@@ -1727,7 +1766,10 @@ mod native {
             FailPoint::new(Action::Delay(Duration::from_millis(100))).times(1),
         )
         .unwrap();
-        let actor = Target.start();
+        let actor = Target.spawn();
+        // A ctx.stop() inside started() is Init::stop (no stopped()): stop
+        // the running actor.
+        actor.ready().unwrap().started().expect("started");
         let began = Instant::now();
         actor.context().stop();
         actor.join();
@@ -1743,8 +1785,8 @@ mod native {
             FailPoint::new(Action::Delay(Duration::from_millis(200))).times(1),
         )
         .unwrap();
-        let peer = Peer.start();
-        let target = Target.start();
+        let peer = Peer.spawn();
+        let target = Target.spawn();
         peer.send(LinkTo(target.child_handle())).unwrap();
         let began = Instant::now();
         while failpoints::stats("link.before_install").hits < 1 {
@@ -1802,8 +1844,8 @@ mod native {
     fn demonitor_flushes_a_down_in_dispatch() {
         let _scenario = FailScenario::setup();
         let handled = Arc::new(AtomicUsize::new(0));
-        let observer = NativeObserver(handled.clone()).start();
-        let target = NativeQuiet.start();
+        let observer = NativeObserver(handled.clone()).spawn();
+        let target = NativeQuiet.spawn();
         let monitor = observer.request(WatchDown(target.child_handle())).unwrap();
         failpoints::configure(
             "monitor.down_before_dispatch",
@@ -1874,7 +1916,7 @@ mod native {
     #[test]
     fn an_unread_reply_is_destroyed_after_every_caller_is_answered() {
         let _scenario = FailScenario::setup();
-        let actor = NativeDischarger.start();
+        let actor = NativeDischarger.spawn();
         let caller: SharedReceiver = Arc::default();
         let answered = Arc::new(AtomicUsize::new(0));
         let unread = actor
@@ -1930,7 +1972,7 @@ mod native {
             }
         }
         let _scenario = FailScenario::setup();
-        let actor = NativeDischarger.start();
+        let actor = NativeDischarger.spawn();
         let (release, gate) = std::sync::mpsc::channel();
         let (entered_tx, entered) = std::sync::mpsc::channel();
         actor.send(Gate(gate, entered_tx)).unwrap();
@@ -1982,7 +2024,7 @@ mod native {
             FailPoint::new(Action::Delay(Duration::from_millis(500))).times(1),
         )
         .unwrap();
-        let owner = One.start();
+        let owner = One.spawn();
         let ctx = owner.context();
         let opts = spawned_concurrency::threads::JobOptions::new;
         drop(ctx.reserve_blocking_job(opts()).unwrap());
@@ -2066,7 +2108,7 @@ mod native {
         let _scenario = FailScenario::setup();
         let (stop_release, stop_gate) = std::sync::mpsc::channel();
         let (stopping_tx, stopping) = std::sync::mpsc::channel();
-        let actor = NativeSlowStop(stop_gate, stopping_tx).start();
+        let actor = NativeSlowStop(stop_gate, stopping_tx).spawn();
         let caller: SharedReceiver = Arc::default();
         let answered = Arc::new(AtomicUsize::new(0));
         let (started_tx, started) = std::sync::mpsc::channel();

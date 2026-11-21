@@ -495,7 +495,10 @@ fn run(rt: &tokio::runtime::Runtime, mode: Mode, bug: Bug, program: &Program) ->
                     call.complete(reply);
                 }
             }
-            let actor = store::AsyncStore(Store::new(bug)).start_with_backend(backend);
+            let actor = store::AsyncStore(Store::new(bug))
+                .with_options(backend)
+                .spawn()
+                .unwrap();
             for &cmd in prefix {
                 issue(&actor, &recorder, 0, cmd).await;
             }
@@ -532,7 +535,7 @@ fn run(rt: &tokio::runtime::Runtime, mode: Mode, bug: Bug, program: &Program) ->
                     call.complete(reply);
                 }
             }
-            let actor = NativeStore(Store::new(bug)).start();
+            let actor = NativeStore(Store::new(bug)).spawn();
             for &cmd in prefix {
                 issue(&actor, &recorder, 0, cmd);
             }

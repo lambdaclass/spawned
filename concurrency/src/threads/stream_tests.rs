@@ -61,7 +61,7 @@ fn listener_consumes_iterator() {
                 items: vec![],
                 done: done.clone(),
             }
-            .start();
+            .spawn();
 
             let ctx = actor.context();
             let items = vec![
@@ -94,7 +94,7 @@ fn listener_stops_on_cancellation() {
                 items: vec![],
                 done: done.clone(),
             }
-            .start();
+            .spawn();
 
             let ctx = actor.context();
 
@@ -137,7 +137,7 @@ fn stopped_actor_does_not_poll_iterator() {
                 items: vec![],
                 done: Default::default(),
             }
-            .start();
+            .spawn();
             actor.child_handle().stop();
             actor.join();
             let count = polls.clone();

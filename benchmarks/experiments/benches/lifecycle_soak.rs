@@ -284,9 +284,9 @@ fn main() {
         counts: counts.clone(),
         pending: HashMap::new(),
     }
-    .start();
+    .spawn();
     // Initialize every owned actor worker/runtime while the caller still inherits actor CPUs.
-    let seed = Worker::new(counts.clone()).start();
+    let seed = Worker::new(counts.clone()).spawn();
     runtime
         .block_on(seed.request(Step {
             expected: 0,
@@ -334,7 +334,7 @@ fn main() {
     });
     runtime.block_on(async {
         let residents: Vec<_> = (0..idle)
-            .map(|_| Worker::new(counts.clone()).start())
+            .map(|_| Worker::new(counts.clone()).spawn())
             .collect();
         watched(&observer, &residents, false).await;
         for a in &residents {
@@ -354,7 +354,7 @@ fn main() {
         let mut expected_down = 0;
         while started.elapsed() < Duration::from_secs(seconds) {
             let actors: Vec<_> = (0..churn)
-                .map(|_| Worker::new(counts.clone()).start())
+                .map(|_| Worker::new(counts.clone()).spawn())
                 .collect();
             let panic = counts.cycles.load(Ordering::Relaxed).is_multiple_of(16);
             watched(&observer, &actors, panic).await;

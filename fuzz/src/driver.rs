@@ -293,10 +293,10 @@ async fn monitor_release_probe(world: &World) {
     if !world.lock().violations.is_empty() {
         return;
     }
-    let target = Probe.start();
+    let target = Probe.spawn();
     rt::sleep(Duration::from_millis(10)).await;
     let alone = sim::stats().tasks;
-    let observer = Probe.start();
+    let observer = Probe.spawn();
     observer.context().monitor(&target.child_handle());
     observer.child_handle().stop();
     if rt::timeout(LONG, observer.wait_exit()).await.is_err() {
@@ -917,14 +917,14 @@ impl Driver {
         let worker = Worker::new(&self.world, None, hooks);
         let instance = worker.instance();
         let (aref, sys) = match how {
-            SpawnHow::Unmanaged => (worker.start(), None),
+            SpawnHow::Unmanaged => (worker.spawn(), None),
             SpawnHow::Managed { group } => {
                 let groups = self.all_groups();
                 if groups.is_empty() {
                     return;
                 }
                 let (sys, group) = &groups[group as usize % groups.len()];
-                match worker.start_on(group) {
+                match worker.with_options(group).spawn() {
                     Ok(aref) => {
                         if self.systems[*sys].shut {
                             self.violate(
@@ -939,12 +939,21 @@ impl Driver {
             }
             SpawnHow::Linked { parent } => {
                 if self.actors.is_empty() {
-                    (worker.start(), None)
+                    (worker.spawn(), None)
                 } else {
-                    let parent = self.actors[parent as usize % self.actors.len()]
-                        .aref
-                        .clone();
-                    let aref = worker.start_linked(&parent.context());
+                    let parent = &self.actors[parent as usize % self.actors.len()];
+                    // 0.9: start_link inherits the parent's placement, so a
+                    // managed parent's child joins its system (and its
+                    // shutdown is a stop cause).
+                    let parent_sys = parent.sys;
+                    let parent = parent.aref.clone();
+                    // 0.9 start_link, its wait abandoned at once: the 0.8
+                    // non-waiting start_linked. A parent whose exit began
+                    // refuses it (ParentExited): nothing is created.
+                    let aref = match worker.start_link(&parent.context()).actor_ref() {
+                        Ok(aref) => aref,
+                        Err(_) => return,
+                    };
                     self.may_stop(parent.id());
                     self.may_stop(aref.id());
                     self.links.push(LinkRec {
@@ -955,7 +964,7 @@ impl Driver {
                         at: self.op,
                         unlinked: false,
                     });
-                    (aref, None)
+                    (aref, parent_sys)
                 }
             }
         };
@@ -1866,9 +1875,13 @@ impl Driver {
             .map(|a| (a.aref.id(), a.instance, a.aref.child_handle().exit_reason()))
             .collect();
         for (id, instance, exit) in standalone {
-            let (may_stop, panicked) = {
+            let (may_stop, panicked, started_panicked) = {
                 let s = self.world.lock();
-                (s.may_stop.contains(&id), s.insts[instance].panicked)
+                (
+                    s.may_stop.contains(&id),
+                    s.insts[instance].panicked,
+                    s.insts[instance].started_panicked,
+                )
             };
             let Some(exit) = exit else { continue };
             if !may_stop {
@@ -1884,7 +1897,13 @@ impl Driver {
             // non-abnormal reason a signal can carry is `Shutdown`.
             let trapping = self.traps.get(&id).is_some_and(|t| t.0);
             let late_shutdown = exit == ExitReason::Shutdown(None) && !trapping;
-            if panicked && !exit.is_abnormal() && !late_shutdown {
+            // 0.9 (design 2.3): an untrapped exit signal held while started()
+            // ran outranks its panic (row 3 over row 4: in OTP the signal
+            // kills the initialising process first). The trap flag that
+            // counts is the one read when started() returned, which a later
+            // TrapExit op may have changed, so any shutdown is accepted here.
+            let held_signal_wins = started_panicked && exit.is_shutdown();
+            if panicked && !exit.is_abnormal() && !late_shutdown && !held_signal_wins {
                 self.violate(
                     "L4: an actor that panicked exited with a non-abnormal reason",
                     format!("w{instance} {exit:?}"),

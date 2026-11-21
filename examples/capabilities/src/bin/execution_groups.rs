@@ -38,9 +38,9 @@ async fn main() {
     let system = ActorSystem::new().unwrap();
     let critical = system.async_group("critical", 1).unwrap();
     let general = system.async_group("general", 2).unwrap();
-    let worker = Worker.start_on(&general).unwrap();
-    let router = Router(worker).start_on(&critical).unwrap();
-    router.ready().await.unwrap();
+    let worker = Worker.with_options(&general).spawn().unwrap();
+    let router = Router(worker).with_options(&critical).spawn().unwrap();
+    router.ready().await.unwrap().started().expect("started");
     assert_eq!(router.request(Double(21)).await.unwrap(), 42);
     let helper = router
         .context()

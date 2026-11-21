@@ -182,7 +182,7 @@ impl Handler<Nested> for Probe {
         let __reply_value: u64 = {
             self.assert_root();
             // Default Async startup uses this actor's isolated runtime.
-            let child = Child.start();
+            let child = Child.spawn();
             let _cleanup = StopOnDrop(child.child_handle());
             let answer = child.request_with_timeout(Ping, LIMIT).await.unwrap();
             child.child_handle().stop();
@@ -258,7 +258,10 @@ async fn finish(
 fn dedicated_actor_and_helpers_progress_without_an_ambient_runtime() {
     assert!(tokio::runtime::Handle::try_current().is_err());
     let (stopped, stop_rx) = oneshot::channel();
-    let actor = Probe::new(stopped).start_with_backend(Backend::Thread);
+    let actor = Probe::new(stopped)
+        .with_options(Backend::Thread)
+        .spawn()
+        .unwrap();
     let _cleanup = StopOnDrop(actor.child_handle());
     observer().block_on(async {
         let first = actor
@@ -285,7 +288,10 @@ fn dedicated_actor_and_helpers_progress_without_an_ambient_runtime() {
 fn dedicated_actor_drives_async_tcp() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let (stopped, stop_rx) = oneshot::channel();
-    let actor = Probe::new(stopped).start_with_backend(Backend::Thread);
+    let actor = Probe::new(stopped)
+        .with_options(Backend::Thread)
+        .spawn()
+        .unwrap();
     let _cleanup = StopOnDrop(actor.child_handle());
     observer().block_on(async {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -317,7 +323,10 @@ fn dedicated_actor_outlives_its_callers_runtime() {
     let (stopped, stop_rx) = oneshot::channel();
     let caller = observer();
     let (actor, root, _cleanup) = caller.block_on(async {
-        let actor = Probe::new(stopped).start_with_backend(Backend::Thread);
+        let actor = Probe::new(stopped)
+            .with_options(Backend::Thread)
+            .spawn()
+            .unwrap();
         let cleanup = StopOnDrop(actor.child_handle());
         let first = actor
             .request_with_timeout(Inspect::Yield, LIMIT)

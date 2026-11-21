@@ -60,6 +60,40 @@
 - ROADMAP: 0.9 is now soundness and introspection; the unified start API
   (G1, G2, G8) and `{shutdown, Term}` exits (G7) move into 0.9, and the
   admission package is designed during 0.9.
+- **Breaking: unified start API** (rank 5h, gaps G1, G2, G8; design
+  `docs/design/unified-start.md`). OTP's verbs in both modes: `spawn` (no
+  wait), `start`, `start_link(&ctx)` and `start_monitor(&ctx)` (wait for
+  `started()` and answer `Started`, `Ignored` or a `StartError` after the
+  child's publication), `with_options(StartOptions)`. `started()` may fail:
+  it returns `()`, `Result<(), E>`, `Result<Init<Self>, E>` or `Init<Self>`
+  (`ready`, `continue_with`, `error`, `stop`, `ignore`), resolved by the
+  design's precedence table; no failed start runs `stopped()` (also not
+  after `ctx.stop()` in `started()`, now `Init::stop`; a behaviour change);
+  an administrative stop during `started()` waits for it and runs
+  `stopped()`, as OTP's `gen_server:stop`. A parent killed (or hit by an
+  untrapped signal) while it waits for a `start_link`/`start_monitor` stops
+  waiting at once (`ParentExited`), as OTP's caller dies without waiting
+  for `init/1`. A dispatch or thread-spawn failure after the commit kills
+  the child (`InitExited { Killed }`) instead of a stage-1 error. The init
+  timer runs on the runtime clock in tasks mode (virtual under the
+  simulator) and on one shared thread in threads mode. `registry::register_owned`
+  takes the holder's `ChildHandle` (for `AlreadyStarted { existing }`). Stage 1 is one
+  atomic commit (group admission, the parent's link or monitor, the typed
+  `Name<A>`); a refusal is never observable. `start_link`/`start_monitor`
+  inherit the parent's placement. A failed start consumes a trapping
+  parent's `Exit` and a monitor's `Down`; a non-trapping parent still exits
+  on a non-`Normal` failure. `Init::continue_with` runs before any mailbox
+  entry. `init_timeout`, `ActorRef::ready()` for every placement,
+  `Starting::actor_ref()`. Removed: `start_on`, `start_with_backend`,
+  `start_linked`, `ExecutionGroup::start`, `SystemError::StartupFailed`;
+  test kit `Mock::spawn`/`spawn_with`, `TestSystem::spawn`/`start`/
+  `spawn_mock`/`options`. Every break is in `docs/MIGRATION.md` (0.8 to
+  0.9). Start.tla is now trace-validated (`StartEvent`, `TraceStart.tla`,
+  `tests/start_trace.rs`, 15 recorded-trace negative controls, coverage 28/28
+  arms); the model releases a group slot at scope completion, as the code
+  does. Not yet: scope ownership (S8), supervisor `ignore` and
+  `ChildSpec::options`.
+
 - `model-sync`: a design-only TLA+ model (`design_only = true`: Start,
   Introspection, DynamicSupervisor) stays allowlisted as TLC-only only while
   no code maps to it; the PR that implements it must add its trace

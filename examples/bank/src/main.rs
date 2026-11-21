@@ -8,7 +8,7 @@ use spawned_rt::tasks as rt;
 
 fn main() {
     rt::run(async {
-        let bank = Bank::new().start();
+        let bank = Bank::new().spawn();
 
         // Testing initial balance for "main" account
         let result = bank.withdraw("main".into(), 15).await.unwrap();

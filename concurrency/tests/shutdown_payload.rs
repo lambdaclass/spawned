@@ -137,10 +137,10 @@ mod tasks_mode {
             Seen::default(),
             Seen::default(),
         );
-        let target = Node(target_seen.clone(), false).start();
-        let plain = Node(plain_seen.clone(), false).start();
-        let trapper = Node(trap_seen.clone(), true).start();
-        let watcher = Node(watch_seen.clone(), false).start();
+        let target = Node(target_seen.clone(), false).spawn();
+        let plain = Node(plain_seen.clone(), false).spawn();
+        let trapper = Node(trap_seen.clone(), true).spawn();
+        let watcher = Node(watch_seen.clone(), false).spawn();
         settle(&trapper).await;
         let t = target.child_handle();
         plain.context().link(&t);
@@ -175,8 +175,8 @@ mod tasks_mode {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn exit_signal_with_payload_ends_or_is_trapped() {
         let (plain_seen, trap_seen) = (Seen::default(), Seen::default());
-        let plain = Node(plain_seen.clone(), false).start();
-        let trapper = Node(trap_seen.clone(), true).start();
+        let plain = Node(plain_seen.clone(), false).spawn();
+        let trapper = Node(trap_seen.clone(), true).spawn();
         settle(&plain).await;
         settle(&trapper).await;
         plain.child_handle().exit(why());
@@ -269,7 +269,7 @@ mod tasks_mode {
     async fn metrics_count_payload_exit_as_shutdown() {
         use spawned_concurrency::metrics;
         let before = metrics::snapshot();
-        let actor = Node(Seen::default(), false).start();
+        let actor = Node(Seen::default(), false).spawn();
         actor.request(StopWith(why())).await.unwrap();
         assert_eq!(ended(&actor.child_handle()).await, why());
         let after = metrics::snapshot();
@@ -359,10 +359,10 @@ mod threads_mode {
             Seen::default(),
             Seen::default(),
         );
-        let target = Node(target_seen.clone(), false).start();
-        let plain = Node(plain_seen.clone(), false).start();
-        let trapper = Node(trap_seen.clone(), true).start();
-        let watcher = Node(watch_seen.clone(), false).start();
+        let target = Node(target_seen.clone(), false).spawn();
+        let plain = Node(plain_seen.clone(), false).spawn();
+        let trapper = Node(trap_seen.clone(), true).spawn();
+        let watcher = Node(watch_seen.clone(), false).spawn();
         settle(&trapper);
         let t = target.child_handle();
         plain.context().link(&t);
@@ -397,8 +397,8 @@ mod threads_mode {
     #[test]
     fn exit_signal_with_payload_ends_or_is_trapped() {
         let (plain_seen, trap_seen) = (Seen::default(), Seen::default());
-        let plain = Node(plain_seen.clone(), false).start();
-        let trapper = Node(trap_seen.clone(), true).start();
+        let plain = Node(plain_seen.clone(), false).spawn();
+        let trapper = Node(trap_seen.clone(), true).spawn();
         settle(&plain);
         settle(&trapper);
         plain.child_handle().exit(why());

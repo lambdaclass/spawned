@@ -14,6 +14,77 @@ account for when upgrading.
   `async`, the default, if you need it explicitly). The research experiments
   live in the unpublished `benchmarks/experiments` crate.
 
+#### Unified start: API call-site table
+
+0.9 replaces the start methods with OTP's verbs
+([design](design/unified-start.md)): `spawn` does not wait (`proc_lib:spawn`);
+`start`, `start_link` and `start_monitor` wait for `started()`
+(`gen_server:start*`). Every break, old call to new call:
+
+| Old call (0.8) | New call (0.9) | Behaviour |
+|---|---|---|
+| `a.start()` | `a.spawn()` | same (unmanaged `Backend::Async`, does not wait) |
+| | or `a.start().await?` | waits for `started()`; reports init failures |
+| `a.start_with_backend(b)` | `a.with_options(b).spawn()?` | same; returns `Result` (invalid options or executor failure) |
+| `a.start_on(&g)?` | `a.with_options(&g).spawn()?` | same; error type `StartError` (was `SystemError`) |
+| `g.start(a)?` (`ExecutionGroup::start`) | `a.with_options(&g).spawn()?` | same |
+| `a.start_linked(&ctx)` | `a.start_link(&ctx).await?` | **changes**: inherits the parent's placement, waits for `started()`, refuses an exiting parent (`ParentExited`); a failed start answers the error and consumes a trapping parent's `Exit` |
+| | `a.start_link(&ctx).actor_ref()?` (then drop the `Starting`) | the 0.8 behaviour (no wait; notices delivered ordinarily), but with inherited placement |
+| `ctx.monitor(&a.start().child_handle())` | `a.start_monitor(&ctx).await?` → `(ActorRef, MonitorRef)` | atomic; the parent needs `Handler<Down>` |
+| `ctx.register_name(n)` in `started()` | `a.with_options(StartOptions::new().name(n))` | atomic with the start; released at publication; `Name<A>` is typed |
+| `actor.ready().await -> Result<(), SystemError>` (managed only) | `actor.ready().await -> Result<StartOutcome<()>, StartError>` | every placement; `Ok(Ignored)` for `Init::ignore()` |
+| `SystemError::StartupFailed(r)` | `StartError::InitExited { reason: r, .. }` (or `InitFailed`, `InitTimeout`) | removed |
+| `SystemError::UnmanagedActor` from `ready()` | `ready()` answers for unmanaged actors too | |
+| threads `a.start()` | `a.spawn()`, or `a.start()?` (blocks for `started()`) | same / waits |
+| threads `a.start_linked(&ctx)` | `a.start_link(&ctx)?` (blocks) | as tasks |
+| `Mock::new()..start()` | `Mock::new()..spawn()` | same |
+| `Mock::new()..start_on(&g)` | `Mock::new()..spawn_with(&g)` | same; `StartError` |
+| `TestSystem::start(a)` | `TestSystem::spawn(a)`, or `TestSystem::start(a).await` (waits; panics on failure) | same / waits |
+| `TestSystem::start_mock(m)` | `TestSystem::spawn_mock(m)` | same |
+| `async fn started(..) {}` | unchanged | `#[started]` methods are unchanged |
+| manual `impl Actor` with `async fn started` | unchanged, but add `#[allow(refining_impl_trait)]` (or allow the lint crate-wide) | `started()` now returns `impl Into<Init<Self>>`; returning `()` refines it, which rustc's warn-by-default `refining_impl_trait` reports. `#[actor]`/`#[started]` add the allow |
+| `stopped()` ran after a `ctx.stop*()` called in `started()` (and after a held exit signal resolved there) | it no longer runs after any failed start; `ctx.stop*()` in `started()` is `Init::stop` | **changes**: as OTP skips `terminate/2` when `init/1` fails. Do the cleanup in `started()` and return `Init::stop(r)`/`Init::error(e)`, or hold resources in RAII guards. An administrative stop (`ChildHandle::stop*`) during `started()` still waits for it and runs `stopped()` |
+
+New, no migration needed: `started()` may return `Result<(), E>`,
+`Result<Init<Self>, E>` or `Init<Self>` (`Init::ready`, `continue_with(msg)`,
+`error(e)`, `stop(reason)`, `ignore()`); `StartOptions` (`name`, `label`,
+`init_timeout`, `stack_size`, `max_outstanding`, `max_native_jobs`, and in
+tasks mode `group`, `backend`, `placement_of`); `Starting::actor_ref()`;
+`StartOutcome`, `StartError`, `Timeout`.
+
+Behaviour changes to check at call sites:
+
+- **Error type.** Functions that propagated `start_on`'s `SystemError` with
+  `?` now get a `StartError` (`From<SystemError>` exists for the other
+  direction's callers: `StartError::from(system_error)`).
+- **Waiting starts block the parent's turn.** A `start_link` awaited inside a
+  handler waits for the child's `started()`; a request from that `started()`
+  back to its parent waits for its timeout (as OTP's `gen_server:call` from
+  `init/1`). Move slow initialisation into a continuation.
+- **An administrative stop during `started()`** (`ChildHandle::stop*`)
+  waits for it, as OTP's `gen_server:stop`: the start answers `Started`,
+  then the actor exits with the stop's reason through `stopped()` (0.8 did
+  the same). A supervisor's or system's shutdown is an exit signal to its
+  child: a non-trapping child in `started()` fails its start without
+  `stopped()`, as before.
+- **`ctx.stop()` inside `started()`** is the same as returning
+  `Init::stop(Normal)` (OTP's `{stop, R}`; a process cannot otherwise stop
+  itself during `init`): the start answers `InitExited { Normal }`, the
+  actor ends `Normal`, and **`stopped()` does not run** (0.8 ran it). Code
+  that called `ctx.stop()` after a failed initialisation and relied on
+  `stopped()` for cleanup must do that cleanup in `started()` and return
+  `Init::stop(reason)` or `Init::error(e)` (or `Err(e)`) instead; RAII guards
+  are dropped with the state either way.
+- **`#[must_use]`.** `Starting` and `StartOutcome` are `#[must_use]`:
+  `a.start();` without `.await` still starts the actor (stage 1 is eager) and
+  warns. `actor.ready().await.unwrap()` now yields a `StartOutcome<()>`:
+  check it (`.started().expect(..)`) or ignore it explicitly.
+- **Not in this release** (still 0.8 behaviour): scope ownership of linked
+  children (S8: a linked child of a managed parent is admitted to the
+  parent's group but not owned by its scope), `ChildStart::Ignore` and
+  `ChildState::Ignored` for supervisors (a supervised child's
+  `Init::ignore()` is a failed start), `ChildSpec::options`.
+
 - `ExitReason::Shutdown` carries an optional payload, OTP's
   `{shutdown, Term}`: it is now `Shutdown(Option<Arc<str>>)`. Every policy
   treats `Shutdown(Some(why))` exactly like the bare form (no restart of a

@@ -63,7 +63,7 @@ impl Store {
 }
 
 fn main() {
-    let store = Store::default().start();
+    let store = Store::default().spawn();
     store.event(Event(1));
     store.record(2).unwrap();
     assert_eq!(store.events().unwrap(), vec![Event(1)]);

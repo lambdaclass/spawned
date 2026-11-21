@@ -37,7 +37,7 @@ or model that checks each one, are collected in the
 
 Every actor goes through three phases:
 
-1. **`started()`** — called once before the actor begins processing messages. Use this for initialization: starting timers, registering with the registry, etc.
+1. **`started()`** — called once before the actor begins processing messages. Use this for initialization: starting timers, opening resources, etc. It may fail or opt out (`Result`, `Init`; see [Starting an actor](#starting-an-actor-v09)); a failed start never runs `stopped()`.
 2. **Message loop** — the actor processes messages one at a time via `Handler<M>` implementations.
 3. **`stopped()`** — called once after the message loop exits, unless the exit was a kill or an exit signal (see [When `stopped()` does not run](#when-stopped-does-not-run)). Use this for cleanup.
 
@@ -161,7 +161,7 @@ As in OTP (`terminate/2` runs only for exits the process takes itself), `stopped
 
 - a kill (`ChildHandle::kill()`, `exit(Kill)`, a supervisor's kill escalation at `shutdown_timeout`), unless `stopped()` already began;
 - an untrapped exit signal or link notice (`ChildHandle::exit(reason)`, a linked peer's abnormal exit);
-- a supervisor's or system's shutdown, or a `start_linked` parent's exit, to an actor that does **not** trap exits: the parent's exit is an exit signal (design E3);
+- a supervisor's or system's shutdown, or a `start_link` parent's exit, to an actor that does **not** trap exits: the parent's exit is an exit signal (design E3);
 - the runtime dropping the actor (`Killed`).
 
 Every skip is logged at `debug` with `event = "stopped_skipped"`, the actor id and type, `cause` (`kill`, `exit_signal` or `runtime_drop`) and `reason`. The log is emitted whether or not the actor overrides `stopped()` (there is no cheap way to tell), so filter on the actor type. The lifecycle trace (feature `lifecycle-trace`) records the same decision as `Hook` `skip`.
@@ -248,19 +248,100 @@ async fn handle_tick(&mut self, _msg: Tick, ctx: &Context<Self>) {
 | `actor_ref.id()` | The actor's `ActorId` |
 | `actor_ref.child_handle()` | Type-erased `ChildHandle` for monitors, links and exit observation |
 | `actor_ref.exit_reason()` / `actor_ref.wait_exit()` | The `ExitReason` once stopped |
-| `actor_ref.ready()` | Wait until a managed actor's `started()` completed (v0.7) |
+| `actor_ref.ready()` | The instance's committed startup result: `Started`, `Ignored` or the start's error (every placement, v0.9) |
 | `actor_ref.mailbox_depth()` | Queued messages (with the `metrics` feature) |
 
-### Starting an actor
+### Starting an actor (v0.9)
+
+The verbs are OTP's ([design](design/unified-start.md)):
+
+| Verb | Waits for `started()` | Link/monitor | Placement | OTP |
+|---|---|---|---|---|
+| `a.spawn()` | no (`ready()` reports later) | no | unmanaged `Backend::Async` | `proc_lib:spawn` |
+| `a.start().await` | yes | no | unmanaged `Backend::Async` | `gen_server:start` |
+| `a.start_link(&ctx).await` | yes | linked to `ctx`'s actor before `started()` | the parent's | `gen_server:start_link` |
+| `a.start_monitor(&ctx).await` | yes | monitored by `ctx`'s actor | the parent's | `gen_server:start_monitor` |
+| `a.with_options(opts).<verb>` | as the verb | as the verb | `opts` (`group`, `backend`, `placement_of`), else as the verb | `spawn_opt`, `{local, Name}`, `{timeout, T}` |
 
 ```rust
-use spawned_concurrency::tasks::ActorStart as _;
+use spawned_concurrency::tasks::{ActorStart as _, Backend, StartOptions};
+use spawned_concurrency::{StartError, StartOutcome};
 
-let actor_ref = MyActor::new().start();
-
-// tasks mode: choose a backend
-let actor_ref = MyActor::new().start_with_backend(Backend::Thread);
+let actor = MyActor::new().spawn();                              // no wait
+let actor = MyActor::new().start().await?.started().unwrap();    // waits for started()
+let actor = MyActor::new().with_options(Backend::Thread).spawn()?;
+let actor = MyActor::new().with_options(&group).spawn()?;        // an ExecutionGroup
+let actor = MyActor::new()
+    .with_options(StartOptions::new().name("rpc").init_timeout(Duration::from_secs(5)))
+    .start()
+    .await?;
 ```
+
+A waiting start answers `Ok(StartOutcome::Started(..))` when `started()`
+returned ready, `Ok(StartOutcome::Ignored { .. })` for `Init::ignore()`, or a
+`StartError`. Stage 1 runs in the call (before any `.await`), so a dropped
+`Starting` still started the actor; dropping it only abandons the wait.
+`Starting::actor_ref()` gives the not-yet-ready instance.
+
+**Results** (`StartError`). Stage 1 refusals create nothing: `Closed`,
+`Capacity`, `AlreadyStarted { name, existing }`, `ParentExited`,
+`InvalidOptions`, `System`. After the child existed: `InitFailed { cause }`
+(`Err(e)` or `Init::error(e)`, the child ended `Normal`), `InitExited {
+reason }` (a kill, an untrapped exit signal, a panic, `ctx.stop*` or
+`Init::stop` during `started()`; `reason` is the final one),
+`InitTimeout`. An error is answered only after the child's publication: its
+state is dropped, its notices are sent and its name is free, so a retry never
+overlaps it. If its destructor hangs past the cleanup deadline (5 s
+unmanaged), the answer carries `pending: Some(handle)`.
+
+**Fallible `started()`.** It may return `()`, `Result<(), E: Display>`,
+`Result<Init<Self>, E>` or `Init<Self>`:
+
+```rust
+#[started]
+async fn started(&mut self, ctx: &Context<Self>) -> Result<Init<Self>, std::io::Error> {
+    let socket = bind(self.port).await?;            // Err(e): InitFailed
+    if self.disabled { return Ok(Init::ignore()); } // Ok(Ignored)
+    self.socket = Some(socket);
+    Ok(Init::continue_with(Handshake))              // ready; Handshake runs first
+}
+```
+
+No failed start runs `stopped()` (OTP skips `terminate/2` when `init/1`
+fails): release what `started()` acquired before returning an error, or hold
+it in RAII guards. `ctx.stop()` inside `started()` is the same as returning
+`Init::stop(Normal)`. An administrative stop (`ChildHandle::stop`) that
+arrives while `started()` runs waits for it, as OTP's `gen_server:stop`: the
+start succeeds, then the actor stops through `stopped()`. `Init::continue_with(msg)` (OTP `handle_continue`) handles
+`msg` before any mailbox entry, including messages sent while `started()`
+ran; readiness is committed before it, so it is not a barrier against
+termination.
+
+**Links and monitors at start.** `start_link`/`start_monitor` commit the edge
+atomically with the start, before `started()`; a parent whose exit began is
+refused (`ParentExited`). A parent killed (or hit by an untrapped exit
+signal) while it waits for the child's `started()` stops waiting at once:
+the start answers `ParentExited` and the parent's turn ends, as in OTP the
+caller dies without waiting for `init/1`; the child gets the parent's exit
+through its link. A failed start's `Exit` (trapping parent) or `Down`
+is consumed by the error; a non-trapping parent still exits on a
+non-`Normal` failure, as the link kills the caller in OTP. An init timeout
+never reaches a waiting parent. The waiting parent's turn is blocked: a
+request from the child's `started()` back to its parent waits for its
+timeout (as `gen_server:call` from `init/1`).
+
+**Placement.** `start_link` and `start_monitor` place the child in the
+parent's placement (its group and shard, or its backend; no fallback: a
+closed or full group fails the start). `spawn` and `start` never inherit;
+`StartOptions::placement_of(&ctx)` opts in.
+
+**Names.** `StartOptions::name` takes a typed `Name<A>` (`Name::new("x")` is
+`const`): committed with the start (a clash is `AlreadyStarted` with the
+holder's handle), found with `Name::whereis()`, released at publication
+before any notice or answer.
+
+threads mode has the same verbs; the waiting ones block and return
+`Result<StartOutcome<T>, StartError>`, and `StartOptions` has no placement.
 
 ---
 
@@ -292,9 +373,9 @@ requirement, then measure the application.
 ```rust
 use spawned_concurrency::tasks::{ActorStart as _, Backend};
 
-let a = MyActor::new().start();                                // async on Tokio
-let b = MyActor::new().start_with_backend(Backend::Blocking);  // blocking I/O
-let c = MyActor::new().start_with_backend(Backend::Thread);    // dedicated thread
+let a = MyActor::new().spawn();                                   // async on Tokio
+let b = MyActor::new().with_options(Backend::Blocking).spawn()?;  // blocking I/O
+let c = MyActor::new().with_options(Backend::Thread).spawn()?;    // dedicated thread
 ```
 
 `Backend::Async` emits a tracing warning (debug builds only) if a poll takes
@@ -1016,7 +1097,7 @@ produces `Killed`.
 
 Links are bidirectional. Use `ctx.link(&child_handle)` and
 `ctx.unlink(&child_handle)` for existing actors, or
-`child.start_linked(&parent_ctx)`, which links before the child's `started()`
+`child.start_link(&parent_ctx)`, which links before the child's `started()`
 and makes the caller its parent. Repeated links and links to oneself are
 no-ops. When a linked actor dies, each peer receives a link notice with its
 final reason, under the same rules as an exit signal except that a `Kill`
@@ -1062,8 +1143,8 @@ example from a helper that outlives it) is inert: no record and no notice.
 ### Parent exits
 
 An actor's parent is fixed when it starts: the actor passed to
-`start_linked`, the supervisor of a supervised child, or the `ActorSystem` of
-a standalone `start_on` actor; a plain `.start()` actor has none. A signal
+`start_link`, the supervisor of a supervised child, or the `ActorSystem` of
+a standalone actor started in a group; a plain `.spawn()` actor has none. A signal
 from the parent to a **trapping** actor is queued as a parent exit: when
 dispatched, the actor exits with that reason (`Normal` included) and
 `stopped()` runs; `exit_received` never sees it. A non-trapping actor treats
@@ -1117,7 +1198,7 @@ Callers see the same final reason: see [Error Handling](#error-handling)
 ## Execution groups and supervision
 
 Available in v0.7.0. These are opt-in capabilities for async actors;
-ordinary `.start()`, message types, handlers and protocols retain their behavior.
+ordinary `.spawn()`, message types, handlers and protocols retain their behavior.
 Parked async pools, persistent native actor-thread pools and parked Linux pinned
 shards share the same ownership API. Supervisors support nested child specs,
 OneForOne, OneForAll and RestForOne. Spinning remains experimental.
@@ -1132,8 +1213,7 @@ use std::time::Duration;
 let system = ActorSystem::new()?;
 let critical = system.async_group("critical", 1)?;
 let background = system.async_group("background", 3)?;
-let actor = MyActor::new().start_on(&critical)?;
-actor.ready().await?;
+let actor = MyActor::new().with_options(&critical).start().await?;
 let report = system.shutdown(Duration::from_secs(5)).await;
 assert!(report.complete);
 ```
@@ -1169,7 +1249,7 @@ or Flux broadcast/loss semantics are introduced.
 let roots = system.thread_group("blocking", 4)?;
 let cpus = spawned_rt::tasks::affinity::available_cpus()?; // Linux
 let pipeline = system.pinned_group("pipeline", cpus.into_iter().take(2).collect())?;
-let stage = MyActor::new().start_on(&pipeline.shard(0)?)?;
+let stage = MyActor::new().with_options(&pipeline.shard(0)?).spawn()?;
 ```
 
 Actors started through `ctx.execution_group()` retain explicit pinned-shard placement. Native thread slots are exclusive, so a native actor’s context-derived group admits a new actor on any free slot instead of inheriting its occupied slot. Use `group.shard(i)` when reserving a particular native slot explicitly.
@@ -1217,13 +1297,13 @@ threads/resources alive indefinitely; the host decides process-level escalation.
 
 To adopt ownership incrementally, use
 `system.async_group_on("client", &tokio::runtime::Handle::current())?` and
-`actor.start_on(&group)`. Group shutdown closes admission and joins only managed
+`actor.with_options(&group).spawn()`. Group shutdown closes admission and joins only managed
 actors and their registered helpers. It leaves the borrowed runtime and ambient
-`.start()`/`tokio::spawn` tasks running. Keep the runtime alive and driven until
+`.spawn()`/`tokio::spawn` tasks running. Keep the runtime alive and driven until
 cleanup completes; cloning a Tokio handle does not keep its runtime alive. On a
 current-thread runtime, keep calling `Runtime::block_on` while awaiting shutdown.
 Use an owned `async_group` for independent scheduling capacity and runtime
-lifetime guarantees. Ambient `.start()` remains unmanaged, including inside a
+lifetime guarantees. Ambient `.spawn()` remains unmanaged, including inside a
 managed handler; use `ctx.execution_group().start(...)` for owned child work.
 
 The restart limit counts restart actions across the supervisor, as OTP's
@@ -1289,7 +1369,7 @@ If a managed actor's admission closes before `started()` begins, neither
 `started()` nor `stopped()` runs; the unstarted state and queued messages are
 dropped. This applies to standalone `start_on` actors as well as supervised
 children. Resources acquired by a constructor must therefore be released by
-Drop, not only by `stopped()`. Legacy unmanaged `.start()` and synchronous
+Drop, not only by `stopped()`. Unmanaged `.spawn()` and synchronous
 `threads` actors retain their behavior of running both hooks after an early
 cooperative stop, provided startup itself succeeds.
 Failed readiness waits for the actual startup outcome, so a non-returning hook
@@ -1476,7 +1556,7 @@ automatic durable state recovery nor exactly-once effects.
 ### Owned helpers and registrations
 
 `Context::spawn_helper` and `spawn_blocking_helper` require an actor started with
-`start_on(&group)` (or by a supervisor). An ambient `.start()` returns
+`with_options(&group)` (or by a supervisor). An ambient `.spawn()` returns
 `SystemError::UnmanagedActor` from these methods, even inside a Tokio runtime.
 Use an ActorSystem to establish cleanup ownership; no detached fallback is used.
 
@@ -1504,7 +1584,7 @@ registered helpers finish cleanup. Guard removal checks an ownership nonce so
 an old generation cannot delete a newer registration. Named registry instances
 and transparent reference rebinding are not implemented.
 
-Arbitrary `tokio::spawn`, nested blocking/native work and ambient `.start()` do not
+Arbitrary `tokio::spawn`, nested blocking/native work and ambient `.spawn()` do not
 automatically enroll in a scope. Track them explicitly or accept their unmanaged
 lifetime. An ambient actor created inside a group may be aborted by runtime
 teardown without running `stopped()`. Actor `join()` still waits for that actor;
@@ -1744,9 +1824,9 @@ use spawned_test::tasks::{Mock, Probe};
 
 let rates = Mock::new()
     .on::<rates_protocol::Rate>(|msg| if msg.currency == "EUR" { 110 } else { 100 })
-    .start();
+    .spawn();
 let out = Probe::<Converted>::new();
-let converter = Converter { rates: rates.to_rates_ref(), out: out.recipient() }.start();
+let converter = Converter { rates: rates.to_rates_ref(), out: out.recipient() }.spawn();
 
 assert_eq!(converter.convert("EUR".into(), 3).await.unwrap(), Ok(330));
 assert_eq!(out.expect(Duration::from_secs(1)).await.cents, 330);
@@ -1932,10 +2012,10 @@ release's semver promise.
 - `spawned-rt`'s re-exports of Tokio and std types (beyond `run`,
   `block_on`, `ctrl_c`, `time::Instant` and the simulation entry points).
 
-`start_linked` always starts an unmanaged `Backend::Async` actor, even from
-a managed parent: the child is outside the parent's execution group and
-ordered shutdown (the unified start API, planned for 0.9, will inherit the
-parent's placement).
+`start_link` and `start_monitor` admit the child to its managed parent's
+execution group, but in 0.9 the child is not yet owned by the parent's scope
+(design section 4.1, S8): the group's ordered shutdown stops it as any
+member, and the parent's own exit reaches it only through the link.
 
 ## Further reading
 

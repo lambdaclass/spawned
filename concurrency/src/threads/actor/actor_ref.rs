@@ -173,6 +173,13 @@ impl<A: Actor> ActorRef<A> {
     pub fn child_handle(&self) -> ChildHandle {
         self.shared.child_handle()
     }
+
+    /// This instance's committed startup result (blocks until `started()`
+    /// returned; a failure until the instance is published, or its cleanup
+    /// deadline): the same answer the waiting starts give.
+    pub fn ready(&self) -> Result<crate::StartOutcome<()>, crate::StartError> {
+        start::wait(self, false)
+    }
 }
 
 impl<A: Actor> ActorShared<A> {

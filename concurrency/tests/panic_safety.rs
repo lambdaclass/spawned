@@ -626,7 +626,7 @@ mod threads_mode {
         fn spawn_trigger(&self) -> ChildHandle {
             let gate = Arc::new(Gate::default());
             let trigger = ThreadVictim(Victim::new(None, &gate))
-                .start()
+                .spawn()
                 .child_handle();
             self.triggers.lock().unwrap().push(trigger.clone());
             trigger
@@ -661,8 +661,8 @@ mod threads_mode {
             let observer = ThreadObserver(Observer {
                 events: events.clone(),
             })
-            .start();
-            let victim = ThreadVictim(Victim::new(Some(fault), &gate)).start();
+            .spawn();
+            let victim = ThreadVictim(Victim::new(Some(fault), &gate)).spawn();
             let h = ThreadsHarness {
                 victim,
                 observer,
@@ -747,10 +747,13 @@ mod tasks_mode {
         fn start<A: spawned_concurrency::tasks::Actor>(&self, actor: A) -> ActorRef<A> {
             let _entered = self.rt.enter();
             match self.place {
-                Place::Async => actor.start_with_backend(Backend::Async),
-                Place::Blocking => actor.start_with_backend(Backend::Blocking),
-                Place::Thread => actor.start_with_backend(Backend::Thread),
-                _ => self.group.as_ref().unwrap().start(actor).unwrap(),
+                Place::Async => actor.with_options(Backend::Async).spawn().unwrap(),
+                Place::Blocking => actor.with_options(Backend::Blocking).spawn().unwrap(),
+                Place::Thread => actor.with_options(Backend::Thread).spawn().unwrap(),
+                _ => actor
+                    .with_options(self.group.as_ref().unwrap())
+                    .spawn()
+                    .unwrap(),
             }
         }
         fn bounded<F: std::future::Future>(&self, f: F) -> F::Output {

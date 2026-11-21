@@ -67,7 +67,7 @@ fn isolated_process_fixture() {
             path: path.into(),
             abort: std::env::var("SPAWNED_PROCESS_MODE").unwrap() == "abort",
         }
-        .start()
+        .spawn()
         .request_with_timeout(Crash, Duration::from_secs(60))
         .await
         .unwrap();

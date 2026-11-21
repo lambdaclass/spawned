@@ -6,3 +6,6 @@ __pycache__/
 # Standalone experiments crate (benchmarks/README.md)
 benchmarks/experiments/target/
 benchmarks/experiments/Cargo.lock
+
+# Standalone example crates build into their own directories
+examples/thread_only/target/

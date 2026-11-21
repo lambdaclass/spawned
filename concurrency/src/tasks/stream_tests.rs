@@ -87,7 +87,7 @@ pub fn test_sum_numbers_from_stream() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let summatory = Summatory::new(0).start();
+                let summatory = Summatory::new(0).spawn();
                 let stream = stream::iter(vec![1u16, 2, 3, 4, 5].into_iter().map(Ok::<u16, ()>));
 
                 let ctx = summatory.context();
@@ -115,7 +115,7 @@ pub fn test_sum_numbers_from_channel() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let summatory = Summatory::new(0).start();
+                let summatory = Summatory::new(0).spawn();
                 let (tx, rx) = spawned_rt::tasks::mpsc::channel::<Result<u16, ()>>();
 
                 spawned_rt::tasks::spawn(async move {
@@ -150,7 +150,7 @@ pub fn test_sum_numbers_from_broadcast_channel() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let summatory = Summatory::new(0).start();
+                let summatory = Summatory::new(0).spawn();
                 let (tx, rx) = tokio::sync::broadcast::channel::<u16>(5);
 
                 spawned_rt::tasks::spawn(async move {
@@ -189,7 +189,7 @@ pub fn test_stream_cancellation() {
 
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let summatory = Summatory::new(0).start();
+                let summatory = Summatory::new(0).spawn();
                 let (tx, rx) = spawned_rt::tasks::mpsc::channel::<Result<u16, ()>>();
 
                 spawned_rt::tasks::spawn(async move {
@@ -229,7 +229,7 @@ pub fn test_halting_on_stream_error() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let summatory = Summatory::new(0).start();
+                let summatory = Summatory::new(0).spawn();
                 let stream =
                     tokio_stream::iter(vec![Ok(1u16), Ok(2), Ok(3), Err(()), Ok(4), Ok(5)]);
                 let msg_stream = stream.filter_map(|value| async move {
@@ -259,7 +259,7 @@ pub fn test_skipping_on_stream_error() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let summatory = Summatory::new(0).start();
+                let summatory = Summatory::new(0).spawn();
                 let stream =
                     tokio_stream::iter(vec![Ok(1u16), Ok(2), Ok(3), Err(()), Ok(4), Ok(5)]);
                 let msg_stream = stream.filter_map(|value| async move {

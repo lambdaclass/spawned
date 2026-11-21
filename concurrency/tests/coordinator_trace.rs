@@ -76,16 +76,24 @@ async fn trace_coordinator_ordered_shutdown() {
     let _serial = SERIAL.lock().await;
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("coordinator-ordered", 2).unwrap();
-    let first = Worker.start_on(&group).unwrap();
-    within!(first.ready()).await.unwrap();
+    let first = Worker.with_options(&group).spawn().unwrap();
+    within!(first.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
     let mut tree = system.supervisor(SupervisorConfig::default()).unwrap();
     tree.add(ChildSpec::new("child", &group, |_| async {
         Ok::<_, String>(Worker)
     }))
     .unwrap();
     let supervisor = within!(tree.start()).await.unwrap();
-    let last = Worker.start_on(&group).unwrap();
-    within!(last.ready()).await.unwrap();
+    let last = Worker.with_options(&group).spawn().unwrap();
+    within!(last.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
     assert!(system.shutdown(LIMIT).await.complete);
     assert_eq!(
         write_trace("ordered", &system, 3),
@@ -105,8 +113,12 @@ async fn trace_coordinator_grace_expiry_kills_remaining() {
     let _serial = SERIAL.lock().await;
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("coordinator-grace", 1).unwrap();
-    let first = Worker.start_on(&group).unwrap();
-    within!(first.ready()).await.unwrap();
+    let first = Worker.with_options(&group).spawn().unwrap();
+    within!(first.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
     let (entered_tx, entered) = tokio::sync::oneshot::channel();
     let (release, release_rx) = tokio::sync::oneshot::channel();
     struct Stuck {
@@ -126,9 +138,14 @@ async fn trace_coordinator_grace_expiry_kills_remaining() {
         entered: Some(entered_tx),
         release: Some(release_rx),
     }
-    .start_on(&group)
+    .with_options(&group)
+    .spawn()
     .unwrap();
-    within!(last.ready()).await.unwrap();
+    within!(last.ready())
+        .await
+        .unwrap()
+        .started()
+        .expect("started");
     let report = system.shutdown(Duration::from_millis(20)).await;
     assert!(!report.complete);
     within!(entered).await.unwrap();
@@ -169,8 +186,12 @@ async fn trace_coordinator_panic_takes_emergency_fallback() {
     let group = system.async_group("coordinator-crash", 1).unwrap();
     let mut actors = Vec::new();
     for _ in 0..3 {
-        let actor = Worker.start_on(&group).unwrap();
-        within!(actor.ready()).await.unwrap();
+        let actor = Worker.with_options(&group).spawn().unwrap();
+        within!(actor.ready())
+            .await
+            .unwrap()
+            .started()
+            .expect("started");
         actors.push(actor);
     }
     failpoints::configure(

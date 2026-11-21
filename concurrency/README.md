@@ -35,7 +35,7 @@ impl Handler<counter_protocol::Get> for MyCounter {
 
 fn main() {
     rt::run(async {
-        let counter = MyCounter { count: 0 }.start();
+        let counter = MyCounter { count: 0 }.spawn();
         counter.increment();
         let value = counter.get().await.unwrap();
         assert_eq!(value, 1);

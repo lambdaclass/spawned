@@ -304,6 +304,11 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
                 let mut m = method.clone();
                 m.attrs.retain(|a| !a.path().is_ident("started"));
+                // `started()` returns `()`, a `Result` or an `Init`: the impl's
+                // return type refines the trait's `impl Into<Init<Self>>` on
+                // purpose (unified start, 0.9).
+                m.attrs
+                    .push(syn::parse_quote!(#[allow(refining_impl_trait)]));
                 m.vis = syn::Visibility::Inherited;
                 m.sig.ident = format_ident!("started");
                 if m.sig.asyncness.is_some() {

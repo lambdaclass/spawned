@@ -322,12 +322,13 @@ impl Fx {
     }
     fn spawn(&self, probe: Probe) -> ActorRef<Probe> {
         match self.place {
-            Place::Async => probe.start_with_backend(Backend::Async),
-            Place::Blocking => probe.start_with_backend(Backend::Blocking),
-            Place::Thread => probe.start_with_backend(Backend::Thread),
-            Place::GroupAsync | Place::GroupThread => {
-                self.group.as_ref().unwrap().start(probe).unwrap()
-            }
+            Place::Async => probe.with_options(Backend::Async).spawn().unwrap(),
+            Place::Blocking => probe.with_options(Backend::Blocking).spawn().unwrap(),
+            Place::Thread => probe.with_options(Backend::Thread).spawn().unwrap(),
+            Place::GroupAsync | Place::GroupThread => probe
+                .with_options(self.group.as_ref().unwrap())
+                .spawn()
+                .unwrap(),
         }
     }
     fn probe(&self) -> Probe {
@@ -565,7 +566,9 @@ async fn group_ready_wait_is_cancel_safe() {
                 spawned_rt::tasks::timeout(LIMIT, actor.ready())
                     .await
                     .unwrap()
-                    .unwrap();
+                    .unwrap()
+                    .started()
+                    .expect("started");
                 assert!(registry::registered().contains(&name));
                 usable(&actor).await;
                 fx.finish(&[&actor]).await;
@@ -775,7 +778,11 @@ async fn system_shutdown_is_cancel_safe() {
                 let mut probe = fx.probe();
                 probe.name = Some(name.clone());
                 let actor = fx.spawn(probe);
-                within!(actor.ready()).await.unwrap();
+                within!(actor.ready())
+                    .await
+                    .unwrap()
+                    .started()
+                    .expect("started");
                 let helper_gate = Arc::new(Notify::new());
                 actor.request(Cmd::Helper(helper_gate)).await.unwrap();
                 let system = fx.system.as_ref().unwrap();
@@ -811,7 +818,11 @@ async fn system_shutdown_is_cancel_safe() {
                 let mut probe = fx.probe();
                 probe.stop_gate = Some(gate.clone());
                 let actor = fx.spawn(probe);
-                within!(actor.ready()).await.unwrap();
+                within!(actor.ready())
+                    .await
+                    .unwrap()
+                    .started()
+                    .expect("started");
                 // A short grace, not zero: the trapping probe must dispatch the
                 // parent's exit and enter stopped() before the kill at grace
                 // (E3). With zero grace the kill can land first and skip
@@ -850,7 +861,11 @@ async fn helper_join_is_cancel_safe() {
             async move {
                 let fx = Fx::new(place);
                 let actor = fx.spawn(fx.probe());
-                within!(actor.ready()).await.unwrap();
+                within!(actor.ready())
+                    .await
+                    .unwrap()
+                    .started()
+                    .expect("started");
                 let gate = Arc::new(Notify::new());
                 let waiting = gate.clone();
                 let task = actor

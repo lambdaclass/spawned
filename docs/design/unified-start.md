@@ -1,9 +1,88 @@
 # Unified start API (0.9): design contract
 
-Status: design in review, revision 3, not implemented. Target release 0.9.
-The implementation follows after two independent reviews. It is designed
-against the 0.8 API as #240 ships it: exit signals, `try_link`, `NoProc`, and
-the 0.8 API-review cleanups (`send_request`, `#[non_exhaustive]` builders).
+Status: revision 3, approved; **implemented in part for 0.9** (see
+[Implementation status](#implementation-status-09)). It is designed against
+the 0.8 API as #240 ships it: exit signals, `try_link`, `NoProc`, and the 0.8
+API-review cleanups (`send_request`, `#[non_exhaustive]` builders).
+
+## Implementation status (0.9)
+
+**Implemented** (both modes unless noted): sections 2.1-2.5 (the verbs,
+`Starter`, `Starting`, `StartOutcome`, `Init` and the 2.3 table, `StartOptions`,
+`Name<A>`, `StartError`), 3 (prepare and one commit), 4 (inheritance; not 4.1),
+5.1-5.5 (the startup cell, disposition at publication, abandonment, answering
+with `pending`), 6 (the init timer and stuck policy), 7 (start-time names), 8
+(continuations), 10 partly (`Mock::spawn`/`spawn_with`, `TestSystem::spawn`/
+`start`/`spawn_mock`/`options`), 12 (migration), 16.2 (trace validation:
+`TraceStart.tla`, all 28 event kinds, 16 recorded scenarios, 15
+recorded-trace controls).
+
+**Not yet implemented** (follow-up PRs):
+
+- 4.1, S8: scope ownership of linked children (the owner gate, the polite
+  `Shutdown` at the parent's publication, the scope deadline, the
+  generation's end). A linked child of a managed parent is admitted to the
+  parent's group but is not owned by its scope.
+- 9: `ChildStart::Ignore`, `ChildState::Ignored`, `ChildStartError`,
+  `ChildSpec::options` and the absolute attempt deadline; the
+  `Supervision.tla`/`Cohorts.tla` changes. A supervised child's
+  `Init::ignore()` is a failed start, as before.
+- 10: `Mock::on_started`, `start_delay`, `drop_flag`.
+- 16.3-16.5: the simulator races, the fuzzer's start generator and oracles,
+  the planted-bug patches of 16.5. The Loom row has one of five tests
+  (`start_edge_commit_races_parent_exit_begin`).
+- `label` sets a managed actor's diagnostic name (threads mode: the thread
+  name); introspection's `set_label` (#256) does not exist yet.
+
+**Deviations, each forced by the code or by Rust:**
+
+- **Slot release** (5.2 step 4, `SReleaseSlot`). A group slot is released at
+  the instance's scope completion, after publication and the owned-work join,
+  not before publication: a thread group's slot is the native worker that
+  still runs the job join, so releasing it earlier admits a new actor onto a
+  busy worker. `Start.tla` was changed to match (`ReleaseSlot` after
+  `Publish` and `WorkDoneC`; P's slot after `WorkDoneP`); every configuration
+  and control was rerun. A retry into a full thread group may therefore see
+  `Capacity` until the old instance's jobs are joined; the name is free at
+  publication as designed.
+- **Lock order of the commit** (section 3, ranks 3-4). The parent's link or
+  monitor table is taken before its exit-request lock, the order every other
+  0.8 path uses (`link/table.rs`: tables, then exit request); the design's
+  reverse order would deadlock against notice delivery. The commit stays
+  atomic: the exit check, the edge and the name are applied under all of
+  them.
+- **Non-ready resolution and D** (2.3). The decision fixes the reason under
+  the exit-request lock and marks it final (a later kill or signal is a
+  no-op, as past D); the link table is closed by the ordinary D right after,
+  outside that lock, as in 0.8. Observably the same as one critical section;
+  the trace records D as a folded step (`SDie` with `f`).
+- **`refining_impl_trait`.** `started()` returns `impl Into<Init<Self>>`; an
+  impl returning `()` refines it, which rustc's warn-by-default lint reports.
+  `#[actor]`/`#[started]` add the allow; manual impls add it themselves
+  (MIGRATION.md). There is no stable alternative (no associated-type
+  defaults).
+- **Bare `Backend::Thread` spawn.** The thread is spawned after the commit,
+  not parked in prepare; a thread-spawn failure panics, as 0.8's did.
+- **A `Normal` failed-start notice to a waiting non-trapping parent** is
+  dropped at publication (the model's legitimate drop) rather than delivered
+  as a no-op; found by trace validation, which rejected the first recording.
+
+**Revision 4 (maintainer decision, after implementation): an administrative
+stop during `started()` waits for it, as OTP.** Revision 3's row 3 made a
+`ChildHandle::stop*` that arrives while `started()` runs a failed start
+without `stopped()`. In OTP, `gen_server:stop/1` is a system message: it is
+handled after `init/1` returns, so the start succeeds and `terminate/2` runs.
+No Rust constraint forces a difference, so (project rule) Spawned now does
+the same: the stop is held, the start commits ready (`Started`), then the
+actor exits with the stop's reason through `stopped()`; a start that fails
+for another reason discards it. Exit signals during `started()` (a kill, a
+held non-trapping parent exit or link notice) keep their rows: they fail the
+start without `stopped()`, as in OTP they kill the starting process. A
+`ctx.stop*` inside `started()` stays row 5: a process cannot stop itself
+mid-`init` in OTP except by returning `{stop, R}`, so it is the same as
+`Init::stop(r)` (no `stopped()`). Model: `AdminStopApply`, invariant
+`ReadyReturnCommitsReady` (control `AdminStopFailsInit`, revision 3's row 3);
+trace control "an administrative stop during started() fails the start".
 
 Revision 2 answered both round-one reviews. Revision 3 answers both round-two
 reviews (Codex and agy, both "approve after the listed changes", no P0). What
@@ -217,7 +296,7 @@ which reopens the window) and `KillBeforeDIsKilled` (control
 |---|---|---|---|---|
 | 1 | the init timer committed `timedout` (section 6) | `Killed` | no | `timedout` → `InitTimeout` |
 | 2 | a kill arrived (`kill()`, `exit(Kill)`, the S8 scope deadline) | `Killed` | no | failed → `InitExited` |
-| 3 | an administrative stop (`ChildHandle::stop*`, `shutdown`) arrived, or the child does not trap and a held non-`Normal` signal (parent exit, link notice, exit signal) arrived; the first of these in arrival order wins | its reason | no | failed → `InitExited` |
+| 3 | the child does not trap and a held non-`Normal` signal (parent exit, link notice, exit signal) arrived; the first in arrival order wins | its reason | no | failed → `InitExited` |
 | 4 | `started()` panicked | `Panic("panic in started(): ..")` | no | failed → `InitExited` |
 | 5 | `ctx.stop*(r)` was called in `started()` | `r` | **no** (as `{stop, r}`) | failed → `InitExited` |
 | 6 | `Init::stop(r)` | `r` | no | failed → `InitExited` |
@@ -232,15 +311,22 @@ which reopens the window) and `KillBeforeDIsKilled` (control
   even a `Normal` one (E3: it ends the child when handled). The child
   commits ready, runs its continuation first, then handles the queued
   entries. This is OTP's behaviour for an `init/1` that sets `trap_exit` and
-  returns `{continue, C}`. Administrative stops and kills are untrappable
-  (rows 2-3).
+  returns `{continue, C}`. Kills are untrappable (row 2).
+- **An administrative stop** (`ChildHandle::stop*`, a scope's stop) that
+  arrives during `started()` decides nothing (revision 4): it is held, and
+  applied once the start commits ready (row 10), which answers `Started`;
+  the actor then exits with the stop's reason through `stopped()`, without
+  dispatching its continuation or messages. A failed start discards it. This
+  is OTP's `gen_server:stop/1`, a system message handled after `init/1`.
 - **A superseded diagnostic.** When a higher row wins over a returned
   `Init::error(e)`, `e` is logged at debug level with the actor id.
 - **Cooperative deviation.** OTP applies a signal when it arrives; Spawned
   reads the trap flag when `started()` returns. This is 0.8's documented
   phase-0 deviation (R: no preemption).
 - **Behaviour change from 0.8.** A `ctx.stop()` inside `started()` no longer
-  runs `stopped()`.
+  runs `stopped()`: it is the same as returning `Init::stop(r)` (OTP's
+  `{stop, R}`; a process cannot otherwise stop itself mid-`init`). Clean up
+  in `started()` before returning, or hold resources in RAII guards.
 
 ### 2.4 `StartOptions<A>`
 

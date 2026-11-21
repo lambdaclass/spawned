@@ -588,7 +588,7 @@ fn main() {
                 children: Vec::new(),
                 meter: meters[id].clone(),
             }
-            .start(),
+            .spawn(),
         );
     }
     let nodes: Vec<_> = nodes.into_iter().map(Option::unwrap).collect();

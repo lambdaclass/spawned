@@ -63,12 +63,14 @@ pub(crate) fn register<K: Hash + Eq, V>(
     active: impl FnOnce(),
 ) -> Registration {
     let mut guard = lock(table);
-    if observer_exiting() {
-        return Registration::Inert;
-    }
+    // The table's closure first: `observer_exiting` may take effects (a
+    // start registers its name there) that a closed table must not see.
     let Some(entries) = guard.as_mut() else {
         return Registration::Inert;
     };
+    if observer_exiting() {
+        return Registration::Inert;
+    }
     if target_dead() {
         late();
         entries.insert(key, Entry::Queued);

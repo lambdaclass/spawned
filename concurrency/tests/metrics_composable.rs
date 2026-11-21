@@ -25,7 +25,7 @@ impl Handler<Ping> for Probe {
 
 #[test]
 fn embedded_components_can_add_sampling_requirements_after_actors_start() {
-    let actor = Probe.start();
+    let actor = Probe.spawn();
     actor.request(Ping).unwrap();
     assert_eq!(metrics::snapshot().queue_wait.count, 1);
     // The implicit default did not register an application requirement.
