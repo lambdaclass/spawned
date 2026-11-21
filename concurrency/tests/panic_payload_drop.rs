@@ -122,7 +122,7 @@ mod tasks_mode {
             .expect("the actor exits");
         expect(Hook::Handler, &reason, stopped.load(Ordering::SeqCst));
         let report = system.shutdown(Duration::from_secs(10)).await;
-        assert!(report.complete, "system shutdown incomplete: {report:?}");
+        assert!(report.complete, "system shutdown incomplete");
     }
 }
 
