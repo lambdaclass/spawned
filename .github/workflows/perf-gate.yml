@@ -1,6 +1,7 @@
 name: Perf gate
 
-# Hot-path instruction counts, PR against its merge base
+# Hot-path instruction counts, PR against its merge base and against the last
+# release tag, a cumulative budget per release cycle
 # (benchmarks/hotpath.py gate; docs/TESTING.md, "Performance gate").
 # The workflow always runs so the check can be required; the gate itself is
 # skipped (and passes) unless runtime source, dependencies, toolchain or driver changed.
@@ -9,6 +10,10 @@ on:
   pull_request:
     branches: ["main"]
   merge_group:
+  # On main only the release binary is built (when missing) and cached, so PRs,
+  # which can only restore caches saved on main, reuse it.
+  push:
+    branches: ["main"]
 
 concurrency:
   group: perf-gate-${{ github.event.pull_request.number || github.ref }}
@@ -19,11 +24,13 @@ env:
   CARGO_INCREMENTAL: "0"
   # Maximum growth of instructions per operation, in percent.
   HOTPATH_THRESHOLD: "3"
+  # Maximum growth over the last release (git describe --match 'v*'), in percent.
+  HOTPATH_RELEASE_THRESHOLD: "3"
 
 jobs:
   perf-gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,6 +41,14 @@ jobs:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           MQ_BASE: ${{ github.event.merge_group.base_sha }}
         run: |
+          release=$(git describe --tags --abbrev=0 --match 'v*' HEAD)
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "release_sha=$(git rev-parse "$release^{commit}")" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = push ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "warm=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           base=$(git merge-base HEAD "${PR_BASE:-$MQ_BASE}")
           echo "base=$base" >> "$GITHUB_OUTPUT"
           changed=$(git diff --name-only "$base" HEAD)
@@ -44,13 +59,29 @@ jobs:
             echo "Perf gate skipped: no runtime source, dependency, toolchain or driver change." >> "$GITHUB_STEP_SUMMARY"
           fi
       - uses: dtolnay/rust-toolchain@1.93.0
-        if: steps.scope.outputs.run == 'true'
+        if: steps.scope.outputs.run == 'true' || steps.scope.outputs.warm == 'true'
+      # The release binary: same driver, same toolchain, same release commit.
+      - name: Release binary cache
+        if: steps.scope.outputs.run == 'true' || steps.scope.outputs.warm == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/hotpath-release
+          key: hotpath-release-${{ steps.scope.outputs.release_sha }}-${{ hashFiles('benchmarks/hotpath/driver.rs', 'rust-toolchain.toml') }}
+      - name: Build the release binary
+        if: steps.scope.outputs.warm == 'true'
+        run: >
+          python3 benchmarks/hotpath.py build-release
+          --release ${{ steps.scope.outputs.release }}
+          --release-cache ${{ runner.temp }}/hotpath-release
+          --work ${{ runner.temp }}/hotpath
       - name: Install valgrind
         if: steps.scope.outputs.run == 'true'
         run: sudo apt-get update -q && sudo apt-get install -y -q valgrind
-      - name: Instruction counts, head vs merge base
+      - name: Instruction counts, head vs merge base and last release
         if: steps.scope.outputs.run == 'true'
         run: >
           python3 benchmarks/hotpath.py gate
           --base ${{ steps.scope.outputs.base }} --head HEAD
+          --release ${{ steps.scope.outputs.release }}
+          --release-cache ${{ runner.temp }}/hotpath-release
           --work ${{ runner.temp }}/hotpath
