@@ -189,11 +189,15 @@ pub enum Placement {
 pub struct TurnId(pub u64);
 
 /// What an activity is (tier 1).
+///
+/// A message turn is `MessageTurn`, not `Message`: a public item named
+/// `Message` beside the `Message` trait makes rustc print the trait's full
+/// path in every user's trait-bound error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ActivityKind {
     Started,
-    Message,
+    MessageTurn,
     ExitReceived,
     Status,
     Stopped,

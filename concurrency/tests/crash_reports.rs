@@ -90,19 +90,6 @@ fn one_report(actor: ActorId) -> Fields {
     found.into_iter().next().unwrap()
 }
 
-const CONTRACT: [&str; 10] = [
-    "actor_id",
-    "system",
-    "actor_type",
-    "label",
-    "name",
-    "reason",
-    "ancestors",
-    "generation",
-    "group",
-    "links",
-];
-
 struct Boom;
 impl Message for Boom {
     type Result = ();
@@ -115,6 +102,20 @@ impl Message for Quit {
 #[cfg(feature = "async")]
 mod tasks_mode {
     use super::*;
+
+    const CONTRACT: [&str; 10] = [
+        "actor_id",
+        "system",
+        "actor_type",
+        "label",
+        "name",
+        "reason",
+        "ancestors",
+        "generation",
+        "group",
+        "links",
+    ];
+
     use spawned_concurrency::supervision::{ChildSpec, SupervisorConfig};
     use spawned_concurrency::system::ActorSystem;
     use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler};

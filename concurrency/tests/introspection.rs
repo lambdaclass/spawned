@@ -9,7 +9,7 @@ use spawned_concurrency::introspection::{
     ActorInfo, Field, Lifecycle, Parent, Placement, Unavailable,
 };
 use spawned_concurrency::message::Message;
-use spawned_concurrency::{ActorId, ExitReason, PendingReply};
+use spawned_concurrency::{ExitReason, PendingReply};
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
@@ -55,6 +55,7 @@ mod tasks_mode {
     use spawned_concurrency::supervision::{ChildSpec, SupervisorConfig};
     use spawned_concurrency::system::{ActorSystem, ExecutionGroup};
     use spawned_concurrency::tasks::{Actor, ActorRef, ActorStart, Backend, Context, Handler};
+    use spawned_concurrency::ActorId;
     use spawned_concurrency::ReplyTo;
     use tokio::sync::oneshot;
 
