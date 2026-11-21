@@ -1641,7 +1641,7 @@ by hand (`verification/planted/patches/`, one patch each, listed in
 
 ```sh
 verification/planted/run.sh -l TSCFVK -f 900 -o /tmp/planted baseline   # control: every layer must miss
-verification/planted/run.sh -l TSCFVK -f 600 -o /tmp/planted             # all 24 patches
+verification/planted/run.sh -l TSCFVK -f 600 -o /tmp/planted             # all 27 patches
 verification/planted/run.sh -l TS -o /tmp/planted verification/planted/patches/09-*.patch
 ```
 
