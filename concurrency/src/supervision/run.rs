@@ -840,7 +840,9 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                     exit = Some(
                         match rt::timeout(spec.shutdown_timeout, child.wait_exit_async()).await {
                             Ok(reason) => {
-                                if !stop_turn {
+                                if stop_turn {
+                                    trace::emit(core.trace, || Event::new("StopExited", c, ""));
+                                } else {
                                     let failed = child.cleanup_failure().is_some();
                                     trace::emit(core.trace, || {
                                         Event::new("SelfExit", c, exit_class(&reason, failed))
@@ -856,6 +858,11 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                                 fail_point!("supervisor.before_stop_kill", async);
                                 trace::atomic(|| {
                                     scope.kill();
+                                    if stop_turn {
+                                        trace::emit(core.trace, || {
+                                            Event::new("CleanupKill", c, "")
+                                        });
+                                    }
                                     if let Some(round) = round_stop {
                                         core.cohort(|| Event::new("CKill", c, "").round(round));
                                     }
@@ -865,7 +872,14 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                                 match rt::timeout(spec.shutdown_timeout, child.wait_exit_async())
                                     .await
                                 {
-                                    Ok(reason) => reason,
+                                    Ok(reason) => {
+                                        if stop_turn {
+                                            trace::emit(core.trace, || {
+                                                Event::new("StopExited", c, "")
+                                            });
+                                        }
+                                        reason
+                                    }
                                     Err(_) => {
                                         stuck = true;
                                         // Reply traces: the cleanup deadline

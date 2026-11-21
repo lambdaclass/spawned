@@ -39,7 +39,7 @@ code = [
     "concurrency/src/supervision/**",
     "concurrency/src/lifecycle_trace.rs",
 ]
-coverage_floor = 36   # of 40 action keys
+coverage_floor = 38   # of 42 action keys
 
 [models.Cohorts]
 # OneForAll/RestForOne rounds (selection, stop, cleanup, join barrier,

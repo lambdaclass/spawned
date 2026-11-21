@@ -105,7 +105,8 @@ during the initial start (`DeferExit`/`Undefer`, S1); non-restartable startup
 failure; restart budget exhaustion and disabled retries; shutdown during
 backoff; replacement startup timeout;
 `Supervisor::shutdown` with a short deadline and a hanging `stopped()`
-(`ShutdownDeadline`, `SupChildTimeout`, `CleanupStuck`); and seeded random
+(`ShutdownDeadline`, `SupChildTimeout`, `CleanupKill`, `CleanupStuck`); a stop
+turn whose child dies after the kill (`CleanupKill`, `StopExited`); and seeded random
 crashes, normal exits and external shutdowns racing a stop or shutdown.
 
 How it works:
@@ -355,6 +356,10 @@ Action and temporal properties:
 - `ReverseShutdown`: ready children get their stop turn only after every later
   child finished or timed out, unless the shutdown deadline forced `stop_remaining`.
 - `NeverReopens`, and liveness `ClosedLeadsToDone` assuming cleanup completes.
+- `StuckOnlyAfterKill` (V3): a generation the supervisor stopped leaves
+  "stopping" only through its actor's death point (`StopExited`) or the kill
+  at `shutdown_timeout` (`CleanupKill`); it is stuck only after the kill and a
+  second interval.
 
 ## Inductive invariants (Apalache)
 
@@ -373,7 +378,7 @@ not, so it has no depth bound; together the two checks imply the invariants
 hold in every reachable state, however long the run. For `Supervision`,
 generation numbers are unbounded SMT integers and no `GenBound` constraint is
 used; the action properties (`NoStartAfterClose`, `RestartFollowsPolicy`,
-`ReverseShutdown`, `NeverReopens`) are checked as one-step action invariants
+`ReverseShutdown`, `NeverReopens`, `StuckOnlyAfterKill`) are checked as one-step action invariants
 from `IndInv`. "Unbounded" still means one instance size: the checks hold for
 the declared constants, not for all N.
 

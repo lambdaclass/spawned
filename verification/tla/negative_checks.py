@@ -828,6 +828,22 @@ def main():
     for label, pattern, replacement in SUPERVISION_S1_CONTROLS:
         spec_mutation("MCSupervision", "Supervision.tla", label, pattern, replacement,
                       "RestartFollowsPolicy", args.tlc)
+    # V3 under OneForOne: a stopped child given up on (stuck) after one
+    # interval, without the kill (the round-stop bug, here on a stop turn).
+    spec_mutation("MCSupervision", "Supervision.tla", "StuckWithoutKill",
+                  r'(CleanupStuck\(c\) ==\s*/\\ pc\[c\] \\in \{"cleanup", "killing")\}',
+                  r'\1, "stopping"}', "StuckOnlyAfterKill", args.tlc)
+    stuck = next(t for t in traces if t.get("name") == "shutdown_deadline_slow_stop")
+    def stop_stuck_without_kill(events):
+        events.remove(next(e for e in events if e["a"] == "CleanupKill"))
+    require_rejected(stuck, stop_stuck_without_kill,
+                     "a stopped child's slot stuck without its kill", args.tlc)
+    killed = next(t for t in traces if t.get("name") == "shutdown_kill")
+    def stop_stuck_before_its_second_interval(events):
+        kill = next(i for i, e in enumerate(events) if e["a"] == "CleanupKill")
+        events.insert(kill, dict(events[kill], a="CleanupStuck"))
+    require_rejected(killed, stop_stuck_before_its_second_interval,
+                     "a stopped child's slot stuck before its kill", args.tlc)
     deferred = next(t for t in traces if t["name"] == "ready_exit_deferred")
     def decide_at_once(events):
         # v0.7: no deferral; the restart decision is taken during startup,

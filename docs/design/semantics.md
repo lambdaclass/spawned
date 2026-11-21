@@ -542,7 +542,11 @@ Checked by: `Supervision!AtMostOneGeneration`, `Cohorts!AtMostOneGeneration`,
 `repeated_crash_producer_and_shutdown_races_never_overlap_generations`,
 `stuck_stopped_hook_triggers_cleanup_deadline_before_terminal_publication`;
 [`otp_exit_signals::tasks_mode::supervisor_shutdown_is_the_parents_exit_signal`][otp_exit_signals]
-(the kill at `shutdown_timeout`); for a OneForAll/RestForOne round's stop,
+(the kill at `shutdown_timeout`); for a supervisor stop turn,
+`Supervision!StuckOnlyAfterKill` (`CleanupKill`/`StopExited`, trace-validated
+by [`supervision_trace`][supervision_trace]`::trace_shutdown_kills_child_at_shutdown_timeout`
+and `trace_shutdown_deadline_with_slow_stop`, with a model fault and two
+recorded-trace controls in `negative_checks.py`); for a OneForAll/RestForOne round's stop,
 `Cohorts!StuckOnlyAfterKill` (`CKill`/`CStuck`, trace-validated by
 [`cohort_trace`][cohort_trace]`::trace_collateral_child_killed_or_stuck`, with
 a model fault and two recorded-trace controls in `negative_checks.py`) and
