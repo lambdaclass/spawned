@@ -401,6 +401,8 @@ def preflight(cfg):
     notes = []
     if (qdir / "run/launched.json").exists():
         die("already launched (run/launched.json); one run per directory")
+    if (qdir / "STOP").exists():
+        die(f"{qdir / 'STOP'} exists; remove it to launch")
     if shutil.which("tmux") is None:
         die("tmux not found")
     if not (qdir / "manifest.json").exists():
@@ -569,7 +571,11 @@ class Controller:
         if pid is None:
             self.log(f"stop {proc_label}: not running", label=proc_label)
             return None
-        start_time = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+        try:
+            start_time = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+        except OSError:
+            self.log(f"stop {proc_label}: exited before the signal", label=proc_label)
+            return None
         log = self.latest_log(proc_label)
         offset = log.stat().st_size if log else 0
 
