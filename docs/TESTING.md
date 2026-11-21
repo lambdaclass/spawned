@@ -2110,13 +2110,16 @@ identical counts run to run, three pairs) and threads-mode sequential
 `request()` (a lockstep pair of threads, nine pairs). Valgrind runs one guest
 thread at a time, but a thread blocked in a syscall lets the other run, so
 with several CPUs the host scheduler decides how the requester and the actor
-interleave, and how often they spin, park and wake. Under load that moved
-`threads_request_seq` by up to 3.7% between runs, as much as the threshold.
-Every callgrind run is therefore pinned to one CPU, which leaves the code
-paths unchanged and cuts that spread to 0.9%. A minimum over runs (on the
-theory that contention only adds instructions) was tried and rejected: the
-noise is in both sizes, so the difference of the minima moved 3.3% across
-ten loaded runs. On a multi-threaded runtime, or with free-running OS-thread
+interleave, and how often they spin, park and wake. On fede under load
+(load average 40-80 on 30 CPUs) single run pairs of `threads_request_seq`
+spread up to 6%, and ten back-to-back gates moved its change against the base
+by up to 4.6 points (one false +3.5%). Every callgrind run is therefore pinned
+to one CPU, which leaves the code paths unchanged: in ten more gates under
+the same kind of load, run pairs spread 1.5%, each side's median of nine
+stayed within 0.9%, and the change against the base stayed within 0.6
+points. A minimum over runs (on the theory that contention only adds
+instructions) was tried and rejected: the noise is in both sizes, so the
+difference of the minima moved 3.3%. On a multi-threaded runtime, or with free-running OS-thread
 producers (threads-mode burst and `send`), how often actors park and wake
 changes from run to run (up to ±20% instructions), so those run only in the
 wall-clock check. The gate fails when any benchmark's instructions per operation grow

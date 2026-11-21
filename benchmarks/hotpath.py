@@ -124,10 +124,10 @@ def instructions(binary, name, ops):
     # Valgrind runs one guest thread at a time, but a thread blocked in a
     # syscall (futex wait, park) releases that lock, so on several CPUs the
     # host scheduler decides how the requester and the actor interleave and
-    # how often they spin, park and wake: up to 3.7% instructions per
-    # operation under load on `threads_request_seq`. On one CPU the
-    # interleaving barely depends on the host (0.9%); the code paths measured
-    # are the same.
+    # how often they spin, park and wake: run pairs of `threads_request_seq`
+    # spread up to 6% under load. On one CPU the interleaving barely depends
+    # on the host (1.5%, the gate's median of nine within 0.9%); the code
+    # paths measured are the same.
     out = subprocess.run(
         ["valgrind", "--tool=callgrind", "--fair-sched=yes",
          "--callgrind-out-file=/dev/null", str(binary), name, str(ops)],
@@ -148,8 +148,7 @@ def per_op(binary, name, small, large, reps, csv=None, label=""):
 
     The two-thread benchmark gets more pairs (`--contended-reps`). The minimum
     is not a stable estimate here: the noise is in both sizes, so the
-    difference of the minima moved 3.3% across ten loaded runs, against 1.4%
-    for the median.
+    difference of the minima moved 3.3% across ten loaded runs.
     """
     runs = {small: [], large: []}
     for rep in range(reps):

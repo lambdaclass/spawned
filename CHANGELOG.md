@@ -54,7 +54,7 @@
   is built once per release and cached (`hotpath.py build-release` on pushes
   to main). Callgrind runs are pinned to one CPU and
   `threads_request_seq` takes the median of nine run pairs: under load the
-  host scheduler had moved it by up to 3.7%, as much as the threshold.
+  host scheduler had swung it by several percent, as much as the threshold.
 - Fix the flaky `supervision::transient_startup_timeout_retries_after_actual_cleanup`
   (a 20 ms startup deadline raced the fast starts on a loaded host, which also
   made cargo-mutants report surviving mutants as caught): the replacement's
