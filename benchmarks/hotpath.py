@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Hot-path regression checks: a revision against its base.
 
-    hotpath.py gate  [--base REV] [--head REV] [--threshold PCT]
-    hotpath.py abba  [--base REV] [--head REV] [--reps N] [--cores LIST]
+    hotpath.py gate  [--base REV] [--head REV] [--threshold PCT] [--features F]
+    hotpath.py abba  [--base REV] [--head REV] [--reps N] [--cores LIST] [--features F]
 
 Both build `benchmarks/hotpath/driver.rs` (the head's copy, in both trees, so
 both sides run the same workload) as a release example of each revision.
@@ -48,7 +48,7 @@ def default_base(head):
     sys.exit("no --base given and no main/origin/main to take a merge base with")
 
 
-def build(work, label, rev):
+def build(work, label, rev, features=None):
     """Check out `rev` in a worktree, add the driver, build it; return the binary."""
     tree = work / label
     sh(["git", "worktree", "add", "--detach", "--force", str(tree), rev], cwd=ROOT,
@@ -61,8 +61,9 @@ def build(work, label, rev):
     actor_rs = tree / "concurrency" / "src" / "tasks" / "actor.rs"
     if "fn start_with_backend" in actor_rs.read_text():
         env["RUSTFLAGS"] = (env.get("RUSTFLAGS", "") + " --cfg hotpath_legacy_start").strip()
+    extra = ["--features", features] if features else []
     sh(["cargo", "build", "--release", "--locked", "-q", "-p", "spawned-concurrency",
-        "--example", "hotpath"], cwd=tree, env=env)
+        "--example", "hotpath", *extra], cwd=tree, env=env)
     binary = work / f"hotpath-{label}"
     shutil.copy(target / "release" / "examples" / "hotpath", binary)
     return binary
@@ -198,6 +199,8 @@ def main():
     p.add_argument("--ops", type=int, default=500_000, help="abba: operations per run")
     p.add_argument("--cores", help="abba: taskset core list, e.g. 12-15")
     p.add_argument("--csv", help="abba: raw samples")
+    p.add_argument("--features", help="cargo features for both sides, e.g. metrics "
+                   "(default: the crate's defaults, as CI gates)")
     args = p.parse_args()
     args.reps = args.reps or (3 if args.mode == "gate" else 20)
 
@@ -206,8 +209,8 @@ def main():
     work = Path(args.work or tempfile.mkdtemp(prefix="hotpath-")).resolve()
     work.mkdir(parents=True, exist_ok=True)
     try:
-        base_bin = build(work, "base", base)
-        head_bin = build(work, "head", head)
+        base_bin = build(work, "base", base, args.features)
+        head_bin = build(work, "head", head, args.features)
         run = gate if args.mode == "gate" else abba
         sys.exit(run(args, base_bin, head_bin, base, head))
     finally:

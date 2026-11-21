@@ -7,6 +7,7 @@
 //! gets exactly one terminal discharge.
 
 pub(crate) mod deadline;
+pub(crate) mod disposal;
 pub(crate) mod job_core;
 pub mod jobs;
 mod pending;
@@ -63,6 +64,9 @@ mod sync {
     pub(crate) type SlotOwner = ();
     /// The owner's final reason, as the slot records it at its close.
     pub(crate) type Reason = crate::error::ExitReason;
+    /// Counts the slot in `spawned_reply_slots_alive` (the Loom model: `()`).
+    pub(crate) type SlotAlive =
+        crate::instrumentation::Live<crate::instrumentation::gauge::ReplySlots>;
 
     /// Run a slot transition as one step of the lifecycle-trace
     /// linearization (the identity without the feature).
@@ -601,6 +605,8 @@ pub struct ReplyTo<R: Send + 'static> {
     registry: Arc<Registry>,
     /// When it was deferred (sampled; zero-sized without `metrics`).
     stamp: crate::instrumentation::hooks::DeferStamp,
+    /// `spawned_reply_tokens_alive`.
+    _alive: crate::instrumentation::Live<crate::instrumentation::gauge::ReplyTokens>,
 }
 
 impl<R: Send + 'static> std::fmt::Debug for ReplyTo<R> {
@@ -621,6 +627,7 @@ impl<R: Send + 'static> ReplyTo<R> {
             slot: Some(slot),
             registry,
             stamp: crate::instrumentation::hooks::deferred(),
+            _alive: Default::default(),
         };
         token.registry.token_added();
         token

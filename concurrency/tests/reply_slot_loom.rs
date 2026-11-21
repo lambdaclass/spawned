@@ -14,6 +14,7 @@ mod sync {
     pub(crate) type SlotMutexGuard<'a, T> = MutexGuard<'a, T>;
     pub(crate) type SlotOwner = Option<()>;
     pub(crate) type Reason = ();
+    pub(crate) type SlotAlive = ();
     pub(crate) fn section<T>(f: impl FnOnce() -> T) -> T {
         f()
     }
@@ -347,6 +348,54 @@ fn drop_vs_close_vs_expiry() {
         let s = state(slot.word());
         let expired = s == slot::TIMED_OUT;
         assert_eq!([closed, dropped, expired].iter().filter(|b| **b).count(), 1);
+        assert_eq!(pool.used(), 0);
+        assert_balanced(&pool, &[&slot]);
+    });
+}
+
+/// The deadline service's expiry (`expire_collect`) versus a reply, with the
+/// expiry's wake-up handed off to another thread (a disposal worker) and the
+/// caller polling throughout: exactly one wins, the credit returns with the
+/// transition (before the wake-up runs), and the polling caller always gets
+/// the outcome (the handed-off wake-up is never lost).
+#[test]
+fn service_expiry_with_handed_off_wake_vs_reply() {
+    model(|| {
+        let pool = Arc::new(CreditPool::new(1));
+        let slot = deferred(&pool, 10);
+        let service = {
+            let (slot, pool) = (slot.clone(), pool.clone());
+            loom::thread::spawn(move || {
+                let wake = slot.expire_collect(10);
+                if wake.is_some() {
+                    assert_eq!(pool.used(), 0, "credit returned before the wake-up");
+                }
+                wake
+            })
+        };
+        let disposal = loom::thread::spawn(move || {
+            if let Some(mut wake) = service.join().unwrap() {
+                wake.notify_parked();
+                wake.run();
+                true
+            } else {
+                false
+            }
+        });
+        let replier = {
+            let slot = slot.clone();
+            loom::thread::spawn(move || slot.reply(1).0)
+        };
+        let got = loom::future::block_on(std::future::poll_fn(|cx| slot.poll(cx.waker())));
+        let expired = disposal.join().unwrap();
+        let delivery = replier.join().unwrap();
+        if expired {
+            assert_eq!(got, Err(Terminal::TimedOut));
+            assert_eq!(delivery, Delivery::Expired);
+        } else {
+            assert_eq!(got, Ok(1));
+            assert_eq!(delivery, Delivery::Delivered);
+        }
         assert_eq!(pool.used(), 0);
         assert_balanced(&pool, &[&slot]);
     });

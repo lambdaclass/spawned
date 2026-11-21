@@ -19,6 +19,7 @@ mod sync {
     pub(crate) type SlotMutexGuard<'a, T> = MutexGuard<'a, T>;
     pub(crate) type SlotOwner = Option<()>;
     pub(crate) type Reason = ();
+    pub(crate) type SlotAlive = ();
     pub(crate) fn section<T>(f: impl FnOnce() -> T) -> T {
         f()
     }

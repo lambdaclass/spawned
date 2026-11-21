@@ -288,10 +288,73 @@ handles a call even after the caller timed out, and the late reply is dropped.
   Shortening or a new earliest entry re-registers and wakes it. A dead owner
   is forgotten at registry close. It is independent of individual Tokio
   runtime lifetimes.
-- **Callback progress.** Expiry may run user wakers and destroy job payloads
-  or completion captures on that thread. A blocking callback delays other
-  actors' heap-driven deadlines and credit return. Callbacks must return
-  promptly; the service provides no isolation from non-returning callbacks.
+- **Callback progress (disposal off the service thread).** The service
+  thread only decides expiry: it pops due entries, makes the terminal
+  transition (`OPEN -> TIMED_OUT`, a job's `JobDeadline` notification or a
+  scheduled emit's fire) and returns the deferral credit, all under
+  framework locks. It also unparks a parked blocking receiver and enqueues a
+  job's message on its owner's mailbox (the runtime wake of the owner's own
+  task). Anything an expiry releases that can run user code is collected
+  during the visit and handed to the disposal workers (`reply/disposal.rs`):
+  the caller's waker and the token's watchers, payloads routed to the
+  owner's failure sink (a held or refused job result, a discarded emit,
+  `done` and its captures), a due slot that may hold an unread reply, and
+  the last references to jobs, runs and the registry (a reference that is
+  not the last, or an entry with nothing of the user's left, is dropped in
+  place; empty payloads, the usual case, are not handed off at all). Each
+  item is queued on its own, so a destructor or waker that blocks holds only
+  the worker running it: while fewer than 64 callbacks are blocked at once,
+  no other expiry, credit return or wake-up waits for it, of another actor
+  or of the same one (two callers of one actor expiring in one visit are
+  woken independently). Disposal workers form an elastic pool: when queued items
+  outnumber idle workers one more starts (one start at a time, up to 64;
+  idle ones exit after 10 s), and each worker re-checks when it takes an
+  item. Reaching the cap logs `disposal_workers_capped` once. Modelled in
+  `verification/tla/Disposal.tla`, including the pool's start rule, idle
+  count and cap (trace-validated against `concurrency/tests/disposal_trace.rs`,
+  which records every hand-off and every worker step): no wake-up before the
+  transition and credit return, no payload drop decided while held, and no
+  expiry or wake-up waiting for a blocked item below the cap; its controls
+  include the shared-batch bug, as a model fault and as a trace recorded
+  from the code with that bug switched on (`disposal.batch_serial`).
+  - *Why a pool and not the owner.* Deferring disposal to the owning actor
+    would tie a caller's wake-up to the owner's next turn (a wedged owner
+    would hang its callers past their deadline), and deferring it to the
+    caller has no thread to run on for an unpolled token. A single disposal
+    thread would only move the stall: a caller's waker queued behind
+    another actor's blocking destructor still waits.
+  - *Order kept.* The death point's rules hold: the transition precedes the
+    wake-up as before (a caller that polls in between sees the terminal
+    state); a payload handed off is discarded again on the worker, where the
+    owner's hold is re-checked, so a drop deferred before the owner's exit
+    still waits for its death point (R6, callers before payloads). If a
+    visit unwinds, what it collected is still submitted, so no wake-up is
+    lost. A deferral from a thread-local destructor after this thread's
+    batch is gone runs inline instead of aborting.
+  - *Credits.* Deferral credits (`MAX_OUTSTANDING`) return on the service
+    thread with the transition. A scheduled emit's per-job emit credit
+    travels inside its message; when the emit is discarded or refused at its
+    instant, that credit returns when the message is dropped on a worker.
+  - *Cost.* None on a request or reply that does not expire: the hand-off is
+    in the service's own path, and the shared helpers test a thread-local
+    only when they already have a waker or a payload to dispose of.
+  - *Pre-exit drops.* A worker decides a payload's fate under the hold
+    lock (`DropFailures::settle`) and runs the destructor after releasing
+    it, like an inline discard: a drop decided just before the owner's exit
+    began may still be running while the exit proceeds. It is pre-exit work
+    (§5); the exit never waits for it, since such a destructor could itself
+    wait for this actor's callers. The guarantee is that no drop is decided
+    after the hold began (the model's `NoDropWhileHeld`, on the decision).
+  - *What still runs on the service thread.* The owner's own executor wake
+    (enqueueing a job's message: a runtime waker or condvar), dropping (not
+    waking) a job's stored wakers when its last reference goes, the `tracing`
+    subscriber for a contained panic or the cap warning, a panic payload's
+    destructor (`dispose_panic`), and, only if no disposal thread exists and
+    none can be spawned, the deferred work itself. If an unwinding job
+    notification drops its run there, that drop is inline too.
+  - *Limits.* With 64 callbacks blocked at once, later items queue behind
+    them. A burst of quick items can start workers that then sit idle (one
+    start in flight at a time; idle workers exit after 10 s).
   Ordinary request/Response runtime timers and send_after/send_interval
   drivers are separate (see semantics.md, section 10).
 - **Simulation.** Under `spawned_sim` the service is a task of the simulated
@@ -1123,7 +1186,9 @@ semantics above.
   service thread (not a task on the `ActorSystem` control runtime); a dead
   owner is forgotten at its registry close. Under `spawned_sim` each owner's
   heap is served by a task of the simulated runtime, so clock domains never
-  mix.
+  mix. The wakers and payload destructors an expiry releases go to an
+  elastic disposal pool, not the thread (§2, "Callback progress", which
+  lists what still runs inline).
 - **Cleanup deadline.** Armed when exit begins: the supervisor's
   `shutdown_timeout` for a supervised child, the remaining system grace
   during `ActorSystem::shutdown`, otherwise `DEFAULT_STOP_DEADLINE` (5 s).

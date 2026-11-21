@@ -26,6 +26,23 @@ trend.actors_active = 10
 trend.mailbox_depth = 100
 trend.handlers_active = 10
 trend.requests_active = 10
+# spawned's retained-structure gauges (docs/GUIDE.md, "Retained internal
+# structures"): counts per hour.
+trend.reply_slots_alive = 10
+trend.reply_tokens_alive = 10
+trend.pending_replies_entries = 10
+trend.reply_registries_alive = 10
+trend.deadline_heap_entries = 10
+trend.deadline_service_entries = 10
+trend.deadline_service_actors = 10
+trend.jobs_alive = 10
+trend.monitors_alive = 10
+trend.link_records_alive = 10
+trend.registered_names = 10
+trend.timers_alive = 10
+trend.disposal_queue_entries = 10
+trend.disposal_workers_alive = 10
+trend.disposal_workers_idle = 10
 
 # Minimum growth: a trend also needs slope x steady-window hours above this
 # many units (MiB for rss_mb and heap_mb) to fail. Bounded pools (Tokio's
@@ -44,6 +61,21 @@ growth.actors_active = 5
 growth.mailbox_depth = 50
 growth.handlers_active = 3
 growth.requests_active = 3
+growth.reply_slots_alive = 5
+growth.reply_tokens_alive = 5
+growth.pending_replies_entries = 5
+growth.reply_registries_alive = 5
+growth.deadline_heap_entries = 5
+growth.deadline_service_entries = 5
+growth.deadline_service_actors = 5
+growth.jobs_alive = 5
+growth.monitors_alive = 5
+growth.link_records_alive = 5
+growth.registered_names = 5
+growth.timers_alive = 5
+growth.disposal_queue_entries = 5
+growth.disposal_workers_alive = 5
+growth.disposal_workers_idle = 5
 
 # Quiesce: after the workload stops and the long-lived ActorSystem shuts
 # down, each series must return to within `slack` of its baseline (sampled
@@ -60,3 +92,19 @@ quiesce.actors_active = 0
 quiesce.mailbox_depth = 0
 quiesce.handlers_active = 0
 quiesce.requests_active = 0
+quiesce.reply_slots_alive = 0
+quiesce.reply_tokens_alive = 0
+quiesce.pending_replies_entries = 0
+quiesce.reply_registries_alive = 0
+quiesce.deadline_heap_entries = 0
+quiesce.deadline_service_entries = 0
+quiesce.deadline_service_actors = 0
+quiesce.jobs_alive = 0
+quiesce.monitors_alive = 0
+quiesce.link_records_alive = 0
+quiesce.registered_names = 0
+quiesce.timers_alive = 0
+# Idle disposal workers retire after their 10 s keep-alive, within the timeout.
+quiesce.disposal_queue_entries = 0
+quiesce.disposal_workers_alive = 0
+quiesce.disposal_workers_idle = 0

@@ -1,8 +1,37 @@
 //! Internal instrumentation; disabled builds use zero-sized no-op guards.
+
+/// A field counting one live `G` structure (`gauge::*`) from construction to
+/// drop; zero-sized, and a no-op without `metrics`.
+pub(crate) type Live<G> = live::Live<G>;
 #[cfg(feature = "metrics")]
 pub(crate) use crate::metrics::{
-    accepted, hooks, reply, ActorObservation, Mailbox, MessageObservation, RequestObservation,
+    accepted, hooks, live, reply, ActorObservation, Mailbox, MessageObservation, RequestObservation,
 };
+
+/// Markers of the retained-structure gauges (`metrics::live`): which
+/// `spawned_*` gauge a [`Live`](live::Live) field counts.
+pub(crate) mod gauge {
+    /// `reply_slots_alive`: request reply slots.
+    pub(crate) enum ReplySlots {}
+    /// `reply_tokens_alive`: `ReplyTo` tokens (deferred obligations).
+    pub(crate) enum ReplyTokens {}
+    /// `reply_registries_alive`: per-instance reply registries.
+    pub(crate) enum ReplyRegistries {}
+    /// `pending_replies_entries`: entries in every `PendingReplies`.
+    pub(crate) enum PendingEntries {}
+    /// `deadline_heap_entries`: per-instance deadline heap entries.
+    pub(crate) enum DeadlineEntries {}
+    /// `jobs_alive`: job states (runs, handles, held results).
+    pub(crate) enum Jobs {}
+    /// `monitors_alive`: entries in monitor tables.
+    pub(crate) enum Monitors {}
+    /// `link_records_alive`: link records.
+    pub(crate) enum LinkRecords {}
+    /// `registered_names`: names in the global registry.
+    pub(crate) enum Names {}
+    /// `timers_alive`: `send_after` / `send_interval` timers.
+    pub(crate) enum Timers {}
+}
 
 #[cfg(not(feature = "metrics"))]
 mod disabled {
@@ -55,6 +84,24 @@ mod disabled {
         pub(crate) fn job_emitted() {}
         #[inline(always)]
         pub(crate) fn jobs_unfinished(_: usize) {}
+        #[inline(always)]
+        pub(crate) fn disposal_capped() {}
+    }
+
+    /// Retained-structure gauges: zero-sized, no-op guards without `metrics`.
+    pub(crate) mod live {
+        use std::marker::PhantomData;
+        pub(crate) struct Live<G>(PhantomData<fn() -> G>);
+        impl<G> Default for Live<G> {
+            #[inline(always)]
+            fn default() -> Self {
+                Self(PhantomData)
+            }
+        }
+        #[inline(always)]
+        pub(crate) fn added<G>(_: usize) {}
+        #[inline(always)]
+        pub(crate) fn removed<G>(_: usize) {}
     }
 }
 #[cfg(not(feature = "metrics"))]

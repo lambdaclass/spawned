@@ -80,6 +80,28 @@ pub const SITES: &[Site] = &[
                       answered (tasks and threads).",
     },
     Site {
+        name: "disposal.item",
+        has_error: false,
+        description: "A disposal worker is about to run an item the deadline service \
+                      handed off (a wake-up or a payload drop). Delay lets the owner's \
+                      exit begin first: a payload handed off before it is held until the \
+                      death point, not dropped by the worker.",
+    },
+    Site {
+        name: "disposal.batch_serial",
+        has_error: true,
+        description: "Error: the deadline service's handed-off batch runs as one entry, \
+                      serially on one worker (the shared-batch bug fixed in PR #282). A \
+                      negative control: the disposal trace it records must be rejected by \
+                      Disposal.tla.",
+    },
+    Site {
+        name: "disposal.keep_alive",
+        has_error: true,
+        description: "Error: an idle disposal worker waits 5 ms instead of the keep-alive \
+                      before it retires, so a test sees workers retire and new ones start.",
+    },
+    Site {
         name: "job.native_worker_unused",
         has_error: false,
         description: "Threads mode: the parked thread of a dropped, unused blocking-job \

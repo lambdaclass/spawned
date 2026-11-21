@@ -12,7 +12,9 @@
 //! due entries even when no caller polls, so credits return on time:
 //!
 //! - real time: one process-wide service thread with its own timer, so
-//!   per-test Tokio runtimes cannot break it;
+//!   per-test Tokio runtimes cannot break it. What an expiry releases
+//!   (wakers, payload destructors) goes to a disposal worker
+//!   (`super::disposal`, which lists what still runs inline);
 //! - under `spawned_sim`: a task of the simulated runtime per actor heap, so
 //!   clock domains never mix and virtual time drives it.
 
@@ -25,14 +27,22 @@ use std::sync::{Arc, Weak};
 pub(crate) trait Expirable: Send + Sync {
     /// The current deadline while the item is pending, else `None`.
     fn pending_deadline(&self) -> Option<u64>;
-    /// The deadline passed (`now >= deadline`): expire the item.
-    fn expire(&self, now: u64);
+    /// Service a popped entry: if `due` (its deadline passed, `now >=
+    /// deadline`), expire it. Returns whether dropping the last reference
+    /// could still run user code (an unread reply): the service hands such a
+    /// drop off ([`super::disposal`]) and drops the others in place, with no
+    /// hand-off. Job entries route their user payloads through the owner's
+    /// drop sink (deferred there), so they return `false`. One method, not
+    /// two: each is instantiated per reply type in the caller's crate.
+    fn expire(&self, now: u64, due: bool) -> bool;
 }
 
 struct Entry {
     at: u64,
     seq: u64,
     item: Weak<dyn Expirable>,
+    /// `spawned_deadline_heap_entries`, stale entries included.
+    _alive: crate::instrumentation::Live<crate::instrumentation::gauge::DeadlineEntries>,
 }
 impl PartialEq for Entry {
     fn eq(&self, other: &Self) -> bool {
@@ -94,6 +104,7 @@ impl DeadlineHeap {
             at,
             seq: self.seq,
             item,
+            _alive: Default::default(),
         }));
         (earliest, upgraded)
     }
@@ -157,6 +168,14 @@ pub(crate) fn schedule(registry: &Arc<Registry>, at: u64) {
     sim::schedule(registry, at);
     #[cfg(not(all(spawned_sim, feature = "async")))]
     thread_service::schedule(registry, at);
+}
+
+/// The process-wide service's `(queue entries, actors)`: queue entries
+/// include superseded ones not yet compacted. Read on a metrics scrape,
+/// under the service's lock; `(0, 0)` before the service first starts.
+#[cfg(feature = "metrics")]
+pub(crate) fn service_sizes() -> (usize, usize) {
+    thread_service::sizes()
 }
 
 mod thread_service {
@@ -254,6 +273,14 @@ mod thread_service {
         assert!(observed.lock().unwrap().upgrade().is_none());
     }
 
+    #[cfg(feature = "metrics")]
+    pub(super) fn sizes() -> (usize, usize) {
+        SERVICE.get().map_or((0, 0), |service| {
+            let state = lock(service);
+            (state.queue.len(), state.actors.len())
+        })
+    }
+
     pub(super) fn forget(key: u64) {
         let Some(service) = SERVICE.get() else {
             return;
@@ -304,15 +331,22 @@ mod thread_service {
                     state.actors.remove(&key);
                     drop(state);
                     // Entries are contained one by one; this also covers the
-                    // visit itself and dropping the upgraded registry, so the
-                    // one process-wide service never stops.
-                    super::super::registry::contain_entry(|| {
-                        if let Some(registry) = weak.upgrade() {
-                            if let Some(next) = registry.service_deadlines(now) {
-                                schedule(&registry, next);
+                    // visit itself, so the one process-wide service never
+                    // stops. Whatever the visit releases that can run user
+                    // code (wakers, payloads, the upgraded registry) goes to
+                    // a disposal worker: this thread runs none of it.
+                    let released = super::super::disposal::collect(|| {
+                        super::super::registry::contain_entry(|| {
+                            if let Some(registry) = weak.upgrade() {
+                                if let Some(next) = registry.service_deadlines(now) {
+                                    schedule(&registry, next);
+                                }
+                                super::super::disposal::defer_drop_arc(registry);
                             }
-                        }
+                        });
                     });
+                    // Disposal.tla `Submit` (recorded there).
+                    super::super::disposal::submit(released);
                     state = lock(service);
                 }
                 Some(Reverse((at, _))) => {

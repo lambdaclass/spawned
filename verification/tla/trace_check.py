@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check recorded lifecycle traces against Supervision.tla (and, by schema,
 Cohorts.tla, NestedSupervision.tla, DeferredJobs.tla, DeferredReplies.tla,
-Lifecycle.tla and Coordinator.tla).
+Disposal.tla, Lifecycle.tla and Coordinator.tla).
 
 Each JSON trace (written by concurrency/tests/supervision_trace.rs with the
 `lifecycle-trace` feature) looks like:
@@ -50,7 +50,7 @@ def tla_event(event, cohort=False):
 def generate(trace, workdir):
     schema = trace.get("schema", "one-for-one-v1")
     if schema not in {"one-for-one-v1", "cohort-v1", "tree-v1", "jobs-v1", "replies-v1",
-                      "lifecycle-v1", "start-v1", "coordinator-v1"}:
+                      "lifecycle-v1", "start-v1", "coordinator-v1", "disposal-v1"}:
         raise ValueError(f"unsupported trace schema: {schema}")
     if schema == "start-v1":
         return generate_start(trace, workdir)
@@ -64,6 +64,8 @@ def generate(trace, workdir):
         return generate_lifecycle(trace, workdir)
     if schema == "coordinator-v1":
         return generate_coordinator(trace, workdir)
+    if schema == "disposal-v1":
+        return generate_disposal(trace, workdir)
     cohort = schema == "cohort-v1"
     modules = ("Cohorts.tla", "TraceCohorts.tla") if cohort else MODELS
     for model in modules:
@@ -148,6 +150,83 @@ def generate_replies(trace, workdir):
                   f"    BoundB = {int(trace.get('bound_b', 1))}\n"
                   f"    MaxTime = {clock}\n    MaxWait = {clock}\n    Fault = \"None\"\n"
                   "    Trace <- TraceLog\n"
+                  "INVARIANT Safety\nINVARIANT TraceIncomplete\n")
+
+
+def generate_disposal(trace, workdir):
+    """The deadline service's hand-off and the disposal pool against
+    Disposal.tla. The leading `Pool` event gives the idle workers when
+    recording started (InitIdle = 1..K; a worker that appears without
+    `Begin` is one of them). Requests (Expire), payloads (Defer drop), other
+    items (Defer other) and started workers (Begin) are numbered in order of
+    appearance, over the whole log, so an event out of order keeps its item
+    and the model rejects it; an item never handed off gets kind "none"."""
+    for model in ("Disposal.tla", "TraceDisposal.tla"):
+        shutil.copy(os.path.join(HERE, model), workdir)
+    events = list(trace["events"])
+    if not events or events[0]["a"] != "Pool":
+        raise ValueError("a disposal trace starts with the pool's state (Pool)")
+    pool = events.pop(0)
+    idle, started = int(pool["w"]), int(pool["r"])
+    if idle != started or pool["x"]:
+        raise ValueError(f"recording must start with the pool quiescent: {pool}")
+    reqs, items, counts = {}, {}, {"drop": 0, "other": 0}
+    for e in events:
+        if e["a"] == "Expire":
+            r = int(e["r"])
+            if r in reqs:
+                raise ValueError(f"a slot expired twice: {e}")
+            reqs[r] = len(reqs) + 1
+            if int(e["id"]):
+                items[int(e["id"])] = ("wake", reqs[r])
+        elif e["a"] == "Defer":
+            kind = e["x"]
+            counts[kind] += 1
+            items[int(e["id"])] = (kind, counts[kind])
+    begun = {int(e["w"]) for e in events if e["a"] == "Begin"}
+    workers, preexisting = {}, 0
+    for e in events:
+        w = int(e.get("w", 0))
+        if not w or w in workers:
+            continue
+        if w in begun:
+            workers[w] = None  # numbered after the pre-existing ones
+        else:
+            preexisting += 1
+            if preexisting > idle:
+                raise ValueError(f"more pre-existing workers than were idle: {e}")
+            workers[w] = preexisting
+    following = idle
+    for w in workers:
+        if workers[w] is None:
+            following += 1
+            workers[w] = following
+    records = []
+    for e in events:
+        a = e["a"]
+        if a == "Expire":
+            k, n = ("wake" if e["x"] == "wake" else "none"), reqs[int(e["r"])]
+        elif a in {"Defer", "Take", "Run", "Settle", "Done"}:
+            k, n = items.get(int(e["id"]), ("none", 0))
+        else:
+            k, n = "none", 0
+        records.append("[a |-> {}, w |-> {}, k |-> {}, n |-> {}, x |-> {}]".format(
+            tla_string(a), workers.get(int(e.get("w", 0)), 0), tla_string(k), n,
+            tla_string(e["x"])))
+    if not records:
+        raise ValueError("a disposal trace needs at least one event")
+    with open(os.path.join(workdir, "TraceRun.tla"), "w") as out:
+        out.write("---- MODULE TraceRun ----\nEXTENDS TraceDisposal\n"
+                  f"TraceBlocking == {{}}\nTraceInitIdle == 1..{idle}\nTraceLog == <<\n    "
+                  + ",\n    ".join(records) + "\n>>\n====\n")
+    with open(os.path.join(workdir, "TraceRun.cfg"), "w") as out:
+        # Deadlines are chosen by TLC; one tick makes every slot due. The
+        # worker cap is the code's (MAX_WORKERS).
+        out.write("INIT TraceInit\nNEXT TraceNext\nCONSTANTS\n"
+                  f"    N = {len(reqs)}\n    P = {counts['drop']}\n    O = {counts['other']}\n"
+                  "    MaxTime = 1\n    Workers = 64\n"
+                  "    Blocking <- TraceBlocking\n    InitIdle <- TraceInitIdle\n"
+                  "    Fault = \"None\"\n    Trace <- TraceLog\n"
                   "INVARIANT Safety\nINVARIANT TraceIncomplete\n")
 
 

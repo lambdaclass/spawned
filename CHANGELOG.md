@@ -23,6 +23,29 @@
   `callbacks_registered`; the timer thread now holds its registrations and
   drops them when it fires or is cancelled. Tasks-mode timers were not
   affected (Tokio removes a cancellation waiter when its future is dropped).
+- `metrics`: gauges of spawned's own retained structures, so memory growth
+  can be attributed to the framework (or ruled out) from one scrape, without a
+  heap-profiling build: `spawned_reply_slots_alive`, `reply_tokens_alive`,
+  `pending_replies_entries`, `reply_registries_alive`,
+  `deadline_heap_entries`, `deadline_service_entries`,
+  `deadline_service_actors`, `jobs_alive`, `monitors_alive`,
+  `link_records_alive`, `registered_names` and `timers_alive` (docs/GUIDE.md,
+  "Retained internal structures"). Counted by a zero-sized field at each
+  structure's creation and drop (one relaxed atomic each end, no lock); the
+  deadline service's sizes are read at scrape. Compiled out without the
+  feature. A churn test in both backends checks that every gauge returns to
+  its baseline (`tests/metrics_retained.rs`), which doubles as a leak test.
+  `timers_alive` is how the threads-mode timer callback leak above was
+  found.
+- `metrics`: the disposal worker pool's gauges, `spawned_disposal_queue_entries`,
+  `disposal_workers_alive` and `disposal_workers_idle` (read at scrape under
+  the pool's lock), and the counter `spawned_disposal_workers_capped_total`
+  (times all 64 workers were busy, once per episode, beside the existing
+  warning). Compiled out without the feature; no change on the hand-off path
+  otherwise. A test expires deadlines in both backends with blocking and
+  non-blocking disposal and checks the queue drains and every worker retires
+  after its keep-alive (`disposal.keep_alive` failpoint with `failpoints`).
+  The soak harness judges the three gauges.
 - Fix the flaky `supervision::transient_startup_timeout_retries_after_actual_cleanup`
   (a 20 ms startup deadline raced the fast starts on a loaded host, which also
   made cargo-mutants report surviving mutants as caught): the replacement's
@@ -131,6 +154,26 @@
   (the selection trace missed it in 24 of 30 runs). New
   `lifecycle_trace::recorded_with` test helper.
 
+- Keep user code off the shared deadline-service thread (the known 0.8
+  limitation). The thread still decides expiry and returns credits, but the
+  wakers and payload destructors an expiry releases (a caller's waker, a
+  discarded scheduled emit, a displaced job result, a `done` closure and its
+  captures) now run on an elastic pool of disposal workers, one item at a
+  time, so a blocking destructor or waker no longer delays other actors'
+  deadlines or other callers of the same actor. A payload handed off still
+  waits for its owner's death point (R6). No cost
+  on requests that do not expire. New regression tests (tasks and threads),
+  a Loom case for the handed-off wake-up, an `InlineDisposal` negative
+  control in `DeferredReplies.tla`, and a new trace-validated model,
+  `Disposal.tla` (expiry and hand-off, per-item queueing, the pool's start
+  rule, idle count and cap, worker wake-ups after the transition, two-step
+  payload drops held until the death point), validated against traces that
+  record every hand-off and worker step (`disposal_trace`, with
+  `disposal.item`, `disposal.keep_alive` and `disposal.batch_serial`
+  failpoints; the last records a control trace from code with the
+  shared-batch bug, which must be rejected) and five negative controls.
+  Empty payloads are no longer handed off, and a due entry is dropped in
+  place unless it may hold an unread reply.
 - Regenerate the 11 planted-bug patches (04, 10-17, 19, 20) that no longer
   applied, each planting the same fault where the code now lives, and check in
   the required `model-sync` job that every planted patch still applies.

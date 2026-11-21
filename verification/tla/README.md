@@ -17,6 +17,7 @@ this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 | `TraceCoordinator.tla` | Trace validation of `Coordinator.tla`: replays the shutdown coordinator events recorded from real `ActorSystem::shutdown` runs (`coordinator_trace`). |
 | `NestedSupervision.tla`, `MCNested.tla/.cfg` | Dynamic subtree ownership and shutdown delivery; parent scope completion waits for descendant completion. Bounded three-node/two-generation model with fair cleanup. |
 | `DeferredReplies.tla`, `MCDeferredReplies*.tla/.cfg` | Rank 11 design model (not implemented), part 1: reply slots, send-time deadlines with shortening, deferral credits shared by a token and its first linked job, the exiting phase with exit-pending drops (unwound or dropped while exiting, answered at death with the final reason), a stuck phase (cleanup deadline passed while `stopped()` runs: nothing closed early, death later or never), death, and downstream request cleanup. Fourteen named negative controls. |
+| `Disposal.tla`, `MCDisposal{,Drop,Capped}.tla/.cfg`, `TraceDisposal.tla` | The deadline service's hand-off of user code to disposal workers (companion of `DeferredReplies.tla`, which takes the service's expiry as one step): per-entry `Expire` (transition and credit return on the service thread), payload `Release` and `Other` items, `Submit` one queue entry per item, and the pool as `disposal.rs` runs it: worker states (active, idle, holding an entry, running an item), the idle count, the start rule after `Submit` and every `Take` (one start in flight, up to the cap), `Wait`/`Woke`/`Retire`; wake-ups run by workers; payload drops in two steps (`Settle` decides under the hold lock: held until `Death`, or dropped; then the destructor until `Done`); items that never return (`Blocking`). Invariants: credit with the transition, no wake-up before the transition, no payload drop decided while held, the cap, timely expiry and timely wake-up whatever blocks (`MCDisposalCapped`, one worker: late only while every worker is stuck); liveness: every non-blocking wake-up runs, every deadline is serviced. Five named negative controls; trace-validated, including a trace recorded from code with the shared-batch bug. See [Disposal](#disposal-trace-validation). |
 | `DeferredJobs.tla`, `MCDeferredJobs*.tla/.cfg` | Rank 11 design model, part 2: pipe jobs with separate execution, cancellation and notification states; keyed replacement including notified jobs; optional job deadlines; a FIFO mailbox with emit credits and the terminal message last; `ActorId` fencing. `MCDeferredJobsEmits` is the fast configuration with emits; `MCDeferredJobsHeld` the one with delayed emits (`emit_at`) and held results (completion, held notification, scheduled emits and credit ownership as separate steps). Twelve named negative controls; `MCDeferredJobsEmitRace` checks retained emit admission at held-result release (306 states). |
 | `Lifecycle.tla`, `MCLifecycle{,Live,Fence,Deep,LiveDeep,WideDeep}.tla/.cfg` | Base actor lifecycle as proposed for v0.8 ([design](../../docs/design/otp-exit-signals.md)): links, monitors, `trap_exit`, exit signals (`Killed`, ignored `Normal`, `NoProc`, parent exits), administrative stops, requests around death, `Exit`/`Down` ordering. Nineteen negative-control faults (19 safety checks, 2 liveness checks): the v0.7 exit-signal behaviours (direct stops ignoring `trap_exit`, kills ending `Kill`, unfenced `unlink`/`demonitor`, real reasons for late registrations, `stopped()` after kills and untrapped signals, late signals ignored during exit), the PR #182/#185 bugs, early exit errors, kill and panic precedence, runtime-drop reasons, early notification, a split death point, a parent exit reaching `exit_received`, an exit signal past the sender's death point (`NoSignalFence`) and publication before the queued requests were answered (`PublishBeforeDischarge`). Death is two steps, as in `actor_cleanup.rs`: the death point (`Die`/`RuntimeDrop`: signal fence, seal, table closed) and `Discharge` (queued and exit-pending requests answered), with other actors' steps in between; `Publish` waits for `Discharge`. Per PR: `MCLifecycle` (10.0M states, fewer reasons, where the safety controls run), `MCLifecycleFence`, `MCLifecycleLive`; weekly: `MCLifecycleWideDeep` (the former 43M-state per-PR instance); manual pre-release: `MCLifecycleDeep`, `MCLifecycleLiveDeep`. |
 | `Start.tla`, `MCStart{,Names,Cap,Timeout,Continue,Scope,Live,Deep}.tla/.cfg` | Unified start API, 0.9 design (approved after three review rounds) ([design](../../docs/design/unified-start.md), not implemented; TLC-only in `model-map.toml` until trace validation lands with the implementation): `spawn`, `start`, `start_link`, `start_monitor`; placement inheritance; an atomic stage-1 commit with the owner gate; an immutable startup commitment and a waiter; death as D, release, then publication, for the child and the parent; the final reason fixed at D; fallible init with held-signal precedence; the continuation; S8 scope ownership with the polite Shutdown and the scope deadline. 40 negative controls (37 safety, 3 liveness); see [Unified start](#unified-start-09-design). Per PR: `MCStart`, `MCStartNames`, `MCStartCap`, `MCStartTimeout`, `MCStartContinue`, `MCStartScope`, `MCStartLive` (CI leg `start`); weekly: `MCStartDeep`. |
@@ -174,12 +175,12 @@ coverage asks the converse: which parts of the model's reachable behavior do
 the recorded runs never exercise? `trace_coverage.py` reports it per model with
 trace validation (`Supervision`, `Cohorts`, `NestedSupervision`, and by
 action keys only `Lifecycle`, `DeferredJobs`, `DeferredReplies`,
-`Coordinator`).
+`Coordinator`, `Disposal`).
 
 **Action-only models.** For `Lifecycle.tla`, `DeferredJobs.tla`,
-`DeferredReplies.tla` and `Coordinator.tla` the keys are the log-event arms of
-their trace spec (`TraceLifecycle.tla`, `TraceJobs.tla`, `TraceReplies.tla`,
-`TraceCoordinator.tla`; each arm is one
+`DeferredReplies.tla`, `Coordinator.tla` and `Disposal.tla` the keys are the
+log-event arms of their trace spec (`TraceLifecycle.tla`, `TraceJobs.tla`,
+`TraceReplies.tla`, `TraceCoordinator.tla`, `TraceDisposal.tla`; each arm is one
 model action or a named group of them, `A|Send`, `A|Fire`, ...): the model
 side is the set of arms, a trace covers the arms its accepted replay takes,
 and no state space is explored for them. `coverage-baseline.json` and the
@@ -188,7 +189,7 @@ Model actions without an arm are listed in the map's `[trace.unlogged]` with
 the reason.
 
 ```bash
-cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace --test job_trace --test reply_trace --test lifecycle_trace --test start_trace
+cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace --test job_trace --test reply_trace --test disposal_trace --test lifecycle_trace --test start_trace
 nix develop -c python3 verification/tla/trace_coverage.py --traces dedicated=target/lifecycle-traces \
     --model-keys verification/tla/coverage-model.json.gz --baseline verification/tla/coverage-baseline.json
 # every test binary: each finished supervisor dumps its traces
@@ -709,6 +710,12 @@ exactly the property it targets:
 | `DeferredReplies` | `EarlyStopped` (rank 11 before 5e: a token dropped while exiting or unwound answers `Stopped` at once) | `StoppedAtDeath` |
 | `DeferredReplies` | `NoReplyFence` (a stored token's reply is admitted after the death point) | `NoReplyAfterDeath` |
 | `DeferredReplies` | `CallbackBeforeDischarge` (an answer's wake-up runs before the last answer of the death batch) | `WokenAfterDischarge` |
+| `DeferredReplies` | `InlineDisposal` (0.8.0: the shared deadline thread runs an expiry's waker or destructor inline, and one never returns) | `TimelyExpiry` |
+| `Disposal` (`MCDisposal`) | `InlineDisposal` (0.8.0: the service runs the batch itself; a blocking item stops every later expiry) | `TimelyExpiry` |
+| `Disposal` (`MCDisposal`) | `WakeBeforeTransition` (the wake-up handed off before the transition commits) | `WakeAfterTransition` |
+| `Disposal` (`MCDisposal`) | `DropWhileHeld` (the worker drops a payload without re-checking the owner's hold) | `NoDropWhileHeld` |
+| `Disposal` (`MCDisposal`) | `BatchSerial` (a visit's batch is one queue entry run serially; the shared-batch bug of PR #282's first revision) | `TimelyWake` |
+| `Disposal` (`MCDisposal`) | `NoStartOnTake` (the start rule checked only at `Submit`: a queued item stranded behind blocked workers) | `TimelyWake` |
 | `DeferredJobs` | `NoInstanceCheck` | `NoLateResult` |
 | `DeferredJobs` | `NoCancelFence` | `NoStaleAfterCancel` |
 | `DeferredJobs` | `DoubleTerminal` | `AtMostOneTerminal` |
@@ -794,6 +801,41 @@ service, the caller giving up, death with a stored token, a panicking turn);
 below the bound, a reply after death, a second discharge, a drop before the
 turn, and a `Stopped` discharge of the panicking turn's token before its
 `Exit`, the rank 11 behaviour before 5e).
+
+### Disposal trace validation
+
+While `lifecycle_trace::record_disposal()` is on, the code records every
+`Disposal.tla` action at its linearization point. The first event, `Pool`,
+is the pool's state when recording starts (the checker requires it
+quiescent and makes its idle workers the model's `InitIdle`). On the
+service thread: `Expire` (after `Slot::expire_collect`'s transition and
+credit return; `x` says whether a wake-up was handed off), `Defer` (every
+other hand-off: a payload, `x: drop`, in one section with `DropFailures`'
+hold check; anything else, `x: other`: a last reference, emitter wakers, a
+slot with an unread reply) and `Submit` (the items queued, `x: spawn` if
+the start rule started a worker). In the pool, under its lock: `Begin`,
+`Take` (with the start decision), `Wait`, `Woke` and `Retire`; outside it:
+`Run`, `Settle` (a payload's hold check, `x: held` or `dropped`) and `Done`.
+The owner: `Exit` (`DropFailures::hold`) and `Death` (`DropFailures::release`).
+Workers and items carry ids; the checker numbers them. Only the clock is
+silent; `Commit` (the `WakeBeforeTransition` fault device) has no event.
+Because every worker step names its worker and item, a worker running an
+item it never took (serial execution of a batch) is rejected, and because
+the start decisions are recorded and the model's start rule must agree, a
+start that the rule requires but the code skips (stranding) is rejected.
+
+Recording is process-wide, so `concurrency/tests/disposal_trace.rs` runs its
+scenarios one at a time: expired callers woken by workers (two waiting, one
+never polled), payloads released by a job deadline and a discarded scheduled
+emit and dropped by workers, a payload handed off before the owner's exit
+whose worker is delayed (`disposal.item` failpoint) until `stopped()` runs
+(held, and dropped at the death point), and idle workers retiring
+(`disposal.keep_alive`) and new ones starting. A control is recorded from
+the code with the shared-batch bug switched back on (`disposal.batch_serial`)
+into `controls/`; `negative_checks.py` requires it to be rejected, along with
+five edited traces (a wake-up before its expiry, a payload run before the
+hand-off, a handed-off payload dropped while held, a required worker start
+not taken, and a worker running an item it never took).
 
 ## Unified start (0.9)
 

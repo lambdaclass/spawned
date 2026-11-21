@@ -59,9 +59,54 @@ impl<R: Send> Expirable for Slot<R> {
         let deadline = self.deadline();
         (!self.is_terminal() && deadline != NEVER).then_some(deadline)
     }
-    fn expire(&self, now: u64) {
-        self.check_deadline(&|| now);
+    /// The transition and credit return happen here; a parked blocking
+    /// receiver is unparked here too (no user code); the wakers are handed
+    /// to a disposal worker when this runs on the deadline thread. Only a
+    /// `REPLIED` slot can hold a value (an unread reply, user code when
+    /// destroyed), or one not yet terminal (a reply still `WRITING` may
+    /// store one); any other terminal state is final and holds none.
+    fn expire(&self, now: u64, due: bool) -> bool {
+        if !due {
+            return may_hold_value(self);
+        }
+        if let Some(mut wake) = self.expire_collect(now) {
+            wake.notify_parked();
+            // Disposal.tla `Expire`: after the transition and its credit
+            // return, the wake-up (if any) is handed off. Compiled out
+            // without `lifecycle-trace`; recorded only on the service.
+            let request = if cfg!(feature = "lifecycle-trace") && super::disposal::collecting() {
+                crate::lifecycle_trace::disposal_id()
+            } else {
+                0
+            };
+            let (item, kind) = if wake.is_empty() {
+                (0, "none")
+            } else {
+                (
+                    super::disposal::defer_as("wake", move || wake.run()),
+                    "wake",
+                )
+            };
+            crate::lifecycle_trace::disposal("Expire", 0, item, request, kind);
+        }
+        may_hold_value(self)
     }
+}
+
+/// Whether dropping `slot`'s last reference could run user code: it is
+/// `REPLIED` (an unread value) or not yet terminal.
+/// Not generic (one copy, in this crate): only the slot's word is read.
+#[inline(never)]
+fn may_hold_word(word: u64) -> bool {
+    let state = super::slot::state(word);
+    match Terminal::of(state) {
+        None => true,
+        Some(terminal) => terminal == Terminal::Replied,
+    }
+}
+
+fn may_hold_value<R>(slot: &Slot<R>) -> bool {
+    may_hold_word(slot.word())
 }
 
 impl<R: Send> Closeable for Slot<R> {
@@ -121,6 +166,8 @@ pub(crate) struct Registry {
     discharge: Mutex<Option<Vec<PendingWake>>>,
     #[cfg(all(spawned_sim, feature = "async"))]
     sim: deadline::SimService,
+    /// `spawned_reply_registries_alive`.
+    _alive: crate::instrumentation::Live<crate::instrumentation::gauge::ReplyRegistries>,
 }
 
 fn lock(lists: &Mutex<Lists>) -> std::sync::MutexGuard<'_, Lists> {
@@ -169,6 +216,7 @@ impl Registry {
             } else {
                 deadline::SimService::default()
             },
+            _alive: Default::default(),
         });
         keys()
             .lock()
@@ -292,19 +340,25 @@ impl Registry {
     /// The service visits: expire every due entry outside the lock, and
     /// return the next earliest deadline.
     ///
-    /// Entries run framework code that can reach user code (a waker, a
-    /// payload destructor the entry did not route to its failure sink, the
-    /// last reference to a job's `done`). Each runs contained, so one
-    /// failing entry neither skips the others nor ends the shared service.
+    /// Entries make their terminal transitions and return credits here.
+    /// What they release that can run user code (a waker, a payload
+    /// destructor, the last reference to an entry or a job's `done`) is
+    /// deferred: on the deadline thread it goes to a disposal worker
+    /// ([`disposal`](super::disposal)); elsewhere it runs inline. Each entry
+    /// runs contained, so one failing entry neither skips the others nor
+    /// ends the shared service.
     pub(crate) fn service_deadlines(&self, now: u64) -> Option<u64> {
         let due = lock(&self.lists).deadlines.due(now);
         for item in due {
             contain_entry(|| {
-                if item.pending_deadline().is_some_and(|d| d <= now) {
-                    item.expire(now);
+                let due = item.pending_deadline().is_some_and(|d| d <= now);
+                // Possibly the last reference: handed off only if dropping
+                // it could run user code (see `Expirable::expire`).
+                if item.expire(now, due) {
+                    super::disposal::defer_drop(item);
+                } else {
+                    drop(item);
                 }
-                // Possibly the last reference: dropped inside the guard.
-                drop(item);
             });
         }
         lock(&self.lists).deadlines.earliest()
@@ -840,8 +894,11 @@ mod tests {
                 fn pending_deadline(&self) -> Option<u64> {
                     Some(self.0)
                 }
-                fn expire(&self, _: u64) {
-                    let _ = self.1.send(());
+                fn expire(&self, _: u64, due: bool) -> bool {
+                    if due {
+                        let _ = self.1.send(());
+                    }
+                    false
                 }
             }
             assert!(spawned_rt::tasks::Handle::try_current().is_err());

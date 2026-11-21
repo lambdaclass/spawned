@@ -73,7 +73,17 @@ impl Message for Down {
 }
 
 mod sync {
+    use crate::instrumentation::{gauge::Monitors, live};
     pub(crate) use std::sync::{Mutex, MutexGuard};
+    /// `spawned_monitors_alive`: entries entering and leaving monitor tables.
+    #[inline(always)]
+    pub(crate) fn monitors_added(n: usize) {
+        live::added::<Monitors>(n);
+    }
+    #[inline(always)]
+    pub(crate) fn monitors_removed(n: usize) {
+        live::removed::<Monitors>(n);
+    }
 }
 pub(crate) mod fence;
 
@@ -124,13 +134,14 @@ mod tests {
     fn dropped_registration_removes_only_its_own_entry() {
         // A waiter future that is rejected or aborted before it runs must not
         // leave its entry behind for the rest of the observer's lifetime.
-        let table: MonitorTable = Default::default();
+        let table: MonitorTable = std::sync::Arc::new(fence::open());
         let (mine, other) = (MonitorRef::next(), MonitorRef::next());
-        let mut entries = std::collections::HashMap::new();
         let token = spawned_rt::sync::CancellationToken::new;
-        entries.insert(mine, fence::Entry::Active(token()));
-        entries.insert(other, fence::Entry::Active(token()));
-        *table.lock().unwrap() = Some(entries);
+        for key in [mine, other] {
+            let registered =
+                fence::register(&table, key, token(), || false, || false, || {}, || {});
+            assert_eq!(registered, fence::Registration::Active);
+        }
         drop(MonitorRegistration(table.clone(), mine));
         let entries = table.lock().unwrap();
         let entries = entries.as_ref().unwrap();

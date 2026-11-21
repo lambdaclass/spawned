@@ -512,6 +512,8 @@ fn abandon_waits(waits: Vec<std::sync::Weak<crate::start::StartupCell>>) {
 
 mod sync {
     pub(crate) use std::sync::{Arc, Mutex, MutexGuard, Weak};
+    pub(crate) type LinkRecordAlive =
+        crate::instrumentation::Live<crate::instrumentation::gauge::LinkRecords>;
 }
 mod table;
 pub(crate) use table::{new_link_table, LinkNotices, LinkOutcome, LinkTable};

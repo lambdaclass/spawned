@@ -9,6 +9,8 @@ struct Entry {
     /// The holder's handle, for a name registered by a start
     /// (`StartError::AlreadyStarted::existing`).
     handle: Option<crate::ChildHandle>,
+    /// `spawned_registered_names`.
+    _alive: crate::instrumentation::Live<crate::instrumentation::gauge::Names>,
 }
 type Store = RwLock<HashMap<String, Entry>>;
 static NEXT_REGISTRATION: AtomicU64 = AtomicU64::new(1);
@@ -58,6 +60,7 @@ pub fn register<T: Clone + Send + Sync + 'static>(
                 value: Box::new(value),
                 owner: None,
                 handle: None,
+                _alive: Default::default(),
             });
             Ok(())
         }
@@ -127,6 +130,7 @@ pub fn register_owned<T: Clone + Send + Sync + 'static>(
                 owner: Some(owner),
                 // The holder, for a start's `AlreadyStarted { existing }`.
                 handle,
+                _alive: Default::default(),
             });
             Ok(RegistrationGuard {
                 name: name.into(),
@@ -167,6 +171,7 @@ pub(crate) fn register_start<T: Clone + Send + Sync + 'static, E>(
                 value: Box::new(value),
                 owner: Some(owner),
                 handle: Some(handle),
+                _alive: Default::default(),
             });
             Ok(Ok(RegistrationGuard {
                 name: name.into(),

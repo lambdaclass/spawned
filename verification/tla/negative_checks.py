@@ -282,6 +282,12 @@ DEFERRED_CONTROLS = [
     ("MCDeferredReplies", "EarlyStopped", "StoppedAtDeath"),
     ("MCDeferredReplies", "NoReplyFence", "NoReplyAfterDeath"),
     ("MCDeferredReplies", "CallbackBeforeDischarge", "WokenAfterDischarge"),
+    ("MCDeferredReplies", "InlineDisposal", "TimelyExpiry"),
+    ("MCDisposal", "InlineDisposal", "TimelyExpiry"),
+    ("MCDisposal", "WakeBeforeTransition", "WakeAfterTransition"),
+    ("MCDisposal", "DropWhileHeld", "NoDropWhileHeld"),
+    ("MCDisposal", "BatchSerial", "TimelyWake"),
+    ("MCDisposal", "NoStartOnTake", "TimelyWake"),
     ("MCDeferredJobs", "NoInstanceCheck", "NoLateResult"),
     ("MCDeferredJobs", "NoCancelFence", "NoStaleAfterCancel"),
     ("MCDeferredJobs", "DoubleTerminal", "AtMostOneTerminal"),
@@ -521,6 +527,52 @@ INTROSPECTION_CONTROLS = [
     ("MCIntrospection", "CallbackPanicStops", "CallbackPanicContained"),
     ("MCIntrospection", "AnswerPanicStops", "CallbackPanicContained"),
 ]
+
+
+def disposal_trace_controls(traces, tlc, directory):
+    """Disposal traces Disposal.tla must reject: edits of recorded traces,
+    and traces recorded from deliberately broken code (`controls/`)."""
+    by_name = {t["name"]: t for t in traces if t.get("schema") == "disposal-v1"}
+
+    def wake_before_expire(events):
+        expire = next(i for i, e in enumerate(events) if e["a"] == "Expire" and e["x"] == "wake")
+        run = next(i for i, e in enumerate(events)
+                   if e["a"] == "Run" and e["id"] == events[expire]["id"])
+        events.insert(expire, events.pop(run))
+    require_rejected(by_name["disposal_expired_callers"], wake_before_expire,
+                     "a wake-up run before its slot's transition", tlc)
+
+    def run_before_submit(events):
+        run = next(i for i, e in enumerate(events) if e["a"] == "Run")
+        submit = next(i for i, e in enumerate(events) if e["a"] == "Submit")
+        events.insert(submit, events.pop(run))
+    require_rejected(by_name["disposal_released_payloads"], run_before_submit,
+                     "a payload run by a worker before the hand-off", tlc)
+
+    def drop_while_held(events):
+        next(e for e in events if e["a"] == "Settle" and e["x"] == "held")["x"] = "dropped"
+    require_rejected(by_name["disposal_held_until_death"], drop_while_held,
+                     "a handed-off payload dropped while the owner's hold is on", tlc)
+
+    def missing_start(events):
+        next(e for e in events if e["a"] in {"Submit", "Take"} and e["x"] == "spawn")["x"] = ""
+    spawning = next(t for t in by_name.values()
+                    if any(e["a"] in {"Submit", "Take"} and e["x"] == "spawn" for e in t["events"]))
+    require_rejected(spawning, missing_start,
+                     "a worker start the start rule requires is not decided", tlc)
+
+    def serial_in_one_entry(events):
+        # Two items of one visit run by one worker after one Take.
+        takes = [i for i, e in enumerate(events) if e["a"] == "Take"]
+        events.pop(takes[1])
+    require_rejected(by_name["disposal_expired_callers"], serial_in_one_entry,
+                     "a worker runs an item it never took", tlc)
+
+    # Recorded from code with `disposal.batch_serial` (the shared-batch bug).
+    for path in sorted((directory / "controls").glob("disposal_*.json")):
+        control = json.loads(path.read_text())
+        require_rejected(control, lambda events: None,
+                         f"recorded from broken code: {control['name']}", tlc)
 
 
 def reply_trace_controls(traces, tlc):
@@ -946,6 +998,7 @@ def main():
     job_trace_controls(traces, args.tlc)
     coordinator_trace_controls(traces, args.tlc)
     reply_trace_controls(traces, args.tlc)
+    disposal_trace_controls(traces, args.tlc, args.traces)
     lifecycle_trace_controls(traces, args.tlc)
     start_trace_controls(traces, args.tlc)
     for module, fault, invariant in LIFECYCLE_CONTROLS:

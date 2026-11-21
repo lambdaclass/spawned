@@ -10,6 +10,7 @@ index 79577a5a..a8c16c06 100644
      if target_dead() {
 -        late();
 -        entries.insert(key, Entry::Queued);
+-        monitors_added(1);
 -        return Registration::Late;
 +        let _ = late;
 +        return Registration::Inert;

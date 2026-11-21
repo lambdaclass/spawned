@@ -1,0 +1,780 @@
+//! Retained-structure gauges (`metrics` feature; docs/GUIDE.md, "Metrics"):
+//! every gauge returns to its idle baseline once the actors that created
+//! the structures are gone. This is also a leak test: a structure that
+//! survives its actor (a slot, token, heap or service entry, job state,
+//! monitor, link record, name or timer) keeps its gauge above the baseline.
+//!
+//! The churn exercises, in both backends: plain requests, raw
+//! `send_request` receivers (owner deadline heap), deferred replies held in
+//! `PendingReplies` (answered, and left for the death point), pipe jobs,
+//! monitors and links in both stop orders, timers and registered names.
+#![cfg(all(feature = "async", feature = "metrics", not(spawned_sim)))]
+use spawned_concurrency::{
+    message::Message, metrics, registry, tasks, threads, ChildHandle, Deadline, Down,
+    PendingReplies, PendingReply,
+};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+/// The gauges are process-wide: the tests in this binary run one at a time.
+static SERIAL: Mutex<()> = Mutex::new(());
+
+const ACTORS: usize = 24;
+/// Deferred requests expire quickly, so deadline-service entries of a dead
+/// owner (removed when due) drain within the quiescence wait.
+const PARK_DEADLINE: Duration = Duration::from_millis(200);
+
+type Gauge = (&'static str, fn(&metrics::Snapshot) -> u64);
+const GAUGES: &[Gauge] = &[
+    ("reply_slots_alive", |s| s.reply_slots_alive),
+    ("reply_tokens_alive", |s| s.reply_tokens_alive),
+    ("reply_registries_alive", |s| s.reply_registries_alive),
+    ("pending_replies_entries", |s| s.pending_replies_entries),
+    ("deadline_heap_entries", |s| s.deadline_heap_entries),
+    ("deadline_service_entries", |s| s.deadline_service_entries),
+    ("deadline_service_actors", |s| s.deadline_service_actors),
+    ("jobs_alive", |s| s.jobs_alive),
+    ("monitors_alive", |s| s.monitors_alive),
+    ("link_records_alive", |s| s.link_records_alive),
+    ("registered_names", |s| s.registered_names),
+    ("timers_alive", |s| s.timers_alive),
+    ("actors_active", |s| s.actors_active),
+    ("requests_active", |s| s.requests_active),
+    ("deferred_pending", |s| s.deferred_pending),
+    ("jobs_running", |s| s.jobs_running),
+    ("mailbox_depth", |s| s.mailbox_depth),
+];
+
+fn read() -> Vec<u64> {
+    let s = metrics::snapshot();
+    GAUGES.iter().map(|(_, g)| g(&s)).collect()
+}
+
+/// The gauges once nothing has changed for a while: the previous work's
+/// asynchronous tail (timer threads ending, deadlines coming due) is over.
+fn quiet() -> Vec<u64> {
+    let limit = Instant::now() + Duration::from_secs(10);
+    let mut last = read();
+    let mut since = Instant::now();
+    while since.elapsed() < PARK_DEADLINE * 2 && Instant::now() < limit {
+        std::thread::sleep(Duration::from_millis(10));
+        let now = read();
+        if now != last {
+            last = now;
+            since = Instant::now();
+        }
+    }
+    last
+}
+
+/// Wait until every gauge is back at `baseline`; fail naming the drifted ones.
+fn settles_to(baseline: &[u64], what: &str) {
+    let limit = Instant::now() + Duration::from_secs(10);
+    loop {
+        let now = read();
+        if now == baseline {
+            return;
+        }
+        if Instant::now() > limit {
+            let drift: Vec<String> = GAUGES
+                .iter()
+                .zip(baseline.iter().zip(&now))
+                .filter(|(_, (b, n))| b != n)
+                .map(|((name, _), (b, n))| format!("{name}: baseline {b}, now {n}"))
+                .collect();
+            panic!("{what}: gauges did not return to baseline: {drift:?}");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// The retained-structure gauges (the first `RETAINED` of `GAUGES`).
+const RETAINED: usize = 12;
+
+/// Every retained-structure gauge rose during the round.
+fn assert_exercised(before: &[u64], peak: &[u64]) {
+    for (i, (name, _)) in GAUGES.iter().enumerate().take(RETAINED) {
+        if *name == "deadline_service_actors" {
+            continue; // visited and removed quickly; seen through its entries
+        }
+        assert!(
+            peak[i] > before[i],
+            "{name} never rose during the round: the churn does not exercise it"
+        );
+    }
+}
+
+struct Ask;
+impl Message for Ask {
+    type Result = u64;
+}
+struct Park;
+impl Message for Park {
+    type Result = u64;
+}
+struct Flush;
+impl Message for Flush {
+    type Result = ();
+}
+struct Watch(ChildHandle);
+impl Message for Watch {
+    type Result = ();
+}
+struct StartJob;
+impl Message for StartJob {
+    type Result = ();
+}
+struct JobDone;
+impl Message for JobDone {
+    type Result = ();
+}
+#[derive(Clone)]
+struct Tick;
+impl Message for Tick {
+    type Result = ();
+}
+
+// ---------------------------------------------------------------------------
+// tasks
+// ---------------------------------------------------------------------------
+
+struct AsyncWorker {
+    name: String,
+    parked: PendingReplies<u64, u64>,
+    next: u64,
+}
+impl AsyncWorker {
+    fn new(name: String) -> Self {
+        Self {
+            name,
+            parked: PendingReplies::with_capacity(16),
+            next: 0,
+        }
+    }
+}
+impl tasks::Actor for AsyncWorker {
+    async fn started(&mut self, ctx: &tasks::Context<Self>) {
+        registry::register(&self.name, self.next).unwrap();
+        tasks::send_after(Duration::from_millis(5), ctx.clone(), Tick);
+        tasks::send_interval(Duration::from_secs(3600), ctx.clone(), Tick);
+    }
+    async fn stopped(&mut self, _: &tasks::Context<Self>) {
+        registry::unregister(&self.name);
+    }
+}
+impl tasks::Handler<Ask> for AsyncWorker {
+    async fn handle(&mut self, _: Ask, reply: PendingReply<'_, u64>, _: &tasks::Context<Self>) {
+        reply.reply(1);
+    }
+}
+impl tasks::Handler<Park> for AsyncWorker {
+    async fn handle(&mut self, _: Park, reply: PendingReply<'_, u64>, _: &tasks::Context<Self>) {
+        self.next += 1;
+        let token = reply.defer().unwrap();
+        self.parked.insert(self.next, token).unwrap();
+    }
+}
+impl tasks::Handler<Flush> for AsyncWorker {
+    async fn handle(&mut self, _: Flush, reply: PendingReply<'_, ()>, _: &tasks::Context<Self>) {
+        for (key, token) in self.parked.drain() {
+            token.reply(key);
+        }
+        reply.reply(());
+    }
+}
+impl tasks::Handler<Watch> for AsyncWorker {
+    async fn handle(&mut self, w: Watch, reply: PendingReply<'_, ()>, ctx: &tasks::Context<Self>) {
+        ctx.monitor(&w.0);
+        ctx.link(&w.0);
+        reply.reply(());
+    }
+}
+impl tasks::Handler<StartJob> for AsyncWorker {
+    async fn handle(
+        &mut self,
+        _: StartJob,
+        reply: PendingReply<'_, ()>,
+        ctx: &tasks::Context<Self>,
+    ) {
+        ctx.pipe(
+            tasks::JobOptions::new(),
+            |_| async { 7u64 },
+            |_: tasks::JobOutcome<u64>| JobDone,
+        )
+        .unwrap();
+        ctx.pipe_blocking(
+            tasks::JobOptions::new(),
+            |_| 7u64,
+            |_: tasks::JobOutcome<u64>| JobDone,
+        )
+        .unwrap();
+        reply.reply(());
+    }
+}
+impl tasks::Handler<JobDone> for AsyncWorker {
+    async fn handle(&mut self, _: JobDone, r: PendingReply<'_, ()>, _: &tasks::Context<Self>) {
+        r.reply(());
+    }
+}
+impl tasks::Handler<Tick> for AsyncWorker {
+    async fn handle(&mut self, _: Tick, r: PendingReply<'_, ()>, _: &tasks::Context<Self>) {
+        r.reply(());
+    }
+}
+impl tasks::Handler<Down> for AsyncWorker {
+    async fn handle(&mut self, _: Down, r: PendingReply<'_, ()>, _: &tasks::Context<Self>) {
+        r.reply(());
+    }
+}
+
+async fn async_pair(round: usize, i: usize) {
+    use tasks::ActorStart;
+    let peer = AsyncWorker::new(format!("retained-a-{round}-{i}-peer")).spawn();
+    let worker = AsyncWorker::new(format!("retained-a-{round}-{i}")).spawn();
+    worker.request(Watch(peer.child_handle())).await.unwrap();
+    for _ in 0..4 {
+        assert_eq!(worker.request(Ask).await.unwrap(), 1);
+    }
+    // A raw receiver awaited while pending puts its deadline in the
+    // owner's heap.
+    let raw = worker
+        .send_request(Ask, Deadline::after(PARK_DEADLINE))
+        .unwrap();
+    assert_eq!(raw.await.unwrap(), 1);
+    let parked: Vec<_> = (0..3)
+        .map(|_| worker.send_request(Park, PARK_DEADLINE).unwrap())
+        .collect();
+    worker.request(Flush).await.unwrap();
+    for rx in parked {
+        assert!(rx.await.is_ok());
+    }
+    worker.request(StartJob).await.unwrap();
+    // Left deferred: answered at the death point.
+    let orphan = worker.send_request(Park, PARK_DEADLINE).unwrap();
+    worker.request(Ask).await.unwrap();
+    let (first, second) = if i.is_multiple_of(2) {
+        (&worker, &peer)
+    } else {
+        (&peer, &worker)
+    };
+    first.context().stop();
+    first.join().await;
+    second.context().stop();
+    second.join().await;
+    assert!(orphan.await.is_err());
+}
+
+fn async_round(rt: &tokio::runtime::Runtime, round: usize) {
+    rt.block_on(futures::future::join_all(
+        (0..ACTORS).map(|i| async_pair(round, i)),
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// threads
+// ---------------------------------------------------------------------------
+
+struct NativeWorker {
+    name: String,
+    parked: PendingReplies<u64, u64>,
+    next: u64,
+}
+impl NativeWorker {
+    fn new(name: String) -> Self {
+        Self {
+            name,
+            parked: PendingReplies::with_capacity(16),
+            next: 0,
+        }
+    }
+}
+impl threads::Actor for NativeWorker {
+    fn started(&mut self, ctx: &threads::Context<Self>) {
+        registry::register(&self.name, self.next).unwrap();
+        threads::send_after(Duration::from_millis(5), ctx.clone(), Tick);
+        threads::send_interval(Duration::from_secs(3600), ctx.clone(), Tick);
+    }
+    fn stopped(&mut self, _: &threads::Context<Self>) {
+        registry::unregister(&self.name);
+    }
+}
+impl threads::Handler<Ask> for NativeWorker {
+    fn handle(&mut self, _: Ask, reply: PendingReply<'_, u64>, _: &threads::Context<Self>) {
+        reply.reply(1);
+    }
+}
+impl threads::Handler<Park> for NativeWorker {
+    fn handle(&mut self, _: Park, reply: PendingReply<'_, u64>, _: &threads::Context<Self>) {
+        self.next += 1;
+        let token = reply.defer().unwrap();
+        self.parked.insert(self.next, token).unwrap();
+    }
+}
+impl threads::Handler<Flush> for NativeWorker {
+    fn handle(&mut self, _: Flush, reply: PendingReply<'_, ()>, _: &threads::Context<Self>) {
+        for (key, token) in self.parked.drain() {
+            token.reply(key);
+        }
+        reply.reply(());
+    }
+}
+impl threads::Handler<Watch> for NativeWorker {
+    fn handle(&mut self, w: Watch, reply: PendingReply<'_, ()>, ctx: &threads::Context<Self>) {
+        ctx.monitor(&w.0);
+        ctx.link(&w.0);
+        reply.reply(());
+    }
+}
+impl threads::Handler<StartJob> for NativeWorker {
+    fn handle(&mut self, _: StartJob, reply: PendingReply<'_, ()>, ctx: &threads::Context<Self>) {
+        ctx.pipe_blocking(
+            threads::JobOptions::new(),
+            |_| 7u64,
+            |_: threads::JobOutcome<u64>| JobDone,
+        )
+        .unwrap();
+        reply.reply(());
+    }
+}
+impl threads::Handler<JobDone> for NativeWorker {
+    fn handle(&mut self, _: JobDone, r: PendingReply<'_, ()>, _: &threads::Context<Self>) {
+        r.reply(());
+    }
+}
+impl threads::Handler<Tick> for NativeWorker {
+    fn handle(&mut self, _: Tick, r: PendingReply<'_, ()>, _: &threads::Context<Self>) {
+        r.reply(());
+    }
+}
+impl threads::Handler<Down> for NativeWorker {
+    fn handle(&mut self, _: Down, r: PendingReply<'_, ()>, _: &threads::Context<Self>) {
+        r.reply(());
+    }
+}
+
+fn native_pair(round: usize, i: usize) {
+    use threads::ActorStart;
+    let peer = NativeWorker::new(format!("retained-n-{round}-{i}-peer")).spawn();
+    let worker = NativeWorker::new(format!("retained-n-{round}-{i}")).spawn();
+    worker.request(Watch(peer.child_handle())).unwrap();
+    for _ in 0..4 {
+        assert_eq!(worker.request(Ask).unwrap(), 1);
+    }
+    let parked: Vec<_> = (0..3)
+        .map(|_| worker.send_request(Park, PARK_DEADLINE).unwrap())
+        .collect();
+    worker.request(Flush).unwrap();
+    for rx in parked {
+        assert!(rx.recv().is_ok());
+    }
+    worker.request(StartJob).unwrap();
+    let orphan = worker.send_request(Park, PARK_DEADLINE).unwrap();
+    worker.request(Ask).unwrap();
+    let (first, second) = if i.is_multiple_of(2) {
+        (&worker, &peer)
+    } else {
+        (&peer, &worker)
+    };
+    first.context().stop();
+    first.join();
+    second.context().stop();
+    second.join();
+    assert!(orphan.recv().is_err());
+}
+
+fn native_round(round: usize) {
+    std::thread::scope(|scope| {
+        for i in 0..ACTORS {
+            scope.spawn(move || native_pair(round, i));
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// tests
+// ---------------------------------------------------------------------------
+
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
+/// Run `round` once to warm process-wide lazies (deadline service, detached
+/// registry), then measure: the round must raise every gauge, and every
+/// gauge must settle back to the baseline.
+fn churn_returns_to_baseline(what: &str, mut round: impl FnMut(usize)) {
+    round(0);
+    let baseline = quiet();
+    // Sample the peak from a watcher while the round runs.
+    let peak = Mutex::new(vec![0u64; GAUGES.len()]);
+    let done = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                let now = read();
+                let mut peak = peak.lock().unwrap();
+                for (p, n) in peak.iter_mut().zip(now) {
+                    *p = (*p).max(n);
+                }
+                drop(peak);
+                std::thread::sleep(Duration::from_micros(200));
+            }
+        });
+        round(1);
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    let peak = peak.into_inner().unwrap();
+    assert_exercised(&baseline, &peak);
+    settles_to(&baseline, what);
+}
+
+#[test]
+fn tasks_churn_returns_every_gauge_to_baseline() {
+    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let rt = runtime();
+    churn_returns_to_baseline("tasks churn", |round| async_round(&rt, round));
+}
+
+#[test]
+fn threads_churn_returns_every_gauge_to_baseline() {
+    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    churn_returns_to_baseline("threads churn", native_round);
+}
+
+/// Repeated churn in both backends for a bounded time
+/// (`SPAWNED_RETAINED_CHURN_SECS`, default 6): after every few rounds every
+/// gauge is back at the baseline, so nothing accumulates across rounds.
+#[test]
+fn long_churn_does_not_drift() {
+    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let secs = std::env::var("SPAWNED_RETAINED_CHURN_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(6);
+    let rt = runtime();
+    async_round(&rt, 0);
+    native_round(0);
+    let baseline = quiet();
+    let end = Instant::now() + Duration::from_secs(secs);
+    let mut round = 1;
+    while Instant::now() < end {
+        for _ in 0..4 {
+            async_round(&rt, round);
+            native_round(round);
+            round += 1;
+        }
+        settles_to(&baseline, &format!("after {round} rounds"));
+    }
+    assert!(round > 4, "the churn ran at least one batch");
+}
+
+/// A long-lived threads actor arming timers: `timers_alive` returns to its
+/// baseline while the actor keeps running (each timer's registration on the
+/// actor's stop token used to stay until the actor stopped).
+#[test]
+fn threads_timers_do_not_accumulate_on_a_running_actor() {
+    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    use threads::ActorStart;
+    // The worker arms a short `send_after` (fires) and a long
+    // `send_interval` (lives until it stops) itself.
+    let before = quiet()[11];
+    let baseline = before + 1;
+    let actor = NativeWorker::new("retained-timer-host".into()).spawn();
+    for _ in 0..100 {
+        threads::send_after(Duration::from_millis(1), actor.context(), Tick);
+    }
+    let cancelled: Vec<_> = (0..50)
+        .map(|_| threads::send_interval(Duration::from_secs(3600), actor.context(), Tick))
+        .collect();
+    for timer in &cancelled {
+        timer.cancellation_token.cancel();
+    }
+    let limit = Instant::now() + Duration::from_secs(10);
+    while metrics::snapshot().timers_alive != baseline && Instant::now() < limit {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(metrics::snapshot().timers_alive, baseline);
+    actor.request(Ask).unwrap();
+    actor.context().stop();
+    actor.join();
+    // Leave nothing behind for the next test's baseline.
+    let limit = Instant::now() + Duration::from_secs(10);
+    while metrics::snapshot().timers_alive != before && Instant::now() < limit {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(metrics::snapshot().timers_alive, before);
+}
+
+/// The gauges are exported as Prometheus gauges.
+#[test]
+fn retained_gauges_are_exported() {
+    let text = metrics::render_prometheus();
+    for (name, _) in GAUGES.iter().chain(DISPOSAL) {
+        assert!(
+            text.contains(&format!("# TYPE spawned_{name} gauge\n")),
+            "spawned_{name} is not exported as a gauge"
+        );
+    }
+    assert!(
+        text.contains("# TYPE spawned_disposal_workers_capped_total counter\n"),
+        "spawned_disposal_workers_capped_total is not exported as a counter"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// disposal pool
+// ---------------------------------------------------------------------------
+
+/// The disposal pool's gauges. Kept out of `GAUGES`: idle workers outlive
+/// the work that started them by their keep-alive (10 s), so the other tests
+/// do not wait for them.
+const DISPOSAL: &[Gauge] = &[
+    ("disposal_queue_entries", |s| s.disposal_queue_entries),
+    ("disposal_workers_alive", |s| s.disposal_workers_alive),
+    ("disposal_workers_idle", |s| s.disposal_workers_idle),
+];
+
+fn read_disposal() -> Vec<u64> {
+    let s = metrics::snapshot();
+    DISPOSAL.iter().map(|(_, g)| g(&s)).collect()
+}
+
+/// Wait (bounded by `limit`) until no item is queued and every worker has
+/// retired, the pool's resting state.
+fn disposal_pool_rests(limit: Duration, what: &str) {
+    let end = Instant::now() + limit;
+    loop {
+        let now = read_disposal();
+        if now == [0, 0, 0] {
+            return;
+        }
+        assert!(
+            Instant::now() < end,
+            "{what}: disposal pool did not drain and retire within {limit:?}: {:?}",
+            DISPOSAL
+                .iter()
+                .map(|(n, _)| *n)
+                .zip(now)
+                .collect::<Vec<_>>()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Requests that expire while their callers wait: the deadline service hands
+/// each caller's wake-up to a disposal worker (non-blocking items).
+const EXPIRE: Duration = Duration::from_millis(30);
+
+/// A message whose destructor blocks for a while: discarded on the deadline
+/// service, it occupies a disposal worker (a blocking item).
+struct Slow(Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>);
+impl Message for Slow {
+    type Result = ();
+}
+impl Drop for Slow {
+    fn drop(&mut self) {
+        if let Some(dropped) = self.0.take() {
+            std::thread::sleep(Duration::from_millis(50));
+            dropped.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+/// Start a blocking job whose deadline (20 ms) passes before its scheduled
+/// `Slow` emit (40 ms): the service discards the emit and its destructor
+/// runs on a disposal worker.
+struct StallJob(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+impl Message for StallJob {
+    type Result = ();
+}
+const JOB_DEADLINE: Duration = Duration::from_millis(20);
+const EMIT_AFTER: Duration = Duration::from_millis(40);
+const JOB_RUNS: Duration = Duration::from_millis(100);
+
+#[derive(Default)]
+struct AsyncExpirer(Vec<spawned_concurrency::ReplyTo<u64>>);
+impl tasks::Actor for AsyncExpirer {}
+impl tasks::Handler<Park> for AsyncExpirer {
+    async fn handle(&mut self, _: Park, reply: PendingReply<'_, u64>, _: &tasks::Context<Self>) {
+        self.0.push(reply.defer().unwrap());
+    }
+}
+impl tasks::Handler<StallJob> for AsyncExpirer {
+    async fn handle(
+        &mut self,
+        StallJob(dropped): StallJob,
+        reply: PendingReply<'_, ()>,
+        ctx: &tasks::Context<Self>,
+    ) {
+        ctx.pipe_blocking(
+            tasks::JobOptions::new().deadline(JOB_DEADLINE),
+            move |job| {
+                let at = tasks::Instant::now() + EMIT_AFTER;
+                job.emit_at_blocking(at, Slow(Some(dropped))).unwrap();
+                std::thread::sleep(JOB_RUNS);
+            },
+            |_: tasks::JobOutcome<()>| JobDone,
+        )
+        .unwrap();
+        reply.reply(());
+    }
+}
+impl tasks::Handler<Slow> for AsyncExpirer {
+    async fn handle(&mut self, mut msg: Slow, r: PendingReply<'_, ()>, _: &tasks::Context<Self>) {
+        msg.0 = None; // delivered, not discarded: not the scenario
+        r.reply(());
+    }
+}
+impl tasks::Handler<JobDone> for AsyncExpirer {
+    async fn handle(&mut self, _: JobDone, r: PendingReply<'_, ()>, _: &tasks::Context<Self>) {
+        r.reply(());
+    }
+}
+
+async fn async_expiry(dropped: std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use tasks::ActorStart;
+    let owner = AsyncExpirer::default().spawn();
+    owner.request(StallJob(dropped)).await.unwrap();
+    let expiring: Vec<_> = (0..3)
+        .map(|_| owner.send_request(Park, Deadline::after(EXPIRE)).unwrap())
+        .collect();
+    for rx in expiring {
+        assert!(matches!(
+            rx.await,
+            Err(spawned_concurrency::ActorError::RequestTimeout)
+        ));
+    }
+    tokio::time::sleep(JOB_RUNS).await;
+    owner.context().stop();
+    owner.join().await;
+}
+
+#[derive(Default)]
+struct NativeExpirer(Vec<spawned_concurrency::ReplyTo<u64>>);
+impl threads::Actor for NativeExpirer {}
+impl threads::Handler<Park> for NativeExpirer {
+    fn handle(&mut self, _: Park, reply: PendingReply<'_, u64>, _: &threads::Context<Self>) {
+        self.0.push(reply.defer().unwrap());
+    }
+}
+impl threads::Handler<StallJob> for NativeExpirer {
+    fn handle(
+        &mut self,
+        StallJob(dropped): StallJob,
+        reply: PendingReply<'_, ()>,
+        ctx: &threads::Context<Self>,
+    ) {
+        ctx.pipe_blocking(
+            threads::JobOptions::new().deadline(JOB_DEADLINE),
+            move |job| {
+                let at = threads::Instant::now() + EMIT_AFTER;
+                job.emit_at_blocking(at, Slow(Some(dropped))).unwrap();
+                std::thread::sleep(JOB_RUNS);
+            },
+            |_: threads::JobOutcome<()>| JobDone,
+        )
+        .unwrap();
+        reply.reply(());
+    }
+}
+impl threads::Handler<Slow> for NativeExpirer {
+    fn handle(&mut self, mut msg: Slow, r: PendingReply<'_, ()>, _: &threads::Context<Self>) {
+        msg.0 = None;
+        r.reply(());
+    }
+}
+impl threads::Handler<JobDone> for NativeExpirer {
+    fn handle(&mut self, _: JobDone, r: PendingReply<'_, ()>, _: &threads::Context<Self>) {
+        r.reply(());
+    }
+}
+
+fn native_expiry(dropped: std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use threads::ActorStart;
+    let owner = NativeExpirer::default().spawn();
+    owner.request(StallJob(dropped)).unwrap();
+    let expiring: Vec<_> = (0..3)
+        .map(|_| owner.send_request(Park, Deadline::after(EXPIRE)).unwrap())
+        .collect();
+    for rx in expiring {
+        assert!(matches!(
+            rx.recv(),
+            Err(spawned_concurrency::ActorError::RequestTimeout)
+        ));
+    }
+    std::thread::sleep(JOB_RUNS);
+    owner.context().stop();
+    owner.join();
+}
+
+/// Expiring deadlines in both backends hand non-blocking items (waiting
+/// callers' wake-ups) and blocking ones (a discarded emit whose destructor
+/// sleeps) to the disposal workers: the pool's gauges rise, then the queue
+/// drains and every worker retires after its keep-alive. With `failpoints`
+/// the keep-alive is shortened (`disposal.keep_alive`); without, the wait
+/// covers the real 10 s.
+#[test]
+fn disposal_pool_gauges_return_to_baseline() {
+    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    #[cfg(feature = "failpoints")]
+    let _scenario = {
+        use spawned_concurrency::failpoints::{self, Action, FailPoint, FailScenario};
+        let scenario = FailScenario::setup();
+        failpoints::configure("disposal.keep_alive", FailPoint::new(Action::Error)).unwrap();
+        scenario
+    };
+    // A worker already waiting keeps the keep-alive it started with.
+    let keep_alive = Duration::from_secs(20);
+    disposal_pool_rests(keep_alive, "before the churn");
+    let capped_before = metrics::snapshot().disposal_workers_capped_total;
+
+    let rt = runtime();
+    let dropped = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let peak = Mutex::new(vec![0u64; DISPOSAL.len()]);
+    let done = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                let now = read_disposal();
+                let mut peak = peak.lock().unwrap();
+                for (p, n) in peak.iter_mut().zip(now) {
+                    *p = (*p).max(n);
+                }
+                drop(peak);
+                std::thread::sleep(Duration::from_micros(200));
+            }
+        });
+        for _ in 0..2 {
+            rt.block_on(futures::future::join_all(
+                (0..ACTORS).map(|_| async_expiry(dropped.clone())),
+            ));
+            std::thread::scope(|scope| {
+                for _ in 0..ACTORS {
+                    let dropped = dropped.clone();
+                    scope.spawn(move || native_expiry(dropped));
+                }
+            });
+        }
+        // Every blocking item ran (its destructor counted itself).
+        let end = Instant::now() + Duration::from_secs(10);
+        while dropped.load(std::sync::atomic::Ordering::SeqCst) < 4 * ACTORS {
+            assert!(Instant::now() < end, "a discarded emit was never dropped");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    let peak = peak.into_inner().unwrap();
+    assert!(
+        peak[1] >= 2,
+        "blocking items ran on fewer than two workers: peak {peak:?}"
+    );
+    assert!(peak[2] >= 1, "no worker was ever idle: peak {peak:?}");
+    disposal_pool_rests(keep_alive, "after the churn");
+    // Far below the cap: never hit.
+    assert_eq!(
+        metrics::snapshot().disposal_workers_capped_total,
+        capped_before
+    );
+}

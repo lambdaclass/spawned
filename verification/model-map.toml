@@ -137,6 +137,27 @@ code = [
 ]
 coverage_floor = 14   # of 14 action keys (TraceReplies arms)
 
+[models.Disposal]
+# The deadline service's hand-off of user code to the disposal workers:
+# expiry and credit return on the service thread, per-item queueing, the
+# worker steps (wake after the transition, payload drops re-checking the
+# owner's hold), the elastic pool, and the owner's hold until death.
+files = [
+    "verification/tla/Disposal.tla",
+    "verification/tla/MCDisposal*",
+    "verification/tla/TraceDisposal.tla",
+]
+code = [
+    "concurrency/src/reply/disposal.rs",
+    "concurrency/src/reply/deadline.rs",
+    "concurrency/src/reply/registry.rs",
+    "concurrency/src/mailbox.rs",
+    "concurrency/src/tasks/jobs.rs",     # job runs' last references (`Run`)
+    "concurrency/src/threads/jobs.rs",
+    "concurrency/src/lifecycle_trace.rs",
+]
+coverage_floor = 13   # of 13 action keys (TraceDisposal arms)
+
 [models.ReplyTimer]
 # Receiver-side refinement: the shared runtime deadline and shortening mark.
 files = ["verification/tla/ReplyTimer.tla", "verification/tla/MCReplyTimer*"]
@@ -355,6 +376,15 @@ emitters = [
 specs = ["verification/tla/TraceJobs.tla"]
 [trace.unlogged]
 Restart = "a new owner instance reading the old one's slot-addressed mailbox: the code has no such mailbox (a job's messages go to its owner instance's own mailbox, discarded at that instance's death), so the model's cross-instance delivery is a conservative over-approximation (NoLateResult holds a fortiori); a trace is one instance"
+
+[[trace]]
+struct = "DisposalEvent"
+emitters = [
+    { call = '\blifecycle_trace::disposal\(', arg = 0 },
+]
+specs = ["verification/tla/TraceDisposal.tla"]
+[trace.unlogged]
+Commit = "fault device only (Fault = WakeBeforeTransition: the transition committed after the hand-off); the code commits in Expire"
 
 [[trace]]
 struct = "ReplyEvent"

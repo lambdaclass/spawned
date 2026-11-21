@@ -776,12 +776,15 @@ Rules (the [design](design/deferred-replies.md) has the full contract):
   added later can be answered).
 
 **Deadline-service progress.** Managed and unmanaged actors share a service
-thread for token/job deadlines and scheduled job emits. Expiry can run user
-wakers and payload destructors there; a blocking callback delays other
-actors' heap-driven expiry too. Keep these callbacks short and nonblocking.
-Ordinary `request()`/`request_with_timeout()`/`Response` timers and the
-`send_after`/`send_interval` drivers are separate. This is a scheduling
-limitation, not a hard real-time deadline guarantee.
+thread for token/job deadlines and scheduled job emits. It only decides
+expiry and returns credits; the wakers and payload destructors an expiry
+releases (a caller's waker, a discarded emit, a displaced job result, a
+`done` closure's captures) run on separate disposal workers, so a blocking
+destructor or waker in one actor does not delay another actor's deadlines.
+They still occupy a worker (at most 64), so keep them short. Ordinary
+`request()`/`request_with_timeout()`/`Response` timers and the
+`send_after`/`send_interval` drivers are separate. Deadlines are not a hard
+real-time guarantee.
 
 **Answering with a reason.** The framework's errors (`ReplyDropped`,
 `ActorStopped`, `Overloaded`, `RequestTimeout`) say what happened to the
@@ -1700,6 +1703,48 @@ handler future destroyed without returning an outcome counts as aborted; this
 does not imply its business effects were rolled back. Native blocking handlers
 still stop cooperatively.
 
+### Retained internal structures
+
+These gauges count what spawned itself keeps in memory, so an operator can
+tell from one scrape whether memory growth is inside the framework: a gauge
+that climbs with uptime while the actor and request counts stay flat points
+at a leak (or an application that holds framework objects), with no heap
+profiling build. Each one is counted where its structure is created and
+destroyed (a zero-sized field in the structure: one relaxed atomic at each
+end, no lock), except the deadline service's two sizes and the disposal
+pool's three, read at scrape under the service's or the pool's own lock. All
+of them are compiled out without the feature.
+
+| Gauge (`spawned_*`) | Counts | Returns to baseline when |
+|---|---|---|
+| `reply_slots_alive` | Reply slots of requests (`request`, `send_request`, protocol calls): held by the envelope, the handler's `PendingReply`/`ReplyTo` and the caller's receiver. | Every holder is gone; a stored, never-awaited `ReplyReceiver` keeps its slot. |
+| `reply_tokens_alive` | `ReplyTo` tokens (deferred obligations), answered or not. Unlike `deferred_pending`, a token whose caller already got an answer (expired, abandoned) still counts until it is dropped. | Tokens are answered or dropped. |
+| `pending_replies_entries` | Entries in every `PendingReplies` table, terminal entries not yet purged included. | Entries are taken, drained or purged by the next insert, or the table is dropped. |
+| `reply_registries_alive` | Per-instance reply registries: one per live actor instance, kept while anything references it (an `ActorRef`, a `ReplyTo`, a job). | Every handle to dead instances is dropped. |
+| `deadline_heap_entries` | Entries in the per-instance deadline heaps (deferred tokens, raw receivers awaited while pending, job deadlines and `emit_at`), stale and superseded entries not yet compacted included. | Entries are due, compacted (when stale entries outnumber live ones), or the owner dies. |
+| `deadline_service_entries` | The process-wide deadline service's queue, superseded entries and entries of dead owners included (dropped when due, or compacted at twice the live owners plus 64). | Their deadlines pass. |
+| `deadline_service_actors` | Owners the deadline service will visit. | Their earliest deadline is serviced or the owner dies. |
+| `jobs_alive` | Job states (`pipe`, `pipe_blocking`, `pipe_reply*`): running work, a held or queued result, a `JobHandle` or a queued job message keeps one. `jobs_running` counts only executing work. | The job ended and its handle and messages are gone. |
+| `monitors_alive` | Entries in observers' monitor tables: active monitors and `Down` notices queued but not yet handled. | Monitors are demonitored, their `Down` is handled, or the observer exits. |
+| `link_records_alive` | Link records (two per link, one per pending late `NoProc` notice), including records taken at a death point until their notices are delivered. | Links are removed or either end exits. |
+| `registered_names` | Names in the global registry (`registry::register`, `register_owned`, `ctx.register_name`). | Names are unregistered (managed names: when the owner's cleanup ends). |
+| `timers_alive` | `send_after` / `send_interval` timers whose task or thread is still running (with it, in `threads` mode, its callback registrations on the actor's and its own stop tokens). | Timers fire or are cancelled, or the actor stops. |
+| `disposal_queue_entries` | Items the deadline service handed to the disposal workers (wake-ups and payload drops an expiry released) not yet taken by a worker. Above zero for long only while every worker is busy at the cap. | Workers take them. |
+| `disposal_workers_alive` | Disposal worker threads, busy or idle (a starting one included). At most 64. | Idle workers retire after their 10 s keep-alive. |
+| `disposal_workers_idle` | Disposal workers waiting for work. | Idle workers retire after their keep-alive. |
+
+`spawned_disposal_workers_capped_total` counts the times every one of the 64
+disposal workers was busy when more work arrived (once per episode, with the
+`disposal_workers_capped` warning): wake-ups and payload drops queued behind
+blocked callbacks. A rising count means user wakers or destructors block.
+
+Gauges are process-wide sums and never labelled. They have idle baselines
+above zero (the detached registry, registered names an application keeps, an
+interval timer, disposal workers within their keep-alive): compare against
+the same process at rest, or alert on growth. Process-wide one-time
+structures (the deadline-service thread, the global registry map) are not
+counted.
+
 ### Caller and raw receiver boundaries
 
 Direct `ActorRef::request`, `Context::request`, and erased-recipient `request`
@@ -1743,8 +1788,7 @@ outside the library. Histogram sums saturate at `u64::MAX` nanoseconds; counters
 can wrap after `u64::MAX` events. Scrapes are approximate concurrent observations.
 
 There is no built-in HTTP server, OpenTelemetry exporter, causal tracing,
-oldest-queued-message age, per-actor histogram or active-monitor gauge in this
-initial implementation. These can be evaluated independently of the existing
+oldest-queued-message age or per-actor histogram in this implementation. These can be evaluated independently of the existing
 metrics and without inserting exporter work into handlers.
 
 Use application measurements before choosing a sampling rate; shared atomic

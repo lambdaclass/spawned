@@ -264,10 +264,29 @@ pub(crate) struct JobState {
     /// user payload, destroyed by [`JobSet::dispose_cancelled`] once the
     /// owner's death point answered and woke every caller.
     exit_released: Mutex<Option<ExitReleased>>,
+    /// `spawned_jobs_alive`: from launch until the last reference (run,
+    /// handle, queued message, held result) is gone.
+    _alive: crate::instrumentation::Live<crate::instrumentation::gauge::Jobs>,
 }
 
 /// Payloads an owner's exit took from a job, destroyed after its death point.
 type ExitReleased = (Option<HeldTerminal>, Vec<Arc<ScheduledEmit>>);
+
+impl Drop for JobState {
+    /// The last reference can go on the deadline service (a job deadline or
+    /// emit entry): what exit released and nobody disposed of yet is user
+    /// payload, so it goes to a disposal worker there (inline elsewhere).
+    fn drop(&mut self) {
+        let released = self
+            .exit_released
+            .get_mut()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(released) = released {
+            super::disposal::defer_drop(released);
+        }
+    }
+}
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|p| p.into_inner())
@@ -290,6 +309,7 @@ impl JobState {
             emit_wakers: Mutex::new(Vec::new()),
             scheduled: Mutex::new(Vec::new()),
             exit_released: Mutex::new(None),
+            _alive: Default::default(),
         })
     }
 
@@ -427,9 +447,15 @@ impl JobState {
     #[cfg(feature = "async")]
     fn wake_emitters(&self) {
         let wakers = std::mem::take(&mut *lock(&self.emit_wakers));
-        for waker in wakers {
-            waker.wake();
+        if wakers.is_empty() {
+            return;
         }
+        // Off the deadline service thread when a deadline or emit fires.
+        super::disposal::defer(move || {
+            for waker in wakers {
+                waker.wake();
+            }
+        });
     }
 
     /// Take the terminal notification and run `enqueue` under the job's
@@ -468,8 +494,11 @@ impl JobState {
             (taken, unsent, held)
         });
         // A held result the deadline displaced (user payload): dropped
-        // outside the trace section, after JobDeadline is recorded.
-        drop(held);
+        // outside the trace section, after JobDeadline is recorded, and off
+        // the deadline service thread.
+        if let Some(held) = held {
+            super::disposal::defer_drop(held);
+        }
         #[cfg(feature = "async")]
         if taken {
             self.wake_emitters();
@@ -999,11 +1028,14 @@ impl Expirable for JobDeadline {
     fn pending_deadline(&self) -> Option<u64> {
         self.state.core.is_pending().then_some(self.at)
     }
-    fn expire(&self, _now: u64) {
-        let notify = lock(&self.notify).take();
-        if let Some(notify) = notify {
-            notify();
+    fn expire(&self, _now: u64, due: bool) -> bool {
+        if due {
+            let notify = lock(&self.notify).take();
+            if let Some(notify) = notify {
+                notify();
+            }
         }
+        false
     }
 }
 
@@ -1059,7 +1091,7 @@ impl Drop for ScheduledEmit {
             .get_mut()
             .unwrap_or_else(|p| p.into_inner())
             .take();
-        self.failures.discard(send);
+        self.failures.discard_some(send);
     }
 }
 
@@ -1095,8 +1127,11 @@ impl ScheduledEmit {
         let delivered = result.is_ok();
         // Whatever was not enqueued (the refused envelope, the uncalled send
         // or the discarded one, each with its credit guard) drops here,
-        // unlocked and contained.
-        self.failures.discard((result, unused, discarded));
+        // unlocked and contained. A delivered emit leaves nothing to drop:
+        // no hand-off then.
+        if result.is_err() || unused.is_some() || discarded.is_some() {
+            self.failures.discard((result, unused, discarded));
+        }
         lock(&job.scheduled).retain(|emit| !std::ptr::eq(Arc::as_ptr(emit), self));
         if let Some(held) = held {
             held();
@@ -1115,11 +1150,17 @@ impl Expirable for ScheduledEmit {
     fn pending_deadline(&self) -> Option<u64> {
         lock(&self.send).is_some().then_some(self.at)
     }
-    fn expire(&self, _now: u64) {
+    fn expire(&self, _now: u64, due: bool) -> bool {
+        if !due {
+            return false;
+        }
         fail_point!("job.emit_due");
         if let Some(job) = self.job.upgrade() {
             self.settle(&job, true);
+            // Possibly the last reference (its other scheduled emits).
+            super::disposal::defer_drop_arc(job);
         }
+        false
     }
 }
 

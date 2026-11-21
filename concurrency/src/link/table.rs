@@ -33,6 +33,8 @@ pub(crate) struct LinkEntry {
     pub peer_links: Weak<Mutex<LinkState>>,
     /// A pending late `NoProc` notice (the peer was past D at `link`).
     pub late: bool,
+    /// `spawned_link_records_alive` (the Loom model: `()`).
+    _alive: super::sync::LinkRecordAlive,
 }
 
 /// An actor's exit table: its link records and its death point.
@@ -118,6 +120,7 @@ pub(crate) fn install(
                     peer: peer.clone(),
                     peer_links: Arc::downgrade(peer_links),
                     late: true,
+                    _alive: Default::default(),
                 });
             }
             return LinkOutcome::NoProc;
@@ -128,6 +131,7 @@ pub(crate) fn install(
             peer: peer.clone(),
             peer_links: Arc::downgrade(peer_links),
             late: false,
+            _alive: Default::default(),
         });
         b.entries.push(LinkEntry {
             peer_id: own.id,
@@ -135,6 +139,7 @@ pub(crate) fn install(
             peer: own.clone(),
             peer_links: Arc::downgrade(own_links),
             late: false,
+            _alive: Default::default(),
         });
         LinkOutcome::Linked
     })
@@ -163,6 +168,7 @@ pub(crate) fn install_start_edge(
             peer: child.clone(),
             peer_links: Arc::downgrade(child_links),
             late: false,
+            _alive: Default::default(),
         });
         c.entries.push(LinkEntry {
             peer_id: parent.id,
@@ -170,6 +176,7 @@ pub(crate) fn install_start_edge(
             peer: parent.clone(),
             peer_links: Arc::downgrade(parent_links),
             late: false,
+            _alive: Default::default(),
         });
         true
     })

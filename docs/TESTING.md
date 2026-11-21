@@ -1893,12 +1893,16 @@ and prints the seed when a test fails. Configuration is process-global.
 | `link.before_install` | no | Peer exiting while a link is installed (tasks and threads) |
 | `monitor.before_install` | no | Target exiting while a monitor is installed (tasks and threads) |
 | `job.emit_due` | no | A scheduled `emit_at` coming due during the owner's exit: its payload is held until every caller is answered (`emit_due_during_exit_*`) |
+| `disposal.item` | no | A disposal worker delayed before an item the deadline service handed off, so the owner's exit begins first: the payload is held until the death point (`disposal_trace`: `a_payload_handed_off_before_exit_waits_for_the_death_point`) |
+| `disposal.batch_serial` | yes | Error: the deadline service's batch runs serially on one worker (the shared-batch bug); its recorded trace must be rejected (`disposal_trace`, negative control) |
+| `disposal.keep_alive` | yes | Error: idle disposal workers retire after 5 ms, so the trace covers `Retire` and later starts (`disposal_trace`) |
 | `job.native_worker_unused` | no | Threads mode: the parked thread of a dropped, unused blocking-job permit held at its exit; the native slot is already back (`an_unused_permit_returns_its_slot_without_its_thread`) |
 | `reply.close_upgraded` | no | The death point's close holding an already-answered slot while its caller drops the receiver: the unread reply is destroyed only after every caller is answered (tasks and threads) |
 | `reply.recv_parked` | no | Handshake: a blocking `recv()` is parked, so only a notification wakes it (discharge notifies parked receivers before any waker; tasks and threads) |
 | `monitor.down_before_dispatch` | no | `demonitor` on another thread returning while the monitor's `Down` is in dispatch: it is flushed (tasks and threads) |
 
-`tests/failpoints.rs` drives every site and checks invariants through public
+`tests/failpoints.rs` drives every site (the `disposal.*` sites are driven by
+`tests/disposal_trace.rs`) and checks invariants through public
 APIs: restarts follow the budget (generation count equals injected failures
 plus started actors), a stop during a restart or publication window starts or
 publishes nothing, shutdown reports at its deadline and later completes,
@@ -2039,6 +2043,8 @@ times.
 | `registry` | `registry::registered().len()` |
 | `actors_live` | harness actor states constructed and not yet dropped (started minus fully stopped) |
 | `actors_active`, `mailbox_depth`, `handlers_active`, `requests_active` | spawned's own `metrics` gauges |
+| `reply_slots_alive` … `timers_alive` | spawned's retained-structure gauges (GUIDE, "Retained internal structures"): reply slots, tokens, `PendingReplies` entries, reply registries, deadline heap and service entries, service owners, jobs, monitors, link records, names, timers |
+| `disposal_queue_entries`, `disposal_workers_alive`, `disposal_workers_idle` | the disposal worker pool's queue and workers (same GUIDE section); idle workers retire within the quiesce timeout |
 | `actors_started`, `scenarios`, `errors` | progress counters (not judged) |
 
 Framework-internal `ActorRef` and `Context` clones are not countable through
@@ -2123,7 +2129,12 @@ gate too; they cannot inherit a passing source check without measurement.
 ```sh
 python3 benchmarks/hotpath.py gate                  # HEAD vs merge base with main
 python3 benchmarks/hotpath.py gate --base origin/main --head origin/my-branch --threshold 3
+python3 benchmarks/hotpath.py gate --features metrics   # both sides with the metrics feature
 ```
+
+CI gates the default build. `--features` builds both sides with extra
+features, for a change whose cost sits behind one (instrumentation under
+`metrics`); run it by hand and quote it in the PR.
 
 Instruction counts miss costs that are not instructions: lock contention,
 extra wake-ups and parking, cache-line transfers. A change that moves work

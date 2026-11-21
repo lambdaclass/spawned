@@ -100,6 +100,7 @@ STATIC = {
     "DeferredReplies": ("TraceReplies.tla", {"replies-v1"}),
     "Start": ("TraceStart.tla", {"start-v1"}),
     "Coordinator": ("TraceCoordinator.tla", {"coordinator-v1"}),
+    "Disposal": ("TraceDisposal.tla", {"disposal-v1"}),
 }
 ALL = list(MODELS) + list(STATIC)
 

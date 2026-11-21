@@ -266,6 +266,21 @@ impl Recorder {
             m.mailbox_depth as f64,
             m.handlers_active as f64,
             m.requests_active as f64,
+            m.reply_slots_alive as f64,
+            m.reply_tokens_alive as f64,
+            m.pending_replies_entries as f64,
+            m.reply_registries_alive as f64,
+            m.deadline_heap_entries as f64,
+            m.deadline_service_entries as f64,
+            m.deadline_service_actors as f64,
+            m.jobs_alive as f64,
+            m.monitors_alive as f64,
+            m.link_records_alive as f64,
+            m.registered_names as f64,
+            m.timers_alive as f64,
+            m.disposal_queue_entries as f64,
+            m.disposal_workers_alive as f64,
+            m.disposal_workers_idle as f64,
         ];
         debug_assert_eq!(values.len(), SERIES.len());
         let sample = Sample {
