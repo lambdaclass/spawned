@@ -128,6 +128,7 @@ impl Drop for Bomb {
 impl Clone for Bomb {
     fn clone(&self) -> Self {
         if self.clone_armed && self.live() {
+            count(&self.world, site::MSG_CLONE);
             self.fire("fuzz: injected message clone panic");
         }
         let mut copy = Bomb::new(&self.world, self.site, self.owner);
@@ -273,10 +274,10 @@ impl Worker {
     /// Answer a deferred token (unless its caller is gone: the payload would
     /// be dropped in this turn, a handler panic by design).
     fn answer(&self, nonce: u64, token: ReplyTo<Answer>) {
-        let mut bomb = Bomb::new(&self.world, site::REPLY_DROP, Some(self.instance));
-        if token.is_closed() {
-            bomb.defuse();
-        }
+        // If the caller left, `reply` drops the payload here, in this turn
+        // (or in `stopped()`): a panic of the actor's own (attributed as
+        // `relaxed`), like any user code in a turn.
+        let bomb = Bomb::new(&self.world, site::REPLY_DROP, Some(self.instance));
         token.reply(Answer { nonce, bomb });
     }
 
@@ -461,7 +462,9 @@ impl Handler<Fx> for Worker {
             FaultCmd::Reply => {}
         }
         let mut bomb = Bomb::new(&self.world, site::REPLY_DROP, Some(self.instance));
-        if reply.is_closed() {
+        // A send has no caller: its reply is always dropped here. A request
+        // whose caller left drops it here too, a panic in this turn.
+        if msg.nonce == 0 {
             bomb.defuse();
         }
         reply.reply(Answer {
