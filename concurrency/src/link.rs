@@ -76,6 +76,10 @@ pub(crate) struct ExitRequest {
     /// A parent exit is queued behind earlier messages of a trapping actor
     /// (E3): when dispatched it ends the actor whatever its reason.
     parent_exit_queued: bool,
+    /// The current reason was imposed by a kill or an untrapped exit signal
+    /// (not produced by the actor itself): no crash report (OTP: a process
+    /// killed by a signal runs no code).
+    signalled: bool,
 }
 
 impl ExitRequest {
@@ -85,6 +89,14 @@ impl ExitRequest {
     }
     pub(crate) fn is_dead(&self) -> bool {
         self.dead
+    }
+    /// Phase 0: `started()` has not returned.
+    pub(crate) fn is_starting(&self) -> bool {
+        self.starting
+    }
+    /// The reason was imposed by a kill or an untrapped exit signal.
+    pub(crate) fn is_signalled(&self) -> bool {
+        self.signalled
     }
     /// `Context::exit_pending`: exit has begun (a reason is requested, which
     /// includes a kill and the dispatch of a parent exit) or a parent exit
@@ -127,6 +139,7 @@ impl ExitRequest {
             self.skip_hook = true;
         }
         self.reason = Some(reason);
+        self.signalled = true;
         true
     }
     /// An untrappable kill: `Killed` supersedes any reason until D and
@@ -137,6 +150,7 @@ impl ExitRequest {
         }
         self.reason = Some(ExitReason::Killed);
         self.killed = true;
+        self.signalled = true;
         if !self.hook_begun {
             self.skip_hook = true;
         }
@@ -147,6 +161,7 @@ impl ExitRequest {
     pub(crate) fn panic(&mut self, reason: ExitReason) {
         if !self.dead && !self.killed {
             self.reason = Some(reason);
+            self.signalled = false;
         }
     }
     /// `stopped()` is about to start: returns whether it runs.
@@ -228,6 +243,8 @@ pub(crate) struct SignalTarget {
     /// Queues a signal held during `started()` in its place in the mailbox
     /// (the flag marks a parent signal).
     pub(crate) send_held: SendHeldFn,
+    /// Introspection metadata: type, placement, label, the instance probe.
+    pub(crate) meta: crate::introspection::Meta,
 }
 
 /// Where an exit signal comes from.
@@ -541,6 +558,12 @@ pub(crate) fn request_stop(reason: &LinkedExitReason, cause: ExitReason, cancel:
     }
 }
 
+/// The peers of this actor's live links (not pending late `NoProc`
+/// records), sorted by id (introspection, out of band).
+pub(crate) fn live_links(table: &LinkTable) -> Vec<ActorId> {
+    table::live_peers(table)
+}
+
 #[cfg(test)]
 pub(crate) fn has_link(table: &LinkTable, peer: ActorId) -> bool {
     table
@@ -761,6 +784,7 @@ mod tests {
                 Ok(())
             }),
             send_held: Arc::new(|_, _| Ok(())),
+            meta: Default::default(),
         }
     }
     fn pair(

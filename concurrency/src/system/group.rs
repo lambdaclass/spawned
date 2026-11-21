@@ -15,6 +15,8 @@ struct Target {
 }
 pub(crate) struct GroupInner {
     pub(super) name: String,
+    /// The owning system (introspection).
+    pub(super) system: crate::introspection::SystemId,
     pub(super) profile: ExecutionProfile,
     pub(super) state: Mutex<GroupState>,
     targets: Vec<Target>,
@@ -32,6 +34,7 @@ impl GroupInner {
     /// need OS threads and are rejected.
     #[cfg(spawned_sim)]
     pub(super) fn new(
+        system: crate::introspection::SystemId,
         name: String,
         profile: ExecutionProfile,
         borrowed: Option<Handle>,
@@ -46,6 +49,7 @@ impl GroupInner {
         let (done_tx, done) = watch::channel(false);
         let handle = borrowed.unwrap_or_else(rt::sim::ambient_handle);
         Ok(Arc::new(Self {
+            system,
             name,
             profile,
             state: Mutex::new(GroupState {
@@ -67,6 +71,7 @@ impl GroupInner {
     }
     #[cfg(not(spawned_sim))]
     pub(super) fn new(
+        system: crate::introspection::SystemId,
         name: String,
         profile: ExecutionProfile,
         borrowed: Option<Handle>,
@@ -193,6 +198,7 @@ impl GroupInner {
             None
         };
         Ok(Arc::new(Self {
+            system,
             name,
             profile,
             state: Mutex::new(GroupState {

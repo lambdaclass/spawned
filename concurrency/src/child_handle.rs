@@ -135,7 +135,7 @@ impl ChildHandle {
     pub(crate) fn signal_target(&self) -> &Arc<SignalTarget> {
         &self.target
     }
-    pub(crate) fn links(&self) -> &LinkTable {
+    pub(crate) fn link_table(&self) -> &LinkTable {
         &self.links
     }
     /// Past the death point D: links, monitors, sends and requests report
@@ -204,6 +204,40 @@ impl ChildHandle {
     /// entry point of supervisors and systems (E3).
     pub(crate) fn exit_from(&self, from: ActorId, reason: ExitReason, from_parent: bool) {
         crate::link::deliver_signal(&self.target, from, reason, Origin::Direct, from_parent);
+    }
+
+    /// The actor as it is now (OTP `process_info/1`). Out of band: reads
+    /// shared state and short metadata locks, never waits for a turn, so it
+    /// answers while a handler is wedged. See [`ActorInfo`].
+    ///
+    /// [`ActorInfo`]: crate::introspection::ActorInfo
+    pub fn info(&self) -> crate::introspection::ActorInfo {
+        match self.target.meta.probe() {
+            Some(probe) => probe.info(),
+            // Every `ActorRef` and `Context` is gone: the instance is past
+            // its death point.
+            None => crate::introspection::released(
+                &self.target,
+                &self.links,
+                self.exit_reason().is_some(),
+            ),
+        }
+    }
+
+    /// The actors this actor is linked to (OTP `process_info(links)`),
+    /// sorted by id; empty from its death point.
+    pub fn links(&self) -> Vec<ActorId> {
+        crate::link::live_links(&self.links)
+    }
+
+    /// The actors this actor monitors (OTP `process_info(monitors)`), sorted
+    /// by id, one entry per monitor; empty from its exit.
+    pub fn monitors(&self) -> Vec<ActorId> {
+        self.target
+            .meta
+            .probe()
+            .map(|probe| probe.monitors())
+            .unwrap_or_default()
     }
 
     /// Returns `true` if the actor is still running.
@@ -391,6 +425,7 @@ pub(crate) mod tests {
             send_exit: Arc::new(|_| Ok(())),
             send_parent_exit: Arc::new(|_| Ok(())),
             send_held: Arc::new(|_, _| Ok(())),
+            meta: Default::default(),
         })
     }
 

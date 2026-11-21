@@ -64,6 +64,11 @@ pub(crate) struct ActorCleanup<C: Fn()> {
     skip_log: Option<ExitReason>,
     /// [`discharged`](Self::discharged) ran.
     discharged: bool,
+    /// The instance, for its `spawned::crash` report.
+    report: Option<std::sync::Arc<crate::link::SignalTarget>>,
+    /// An abnormal reason the actor produced itself: reported once every
+    /// obligation is answered (a subscriber is user code).
+    crash: Option<ExitReason>,
 }
 impl<C: Fn()> ActorCleanup<C> {
     pub(crate) fn new(
@@ -89,7 +94,14 @@ impl<C: Fn()> ActorCleanup<C> {
             jobs: None,
             skip_log: None,
             discharged: false,
+            report: None,
+            crash: None,
         }
+    }
+    /// Emit the `spawned::crash` report for this instance (introspection).
+    pub(crate) fn with_report(mut self, signal: std::sync::Arc<crate::link::SignalTarget>) -> Self {
+        self.report = Some(signal);
+        self
     }
     /// Seal `replies` with the final reason at D, inside the exit-table
     /// critical section: callers then get `ActorStopped(final reason)` and
@@ -154,6 +166,7 @@ impl<C: Fn()> ActorCleanup<C> {
         }
         let id = self.id.raw();
         let mut skipped = false;
+        let mut crashed = false;
         let reason = trace::life_section(id, || {
             let mut request = crate::link::lock_request(&self.cause);
             let reason = if dropped {
@@ -162,6 +175,9 @@ impl<C: Fn()> ActorCleanup<C> {
             } else {
                 request.die()
             };
+            // OTP's proc_lib crash report: an abnormal reason the actor
+            // produced itself, not one a signal, kill or drop imposed.
+            crashed = !dropped && reason.is_abnormal() && !request.is_signalled();
             drop(request);
             trace::life_emit(id, || {
                 trace::LifeEvent::new(if dropped { "Drop" } else { "Die" }, id)
@@ -171,6 +187,9 @@ impl<C: Fn()> ActorCleanup<C> {
         });
         if skipped {
             self.skip_log = Some(reason.clone());
+        }
+        if crashed && self.report.is_some() {
+            self.crash = Some(reason.clone());
         }
         fail_point!("actor.at_death");
         // Every open deferred reply (and every exit-pending one) is answered
@@ -217,6 +236,14 @@ impl<C: Fn()> ActorCleanup<C> {
         }
         if let Some(reason) = self.skip_log.take() {
             log_stopped_skipped(self.id, "", "runtime_drop", Some(&reason));
+        }
+        if let (Some(reason), Some(signal)) = (self.crash.take(), &self.report) {
+            let links = self
+                .notices
+                .as_ref()
+                .map(crate::link::LinkNotices::peers)
+                .unwrap_or_default();
+            crate::introspection::crash_report(signal, &reason, &links);
         }
         // Payloads the exit's job cancellation released: destroyed only now.
         if let Some(jobs) = &self.jobs {

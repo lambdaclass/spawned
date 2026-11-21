@@ -46,6 +46,12 @@ impl<A: Actor> ActorRef<A> {
         let id = ActorId::next();
         // Phase 0: signals that arrive before started() returns are held.
         link::lock_request(&linked_reason).begin_starting();
+        let host = match (&managed, backend) {
+            (Some(_), _) => crate::introspection::Host::Managed,
+            (None, Backend::Async) => crate::introspection::Host::Async,
+            (None, Backend::Blocking) => crate::introspection::Host::Blocking,
+            (None, Backend::Thread) => crate::introspection::Host::Thread,
+        };
         let signal = signal_target::<A>(
             id,
             parent.as_ref().map(ChildHandle::id),
@@ -53,6 +59,7 @@ impl<A: Actor> ActorRef<A> {
             trap_exit.clone(),
             linked_reason.clone(),
             cancellation_token.clone(),
+            crate::introspection::Meta::new(std::any::type_name::<A>(), host),
         );
         let (cleaned_tx, cleaned_rx) = watch::channel(false);
         // A supervised child's `ChildSpec` may override the actor's bounds.
@@ -80,6 +87,11 @@ impl<A: Actor> ActorRef<A> {
             }),
         };
         let ctx = actor_ref.context();
+        actor_ref
+            .shared
+            .signal
+            .meta
+            .set_probe(probe_of(&actor_ref.shared));
 
         if let Some(scope) = &managed {
             scope.attach::<A>(actor_ref.child_handle());
@@ -104,7 +116,8 @@ impl<A: Actor> ActorRef<A> {
         )
         .with_mailbox_failures(actor_ref.shared.sender.failures())
         .with_replies(actor_ref.shared.replies.clone())
-        .with_jobs(actor_ref.shared.jobs.clone());
+        .with_jobs(actor_ref.shared.jobs.clone())
+        .with_report(actor_ref.shared.signal.clone());
         let startup = crate::actor_cleanup::ActorStartup::new(
             (actor, ctx, rx, cancellation_token),
             cleanup,
