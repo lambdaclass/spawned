@@ -185,6 +185,11 @@ def labels(cfg):
     return ["control", "candidate"] if on(cfg, "PAIRED") else ["candidate"]
 
 
+def session_name(qdir):
+    name = re.sub(r"[^A-Za-z0-9_-]", "-", Path(qdir).name)
+    return name if name.startswith("qual-") else "qual-" + name
+
+
 def die(msg):
     print(f"qualify: {msg}", file=sys.stderr)
     sys.exit(1)
@@ -470,7 +475,7 @@ class Controller:
         self.q = Path(cfg["QUAL_DIR"])
         self.R = self.q / "results"
         self.client = clients.load(cfg)
-        self.session = "qual-" + re.sub(r"[^A-Za-z0-9_-]", "-", self.q.name)
+        self.session = session_name(self.q)
         self.stopping = False
         self.stop_reason = ""
         self.running = set()  # process labels started and not stopped by the plan
@@ -550,7 +555,8 @@ class Controller:
                         "ETHREX_JEMALLOC_STATS_INTERVAL_S=60"]
             (self.q / "run" / f"{proc_label}.pid").unlink(missing_ok=True)
             cmd = [str(HERE / "node.sh"), str(self.q), proc_label, "nice", "-n", str(self.cfg["NICE"]), "env", *env, *argv]
-            subprocess.run(["tmux", "new-window", "-d", "-t", self.session, "-n", proc_label, shlex.join(cmd)], check=True)
+            # argv form: tmux execs it directly, whatever the user's default shell is
+            subprocess.run(["tmux", "new-window", "-d", "-t", self.session, "-n", proc_label, *cmd], check=True)
             for _ in range(100):
                 if self.pid(proc_label) is not None:
                     break
@@ -810,9 +816,9 @@ class Controller:
             self.stop_reason = f"controller got {signal.Signals(signum).name}"
         signal.signal(signal.SIGTERM, on_signal)
         signal.signal(signal.SIGINT, on_signal)
-        subprocess.run(["tmux", "new-session", "-d", "-s", self.session, "-n", "sampler",
-                        shlex.join([sys.executable, "-I", str(HERE / "sampler.py"), str(q)])
-                        + f" 2>> {shlex.quote(str(self.R / 'sampler.err'))}"], check=True)
+        subprocess.run(["tmux", "new-session", "-d", "-s", self.session, "-n", "sampler", "bash", "-c",
+                        'exec "$0" -I "$1" "$2" 2>> "$3"', sys.executable, str(HERE / "sampler.py"), str(q),
+                        str(self.R / "sampler.err")], check=True)
         outcome = "complete"
         try:
             self.plan()
@@ -848,7 +854,7 @@ def cmd_launch(qdir):
     p = subprocess.Popen([sys.executable, "-I", str(HERE / "qualify.py"), "run", str(q)],
                          stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                          start_new_session=True, cwd=q)
-    print(f"controller pid {p.pid} (setsid; log results/controller.log); tmux session qual-{q.name}")
+    print(f"controller pid {p.pid} (setsid; log results/controller.log); tmux session {session_name(q)}")
     print(f"status: {sys.argv[0]} status {q}\nstop:   {sys.argv[0]} stop {q}   (or touch {q}/STOP)")
 
 
