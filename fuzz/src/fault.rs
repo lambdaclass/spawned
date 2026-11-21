@@ -327,7 +327,10 @@ impl Worker {
             }
         };
         let emits = emits % 4;
-        let result = if blocking {
+        // A refused job's `work` and `done` drop inside this call (R7: "on
+        // `Err`, `work` and `done` are dropped"): the handler's own context.
+        let caller = self.world.clone();
+        let result = caller.calling(|| if blocking {
             ctx.pipe_blocking(
                 opts,
                 move |job: JobCtx<Self>| {
@@ -379,7 +382,7 @@ impl Worker {
                 },
                 done,
             )
-        };
+        });
         let _ = result;
     }
 }
@@ -425,13 +428,14 @@ impl Handler<Fx> for Worker {
             FaultCmd::Helper(v) => {
                 let world = self.world.clone();
                 let owner = self.instance;
-                let _ = ctx.spawn_helper(async move {
+                let caller = self.world.clone();
+                let _ = caller.calling(|| ctx.spawn_helper(async move {
                     // Created in the first poll: a future dropped unpolled
                     // (a refused helper) carries no bomb.
                     let mut bomb = Bomb::new(&world, site::HELPER_DROP, Some(owner));
                     rt::sleep(Duration::from_millis(10 * v as u64)).await;
                     bomb.defuse();
-                });
+                }));
             }
             FaultCmd::Reply => {}
         }

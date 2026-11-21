@@ -200,6 +200,10 @@ pub struct World {
     /// The driver's task and its request tasks: the caller's context, where
     /// no injected fault goes off.
     callers: Mutex<HashSet<u64>>,
+    /// A handler is inside its own call into the framework (`ctx.pipe*`,
+    /// `ctx.spawn_helper`): a payload the call refuses is dropped there, in
+    /// the caller's context.
+    calling: std::sync::atomic::AtomicBool,
 }
 
 impl World {
@@ -208,6 +212,7 @@ impl World {
             state: Mutex::new(State::default()),
             armed: AtomicU16::new(0),
             callers: Mutex::new(HashSet::new()),
+            calling: std::sync::atomic::AtomicBool::new(false),
         })
     }
     pub fn armed(&self) -> u16 {
@@ -222,8 +227,22 @@ impl World {
             .unwrap_or_else(|p| p.into_inner())
             .insert(task);
     }
+    /// Run `f`, a handler's call into the framework, as caller context.
+    pub fn calling<T>(&self, f: impl FnOnce() -> T) -> T {
+        struct Reset<'a>(&'a std::sync::atomic::AtomicBool);
+        impl Drop for Reset<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Relaxed);
+            }
+        }
+        self.calling.store(true, Ordering::Relaxed);
+        let _reset = Reset(&self.calling);
+        f()
+    }
     pub fn in_caller(&self) -> bool {
-        self.callers
+        self.calling.load(Ordering::Relaxed)
+            || self
+                .callers
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .contains(&crate::fault::task())
