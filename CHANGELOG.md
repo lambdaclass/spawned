@@ -15,7 +15,7 @@
   backstop beyond both. `Cohorts.tla` gains `CKill` and `CStuck` with
   `StuckOnlyAfterKill` (it had no kill or stuck step, so it permitted the
   bug), trace-validated by a new `cohort_trace` scenario; a `#[sim_test]`
-  (`collateral_kill`) and planted bug 25 cover it.
+  (`collateral_kill`) and planted bug 35 cover it.
 - Release qualification harness, `benchmarks/qualification/`: the client
   canaries and the ethrex memory run, consolidated from the hand-built 0.7.x
   and 0.8.0 runs into one parameterised, manual-only harness. It builds a

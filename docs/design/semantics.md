@@ -544,7 +544,7 @@ Checked by: `Supervision!AtMostOneGeneration`, `Cohorts!AtMostOneGeneration`,
 [`cohort_trace`][cohort_trace]`::trace_collateral_child_killed_or_stuck`, with
 a model fault and two recorded-trace controls in `negative_checks.py`) and
 [`collateral_kill`][collateral_kill] (`#[sim_test]`: killed at
-`shutdown_timeout`, stuck only after a second interval; planted bug 25).
+`shutdown_timeout`, stuck only after a second interval; planted bug 35).
 
 **V4. Generations and publication.** Each construction attempt increments the
 slot's generation. `SupervisedChild::current()` returns only the latest live,
