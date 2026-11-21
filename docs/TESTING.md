@@ -2101,18 +2101,44 @@ across releases (`#[actor]` handlers, `request()`, `send()`).
 **CI: instruction counts** (`perf-gate` workflow, every PR and the merge
 queue). Wall-clock numbers on shared runners are too noisy, so the gate counts
 instructions with callgrind. Each benchmark runs at two sizes (2,000 and 6,000
-operations, three runs each); instructions per operation is the difference
-divided by the extra operations, so process start, runtime and actor setup
-cancel. Only deterministic benchmarks are gated: the async ones on a Tokio
-current-thread runtime (`async_ct_*`: burst, sequential and 16-task
-`request()`, `send` from one and two producer tasks; identical counts run to
-run) and threads-mode sequential `request()` (a lockstep pair of threads,
-within 0.5%). On a multi-threaded runtime, or with free-running OS-thread
+operations); instructions per operation is the difference divided by the
+extra operations, so process start, runtime and actor setup cancel, and the
+gate takes the median over run pairs. Only deterministic benchmarks are
+gated: the async ones on a Tokio current-thread runtime (`async_ct_*`: burst,
+sequential and 16-task `request()`, `send` from one and two producer tasks;
+identical counts run to run, three pairs) and threads-mode sequential
+`request()` (a lockstep pair of threads, nine pairs). Valgrind runs one guest
+thread at a time, but a thread blocked in a syscall lets the other run, so
+with several CPUs the host scheduler decides how the requester and the actor
+interleave, and how often they spin, park and wake. Under load that moved
+`threads_request_seq` by up to 3.7% between runs, as much as the threshold.
+Every callgrind run is therefore pinned to one CPU, which leaves the code
+paths unchanged and cuts that spread to 0.9%. A minimum over runs (on the
+theory that contention only adds instructions) was tried and rejected: the
+noise is in both sizes, so the difference of the minima moved 3.3% across
+ten loaded runs. On a multi-threaded runtime, or with free-running OS-thread
 producers (threads-mode burst and `send`), how often actors park and wake
 changes from run to run (up to ±20% instructions), so those run only in the
 wall-clock check. The gate fails when any benchmark's instructions per operation grow
 more than 3% over the merge base (`--threshold`, or `HOTPATH_THRESHOLD` in the
-workflow). The job summary has the per-benchmark table. The workflow always
+workflow).
+
+A per-PR budget alone lets regressions add up: ten PRs at +2.5% each all pass.
+So the same job also measures the last release tag (`git describe --tags
+--abbrev=0 --match 'v*'`) with the same driver and harness, and fails when
+any benchmark grows more than 3% over that release (`--release`,
+`--release-threshold`, or `HOTPATH_RELEASE_THRESHOLD`): the cumulative budget
+for a release cycle. A PR that is under 3% on its own can still fail because
+of earlier PRs; then the fix is to win back instructions on that path, not to
+raise the threshold. A deliberate cost (a new guarantee on the request path)
+is argued in the PR and the release budget is reset only by tagging the next
+release. The release binary is built once per release, driver and toolchain:
+pushes to main build it into the Actions cache (`hotpath.py build-release`),
+and PRs restore it. The release is built with the default features, which
+every release has; features removed since (such as the `*-experiments` ones
+in 0.9) are not used by the driver. The job summary has the per-benchmark
+table: release, base and head instructions per operation, the change against
+the base and against the release. The workflow always
 reports, so it can be a required check, but it only builds and measures when
 `concurrency/src`, `rt/src`, `macros/src`, the driver, a Cargo manifest or
 lockfile, or the pinned Rust toolchain changed. Release version bumps run the
@@ -2122,6 +2148,7 @@ gate too; they cannot inherit a passing source check without measurement.
 python3 benchmarks/hotpath.py gate                  # HEAD vs merge base with main
 python3 benchmarks/hotpath.py gate --base origin/main --head origin/my-branch --threshold 3
 python3 benchmarks/hotpath.py gate --features metrics   # both sides with the metrics feature
+python3 benchmarks/hotpath.py gate --release v0.8.0   # also the cumulative check, as in CI
 ```
 
 CI gates the default build. `--features` builds both sides with extra
