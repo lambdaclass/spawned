@@ -941,7 +941,7 @@ oracle's name, so shrinking can match it):
 | X2 (flush) | No `Down` of a monitor is handled after the driver's `demonitor` of it returned (dispatch and the handler's record are one poll, so a `Down` whose dispatch began earlier is already recorded) |
 | X3, X5 | `Exit` carries the peer's published reason; a trapping, still-linked actor gets it (no more often than links were made); a non-trapping one does not survive a peer's abnormal exit |
 | X7 | No `Note` from a source after its `Down`/`Exit` at the same receiver |
-| X8 | An actor whose only possible stop cause was one driver `stop`, `shutdown` or `stop_with_reason` on it while alive publishes exactly that reason (skipped if a hook or the state destructor panicked) |
+| X8 | An actor whose only possible stop cause was one driver `stop`, `shutdown` or `stop_with_reason` on it while alive publishes exactly that reason (skipped if a hook panicked; a destructor panic after D is no excuse, L6) |
 | X3 (reason) | A standalone, non-trapping actor whose only possible stop cause was its link to a peer survives the peer's `Normal` exit, and after `Shutdown`, `Panic` or `Kill` publishes the peer's reason, so the crash keeps propagating |
 | X5 (unlink) | After the driver unlinks two running actors (and does not link them again), neither receives an `Exit` from the other, and a standalone actor whose only stop causes were links to that peer outlives it |
 | T1 (cancel) | A timer cancelled at time `c` delivers at most the ticks due by `c` (`send_after`: at most one, none if cancelled before its period; `send_interval`: one per elapsed period) |
@@ -956,6 +956,9 @@ oracle's name, so shrinking can match it):
 | V4, V9 | `current()` never returns an exited generation; a finished supervisor has every child `Stopped` or `Failed`, no live generation, and runs no factory afterwards; children stop in reverse declaration order |
 | S1-S4 | A complete system shutdown leaves no managed actor running and no coordinator failure; a shut-down system admits nothing; targets stop in reverse admission order |
 | M5, S3, S5 | After teardown: every actor state dropped, no registered name left, and the simulator's task count back to its starting value |
+| M6 (panic injection) | Every injected-fault payload (message, reply, job result, `done` captures, emit, helper locals, panic payload) is destroyed exactly once: never leaked, never twice |
+| L6 (panic injection) | A payload destructor that panics on its owner's own task (a queued message at the death point, a fenced or cancelled job's result, `done` or emit) is that actor's recorded `cleanup_failure()`; with one stop request as the only cause, the published reason is still the requested one (X8 no longer excuses destructor panics) |
+| R1, R6 (panic injection) | Every `Fx` request resolves exactly once, deferred ones included (unbounded deadline, collected after teardown): `Ok` with its own nonce, `ActorStopped`/`NoProc`, `RequestTimeout` not before its timeout, or `ReplyDropped`/`Overloaded` only for a deferred reply |
 
 Order checks run only after quiescing (timers cancelled, requests collected,
 every actor fenced, no child starting or backing off) and when every
@@ -1007,6 +1010,58 @@ for `Supervision.tla`, OneForAll and RestForOne, cohort actions only, for
 `Cohorts.tla`; nested trees are not exported), and
 `fuzz/tla-sample.sh CORPUS [MAX] [OUT]` replays a corpus and runs
 `trace_check.py` on them (`nix develop -c fuzz/tla-sample.sh ...`).
+
+#### Panic injection
+
+The fuzz target reads its input in the fault format (`Format::Faults`): an
+operation whose 4-byte discriminant is `7 (mod 8)` is a fault step instead,
+and everything else decodes as before, so the committed seeds and the older
+regressions (`Format::Base`, `decode`, `assert_passes`, `repro --base`) keep
+their meaning. Fault steps arm entry points (`FaultOp::Arm`, each site about
+one time in four), send or request `Fx` commands (answer, defer, answer or
+drop deferred tokens, start a job, panic, spawn a helper) and arm `Fx`
+timers. Payloads are `Bomb`s: armed when their site was armed at creation,
+defused by the user code that takes them, so an armed one goes off only where
+the framework destroys or copies it on its own. Nothing goes off in the
+driver, its request tasks, or inside a handler's own call into the framework
+(a refused `pipe` drops `work` and `done` there by design, R7): those are the
+caller's context. All of it is harness code: the framework and the default
+build are untouched.
+
+Every place spawned runs user code, and how the harness reaches it:
+
+| Entry point | Runs on | Injection | Expected (contract) |
+|---|---|---|---|
+| `started()` | actor task | `Hooks` bits 0-2 (panic), `started_sleep` | `Panic`, no `stopped()` (L5) |
+| handlers (`Do`, `Fx`) | actor task | `Cmd::Panic`, `FaultCmd::Panic` | `Panic`, then `stopped()` (L5) |
+| `stopped()` | actor task | `Hooks` bits 3-5, `stopped_sleep`; answers deferred tokens | `Panic` unless killed (L3, L5) |
+| `exit_received` | actor task | `EXIT_PANIC` | handler panic (L4) |
+| `Down` handler | actor task | `DOWN_PANIC` | handler panic (L4) |
+| `Note` handler | actor task | `NOTE_PANIC` | handler panic (L4) |
+| state `Drop` | actor task, after D | `Hooks` bits 6-7 | cleanup failure, reason unchanged (L6) |
+| queued message `Drop` | actor task, after D | `MSG_DROP` | cleanup failure, reason unchanged (L6) |
+| refused message `Drop` | sender (driver, handler or timer task) | `MSG_DROP` | the sender's context |
+| timer message `Clone` (`send_interval`) | timer task | `MSG_CLONE` | the timer task ends; the actor is unaffected |
+| cancelled timer's message `Drop` | timer task | `MSG_DROP` | the timer task ends |
+| reply payload `Drop` (immediate and deferred replies) | wherever the slot dies: caller, deadline service, disposal worker | `REPLY_DROP` | contained off the caller (P1) |
+| deferred `ReplyTo`: answered in a turn, a job's `done`, `stopped()`, or dropped | actor task | `FaultCmd::{Defer, Answer, DropToken}`, `Pipe { answer }` | every caller answered once (R6) |
+| job work (async, blocking) | job task | `WORK_PANIC` | `JobError::Panicked` (R7) |
+| job `done` | actor task (a turn) | `DONE_PANIC` | handler panic |
+| job `done` dropped unrun (fenced, cancelled) | actor task or deadline service | `DONE_DROP` | contained; on the owner's task, a cleanup failure |
+| job result `Drop` (fenced, cancelled, keyed replacement, deadline, owner exit) | actor task, job task or deadline service | `RESULT_DROP` | contained (R7, L6) |
+| job emit `Drop` (`emit`, `emit_at`, fenced or expired) | actor task, job task or deadline service | `EMIT_DROP` | contained |
+| panic payload `Drop` | wherever the panic is caught | `PAYLOAD_DROP` (every injected panic) | `dispose_panic` forgets the secondary (L6) |
+| `tracing` subscriber | every task that logs | `TRACING` | contained where the contract says so (P1) |
+| `Debug` / `Display` of user payloads | none on main | `FMT` | armed for introspection (#301, #304, #305) |
+| `ChildSpec` factory (error, panic) | supervisor task | `WorkerDef::{fail_mask, panic_mask}` | a failed attempt (V1-V5) |
+| nested `configure` | supervisor task | `CONFIGURE_PANIC` | a failed attempt |
+| helper future body, `Drop` | helper task | `Cmd::Helper`, `HELPER_DROP` | `HelperError`, joined by the scope |
+
+Not reachable from the harness (single-threaded simulator, `tasks` mode
+only): `threads` mode, `Backend::Blocking`/`Thread` and native groups (their
+panic paths are covered by `panic_safety`, `native_mailbox_drop` and
+`foreign_panics`), stream listeners (`spawn_listener`, `send_message_on`),
+`spawned-test`'s `in_actor` closures, and wakers of user futures.
 
 CI (`fuzz.yml`) runs rustfmt, clippy and the harness tests (seeds,
 regressions, generated inputs) and a 60 s single-process smoke run on pull
