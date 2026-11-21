@@ -240,7 +240,9 @@ impl<A: Actor> SupervisedChild<A> {
 /// What `tree()` expands for one child: the instance captured with its row.
 pub(super) enum Captured {
     Worker(Option<crate::ChildHandle>),
-    Supervisor(Option<Supervisor>),
+    /// The subtree of the live instance; `Err(true)` while that instance
+    /// has not published it (starting), `Err(false)` with no instance.
+    Supervisor(Result<Supervisor, bool>),
 }
 
 pub(super) trait ChildControl: Send + Sync {
@@ -280,11 +282,14 @@ impl<A: Actor> ChildControl for View<A> {
         };
         let captured = match self.kind {
             ChildKind::Worker => Captured::Worker(handle),
-            ChildKind::Supervisor => Captured::Supervisor(handle.and_then(|handle| {
-                self.nested
+            ChildKind::Supervisor => Captured::Supervisor(match handle {
+                None => Err(false),
+                Some(handle) => self
+                    .nested
                     .get()
                     .and_then(|ready| super::nested::resolve_instance(ready, handle.id()))
-            })),
+                    .ok_or(true),
+            }),
         };
         (row, captured)
     }

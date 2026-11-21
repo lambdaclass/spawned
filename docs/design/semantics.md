@@ -1129,10 +1129,13 @@ A panicking subscriber cannot change the reason. Supervisors emit
 `supervisor`, `system`, `child`, `generation`, `reason`,
 `restarts_in_window`, `max_restarts`, `window_ms`, `action`:
 `child_terminated` (WARN, an unexpected exit: abnormal or a cleanup failure;
-a supervisor-ordered stop or a clean exit is not reported),
-`child_restarted` (INFO), `start_failed`, `restart_intensity_reached` and
-`shutdown_error` (ERROR; the last when a child missed its shutdown time and
-was killed). Sessions come with a later step.
+a supervisor-ordered stop or a clean exit is not reported; its `action` is
+decided by the restart budget, so it is never `restart` when the intensity
+limit stops the supervisor), `child_restarted` (INFO), `start_failed`,
+`restart_intensity_reached` and `shutdown_error` (ERROR; a child that missed
+its shutdown time: `killed` at the supervisor's stop, `stuck` in a
+OneForAll/RestForOne round, which fails the tree instead, S2). A nested
+supervisor instance not ready yet expands to `Unavailable(Starting)`. Sessions come with a later step.
 Checked by: [`crash_reports`][crash_reports] (both modes:
 `handler_panic_is_reported_with_the_contract_fields`,
 `panics_in_started_and_stopped_are_reported`,
@@ -1142,7 +1145,9 @@ Checked by: [`crash_reports`][crash_reports] (both modes:
 `threads_mode::handler_panic_is_reported_and_clean_exits_are_not`;
 `supervisor_reports::restart_reports_terminated_and_restarted`,
 `intensity_and_start_failures_are_errors`,
-`a_child_killed_at_its_shutdown_time_is_a_shutdown_error`).
+`a_child_killed_at_its_shutdown_time_is_a_shutdown_error`,
+`a_collateral_child_missing_its_shutdown_time_is_a_shutdown_error`;
+`supervision_introspection::a_starting_nested_supervisor_reads_starting`).
 
 **I11. No cost on the default path.** Tier 0 adds nothing to send, dispatch
 or a turn: its fields are kept by state that already exists or is written at

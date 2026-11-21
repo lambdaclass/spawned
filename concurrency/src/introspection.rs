@@ -119,6 +119,9 @@ pub enum Unavailable {
     Redacted,
     /// The actor is past its death point.
     Dead,
+    /// The instance exists but has not published what is asked for yet (a
+    /// nested supervisor still starting its children).
+    Starting,
 }
 
 /// Where the actor is in its lifecycle (OTP `process_info(status)`, with

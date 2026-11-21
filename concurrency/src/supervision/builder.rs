@@ -346,11 +346,15 @@ impl Supervisor {
                     Captured::Worker(None) => {
                         TreeNode::Worker(Field::Unavailable(Unavailable::Dead))
                     }
-                    Captured::Supervisor(Some(nested)) => {
+                    Captured::Supervisor(Ok(nested)) => {
                         TreeNode::Supervisor(Field::Value(nested.tree()))
                     }
-                    Captured::Supervisor(None) => {
-                        TreeNode::Supervisor(Field::Unavailable(Unavailable::Dead))
+                    Captured::Supervisor(Err(starting)) => {
+                        TreeNode::Supervisor(Field::Unavailable(if starting {
+                            Unavailable::Starting
+                        } else {
+                            Unavailable::Dead
+                        }))
                     }
                 };
                 TreeChild { info, node }

@@ -1742,16 +1742,21 @@ Each `ChildInfo` row is read under that child's lock; rows of one call can
 come from different instants. `actor` is the live instance (starting, ready
 or stopping), `None` between instances. `tree()` copies each level's rows
 and live instances, releases every lock, then expands them: a worker node
-is that instance's `info()`, a nested supervisor node its own `tree()`, and
-`Unavailable(Dead)` when there was no live instance. A node always belongs to
+is that instance's `info()`, a nested supervisor node its own `tree()`,
+`Unavailable(Starting)` for a nested supervisor whose instance is still
+starting its children, and `Unavailable(Dead)` when there was no live
+instance. A node always belongs to
 the generation of its row. `SupervisedChild::info()` is one child's row.
 Name a supervisor with `SupervisorConfig::name` (a nested one defaults to its
 `SupervisorSpec` name).
 
 Supervisors also emit `spawned::supervisor` events (OTP's SASL supervisor
 reports): `child_terminated` (WARN, an unexpected exit), `child_restarted`
-(INFO), and at ERROR `start_failed`, `restart_intensity_reached` and
-`shutdown_error` (a child killed after missing its shutdown time), with the
+(INFO; `child_terminated`'s `action` is what the restart budget decided:
+`restart`, or `shutdown` when the intensity limit stops the supervisor), and
+at ERROR `start_failed`, `restart_intensity_reached` and `shutdown_error` (a
+child that missed its shutdown time: `killed` when the supervisor stops it,
+`stuck` when a OneForAll or RestForOne round gives up on it), with the
 fields `supervisor`, `system`, `child`, `generation`, `reason`,
 `restarts_in_window`, `max_restarts`, `window_ms`, `action`.
 

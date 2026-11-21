@@ -209,6 +209,87 @@ async fn tree_during_restarts() {
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
+/// A nested supervisor instance that has not published its subtree yet (its
+/// children are still starting) reads `Unavailable(Starting)`, not `Dead`;
+/// once it is ready the node expands.
+#[cfg(not(spawned_sim))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_starting_nested_supervisor_reads_starting() {
+    use spawned_concurrency::introspection::Unavailable;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("tree-starting", 2).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (open, gate) = tokio::sync::oneshot::channel::<()>();
+    let gate = Arc::new(Mutex::new(Some(gate)));
+    let mut builder = system.supervisor(config()).unwrap();
+    let inner_group = group.clone();
+    let leaves = Arc::new(Mutex::new(Vec::new()));
+    let published = leaves.clone();
+    let nested = builder
+        .add_supervisor(
+            SupervisorSpec::new(
+                "nested",
+                &group,
+                // The leaf's crash ends its supervisor, which the root restarts.
+                SupervisorConfig::default().max_restarts(0),
+                move |nested| {
+                    let calls = calls.clone();
+                    let gate = gate.clone();
+                    let published = published.clone();
+                    nested
+                        .add(ChildSpec::new("leaf", &inner_group, move |_| {
+                            let first = calls.fetch_add(1, Ordering::SeqCst) == 0;
+                            let gate = if first {
+                                None
+                            } else {
+                                gate.lock().unwrap().take()
+                            };
+                            async move {
+                                if let Some(gate) = gate {
+                                    let _ = gate.await;
+                                }
+                                Ok::<_, String>(Worker)
+                            }
+                        }))
+                        .map(|leaf| published.lock().unwrap().push(leaf))
+                },
+            )
+            .startup_timeout(LIMIT),
+        )
+        .unwrap();
+    let root = builder.start().await.unwrap();
+    nested.wait_ready().await.unwrap();
+    let first_leaf = leaves.lock().unwrap()[0].clone();
+    first_leaf.wait_ready().await.unwrap().send(Crash).unwrap();
+    let until = std::time::Instant::now() + LIMIT;
+    loop {
+        let tree = root.tree();
+        let child = &tree.children[0];
+        if child.info.generation == 2 && child.info.actor.is_some() {
+            assert!(
+                matches!(
+                    child.node,
+                    TreeNode::Supervisor(Field::Unavailable(Unavailable::Starting))
+                ),
+                "{child:?}"
+            );
+            assert_eq!(child.info.state, ChildState::Starting);
+            break;
+        }
+        assert!(std::time::Instant::now() < until, "{child:?}");
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    open.send(()).unwrap();
+    nested.wait_for_generation(1).await.unwrap();
+    assert!(matches!(
+        root.tree().children[0].node,
+        TreeNode::Supervisor(Field::Value(_))
+    ));
+    assert!(system.shutdown(LIMIT).await.complete);
+}
+
 trait CountsOfTree {
     fn of_rows(tree: &spawned_concurrency::supervision::SupervisorTree) -> ChildCounts;
 }

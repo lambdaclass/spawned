@@ -445,6 +445,10 @@ mod supervisor_reports {
         let reached = event(&reports, "restart_intensity_reached");
         assert_eq!(reached.len(), 1, "{reports:?}");
         assert_eq!(reached[0].0, tracing::Level::ERROR);
+        // The exit's report names what the budget decided: no restart.
+        let terminated = event(&reports, "child_terminated");
+        assert_eq!(terminated.len(), 1, "{reports:?}");
+        assert_eq!(terminated[0].1["action"], "shutdown");
 
         let mut builder = system.supervisor(config("sup-start", 5)).unwrap();
         builder
@@ -500,6 +504,59 @@ mod supervisor_reports {
             ("slow", "killed")
         );
         assert!(system.shutdown(LIMIT).await.complete);
+    }
+
+    /// OneForAll: a collateral child that misses its shutdown time when the
+    /// cohort is stopped for a sibling's crash is reported.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_collateral_child_missing_its_shutdown_time_is_a_shutdown_error() {
+        capture();
+        let system = ActorSystem::new().unwrap();
+        let group = system.async_group("reports-collateral", 2).unwrap();
+        let mut builder = system
+            .supervisor(
+                config("sup-collateral", 5)
+                    .strategy(spawned_concurrency::supervision::SupervisorStrategy::OneForAll),
+            )
+            .unwrap();
+        let crashing = builder
+            .add(ChildSpec::new("crashing", &group, |_| async {
+                Ok::<_, String>(Worker)
+            }))
+            .unwrap();
+        let slow = builder
+            .add(
+                ChildSpec::new("slow", &group, |_| async { Ok::<_, String>(Worker) })
+                    .shutdown_timeout(Duration::from_millis(50)),
+            )
+            .unwrap();
+        let _sup = builder.start().await.unwrap();
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let (release_tx, release) = std::sync::mpsc::channel();
+        slow.wait_ready()
+            .await
+            .unwrap()
+            .send(Wedge(entered_tx, release))
+            .unwrap();
+        entered.recv_timeout(LIMIT).unwrap();
+        crashing.wait_ready().await.unwrap().send(Boom).unwrap();
+        let until = Instant::now() + LIMIT;
+        while event(&of("sup-collateral"), "shutdown_error").is_empty() {
+            assert!(
+                Instant::now() < until,
+                "no shutdown_error: {:?}",
+                of("sup-collateral")
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        release_tx.send(()).unwrap();
+        let reports = of("sup-collateral");
+        let error = event(&reports, "shutdown_error");
+        assert_eq!(error[0].0, tracing::Level::ERROR);
+        assert_eq!(error[0].1["child"], "slow");
+        // The round gives up on it (the tree fails, S2) instead of killing.
+        assert_eq!(error[0].1["action"], "stuck");
+        let _ = system.shutdown(LIMIT).await;
     }
 }
 
