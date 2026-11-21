@@ -371,6 +371,8 @@ class Analysis:
         st_ = {label: self.stats(label) for label in self.labels}
         cand, ctrl = st_["candidate"], st_.get("control")
         trend_ok = t0 is not None and cand.get("window_s", 0) >= float(cfg["MIN_TREND_S"])
+        # Missing soak data fails a finished run; mid-run it is only pending.
+        missing = "FAIL" if t0 is not None and self.outcome != "running" else "SKIP"
 
         # 1. single spawned version
         sp = self.manifest.get("labels", {}).get("candidate", {}).get("spawned")
@@ -425,7 +427,7 @@ class Analysis:
         # 7. sync
         cs_ = cand.get("sync")
         if not cs_:
-            self.check("sync distance", "FAIL" if t0 else "SKIP", "no sync samples in the soak window")
+            self.check("sync distance", missing, "no sync samples in the soak window")
         else:
             ks = (ctrl or {}).get("sync")
             ok = cs_["synced_pct"] >= self.th("TH_SYNCED_PCT") or (
@@ -440,7 +442,7 @@ class Analysis:
                        f"candidate {cand['api_ok_pct']:.1f}%" + (f", control {ctrl['api_ok_pct']:.1f}%" if ctrl and ctrl.get("samples") else ""))
         # 9. spawned counters
         if not cand.get("has_spawned_metrics"):
-            self.check("spawned counters", "FAIL" if t0 else "SKIP",
+            self.check("spawned counters", missing,
                        "no spawned_* metrics scraped from the candidate (build without the `metrics` feature?)")
         else:
             fp = self.fault_pid()
