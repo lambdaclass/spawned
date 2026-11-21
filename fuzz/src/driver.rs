@@ -1912,6 +1912,23 @@ impl Driver {
             // non-abnormal reason a signal can carry is `Shutdown`.
             let trapping = self.traps.get(&id).is_some_and(|t| t.0);
             let late_shutdown = exit == ExitReason::Shutdown(None) && !trapping;
+            // L5: a handler panic (not one in `started()`) whose only cause
+            // was the panic itself (no kill, signal or link could skip the
+            // hook) still runs `stopped()`.
+            {
+                let s = self.world.lock();
+                let x = &s.insts[instance];
+                if panicked
+                    && !x.started_panicked
+                    && x.started_end.is_some()
+                    && x.stopped_begin.is_none()
+                    && s.causes.get(&id) == Some(&1)
+                {
+                    let detail = format!("w{instance} {exit:?}");
+                    drop(s);
+                    self.violate("L5: stopped() did not run after a handler panic", detail);
+                }
+            }
             if panicked && !exit.is_abnormal() && !late_shutdown {
                 self.violate(
                     "L4: an actor that panicked exited with a non-abnormal reason",
