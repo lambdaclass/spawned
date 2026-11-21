@@ -23,3 +23,4 @@ id	name	file	bug
 22	timer-interval-outlives-actor	tasks/time.rs	send_interval keeps ticking after its actor stops (only its own token stops it)
 23	sys-shutdown-forward-order	system.rs	ActorSystem shutdown stops targets in admission order instead of reverse
 24	sys-targets-unsorted	system.rs	System shutdown stops all standalone actors before all trees, ignoring admission order
+25	sup-round-stop-skips-kill	supervision/run.rs	A round's collateral stop takes the self-exit path: no kill at shutdown_timeout, stuck after one interval (V3)

@@ -1,0 +1,15 @@
+Planted bug 25 (sup-round-stop-skips-kill): a OneForAll/RestForOne round's stop never kills a collateral child that misses its shutdown time; its slot is stuck after one interval (V3)
+
+diff --git a/concurrency/src/supervision/run.rs b/concurrency/src/supervision/run.rs
+index 91ff0887..7514a109 100644
+--- a/concurrency/src/supervision/run.rs
++++ b/concurrency/src/supervision/run.rs
+@@ -796,7 +796,7 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>,
+                         .flatten()
+                         .filter(|round| round.stop.is_cancelled())
+                         .map(|round| round.meta.id);
+-                    let supervisor_stop = stop_turn || round_stop.is_some();
++                    let supervisor_stop = stop_turn;
+                     if stop_turn {
+                         view.stop_turn.cancelled().await;
+                         trace::emit(core.trace, || Event::new("StopObserved", c, ""));
