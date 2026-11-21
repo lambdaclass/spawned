@@ -902,3 +902,42 @@ validation (design section 16.2).
 | `MCStartLive` (liveness) | `DropHeld` | `ParentExitReachesChild` |
 | `MCStartLive` (liveness) | `NoAnswerIgnore` | `StartAnswered` |
 | `MCStartScope` (liveness) | `NoPoliteStop` | `OwnedScopeFinishes` |
+
+## Admission package (0.9 design)
+
+`Admission.tla` and `AdmissionCycle.tla` back the
+[admission design](../../docs/design/admission.md) (ranks 17, 18, 19 and
+14/G11; in review, not implemented). Design section 11 lists what they
+cover and leave out. Both are TLC-only in `verification/model-map.toml`
+(`design_only = true`) until the implementation adds trace validation
+(design section 12).
+
+| Configuration | Run | Instance |
+|---|---|---|
+| `MCAdmission` | per PR | one mailbox on a pool of two credits shared with another mailbox; a waiting request (weight 1, `skip_expired`), a waiting request (weight 2) and a never-waiting send, two messages each; two priority edges and one ordinary edge; valve 1 |
+| `MCAdmissionOversize` | per PR | a private pool of three; waiting requests of weight 1 and 3 and a waiting send of weight 4 (`TooLarge`) |
+| `MCAdmissionLive` | per PR | liveness `WaiterResolves`: two waiting requests on a shared pool of two, one priority and one ordinary edge |
+| `MCAdmissionCycle` | per PR | two actors with one-slot mailboxes whose handlers send to each other under a deadline; liveness `TurnsEnd` |
+
+**Negative controls** (`ADMISSION_CONTROLS` and
+`ADMISSION_TEMPORAL_CONTROLS` in `negative_checks.py`; each checks
+`TypeOK` and only the named property):
+
+| Configuration | Fault | Breaks |
+|---|---|---|
+| `MCAdmission` | `Barge` | `NoOvertaking` |
+| `MCAdmission` | `FirstFit` | `NoOvertaking` |
+| `MCAdmission` | `LazyHandoff` | `NoIdleWithWaiter` |
+| `MCAdmission` | `NoCapacityCheck` | `CapacityRespected` |
+| `MCAdmission` | `ExpireRacesHandoff` | `RejectedNeverAdmitted` |
+| `MCAdmission` | `TimeoutWhileWaiting` | `TimeoutOnlyAdmitted` |
+| `MCAdmission` | `LateAdmit` | `NoAdmitAfterD` |
+| `MCAdmission` | `KeepWaiters` | `NoWaiterAfterD` |
+| `MCAdmission` | `LeakCredits` | `CreditsReturnedAtDeath` |
+| `MCAdmission` | `CountControl` | `ControlNeverRefused` |
+| `MCAdmission` | `SkipOpen` | `SkipOnlyClosed` |
+| `MCAdmission` | `SkipNoOptIn` | `SkipOnlyClosed` |
+| `MCAdmission` | `NoValve` | `BoundedOvertaking` |
+| `MCAdmissionOversize` | `OversizeWaits` | `NoOversizeWait` |
+| `MCAdmissionLive` (liveness) | `LazyHandoff` | `WaiterResolves` |
+| `MCAdmissionCycle` (liveness) | `NoDeadline` | `TurnsEnd` |

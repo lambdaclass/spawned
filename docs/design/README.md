@@ -32,6 +32,13 @@ Active design contracts. Usage is documented in the [guide](../GUIDE.md).
   `verification/tla/Start.tla`. Client rewrites:
   [unified-start-client-mapping.md](unified-start-client-mapping.md).
 
+- **[admission.md](admission.md)** (ranks 17, 18, 19, 14/G11; designed in
+  0.9, implementation planned for 0.10; in review, not implemented): opt-in
+  bounded mailboxes on weighted, shareable credit pools with FIFO hand-off,
+  `MailboxFull`/`TooLarge` outcomes, opt-in `skip_expired`, and the
+  receiver-opted priority lane with a valve. Models:
+  `verification/tla/Admission.tla` and `AdmissionCycle.tla`.
+
 Earlier designs (the v0.5 API redesign alternatives, the framework comparison
 and superseded roadmap plans) are archived in
 [`legacy/docs/design`](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/design).

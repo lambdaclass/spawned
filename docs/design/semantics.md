@@ -876,6 +876,15 @@ remaining differences of the exit-signal design are listed in
   preempts a turn); R4 gains one exception: a status request whose caller
   gave up before dispatch is not run.
 
+- Admission package (ranks 17, 18, 19, 14/G11; designed in 0.9, planned
+  for 0.10; design in review, [admission.md](admission.md) §9): a new
+  section "Admission" (A1-A10). D5 becomes "unbounded by default", and R1
+  gains `MailboxFull` (never admitted) and `TooLarge`. Section 10 gains
+  deadlock with `Deadline::Never` waits in handlers; section 11 gains the
+  bound, user-supplied weights, never-waiting `send` and the priority
+  valve. D1-D4, R3 (one deadline), X7 for ordinary edges and V9 are
+  unchanged.
+
 See the [ranked backlog](../../ROADMAP.md#ranked-backlog).
 
 [deferred_replies]: ../../concurrency/tests/deferred_replies.rs
