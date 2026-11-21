@@ -48,8 +48,7 @@ impl Scenario {
         let mut ops = Vec::new();
         while !u.is_empty() && ops.len() < MAX_OPS {
             let fault = format == Format::Faults
-                && u
-                    .peek_bytes(4)
+                && u.peek_bytes(4)
                     .is_some_and(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) % 8 == 7);
             if fault {
                 u.bytes(4)?;

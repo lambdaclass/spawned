@@ -330,58 +330,60 @@ impl Worker {
         // A refused job's `work` and `done` drop inside this call (R7: "on
         // `Err`, `work` and `done` are dropped"): the handler's own context.
         let caller = self.world.clone();
-        let result = caller.calling(|| if blocking {
-            ctx.pipe_blocking(
-                opts,
-                move |job: JobCtx<Self>| {
-                    for _ in 0..emits {
-                        let e = Emitted {
-                            bomb: Bomb::new(&world, site::EMIT_DROP, Some(instance)),
-                        };
-                        let _ = if at {
-                            job.emit_at_blocking(
-                                spawned_concurrency::Instant::now() + Duration::from_millis(5),
-                                e,
-                            )
-                        } else {
-                            job.emit_blocking(e)
-                        };
-                    }
-                    if work_panic {
-                        inject_panic(&world, faults, "fuzz: injected job panic");
-                    }
-                    Bomb::new(&world, site::RESULT_DROP, Some(instance))
-                },
-                done,
-            )
-        } else {
-            ctx.pipe(
-                opts,
-                move |job: JobCtx<Self>| async move {
-                    for _ in 0..emits {
-                        let e = Emitted {
-                            bomb: Bomb::new(&world, site::EMIT_DROP, Some(instance)),
-                        };
-                        let _ = if at {
-                            job.emit_at(
-                                spawned_concurrency::Instant::now() + Duration::from_millis(5),
-                                e,
-                            )
-                            .await
-                        } else {
-                            job.emit(e).await
-                        };
-                    }
-                    if sleep > 0 {
-                        rt::sleep(Duration::from_millis(10 * sleep as u64)).await;
-                    }
-                    if work_panic {
-                        inject_panic(&world, faults, "fuzz: injected job panic");
-                    }
-                    Bomb::new(&world, site::RESULT_DROP, Some(instance))
-                },
-                done,
-            )
+        let result = caller.calling(|| {
+            if blocking {
+                ctx.pipe_blocking(
+                    opts,
+                    move |job: JobCtx<Self>| {
+                        for _ in 0..emits {
+                            let e = Emitted {
+                                bomb: Bomb::new(&world, site::EMIT_DROP, Some(instance)),
+                            };
+                            let _ = if at {
+                                job.emit_at_blocking(
+                                    spawned_concurrency::Instant::now() + Duration::from_millis(5),
+                                    e,
+                                )
+                            } else {
+                                job.emit_blocking(e)
+                            };
+                        }
+                        if work_panic {
+                            inject_panic(&world, faults, "fuzz: injected job panic");
+                        }
+                        Bomb::new(&world, site::RESULT_DROP, Some(instance))
+                    },
+                    done,
+                )
+            } else {
+                ctx.pipe(
+                    opts,
+                    move |job: JobCtx<Self>| async move {
+                        for _ in 0..emits {
+                            let e = Emitted {
+                                bomb: Bomb::new(&world, site::EMIT_DROP, Some(instance)),
+                            };
+                            let _ = if at {
+                                job.emit_at(
+                                    spawned_concurrency::Instant::now() + Duration::from_millis(5),
+                                    e,
+                                )
+                                .await
+                            } else {
+                                job.emit(e).await
+                            };
+                        }
+                        if sleep > 0 {
+                            rt::sleep(Duration::from_millis(10 * sleep as u64)).await;
+                        }
+                        if work_panic {
+                            inject_panic(&world, faults, "fuzz: injected job panic");
+                        }
+                        Bomb::new(&world, site::RESULT_DROP, Some(instance))
+                    },
+                    done,
+                )
+            }
         });
         let _ = result;
     }
@@ -429,13 +431,15 @@ impl Handler<Fx> for Worker {
                 let world = self.world.clone();
                 let owner = self.instance;
                 let caller = self.world.clone();
-                let _ = caller.calling(|| ctx.spawn_helper(async move {
-                    // Created in the first poll: a future dropped unpolled
-                    // (a refused helper) carries no bomb.
-                    let mut bomb = Bomb::new(&world, site::HELPER_DROP, Some(owner));
-                    rt::sleep(Duration::from_millis(10 * v as u64)).await;
-                    bomb.defuse();
-                }));
+                let _ = caller.calling(|| {
+                    ctx.spawn_helper(async move {
+                        // Created in the first poll: a future dropped unpolled
+                        // (a refused helper) carries no bomb.
+                        let mut bomb = Bomb::new(&world, site::HELPER_DROP, Some(owner));
+                        rt::sleep(Duration::from_millis(10 * v as u64)).await;
+                        bomb.defuse();
+                    })
+                });
             }
             FaultCmd::Reply => {}
         }

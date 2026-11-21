@@ -52,7 +52,11 @@ fn seed_corpus_passes() {
         // Seeds are base-format inputs; the fuzz target reads them with
         // fault steps, so run both decodings.
         if !check(&path.display().to_string(), &bytes, Format::Base)
-            || !check(&format!("{} (faults)", path.display()), &bytes, Format::Faults)
+            || !check(
+                &format!("{} (faults)", path.display()),
+                &bytes,
+                Format::Faults,
+            )
         {
             failed += 1;
         }

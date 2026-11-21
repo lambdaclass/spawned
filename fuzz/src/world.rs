@@ -243,9 +243,9 @@ impl World {
         self.calling.load(Ordering::Relaxed)
             || self
                 .callers
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .contains(&crate::fault::task())
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains(&crate::fault::task())
     }
     /// The worker instance whose task runs now.
     pub fn task_owner(&self) -> Option<usize> {

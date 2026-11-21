@@ -1943,11 +1943,7 @@ impl Driver {
             let (only_cause, cleanup, relaxed) = {
                 let s = self.world.lock();
                 let x = &s.insts[instance];
-                (
-                    s.causes.get(&id) == Some(&1),
-                    x.drop_panicked,
-                    x.relaxed,
-                )
+                (s.causes.get(&id) == Some(&1), x.drop_panicked, x.relaxed)
             };
             if let Some(requested) = self.requested.get(&id) {
                 if only_cause && !panicked && !relaxed && *requested != exit {
