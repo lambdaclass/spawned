@@ -314,6 +314,8 @@ def main():
                    help="gate: runs per size for benchmarks with more than one thread "
                         "(default 9)")
     p.add_argument("--csv", help="raw samples")
+    p.add_argument("--features", help="cargo features for every side, e.g. metrics "
+                   "(default: the crate's defaults, as CI gates)")
     args = p.parse_args()
     args.reps = args.reps or (3 if args.mode == "gate" else 20)
     if args.release_threshold is None:
@@ -347,7 +349,8 @@ def main():
         if release:
             try:
                 release_bin = (base_bin if release == base
-                               else build_release(work, release, args.release_cache, args.features))
+                               else build_release(work, release, args.release_cache,
+                                                  args.features))
             except subprocess.CalledProcessError:
                 sys.exit(f"the driver does not build against {args.release}: "
                          "benchmarks/hotpath/driver.rs must only use APIs that the last "
