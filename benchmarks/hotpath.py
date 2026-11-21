@@ -13,8 +13,8 @@ both sides run the same workload) as a release example of each revision.
 noisy CI runners. Each benchmark runs at two sizes; instructions per operation
 is the difference divided by the extra operations, so process start, runtime
 and actor setup cancel; the median over `--reps` run pairs (`--contended-reps` for the
-two-thread benchmark). Every run is pinned to one CPU, so the host scheduler
-cannot change how the threads interleave (see `instructions`). It fails when any benchmark grows by more than
+two-thread benchmark, whose thread interleaving varies under load; see
+`per_op`). It fails when any benchmark grows by more than
 `--threshold` percent (default 3). It is the CI check.
 
 With `--release` (CI passes the last `v*` tag), `gate` also measures that
@@ -114,24 +114,19 @@ def benchmarks(binary, only, gate=False):
 IR = re.compile(r"Collected\s*:\s*(\d+)")
 
 
-def one_cpu():
-    """Pin the measured process to one CPU (see `instructions`)."""
-    if hasattr(os, "sched_setaffinity"):
-        os.sched_setaffinity(0, {max(os.sched_getaffinity(0))})
-
-
 def instructions(binary, name, ops):
     # Valgrind runs one guest thread at a time, but a thread blocked in a
-    # syscall (futex wait, park) releases that lock, so on several CPUs the
-    # host scheduler decides how the requester and the actor interleave and
-    # how often they spin, park and wake: run pairs of `threads_request_seq`
-    # spread up to 6% under load. On one CPU the interleaving barely depends
-    # on the host (1.5%, the gate's median of nine within 0.9%); the code
-    # paths measured are the same.
+    # syscall (futex wait, park) releases that lock, so the host scheduler
+    # decides how the requester and the actor of `threads_request_seq`
+    # interleave and how often they spin, park and wake. On an idle machine
+    # a woken thread finds a free CPU at once and the count repeats; under
+    # load it does not (see `per_op`). Do not pin the run to one CPU: then
+    # every hand-off depends on wakeup preemption, and on the CI runner run
+    # pairs spread 10% (against 0.05% unpinned).
     out = subprocess.run(
         ["valgrind", "--tool=callgrind", "--fair-sched=yes",
          "--callgrind-out-file=/dev/null", str(binary), name, str(ops)],
-        text=True, capture_output=True, timeout=180, preexec_fn=one_cpu)
+        text=True, capture_output=True, timeout=180)
     if out.returncode != 0:
         sys.exit(f"{binary.name} {name} {ops} failed:\n{out.stderr[-3000:]}")
     return int(IR.search(out.stderr).group(1))
@@ -146,9 +141,11 @@ def per_op(binary, name, small, large, reps, csv=None, label=""):
     """Instructions per operation: the median over run pairs of
     (instructions at `large` - at `small`) / extra operations, and the pairs.
 
-    The two-thread benchmark gets more pairs (`--contended-reps`). The minimum
-    is not a stable estimate here: the noise is in both sizes, so the
-    difference of the minima moved 3.3% across ten loaded runs.
+    The two-thread benchmark gets more pairs (`--contended-reps`): across ten
+    gates on a heavily loaded host its change against an identical base
+    stayed within -0.4% to +1.1% with nine pairs, against -1.1% to +1.5%
+    with three. The minimum is not a stable estimate: the noise is in both
+    sizes, so the difference of the minima moved -1.6% to +3.5%.
     """
     runs = {small: [], large: []}
     for rep in range(reps):
@@ -230,7 +227,7 @@ def gate(args, base_bin, head_bin, base, head, release_bin=None, release=None):
         "",
         f"{revisions} Instructions per operation "
         f"(callgrind, sizes {args.small} and {args.large}, median of {args.reps} run "
-        f"pairs, {args.contended_reps} for the two-thread `threads_*`, one CPU); "
+        f"pairs, {args.contended_reps} for the two-thread `threads_*`); "
         f"{thresholds}.",
         "",
         *header,

@@ -52,9 +52,9 @@
   per-PR regressions cannot add up across a release cycle. The job summary
   table shows release, base and head with both changes. The release binary
   is built once per release and cached (`hotpath.py build-release` on pushes
-  to main). Callgrind runs are pinned to one CPU and
-  `threads_request_seq` takes the median of nine run pairs: under load the
-  host scheduler had swung it by several percent, as much as the threshold.
+  to main). `threads_request_seq`, whose thread
+  interleaving varies on a loaded host, takes the median of nine run pairs
+  instead of three.
 - Fix the flaky `supervision::transient_startup_timeout_retries_after_actual_cleanup`
   (a 20 ms startup deadline raced the fast starts on a loaded host, which also
   made cargo-mutants report surviving mutants as caught): the replacement's

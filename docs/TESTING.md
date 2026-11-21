@@ -2109,17 +2109,19 @@ sequential and 16-task `request()`, `send` from one and two producer tasks;
 identical counts run to run, three pairs) and threads-mode sequential
 `request()` (a lockstep pair of threads, nine pairs). Valgrind runs one guest
 thread at a time, but a thread blocked in a syscall lets the other run, so
-with several CPUs the host scheduler decides how the requester and the actor
-interleave, and how often they spin, park and wake. On fede under load
-(load average 40-80 on 30 CPUs) single run pairs of `threads_request_seq`
-spread up to 6%, and ten back-to-back gates moved its change against the base
-by up to 4.6 points (one false +3.5%). Every callgrind run is therefore pinned
-to one CPU, which leaves the code paths unchanged: in ten more gates under
-the same kind of load, run pairs spread 1.5%, each side's median of nine
-stayed within 0.9%, and the change against the base stayed within 0.6
-points. A minimum over runs (on the theory that contention only adds
-instructions) was tried and rejected: the noise is in both sizes, so the
-difference of the minima moved 3.3%. On a multi-threaded runtime, or with free-running OS-thread
+the host scheduler decides how the requester and the actor interleave, and
+how often they spin, park and wake. On an idle machine, such as the CI
+runner, a woken thread finds a free CPU at once and the count repeats (run
+pairs within 0.05%). Under load it does not: on fede (load average 40-80 on
+30 CPUs) run pairs spread 5-6%. Across ten gates there, the change against
+an identical base stayed within -1.1% to +1.5% with a median of three
+pairs, and within -0.4% to +1.1% with the median of nine the gate now uses.
+Two other fixes were tried and rejected. The minimum over runs, on the
+theory that contention only adds instructions, moved -1.6% to +3.5%, one
+false failure: the noise is in both sizes, so the difference of the minima
+is not a lower bound. Pinning each run to one CPU gave 1.5% spreads on
+loaded fede but 10% on the CI runner, where every hand-off then depends on
+wakeup preemption. On a multi-threaded runtime, or with free-running OS-thread
 producers (threads-mode burst and `send`), how often actors park and wake
 changes from run to run (up to ±20% instructions), so those run only in the
 wall-clock check. The gate fails when any benchmark's instructions per operation grow

@@ -56,7 +56,7 @@ python3 benchmarks/hotpath.py abba --cores 12-15 --reps 30  # wall clock, before
 ```
 
 `gate` is the `perf-gate` CI check: it fails when instructions per operation
-grow more than 3% over the merge base (callgrind pinned to one CPU), or more than 3% over the last release
+grow more than 3% over the merge base, or more than 3% over the last release
 tag (`--release`; the cumulative budget per release cycle, so small per-PR
 regressions cannot add up). `abba` alternates base and head on the
 same cores and reports the median and spread. See
