@@ -315,6 +315,194 @@ mod status_log {
     }
 }
 
+/// `spawned::supervisor` reports (OTP's SASL supervisor reports):
+/// `child_terminated` (unexpected exit), `child_restarted`, `start_failed`,
+/// `restart_intensity_reached`, `shutdown_error` (killed after its shutdown
+/// time), with the contract fields.
+#[cfg(feature = "async")]
+mod supervisor_reports {
+    use super::*;
+    use spawned_concurrency::supervision::{Backoff, ChildSpec, SupervisorConfig};
+    use spawned_concurrency::system::ActorSystem;
+    use spawned_concurrency::tasks::{Actor, Context, Handler};
+
+    const LIMIT: Duration = Duration::from_secs(5);
+    const FIELDS: [&str; 9] = [
+        "supervisor",
+        "child",
+        "generation",
+        "reason",
+        "restarts_in_window",
+        "max_restarts",
+        "window_ms",
+        "action",
+        "event",
+    ];
+
+    /// `(level, fields)` of every report of supervisor `name`.
+    fn of(name: &str) -> Vec<(tracing::Level, Fields)> {
+        capture()
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(target, _, f)| {
+                target == "spawned::supervisor"
+                    && f.get("supervisor").map(String::as_str) == Some(name)
+            })
+            .map(|(_, level, f)| (*level, f.clone()))
+            .collect()
+    }
+    fn event<'a>(
+        reports: &'a [(tracing::Level, Fields)],
+        name: &str,
+    ) -> Vec<&'a (tracing::Level, Fields)> {
+        reports.iter().filter(|(_, f)| f["event"] == name).collect()
+    }
+    fn config(name: &str, max_restarts: usize) -> SupervisorConfig {
+        SupervisorConfig::default()
+            .name(name)
+            .max_restarts(max_restarts)
+            .backoff(
+                Backoff::default()
+                    .initial(Duration::from_millis(1))
+                    .maximum(Duration::from_millis(2))
+                    .jitter(false),
+            )
+    }
+
+    struct Worker;
+    impl Actor for Worker {}
+    impl Handler<Boom> for Worker {
+        async fn handle(&mut self, _: Boom, _: PendingReply<'_, ()>, _: &Context<Self>) {
+            panic!("worker boom");
+        }
+    }
+    /// Blocks its thread until released: misses any shutdown time.
+    struct Wedge(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
+    impl Message for Wedge {
+        type Result = ();
+    }
+    impl Handler<Wedge> for Worker {
+        async fn handle(&mut self, msg: Wedge, _: PendingReply<'_, ()>, _: &Context<Self>) {
+            msg.0.send(()).unwrap();
+            let _ = msg.1.recv_timeout(LIMIT);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restart_reports_terminated_and_restarted() {
+        capture();
+        let system = ActorSystem::new().unwrap();
+        let group = system.async_group("reports-restart", 1).unwrap();
+        let mut builder = system.supervisor(config("sup-restart", 5)).unwrap();
+        let child = builder
+            .add(ChildSpec::new("w", &group, |_| async {
+                Ok::<_, String>(Worker)
+            }))
+            .unwrap();
+        let _sup = builder.start().await.unwrap();
+        child.wait_ready().await.unwrap().send(Boom).unwrap();
+        child.wait_for_generation(1).await.unwrap();
+        assert!(system.shutdown(LIMIT).await.complete);
+        let reports = of("sup-restart");
+        let terminated = event(&reports, "child_terminated");
+        assert_eq!(terminated.len(), 1, "{reports:?}");
+        let (level, f) = terminated[0];
+        assert_eq!(*level, tracing::Level::WARN);
+        assert!(FIELDS.iter().all(|k| f.contains_key(*k)), "{f:?}");
+        assert_eq!(f["system"], system.id().to_string());
+        assert_eq!((f["child"].as_str(), f["generation"].as_str()), ("w", "1"));
+        assert!(f["reason"].contains("worker boom"));
+        assert_eq!(f["action"], "restart");
+        assert_eq!(
+            (f["max_restarts"].as_str(), f["window_ms"].as_str()),
+            ("5", "30000")
+        );
+        let restarted = event(&reports, "child_restarted");
+        assert_eq!(restarted.len(), 1);
+        assert_eq!(restarted[0].0, tracing::Level::INFO);
+        assert_eq!(restarted[0].1["generation"], "2");
+        // The supervisor's own shutdown stops the children: not reported.
+        assert_eq!(event(&reports, "child_terminated").len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn intensity_and_start_failures_are_errors() {
+        capture();
+        let system = ActorSystem::new().unwrap();
+        let group = system.async_group("reports-intensity", 1).unwrap();
+        let mut builder = system.supervisor(config("sup-intensity", 0)).unwrap();
+        let child = builder
+            .add(ChildSpec::new("w", &group, |_| async {
+                Ok::<_, String>(Worker)
+            }))
+            .unwrap();
+        let sup = builder.start().await.unwrap();
+        child.wait_ready().await.unwrap().send(Boom).unwrap();
+        sup.join().await;
+        let reports = of("sup-intensity");
+        let reached = event(&reports, "restart_intensity_reached");
+        assert_eq!(reached.len(), 1, "{reports:?}");
+        assert_eq!(reached[0].0, tracing::Level::ERROR);
+
+        let mut builder = system.supervisor(config("sup-start", 5)).unwrap();
+        builder
+            .add(ChildSpec::new("bad", &group, |_| async {
+                Err::<Worker, _>("no database")
+            }))
+            .unwrap();
+        assert!(builder.start().await.is_err());
+        let reports = of("sup-start");
+        let failed = event(&reports, "start_failed");
+        assert_eq!(failed.len(), 1, "{reports:?}");
+        assert_eq!(failed[0].0, tracing::Level::ERROR);
+        assert_eq!(failed[0].1["child"], "bad");
+        assert!(system.shutdown(LIMIT).await.complete);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_child_killed_at_its_shutdown_time_is_a_shutdown_error() {
+        capture();
+        let system = ActorSystem::new().unwrap();
+        let group = system.async_group("reports-shutdown", 2).unwrap();
+        let mut builder = system.supervisor(config("sup-shutdown", 5)).unwrap();
+        let child = builder
+            .add(
+                ChildSpec::new("slow", &group, |_| async { Ok::<_, String>(Worker) })
+                    .shutdown_timeout(Duration::from_millis(50)),
+            )
+            .unwrap();
+        let sup = builder.start().await.unwrap();
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let (release_tx, release) = std::sync::mpsc::channel();
+        child
+            .wait_ready()
+            .await
+            .unwrap()
+            .send(Wedge(entered_tx, release))
+            .unwrap();
+        entered.recv_timeout(LIMIT).unwrap();
+        sup.stop();
+        let until = Instant::now() + LIMIT;
+        while event(&of("sup-shutdown"), "shutdown_error").is_empty() {
+            assert!(Instant::now() < until, "no shutdown_error");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        release_tx.send(()).unwrap();
+        sup.join().await;
+        let reports = of("sup-shutdown");
+        let error = event(&reports, "shutdown_error");
+        assert_eq!(error.len(), 1);
+        assert_eq!(error[0].0, tracing::Level::ERROR);
+        assert_eq!(
+            (error[0].1["child"].as_str(), error[0].1["action"].as_str()),
+            ("slow", "killed")
+        );
+        assert!(system.shutdown(LIMIT).await.complete);
+    }
+}
+
 mod threads_mode {
     use super::*;
     use spawned_concurrency::threads::{Actor, ActorStart, Context, Handler};

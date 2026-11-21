@@ -1725,6 +1725,36 @@ impl PeerTable { /* ... */ }
 
 Formatted state over 64 KiB comes back `StateView::Truncated`.
 
+### Supervision trees (`which_children`, `count_children`, `tree`)
+
+A running `Supervisor` lists its children as OTP's supervisor does:
+
+```rust
+for child in supervisor.which_children() {
+    println!("{} {:?} gen {} restarts {} actor {:?}",
+        child.key, child.state, child.generation, child.restarts, child.actor);
+}
+let counts = supervisor.count_children();   // specs, active, supervisors, workers
+let tree = supervisor.tree();                // the whole subtree, expanded
+```
+
+Each `ChildInfo` row is read under that child's lock; rows of one call can
+come from different instants. `actor` is the live instance (starting, ready
+or stopping), `None` between instances. `tree()` copies each level's rows
+and live instances, releases every lock, then expands them: a worker node
+is that instance's `info()`, a nested supervisor node its own `tree()`, and
+`Unavailable(Dead)` when there was no live instance. A node always belongs to
+the generation of its row. `SupervisedChild::info()` is one child's row.
+Name a supervisor with `SupervisorConfig::name` (a nested one defaults to its
+`SupervisorSpec` name).
+
+Supervisors also emit `spawned::supervisor` events (OTP's SASL supervisor
+reports): `child_terminated` (WARN, an unexpected exit), `child_restarted`
+(INFO), and at ERROR `start_failed`, `restart_intensity_reached` and
+`shutdown_error` (a child killed after missing its shutdown time), with the
+fields `supervisor`, `system`, `child`, `generation`, `reason`,
+`restarts_in_window`, `max_restarts`, `window_ms`, `action`.
+
 ### Crash reports
 
 An actor that ends with an abnormal reason it produced itself (a panic in

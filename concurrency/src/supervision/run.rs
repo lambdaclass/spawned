@@ -657,6 +657,14 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                     "starting replacement child"
                 );
             });
+            core.report(
+                tracing::Level::INFO,
+                "child_restarted",
+                &spec.name,
+                generation,
+                previous.last_exit.as_ref(),
+                "restart",
+            );
         }
         view.changed.send_modify(|n| *n = n.wrapping_add(1));
         let ctx = FactoryContext {
@@ -872,6 +880,16 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                                         core.cohort(|| Event::new("CKill", c, "").round(round));
                                     }
                                 });
+                                // OTP's `shutdown_error`: the child missed its
+                                // shutdown time and is killed.
+                                core.report(
+                                    tracing::Level::ERROR,
+                                    "shutdown_error",
+                                    &spec.name,
+                                    generation,
+                                    None,
+                                    "killed",
+                                );
                                 // The second interval runs from the kill.
                                 cleanup_until = Some(Instant::now());
                                 match rt::timeout(spec.shutdown_timeout, child.wait_exit_async())
@@ -1071,6 +1089,9 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
         }
         // Gate check, decision and any resulting failure happen in one step,
         // so a concurrent stop is never followed by a failure of this child.
+        // What the decision below did, reported after it (outside its
+        // trace section).
+        let mut decided = "closed";
         let again = trace::atomic(|| {
             if !core.gate.is_open() {
                 if !stuck {
@@ -1096,11 +1117,14 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
             }
             if restart {
                 trace::emit(core.trace, || Event::new("Decide", c, "restart"));
+                decided = "restart";
                 return true;
             }
             if ready_at.is_some() {
                 trace::emit(core.trace, || Event::new("Decide", c, "stop"));
+                decided = "none";
             } else {
+                decided = if first_start { "start_failed" } else { "fail" };
                 let (kind, message) = if first_start {
                     let snapshot = view.snapshot();
                     let cause = snapshot
@@ -1124,6 +1148,34 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
             }
             false
         });
+        // OTP's SASL supervisor reports: an unexpected exit (abnormal, or a
+        // cleanup failure) and a failed start; a supervisor-ordered stop
+        // (`closed`) and a clean exit are not reported.
+        let abnormal =
+            exit.as_ref().is_none_or(ExitReason::is_abnormal) || cleanup_failure.is_some();
+        match decided {
+            "start_failed" => core.report(
+                tracing::Level::ERROR,
+                "start_failed",
+                &spec.name,
+                generation,
+                exit.as_ref(),
+                "shutdown",
+            ),
+            "restart" | "none" | "fail" if abnormal => core.report(
+                tracing::Level::WARN,
+                "child_terminated",
+                &spec.name,
+                generation,
+                exit.as_ref(),
+                if decided == "fail" {
+                    "shutdown"
+                } else {
+                    decided
+                },
+            ),
+            _ => {}
+        }
         if !again {
             if core.config.strategy == SupervisorStrategy::OneForOne || !core.gate.is_open() {
                 break;

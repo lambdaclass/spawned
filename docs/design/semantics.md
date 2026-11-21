@@ -1010,8 +1010,8 @@ remaining differences of the exit-signal design are listed in
 - Rank 19, propagated deadlines: queued work can expire before dispatch (R4).
 
 - 0.9, introspection ([introspection.md](introspection.md)): section 13
-  holds I1, I3 (tier 0 part), I4, I5, I10 (crash reports) and I11 so far;
-  the rest (trees, listings, the fenced watchdog kill, the console)
+  holds I1, I3 (tier 0 part), I4, I5, I7, I10 (crash and supervisor
+  reports) and I11 so far; the rest (listings, the fenced watchdog kill, the console)
   join it step by step. L3 and L5 are unchanged (nothing preempts a turn); R4
   has one exception (I4): a status request whose caller gave up before
   dispatch is not run.
@@ -1021,10 +1021,10 @@ See the [ranked backlog](../../ROADMAP.md#ranked-backlog).
 ## 13. Introspection
 
 Design: [introspection.md](introspection.md). Tier 0 is implemented (0.9
-step 1, in progress): `info()`, labels, crash reports and the status turn.
-Supervision trees, listings, the `introspection` feature (turn ids, ages,
+step 1): `info()`, labels, crash and supervisor reports, the status turn
+and supervision trees. Listings, the `introspection` feature (turn ids, ages,
 mailbox counters), the watchdog and the console are later steps; their
-guarantees (I2, I6 to I9, I12, I13) are listed in the design and enter this
+guarantees (I2, I6, I8, I9, I12, I13) are listed in the design and enter this
 section with their code. L3, L5, M1, M2, R1 and R3 are unchanged; R4 has one
 exception (I4).
 
@@ -1098,6 +1098,21 @@ boundary (`Truncated`). A formatter panic is `CallbackFailed`.
 Checked by: [`status`][status]`::tasks_mode::state_is_redacted_by_default_and_formatted_on_opt_in`,
 `::threads_mode::inspect_formats_state`, `src/introspection.rs::tests::state_view_*`.
 
+**I7. Supervision rows.** `Supervisor::which_children()` (OTP
+`which_children/1`) returns one row per child in declaration order, each read
+under that child's lock (consistent with itself; rows may come from
+different instants). `count_children()` (OTP `count_children/1`) and
+`tree().counts` are derived from the rows of the same call. `tree()` copies
+each level's rows and instance-bound handles, releases every lock, then
+expands them (a worker's `info()`, a nested supervisor's `tree()`): a node
+never pairs one generation's row with another generation's actor, and no
+lock is held across a child's `info()` or a nested `tree()`. A row's `actor`
+is its live instance (starting, ready or stopping) or `None`.
+Checked by: [`supervision_introspection`][supervision_introspection]`::tree_rows_and_counts_agree`
+(OneForOne with a nested OneForAll; rows, counts, expansion, a restart moving
+row and node together, after shutdown), `::tree_during_restarts`
+(`#[sim_test]`, a OneForAll cohort restarting while `tree()` runs).
+
 **I10. Crash reports.** An actor whose final reason is abnormal and was
 produced by the actor itself (a panic in `started()`, a handler or
 `stopped()`; a self-exit or parent exit with an abnormal reason) emits
@@ -1109,15 +1124,25 @@ signal or a runtime drop produce none (OTP: a process killed by a signal runs
 no code). For a failed start (unified start, section 2.3 of the design) the
 same split holds: the init timer's kill, a kill and a held untrapped signal
 produce none; a panic in `started()` and an abnormal `Init::stop(reason)` do.
-A panicking subscriber cannot change the reason. Supervisor
-reports and sessions come with later steps.
+A panicking subscriber cannot change the reason. Supervisors emit
+`spawned::supervisor` reports (OTP's SASL supervisor reports) with the fields
+`supervisor`, `system`, `child`, `generation`, `reason`,
+`restarts_in_window`, `max_restarts`, `window_ms`, `action`:
+`child_terminated` (WARN, an unexpected exit: abnormal or a cleanup failure;
+a supervisor-ordered stop or a clean exit is not reported),
+`child_restarted` (INFO), `start_failed`, `restart_intensity_reached` and
+`shutdown_error` (ERROR; the last when a child missed its shutdown time and
+was killed). Sessions come with a later step.
 Checked by: [`crash_reports`][crash_reports] (both modes:
 `handler_panic_is_reported_with_the_contract_fields`,
 `panics_in_started_and_stopped_are_reported`,
 `clean_exits_kills_and_signals_are_not_reported`,
 `self_exit_with_an_abnormal_reason_is_reported`,
 `supervised_report_names_system_group_generation_and_ancestors`,
-`threads_mode::handler_panic_is_reported_and_clean_exits_are_not`).
+`threads_mode::handler_panic_is_reported_and_clean_exits_are_not`;
+`supervisor_reports::restart_reports_terminated_and_restarted`,
+`intensity_and_start_failures_are_errors`,
+`a_child_killed_at_its_shutdown_time_is_a_shutdown_error`).
 
 **I11. No cost on the default path.** Tier 0 adds nothing to send, dispatch
 or a turn: its fields are kept by state that already exists or is written at
@@ -1141,6 +1166,7 @@ operation within 3% of the merge base and of the last release).
 [introspection]: ../../concurrency/tests/introspection.rs
 [crash_reports]: ../../concurrency/tests/crash_reports.rs
 [status]: ../../concurrency/tests/status.rs
+[supervision_introspection]: ../../concurrency/tests/supervision_introspection.rs
 [otp_exit_signals]: ../../concurrency/tests/otp_exit_signals.rs
 [shutdown_payload]: ../../concurrency/tests/shutdown_payload.rs
 [exit_signals_sim]: ../../concurrency/tests/exit_signals_sim.rs
