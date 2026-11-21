@@ -160,7 +160,10 @@ ReverseShutdownStep ==
             \A d \in Children : d > c => cdone[d] \/ d \in timedOut
 NeverReopensStep == open' => open
 StuckOnlyAfterKillStep ==
-    \A c \in Children : pc[c] = "stopping" => pc'[c] \in {"stopping", "killing", "cleanup"}
+    \A c \in Children :
+        pc[c] = "stopping" =>
+            /\ pc'[c] \in {"stopping", "killing", "cleanup"}
+            /\ (c \in timedOut' => c \in timedOut)
 
 ActionProps ==
     /\ NoStartAfterCloseStep /\ RestartFollowsPolicyStep

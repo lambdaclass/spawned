@@ -536,7 +536,10 @@ not reached its death point `shutdown_timeout` after its signal is killed
 (`Killed`, design E3); if it misses a second `shutdown_timeout` the slot is
 stuck. A child that exits on its own is stuck if its cleanup misses
 `shutdown_timeout` from its exit (no kill: it would relabel its reason). A
-stuck slot fails the supervisor and nothing replaces it.
+stuck slot fails the supervisor and nothing replaces it. The supervisor's own
+wait for a stopped child, in shutdown or a round, is a backstop at three
+`shutdown_timeout`s, beyond the kill and the second interval, so it never
+gives up on (and fails the tree for) a child before the kill.
 Checked by: `Supervision!AtMostOneGeneration`, `Cohorts!AtMostOneGeneration`,
 `NestedSupervision!AtMostOneGeneration`; [`supervision::cleanup_deadline_escalates_without_overlapping_a_live_generation`][supervision],
 `repeated_crash_producer_and_shutdown_races_never_overlap_generations`,

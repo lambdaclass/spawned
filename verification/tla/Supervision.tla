@@ -401,8 +401,10 @@ SupChildDone ==
     /\ UNCHANGED <<open, failed, sready, sdone, budget, reserved, deadline, timedOut, child>>
 
 \* Child cleanup deadline exceeded: fail and move on to the next child.
+\* Its wait is a backstop beyond the controller's kill and second interval
+\* (3 x shutdown_timeout), so a child still "stopping" is never given up on.
 SupChildTimeout ==
-    /\ sphase = "waitchild" /\ ~cdone[sidx]
+    /\ sphase = "waitchild" /\ ~cdone[sidx] /\ pc[sidx] # "stopping"
     /\ failed' = TRUE
     /\ timedOut' = timedOut \cup {sidx}
     /\ sidx' = sidx - 1
@@ -524,9 +526,13 @@ NeverReopens == [][open' => open]_vars
 
 \* V3 (E3, OTP's shutdown escalation): a generation the supervisor stopped
 \* leaves "stopping" only through its actor's death point or its kill; it
-\* is never given up on (stuck) before the kill and a second interval.
+\* is never given up on (stuck, or abandoned by the supervisor's wait)
+\* before the kill.
 StuckOnlyAfterKill ==
-    [][\A c \in Children : pc[c] = "stopping" => pc'[c] \in {"stopping", "killing", "cleanup"}]_vars
+    [][\A c \in Children :
+         pc[c] = "stopping" =>
+             /\ pc'[c] \in {"stopping", "killing", "cleanup"}
+             /\ (c \in timedOut' => c \in timedOut)]_vars
 
 (* Liveness: once closed, the supervisor eventually finishes. *)
 ClosedLeadsToDone == (~open) ~> sdone

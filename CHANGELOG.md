@@ -35,10 +35,15 @@
   `StuckOnlyAfterKill` (it had no kill or stuck step, so it permitted the
   bug), trace-validated by a new `cohort_trace` scenario; a `#[sim_test]`
   (`collateral_kill`) and planted bug 35 cover it. `Supervision.tla`
-  (OneForOne) had the same gap on a supervisor stop turn: the code killed,
-  but the model allowed a stuck slot without the kill. It gains
-  `CleanupKill`/`StopExited` and `StuckOnlyAfterKill`, with a model fault,
-  a `shutdown_kill` trace scenario and two recorded-trace controls.
+  (OneForOne) had the same gap on a supervisor stop turn. The model
+  allowed a stuck slot without the kill. In the code, the shutdown loop's
+  wait for a stopped child gave up at one `shutdown_timeout`, racing the
+  controller's kill, and failed the tree with "child cleanup deadline
+  exceeded" even when the kill ended the child. That wait is now a backstop
+  at three intervals, like the round coordinator's. The model gains
+  `CleanupKill`/`StopExited` and `StuckOnlyAfterKill`, which also covers the
+  supervisor's wait. It is checked by two model faults, a `shutdown_kill`
+  trace scenario (which found the code bug) and two recorded-trace controls.
 - Release qualification harness, `benchmarks/qualification/`: the client
   canaries and the ethrex memory run, consolidated from the hand-built 0.7.x
   and 0.8.0 runs into one parameterised, manual-only harness. It builds a

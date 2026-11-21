@@ -833,6 +833,10 @@ def main():
     spec_mutation("MCSupervision", "Supervision.tla", "StuckWithoutKill",
                   r'(CleanupStuck\(c\) ==\s*/\\ pc\[c\] \\in \{"cleanup", "killing")\}',
                   r'\1, "stopping"}', "StuckOnlyAfterKill", args.tlc)
+    # v0.8's supervisor wait: it gave up on a stopped child at one
+    # shutdown_timeout, racing the controller's kill.
+    spec_mutation("MCSupervision", "Supervision.tla", "AbandonBeforeKill",
+                  r' /\\ pc\[sidx\] # "stopping"', "", "StuckOnlyAfterKill", args.tlc)
     stuck = next(t for t in traces if t.get("name") == "shutdown_deadline_slow_stop")
     def stop_stuck_without_kill(events):
         events.remove(next(e for e in events if e["a"] == "CleanupKill"))

@@ -838,7 +838,8 @@ async fn trace_shutdown_deadline_with_slow_stop() {
     let supervisor = within!(tree.start()).await.unwrap();
     let report = supervisor.shutdown(Duration::from_millis(20)).await;
     assert!(!report.complete);
-    spawned_rt::tasks::sleep(Duration::from_millis(300)).await;
+    // Past the supervisor's backstop (3 x shutdown_timeout).
+    spawned_rt::tasks::sleep(Duration::from_millis(500)).await;
     release.send(()).unwrap();
     spawned_rt::tasks::timeout(LIMIT, supervisor.join())
         .await
@@ -886,7 +887,7 @@ async fn trace_shutdown_kills_child_at_shutdown_timeout() {
         release.send(()).unwrap();
     });
     assert!(report.complete);
-    assert!(supervisor.failure().is_none());
+    assert!(supervisor.failure().is_none(), "{:?}", supervisor.failure());
     assert_eq!(
         actor.wait_exit().await,
         spawned_concurrency::ExitReason::Killed
