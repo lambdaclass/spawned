@@ -1063,6 +1063,28 @@ panic paths are covered by `panic_safety`, `native_mailbox_drop` and
 `foreign_panics`), stream listeners (`spawn_listener`, `send_message_on`),
 `spawned-test`'s `in_actor` closures, and wakers of user futures.
 
+`cargo run --release --example sites -- CORPUS` replays a corpus and counts,
+per site, the runs that armed it and made it go off. On the corpus of a
+40-minute run (2026-11-21, fede, 6 workers, 10.6 million executions, no
+failure with #309; 5,769 inputs), the runs in which each site went off:
+`MSG_DROP` 143, `MSG_CLONE` 36, `REPLY_DROP` 8, `RESULT_DROP` 23,
+`DONE_DROP` 47, `DONE_PANIC` 34, `WORK_PANIC` 34, `DOWN_PANIC` 5,
+`EXIT_PANIC` 9, `PAYLOAD_DROP` 221, `TRACING` 478, `CONFIGURE_PANIC` 298,
+`EMIT_DROP` 50, `NOTE_PANIC` 3, `HELPER_DROP` 6, and `FMT` 0 (the
+framework formats no user payload yet).
+
+Findings: the payload of a caught panic was dropped in place at the
+`started()`, handler and `stopped()` boundaries (both modes), at helpers,
+factories and native group roots, so a payload whose destructor panicked
+unwound the lifecycle (no `stopped()` after a handler panic, reason "actor
+lifecycle unwound"); fixed in #309, regression
+`exploding_panic_payload_keeps_stopped` (45 bytes after `tmin`). Harness
+false positives kept as regressions: `refused_job_drops_in_handler_call`
+(a refused `pipe` drops `work` and `done` in the caller's call, R7) and
+`transient_restarts_on_job_payload_cleanup` (a job payload's destructor
+failed on the deadline service: still the owner's cleanup failure, which
+restarts a Transient child).
+
 CI (`fuzz.yml`) runs rustfmt, clippy and the harness tests (seeds,
 regressions, generated inputs) and a 60 s single-process smoke run on pull
 requests that touch `rt`, `concurrency`, `macros` or `fuzz`; longer
