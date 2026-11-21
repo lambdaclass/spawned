@@ -147,7 +147,8 @@
 //! ```
 #![cfg(spawned_sim)]
 
-const INPUT: &[u8] = include_bytes!("../regressions/transient_restarts_on_job_payload_cleanup.input");
+const INPUT: &[u8] =
+    include_bytes!("../regressions/transient_restarts_on_job_payload_cleanup.input");
 const TAPE: &str = include_str!("../regressions/transient_restarts_on_job_payload_cleanup.tape");
 
 /// The input under its own schedule and under its recorded tape.

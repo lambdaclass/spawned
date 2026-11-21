@@ -191,6 +191,8 @@ pub struct State {
     /// Simulated task -> worker instance.
     pub tasks: HashMap<u64, usize>,
     pub subscriber_panics: u64,
+    /// Callback faults that went off, per site bit (stats).
+    pub site_fires: [u64; 16],
 }
 
 pub struct World {
@@ -516,6 +518,7 @@ impl Worker {
         if self.faults & site == 0 {
             return;
         }
+        crate::fault::count(&self.world, site);
         {
             let mut s = self.world.lock();
             s.insts[self.instance].panicked = true;

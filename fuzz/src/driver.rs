@@ -24,7 +24,6 @@ use spawned_concurrency::{
 };
 use spawned_rt::tasks::{self as rt, sim, JoinHandle};
 use std::{
-    cell::RefCell,
     collections::{BTreeSet, HashMap},
     sync::Arc,
     time::Duration,
@@ -47,10 +46,13 @@ const MAX_MONITORS: usize = 128;
 const MAX_PENDING: usize = 16;
 const REGISTERED_PREFIX: &str = "fz-reg-";
 
-thread_local! {
-    /// Details of the last failing run's violations, for [`crate::fuzz_one`].
-    pub static LAST_DETAILS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-}
+/// Details of the last failing run's violations, for [`crate::fuzz_one`].
+/// Process-wide: the simulator may poll the body on a thread of its own.
+pub static LAST_DETAILS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+/// Per injection site (bit index): payloads created armed, and faults that
+/// went off, in the last run; then subscriber panics.
+pub static LAST_SITES: std::sync::Mutex<([u64; 16], [u64; 16], u64)> =
+    std::sync::Mutex::new(([0; 16], [0; 16], 0));
 
 struct Sys {
     system: Option<ActorSystem>,
@@ -208,17 +210,27 @@ pub async fn run_body(scenario: Scenario, seed: u64) {
     payload_checks(&world);
     budget_checks(&world);
     crate::oracles::check(&world);
+    {
+        let s = world.lock();
+        let mut stats = ([0u64; 16], s.site_fires, s.subscriber_panics);
+        for b in &s.bombs {
+            let bit = b.site.trailing_zeros() as usize;
+            if bit < 16 {
+                stats.0[bit] += b.armed as u64;
+                stats.1[bit] += b.fired.is_some() as u64;
+            }
+        }
+        *LAST_SITES.lock().unwrap_or_else(|p| p.into_inner()) = stats;
+    }
     let violations = std::mem::take(&mut world.lock().violations);
     for v in &violations {
         trace(|| format!("violation {}: {}", v.kind, v.detail));
     }
     if let Some(first) = violations.first() {
-        LAST_DETAILS.with(|d| {
-            *d.borrow_mut() = violations
-                .iter()
-                .map(|v| format!("{}: {}", v.kind, v.detail))
-                .collect()
-        });
+        *LAST_DETAILS.lock().unwrap_or_else(|p| p.into_inner()) = violations
+            .iter()
+            .map(|v| format!("{}: {}", v.kind, v.detail))
+            .collect();
         panic!("spawned-fuzz oracle: {}", first.kind);
     }
 }
@@ -2264,6 +2276,7 @@ fn nested_configure(
         let call = factory_call(&world, parent_inst, &path, mode);
         if world.armed() & site::CONFIGURE_PANIC != 0 && !world.in_caller() {
             factory_outcome(&world, call, Outcome::Panic);
+            crate::fault::count(&world, site::CONFIGURE_PANIC);
             panic!("fuzz: injected configure panic");
         }
         let inst = new_sup_inst(&world, root, &cfg);

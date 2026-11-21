@@ -30,6 +30,8 @@ pub struct BombRec {
     /// Instance whose payload it is.
     pub owner: Option<usize>,
     pub dropped: u32,
+    /// Armed when created.
+    pub armed: bool,
     /// It went off, on this instance's task (`None`: another task).
     pub fired: Option<Option<usize>>,
 }
@@ -57,6 +59,7 @@ impl Bomb {
                 site,
                 owner,
                 dropped: 0,
+                armed: armed & site != 0,
                 fired: None,
             });
             s.bombs.len() - 1
@@ -129,6 +132,7 @@ impl Clone for Bomb {
         }
         let mut copy = Bomb::new(&self.world, self.site, self.owner);
         // A copy keeps the original's arming, not the current one.
+        copy.world.lock().bombs[copy.id].armed = self.drop_armed;
         copy.drop_armed = self.drop_armed;
         copy.clone_armed = self.clone_armed;
         copy.fmt_armed = self.fmt_armed;
@@ -173,6 +177,14 @@ impl Drop for PayloadBomb {
 
 /// Panic with `what`, or with a [`PayloadBomb`] when `PAYLOAD_DROP` is armed
 /// (now, or for the instance: `faults`).
+/// Count a fault that is not a payload (a callback panic) for the stats.
+pub fn count(world: &World, site: u16) {
+    let bit = site.trailing_zeros() as usize;
+    if bit < 16 {
+        world.lock().site_fires[bit] += 1;
+    }
+}
+
 pub fn inject_panic(world: &Arc<World>, faults: u16, what: &'static str) -> ! {
     if (world.armed() | faults) & site::PAYLOAD_DROP != 0 {
         let id = {
@@ -181,6 +193,7 @@ pub fn inject_panic(world: &Arc<World>, faults: u16, what: &'static str) -> ! {
                 site: site::PAYLOAD_DROP,
                 owner: None,
                 dropped: 0,
+                armed: true,
                 fired: None,
             });
             s.bombs.len() - 1
@@ -214,6 +227,7 @@ impl tracing::Subscriber for Subscriber {
             && !self.world.in_caller()
         {
             self.world.lock().subscriber_panics += 1;
+            count(&self.world, site::TRACING);
             panic!("fuzz: injected tracing subscriber panic");
         }
     }
@@ -311,6 +325,7 @@ impl Worker {
                 done_bomb.defuse();
                 drop(done_bomb);
                 if done_panic {
+                    count(&world, site::DONE_PANIC);
                     {
                         let mut s = world.lock();
                         s.insts[instance].panicked = true;
@@ -349,6 +364,7 @@ impl Worker {
                             };
                         }
                         if work_panic {
+                            count(&world, site::WORK_PANIC);
                             inject_panic(&world, faults, "fuzz: injected job panic");
                         }
                         Bomb::new(&world, site::RESULT_DROP, Some(instance))
@@ -377,6 +393,7 @@ impl Worker {
                             rt::sleep(Duration::from_millis(10 * sleep as u64)).await;
                         }
                         if work_panic {
+                            count(&world, site::WORK_PANIC);
                             inject_panic(&world, faults, "fuzz: injected job panic");
                         }
                         Bomb::new(&world, site::RESULT_DROP, Some(instance))

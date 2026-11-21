@@ -27,7 +27,15 @@ pub use driver::run_body;
 
 /// Violation details (kind: detail) of the last failing run on this thread.
 pub fn last_details() -> Vec<String> {
-    driver::LAST_DETAILS.with(|d| d.borrow().clone())
+    driver::LAST_DETAILS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+}
+/// Injection-site statistics of the last run on this thread: per site bit,
+/// payloads created armed and payloads that went off; then subscriber panics.
+pub fn last_sites() -> ([u64; 16], [u64; 16], u64) {
+    *driver::LAST_SITES.lock().unwrap_or_else(|p| p.into_inner())
 }
 pub use scenario::*;
 
