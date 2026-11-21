@@ -941,9 +941,12 @@ impl Driver {
                 if self.actors.is_empty() {
                     (worker.spawn(), None)
                 } else {
-                    let parent = self.actors[parent as usize % self.actors.len()]
-                        .aref
-                        .clone();
+                    let parent = &self.actors[parent as usize % self.actors.len()];
+                    // 0.9: start_link inherits the parent's placement, so a
+                    // managed parent's child joins its system (and its
+                    // shutdown is a stop cause).
+                    let parent_sys = parent.sys;
+                    let parent = parent.aref.clone();
                     // 0.9 start_link, its wait abandoned at once: the 0.8
                     // non-waiting start_linked. A parent whose exit began
                     // refuses it (ParentExited): nothing is created.
@@ -961,7 +964,7 @@ impl Driver {
                         at: self.op,
                         unlinked: false,
                     });
-                    (aref, None)
+                    (aref, parent_sys)
                 }
             }
         };
