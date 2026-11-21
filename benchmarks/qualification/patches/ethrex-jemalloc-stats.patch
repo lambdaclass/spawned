@@ -1,0 +1,101 @@
+diff --git a/cmd/ethrex/ethrex.rs b/cmd/ethrex/ethrex.rs
+index e25fe567b..679fd71e1 100644
+--- a/cmd/ethrex/ethrex.rs
++++ b/cmd/ethrex/ethrex.rs
+@@ -44,6 +44,87 @@ pub static malloc_conf: &[u8] =
+ #[unsafe(export_name = "malloc_conf")]
+ pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19,background_thread:true,dirty_decay_ms:30000,muzzy_decay_ms:30000\0";
+ 
++
++// Qualification harness only (benchmarks/qualification in spawned): when ETHREX_JEMALLOC_STATS_FILE is set,
++// append jemalloc's global counters to that file every ETHREX_JEMALLOC_STATS_INTERVAL_S (60 s).
++// Reads mallctl directly (tikv-jemalloc-sys exports it unprefixed on Linux); no new dependency.
++#[cfg(all(feature = "jemalloc_profiling", target_os = "linux"))]
++fn spawn_jemalloc_stats_writer() {
++    use std::io::Write;
++    unsafe extern "C" {
++        fn mallctl(
++            name: *const std::ffi::c_char,
++            oldp: *mut std::ffi::c_void,
++            oldlenp: *mut usize,
++            newp: *mut std::ffi::c_void,
++            newlen: usize,
++        ) -> std::ffi::c_int;
++    }
++    let Ok(path) = std::env::var("ETHREX_JEMALLOC_STATS_FILE") else {
++        return;
++    };
++    let interval = std::env::var("ETHREX_JEMALLOC_STATS_INTERVAL_S")
++        .ok()
++        .and_then(|v| v.parse().ok())
++        .unwrap_or(60u64);
++    let _ = std::thread::Builder::new()
++        .name("jemalloc-stats".into())
++        .spawn(move || {
++            const KEYS: [&str; 6] = ["allocated", "active", "metadata", "resident", "mapped", "retained"];
++            let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else {
++                return;
++            };
++            let _ = writeln!(f, "epoch,{}", KEYS.join(","));
++            loop {
++                let now = std::time::SystemTime::now()
++                    .duration_since(std::time::UNIX_EPOCH)
++                    .map(|d| d.as_secs())
++                    .unwrap_or(0);
++                let mut line = now.to_string();
++                // SAFETY: standard mallctl calls with correctly sized out-pointers.
++                unsafe {
++                    let mut e: u64 = 1;
++                    let mut sz = std::mem::size_of::<u64>();
++                    let ep = (&mut e as *mut u64).cast();
++                    mallctl(c"epoch".as_ptr(), ep, &mut sz, ep, std::mem::size_of::<u64>());
++                    for k in KEYS {
++                        let name = std::ffi::CString::new(format!("stats.{k}")).unwrap();
++                        let mut v: usize = 0;
++                        let mut sz = std::mem::size_of::<usize>();
++                        let rc = mallctl(name.as_ptr(), (&mut v as *mut usize).cast(), &mut sz, std::ptr::null_mut(), 0);
++                        line.push(',');
++                        if rc == 0 {
++                            line.push_str(&v.to_string());
++                        }
++                    }
++                }
++                let _ = writeln!(f, "{line}");
++                let _ = f.flush();
++                // Raw jemalloc heap dump (jeprof format) on request: the request file holds the
++                // output path; it is removed once the dump has been attempted.
++                let req = format!("{path}.dump-request");
++                if let Ok(out) = std::fs::read_to_string(&req) {
++                    let _ = std::fs::remove_file(&req);
++                    if let Ok(cout) = std::ffi::CString::new(out.trim()) {
++                        let mut p = cout.as_ptr();
++                        // SAFETY: prof.dump takes a `const char *` new value.
++                        let rc = unsafe {
++                            mallctl(
++                                c"prof.dump".as_ptr(),
++                                std::ptr::null_mut(),
++                                std::ptr::null_mut(),
++                                (&mut p as *mut *const std::ffi::c_char).cast(),
++                                std::mem::size_of::<*const std::ffi::c_char>(),
++                            )
++                        };
++                        let _ = std::fs::write(format!("{path}.dump-result"), format!("{} rc={rc}\n", out.trim()));
++                    }
++                }
++                std::thread::sleep(std::time::Duration::from_secs(interval));
++            }
++        });
++}
++
+ /// Builds the CPU profile report and writes it to `profile.pb` in the current directory.
+ #[cfg(feature = "cpu_profiling")]
+ fn write_cpu_profile(guard: pprof::ProfilerGuard<'_>) -> eyre::Result<()> {
+@@ -166,6 +247,8 @@ async fn main() -> eyre::Result<()> {
+     let mut signal_terminate = signal(SignalKind::terminate())?;
+ 
+     log_global_allocator();
++    #[cfg(all(feature = "jemalloc_profiling", target_os = "linux"))]
++    spawn_jemalloc_stats_writer();
+ 
+     // The node's one shutdown path, whatever starts it. No actor listens for
+     // ctrl-c on its own.
