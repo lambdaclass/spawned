@@ -1,0 +1,15 @@
+Planted bug 26 (fenced-job-drop-in-turn): A fenced job terminal drops its done callback and result in the owner's turn, so their destructor panic kills the owner
+
+diff --git a/concurrency/src/tasks/jobs.rs b/concurrency/src/tasks/jobs.rs
+index fa83ae99..7a546e2d 100644
+--- a/concurrency/src/tasks/jobs.rs
++++ b/concurrency/src/tasks/jobs.rs
+@@ -101,7 +101,7 @@ where
+             if job.fenced(ctx.id(), kind) {
+                 // Fenced: `done` and its captures (a linked token) are
+                 // discarded in the turn, through the mailbox drop path.
+-                ctx.shared.sender.failures().discard((done, outcome));
++                drop((done, outcome));
+                 return;
+             }
+             let msg = done(outcome);

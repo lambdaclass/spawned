@@ -1,0 +1,18 @@
+Planted bug 25 (cleanup-drop-uncontained): A payload the framework destroys after the death point (queued message, discarded job result or callback) is dropped without containment
+
+diff --git a/concurrency/src/mailbox.rs b/concurrency/src/mailbox.rs
+index 6d473e27..000d0b3b 100644
+--- a/concurrency/src/mailbox.rs
++++ b/concurrency/src/mailbox.rs
+@@ -118,10 +118,7 @@ impl DropFailures {
+         self.drop_contained(value);
+     }
+     fn drop_contained<T>(&self, value: T) {
+-        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(value))) {
+-            self.record(crate::error::panic_message(&*payload));
+-            dispose_panic(payload);
+-        }
++        drop(value);
+     }
+ }
+ 
