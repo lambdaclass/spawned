@@ -131,10 +131,16 @@ impl GroupInner {
                                     if let Err(payload) = std::panic::catch_unwind(
                                         std::panic::AssertUnwindSafe(|| handle.block_on(future)),
                                     ) {
-                                        tracing::error!(
-                                            "native actor root unwound: {}",
-                                            crate::error::panic_message(&*payload)
-                                        );
+                                        // User code (the payload's destructor,
+                                        // a subscriber) must not end this
+                                        // worker: later actors run on it.
+                                        let message = crate::error::panic_message(&*payload);
+                                        crate::mailbox::dispose_panic(payload);
+                                        crate::actor_cleanup::log_safely(|| {
+                                            tracing::error!(
+                                                "native actor root unwound: {message}"
+                                            );
+                                        });
                                     }
                                 }
                             })

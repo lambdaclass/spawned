@@ -969,12 +969,16 @@ impl JobSet {
 pub(crate) fn report_unfinished(owner: ActorId, unfinished: usize) {
     if unfinished > 0 {
         crate::instrumentation::hooks::jobs_unfinished(unfinished);
-        tracing::warn!(
-            event = "unfinished_at_stop",
-            actor = %owner,
-            unfinished,
-            "job cleanup incomplete: jobs still running at the cleanup deadline"
-        );
+        // A lifecycle diagnostic: a panicking subscriber must not unwind the
+        // owner's cleanup (P1).
+        crate::actor_cleanup::log_safely(|| {
+            tracing::warn!(
+                event = "unfinished_at_stop",
+                actor = %owner,
+                unfinished,
+                "job cleanup incomplete: jobs still running at the cleanup deadline"
+            );
+        });
     }
 }
 
