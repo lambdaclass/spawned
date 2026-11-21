@@ -18,6 +18,7 @@ compile_error!(
 );
 
 mod driver;
+mod fault;
 mod oracles;
 pub mod scenario;
 mod world;
@@ -141,19 +142,39 @@ fn tape_hash(tape: &Tape) -> u64 {
     })
 }
 
-/// Decode a fuzz input the way `libfuzzer_sys::fuzz_target!` does.
+/// Decode an input of the base format ([`Format::Base`]: every input
+/// committed before fault injection, `fuzz/seeds` and the older
+/// `fuzz/regressions`).
 pub fn decode(bytes: &[u8]) -> Option<Scenario> {
+    decode_as(bytes, Format::Base)
+}
+
+/// Decode an input the way the fuzz target does ([`Format::Faults`]).
+pub fn decode_faults(bytes: &[u8]) -> Option<Scenario> {
+    decode_as(bytes, Format::Faults)
+}
+
+pub fn decode_as(bytes: &[u8], format: Format) -> Option<Scenario> {
     use arbitrary::{Arbitrary, Unstructured};
     if bytes.len() < <Scenario as Arbitrary>::size_hint(0).0 {
         return None;
     }
-    Scenario::arbitrary_take_rest(Unstructured::new(bytes)).ok()
+    Scenario::decode_with(Unstructured::new(bytes), format).ok()
 }
 
-/// Regression check: `input` must pass under its own seed and strategy and
-/// under the strict replay of `tape`.
+/// Regression check: `input` (base format) must pass under its own seed and
+/// strategy and under the strict replay of `tape`.
 pub fn assert_passes(input: &[u8], tape: Option<&str>) {
-    let scenario = decode(input).expect("regression input does not decode");
+    assert_passes_as(input, tape, Format::Base);
+}
+
+/// [`assert_passes`] for an input of the fuzz target's format.
+pub fn assert_passes_faults(input: &[u8], tape: Option<&str>) {
+    assert_passes_as(input, tape, Format::Faults);
+}
+
+fn assert_passes_as(input: &[u8], tape: Option<&str>, format: Format) {
+    let scenario = decode_as(input, format).expect("regression input does not decode");
     let run = execute(&scenario, None);
     assert_eq!(run.failure, None, "scenario fails under its own schedule");
     if let Some(text) = tape {

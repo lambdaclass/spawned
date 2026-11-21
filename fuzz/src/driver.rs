@@ -3,6 +3,7 @@
 //! input order; the only iteration over hashed collections is for lookups,
 //! so a run is a function of the input, the seed and the strategy.
 
+use crate::fault::{Answer, Bomb, Fx};
 use crate::scenario::*;
 use crate::world::{
     factory_call, factory_outcome, now, Act, Do, Outcome, SupInst, TimerRec, TimerTag, Worker,
@@ -132,7 +133,14 @@ struct Driver {
     queued_sleep: Duration,
     /// Driver unlinks, for the X5 unlink oracle.
     unlinks: Vec<UnlinkRec>,
+    /// `Fx` requests in their own tasks; a deferred one may wait until its
+    /// owner exits, so they are collected after teardown.
+    fx_pending: Vec<JoinHandle<FxReply>>,
+    fx_timers: Vec<TimerHandle>,
 }
+
+/// nonce, timeout (None: unbounded), elapsed, outcome.
+type FxReply = (u64, Option<u64>, Duration, Result<u64, ActorError>);
 
 /// `a.unlink(b)` by the driver while both were running.
 struct UnlinkRec {
@@ -146,6 +154,11 @@ struct UnlinkRec {
 /// violated oracle.
 pub async fn run_body(scenario: Scenario, seed: u64) {
     let world = World::new();
+    world.add_caller(crate::fault::task());
+    // A user subscriber is user code (P1): it panics while `TRACING` is armed.
+    let _subscriber = tracing::subscriber::set_default(crate::fault::Subscriber {
+        world: world.clone(),
+    });
     let baseline = sim::stats().tasks;
     let mut driver = Driver::new(world.clone(), seed);
     if std::env::var_os("SPAWNED_FUZZ_WATCH").is_some() {
@@ -166,10 +179,13 @@ pub async fn run_body(scenario: Scenario, seed: u64) {
             }
         }));
     }
-    for op in scenario.ops.iter().take(MAX_OPS) {
+    for step in scenario.ops.iter().take(MAX_OPS) {
         driver.op += 1;
-        trace(|| format!("op {}: {op:?}", driver.op));
-        driver.apply(op).await;
+        trace(|| format!("op {}: {step:?}", driver.op));
+        match step {
+            Step::Op(op) => driver.apply(op).await,
+            Step::Fault(fault) => driver.fault(*fault).await,
+        }
     }
     trace(|| "teardown".into());
     driver.teardown().await;
@@ -181,11 +197,15 @@ pub async fn run_body(scenario: Scenario, seed: u64) {
         for inst in &mut s.insts {
             if let Some(handle) = inst.handle.take() {
                 inst.reason = handle.exit_reason();
+                inst.cleanup_failure = handle.cleanup_failure();
             }
         }
     }
+    // Faults stop here: the probes below run user code of their own.
+    world.arm(0);
     leaks(&world, baseline).await;
     monitor_release_probe(&world).await;
+    payload_checks(&world);
     budget_checks(&world);
     crate::oracles::check(&world);
     let violations = std::mem::take(&mut world.lock().violations);
@@ -441,6 +461,8 @@ impl Driver {
             requested: HashMap::new(),
             queued_sleep: Duration::ZERO,
             unlinks: Vec::new(),
+            fx_pending: Vec::new(),
+            fx_timers: Vec::new(),
         };
         driver.new_system();
         driver
@@ -1684,6 +1706,9 @@ impl Driver {
         while !self.timers.is_empty() {
             self.cancel_timer(0);
         }
+        for t in std::mem::take(&mut self.fx_timers) {
+            t.cancellation_token.cancel();
+        }
         self.collect_pending().await;
         for _ in 0..2 {
             for aref in self.targets() {
@@ -1892,14 +1917,27 @@ impl Driver {
             }
             // X8: with one possible cause, a driver stop, shutdown or
             // stop_with_reason on a live actor is the reason it publishes.
-            let only_cause = {
+            // A destructor panic after the death point (the state, a queued
+            // message, a job's discarded result or callback) never changes
+            // the reason (L6), so it does not excuse a mismatch.
+            let (only_cause, cleanup, relaxed) = {
                 let s = self.world.lock();
-                s.causes.get(&id) == Some(&1) && !s.insts[instance].drop_panicked
+                let x = &s.insts[instance];
+                (
+                    s.causes.get(&id) == Some(&1),
+                    x.drop_panicked,
+                    x.relaxed,
+                )
             };
             if let Some(requested) = self.requested.get(&id) {
-                if only_cause && !panicked && *requested != exit {
+                if only_cause && !panicked && !relaxed && *requested != exit {
+                    let kind = if cleanup {
+                        "L6: a destructor panic after the death point changed the exit reason"
+                    } else {
+                        "X8: an actor published a different reason than its only stop request"
+                    };
                     self.violate(
-                        "X8: an actor published a different reason than its only stop request",
+                        kind,
                         format!("w{instance} requested {requested:?}, published {exit:?}"),
                     );
                 }
@@ -2087,6 +2125,7 @@ impl Driver {
             }
         }
         self.collect_pending().await;
+        self.collect_fx().await;
         self.world.lock().nested.clear();
     }
 }
@@ -2196,7 +2235,11 @@ fn nested_configure(
     cfg: SupervisorConfig,
 ) -> impl Fn(&mut SupervisorBuilder) -> Result<(), SupervisorError> + Send + Sync + 'static {
     move |builder: &mut SupervisorBuilder| {
-        factory_call(&world, parent_inst, &path, mode);
+        let call = factory_call(&world, parent_inst, &path, mode);
+        if world.armed() & site::CONFIGURE_PANIC != 0 && !world.in_caller() {
+            factory_outcome(&world, call, Outcome::Panic);
+            panic!("fuzz: injected configure panic");
+        }
         let inst = new_sup_inst(&world, root, &cfg);
         for (j, w) in children.iter().enumerate() {
             let p = format!("{path}/c{j}");
@@ -2205,5 +2248,164 @@ fn nested_configure(
             world.lock().nested.insert(p, child);
         }
         Ok(())
+    }
+}
+
+impl Driver {
+    /// One fault-injection step.
+    async fn fault(&mut self, fault: FaultOp) {
+        match fault {
+            FaultOp::Arm { sites, mask } => self.world.arm(sites & mask),
+            FaultOp::Send {
+                to,
+                cmd,
+                request,
+                timeout,
+            } => {
+                let Some(aref) = self.pick(to) else { return };
+                let owner = self.world.lock().instance_of(aref.id());
+                if matches!(cmd, FaultCmd::Panic) {
+                    self.may_stop(aref.id());
+                }
+                let bomb = Bomb::new(&self.world, site::MSG_DROP, owner);
+                if !request {
+                    let _ = aref.send(Fx {
+                        nonce: 0,
+                        cmd,
+                        bomb,
+                    });
+                    return;
+                }
+                if self.fx_pending.len() >= MAX_PENDING {
+                    return;
+                }
+                let nonce = self.next_nonce();
+                let msg = Fx { nonce, cmd, bomb };
+                let world = self.world.clone();
+                let ms = timeout.map(|t| t as u64);
+                let task = rt::spawn(async move {
+                    let start = now();
+                    // Unbounded unless a timeout is given: a deferred reply
+                    // must still be answered, at the latest at its owner's
+                    // death point (R6).
+                    let deadline = match ms {
+                        Some(ms) => spawned_concurrency::Deadline::after(Duration::from_millis(ms)),
+                        None => spawned_concurrency::Deadline::Never,
+                    };
+                    let reply = match aref.send_request(msg, deadline) {
+                        Ok(rx) => rx.await,
+                        Err(e) => Err(e),
+                    };
+                    let reply = reply.map(|mut a: Answer| {
+                        a.bomb.defuse();
+                        a.nonce
+                    });
+                    // A deferred reply's token may be dropped (R6) or refused
+                    // at the credit bound.
+                    let reply = match reply {
+                        Err(ActorError::ReplyDropped | ActorError::Overloaded)
+                            if world.lock().deferred.contains(&nonce) =>
+                        {
+                            Err(ActorError::NoProc)
+                        }
+                        other => other,
+                    };
+                    (nonce, ms, now() - start, reply)
+                });
+                self.world
+                    .add_caller(task.id().to_string().parse().unwrap_or(u64::MAX));
+                self.fx_pending.push(task);
+            }
+            FaultOp::Timer {
+                to,
+                ms,
+                interval,
+                cmd,
+            } => {
+                if self.fx_timers.len() >= MAX_TIMERS {
+                    return;
+                }
+                let Some(aref) = self.pick(to) else { return };
+                // A repeating job, deferral or helper would grow without bound.
+                let cmd = match cmd {
+                    FaultCmd::Pipe { .. } | FaultCmd::Defer | FaultCmd::Helper(_) if interval => {
+                        FaultCmd::Reply
+                    }
+                    cmd => cmd,
+                };
+                if matches!(cmd, FaultCmd::Panic) {
+                    self.may_stop(aref.id());
+                }
+                let owner = self.world.lock().instance_of(aref.id());
+                let msg = Fx {
+                    nonce: 0,
+                    cmd,
+                    bomb: Bomb::new(&self.world, site::MSG_DROP, owner),
+                };
+                let period = Duration::from_millis(1 + ms as u64 % 5_000);
+                let timer = if interval {
+                    send_interval(period, aref.context(), msg)
+                } else {
+                    send_after(period, aref.context(), msg)
+                };
+                self.fx_timers.push(timer);
+            }
+        }
+    }
+
+    /// Collect the `Fx` requests (after teardown: every owner has exited, so
+    /// every deferred token was answered).
+    async fn collect_fx(&mut self) {
+        for handle in std::mem::take(&mut self.fx_pending) {
+            match rt::timeout(LONG * 2, handle).await {
+                Ok(Ok((nonce, ms, elapsed, reply))) => {
+                    self.check_reply(nonce, ms.unwrap_or(u64::MAX), elapsed, reply)
+                }
+                Ok(Err(e)) => self.violate("R1: a request task failed", format!("{e}")),
+                Err(_) => self.violate("R1: a request never resolved", String::new()),
+            }
+        }
+    }
+}
+
+/// After the leak checks: every injected-fault payload was destroyed exactly
+/// once (M6), and one that went off on its owner's own task is that actor's
+/// recorded cleanup failure (L6), never a lost one.
+fn payload_checks(world: &World) {
+    let mut s = world.lock();
+    let mut found = Vec::new();
+    let mut leaked = 0;
+    for (i, b) in s.bombs.iter().enumerate() {
+        if b.dropped == 0 {
+            leaked += 1;
+            if leaked == 1 {
+                found.push((
+                    "M6: a user payload was never destroyed",
+                    format!("payload {i} (site {:#x}, owner {:?})", b.site, b.owner),
+                ));
+            }
+        }
+        let Some(Some(task_owner)) = b.fired else {
+            continue;
+        };
+        let cleanup = [
+            site::MSG_DROP,
+            site::RESULT_DROP,
+            site::DONE_DROP,
+            site::EMIT_DROP,
+        ]
+        .contains(&b.site);
+        if cleanup && b.owner == Some(task_owner) {
+            let x = &s.insts[task_owner];
+            if x.reason.is_some() && x.cleanup_failure.is_none() {
+                found.push((
+                    "L6: a destructor panic on the actor's task was not recorded as a cleanup failure",
+                    format!("w{task_owner}, payload {i} (site {:#x})", b.site),
+                ));
+            }
+        }
+    }
+    for (kind, detail) in found {
+        s.violate(kind, detail);
     }
 }

@@ -6,21 +6,24 @@
 //!   cargo run --example repro -- artifacts/scenario/crash-<sha> [--emit <name>]
 //! ```
 //!
-//! `--print` only decodes and prints the scenario. Otherwise it prints the
+//! Inputs are read in the fuzz target's format (base operations plus fault
+//! steps); `--base` reads one of the base format (`fuzz/seeds`, regressions
+//! emitted before fault injection). `--print` only decodes and prints the
+//! scenario. Otherwise it prints the
 //! decoded scenario and the run's outcome. On failure it shrinks
 //! the tape toward the canonical schedule (`SPAWNED_SIM_SHRINK` runs, default
 //! 200) and, with `--emit <name>`, writes `regressions/<name>.input`,
 //! `regressions/<name>.tape` and `tests/<name>.rs`, a test that replays the
 //! minimized tape strictly and sweeps the scenario over simulator seeds.
 
-use spawned_fuzz::{decode, execute, last_details, run_body, strategy};
+use spawned_fuzz::{decode_as, execute, last_details, run_body, strategy, Format};
 use spawned_rt::tasks::sim;
 use std::path::Path;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(input) = args.first() else {
-        eprintln!("usage: repro <input> [--emit <name>]");
+        eprintln!("usage: repro <input> [--base] [--print] [--emit <name>]");
         std::process::exit(2);
     };
     let emit = args
@@ -29,7 +32,14 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .cloned();
     let bytes = std::fs::read(input).expect("read input");
-    let Some(scenario) = decode(&bytes) else {
+    // Fuzz-target inputs use the fault format; `--base` reads an input of
+    // the base format (older seeds and regressions).
+    let format = if args.iter().any(|a| a == "--base") {
+        Format::Base
+    } else {
+        Format::Faults
+    };
+    let Some(scenario) = decode_as(&bytes, format) else {
         eprintln!("input does not decode to a scenario (too short)");
         std::process::exit(2);
     };
@@ -54,6 +64,7 @@ fn main() {
                 &scenario,
                 run.tape.as_ref(),
                 "none (passing input)",
+                format,
             );
         }
         return;
@@ -90,7 +101,7 @@ fn main() {
         println!("minimized tape: {}", path.display());
         return;
     };
-    emit_regression(&name, &bytes, &scenario, Some(&small), &failure);
+    emit_regression(&name, &bytes, &scenario, Some(&small), &failure, format);
 }
 
 fn emit_regression(
@@ -99,6 +110,7 @@ fn emit_regression(
     scenario: &spawned_fuzz::Scenario,
     tape: Option<&sim::Tape>,
     failure: &str,
+    format: Format,
 ) {
     assert!(
         name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
@@ -131,14 +143,14 @@ const INPUT: &[u8] = include_bytes!("../regressions/{name}.input");
 /// The input under its own schedule and under its recorded tape.
 #[test]
 fn {name}_tape() {{
-    spawned_fuzz::assert_passes(INPUT, {tape_arg});
+    spawned_fuzz::{assert}(INPUT, {tape_arg});
 }}
 
 /// The same operations under other simulator schedules.
 #[spawned_macros::sim_test(seeds = 32)]
 async fn {name}_seeds(seed: u64) {{
     spawned_fuzz::init();
-    spawned_fuzz::run_body(spawned_fuzz::decode(INPUT).unwrap(), seed).await;
+    spawned_fuzz::run_body(spawned_fuzz::{decode}(INPUT).unwrap(), seed).await;
 }}
 "#,
         tape_const = if tape.is_some() {
@@ -147,6 +159,14 @@ async fn {name}_seeds(seed: u64) {{
             String::new()
         },
         tape_arg = if tape.is_some() { "Some(TAPE)" } else { "None" },
+        assert = match format {
+            Format::Base => "assert_passes",
+            Format::Faults => "assert_passes_faults",
+        },
+        decode = match format {
+            Format::Base => "decode",
+            Format::Faults => "decode_faults",
+        },
         strategy = strategy(scenario.sched),
         seed = scenario.seed,
     );

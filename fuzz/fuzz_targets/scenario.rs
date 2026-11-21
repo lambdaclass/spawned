@@ -4,6 +4,9 @@
 
 use libfuzzer_sys::fuzz_target;
 
-fuzz_target!(|scenario: spawned_fuzz::Scenario| {
-    spawned_fuzz::fuzz_one(&scenario);
+// The fault format: base operations plus fault-injection steps.
+fuzz_target!(|data: &[u8]| {
+    if let Some(scenario) = spawned_fuzz::decode_faults(data) {
+        spawned_fuzz::fuzz_one(&scenario);
+    }
 });
