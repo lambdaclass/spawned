@@ -162,7 +162,7 @@ else
 fi
 
 {
-    echo "artifacts $(($(wc -l < "$triage") - 1)) ($unreproduced do not reproduce under the simulator)"
+    echo "artifacts $(($(wc -l < "$triage") - 1)) ($unreproduced pass on this tree: fixed, or a wall-clock timeout the simulator does not reproduce)"
     echo "distinct failures ${#emitted[@]}"
     for e in "${emitted[@]}"; do
         echo "  $e"
