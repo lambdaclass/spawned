@@ -209,6 +209,9 @@ pub async fn run_body(scenario: Scenario, seed: u64) {
     budget_checks(&world);
     crate::oracles::check(&world);
     let violations = std::mem::take(&mut world.lock().violations);
+    for v in &violations {
+        trace(|| format!("violation {}: {}", v.kind, v.detail));
+    }
     if let Some(first) = violations.first() {
         LAST_DETAILS.with(|d| {
             *d.borrow_mut() = violations
