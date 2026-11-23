@@ -127,9 +127,11 @@ guarantee checked at every layer the plan names, the model tied to the code by
 trace validation (the model leaves the `model-sync` TLC-only allowlist in the
 same PR), the planted bugs from the design caught, a no-cost benchmark against
 the previous release, and a final independent review before merge. The
-release is cut after a soak run and, for client-facing behaviour, a canary on
-the release candidate; the next release's work proceeds in parallel on
-branches.
+release is cut after a soak run and [client qualification](docs/TESTING.md#client-qualification)
+on the release candidate, run by hand from `benchmarks/qualification/` for
+both clients: a 24 h ethlambda run paired with its `main` and a 48 h ethrex
+memory run (the [release checklist](docs/TESTING.md#release-checklist)); the
+next release's work proceeds in parallel on branches.
 
 What 1.0 requires:
 

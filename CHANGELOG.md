@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Release qualification harness, `benchmarks/qualification/`: the client
+  canaries and the ethrex memory run, consolidated from the hand-built 0.7.x
+  and 0.8.0 runs into one parameterised, manual-only harness. It builds a
+  client's port at a spawned commit and the client's `main`, fails a
+  candidate that links a second spawned (the 0.5.0 copy that hid in the
+  0.8.0 ethlambda build), runs both side by side through warmup, paired
+  TERM/INT shutdown cycles, fault injection and a long soak, samples process,
+  sync, host-RAM and spawned metrics (optionally jemalloc heap profiles
+  attributed by owner), and writes a summary with pass/fail thresholds. The
+  release checklist now requires a 24 h paired ethlambda run and a 48 h
+  ethrex memory run (docs/TESTING.md, "Client qualification").
+- Perf gate: every measured binary (release, base, head) is built with one
+  codegen unit, so instruction counts follow the code rather than how generic
+  code is partitioned across units (which moved `async_ct_burst` by about
+  +2.6% between v0.8.0 and main with no change on its path).
 - CI reliability: drop `magic-nix-cache-action` (its GitHub Actions cache
   backend failed runs with FlakeHub authentication, cache-service and SSL
   errors); give TLC 75% of RAM (`TLC_HEAP`) so liveness checking no longer runs

@@ -61,6 +61,15 @@ def default_base(head):
     sys.exit("no --base given and no main/origin/main to take a merge base with")
 
 
+# Every measured binary (release, base, head) is built with one codegen unit.
+# With the default 16, how generic code is partitioned across units changes
+# with unrelated code size, and with it which futures LLVM inlines: the same
+# workload then moved by up to +-5% Ir/op between builds (async_ct_burst's
+# join_all harness and the request futures), larger than the gate's budget.
+# One unit makes the counts reflect the code, not the partition.
+BUILD_PROFILE = {"CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "1"}
+
+
 def build(work, label, rev, features=None):
     """Check out `rev` in a worktree, add the driver, build it; return the binary."""
     tree = work / label
@@ -69,7 +78,8 @@ def build(work, label, rev, features=None):
        capture_output=True)
     shutil.copy(DRIVER, tree / "concurrency" / "examples" / "hotpath.rs")
     target = work / f"target-{label}"  # one per side: identical crate hashes would collide
-    env = dict(os.environ, CARGO_TARGET_DIR=str(target), CARGO_INCREMENTAL="0")
+    env = dict(os.environ, CARGO_TARGET_DIR=str(target), CARGO_INCREMENTAL="0",
+               **BUILD_PROFILE)
     # Before the 0.9 unified start, `start()` was the non-waiting start: the
     # driver's `spawn_actor!` uses it on such a tree (same workload).
     actor_rs = tree / "concurrency" / "src" / "tasks" / "actor.rs"
@@ -90,7 +100,8 @@ def release_key(rev, features=None):
     toolchain = hashlib.sha256(rustc.encode()).hexdigest()[:16]
     commit = git("rev-parse", f"{rev}^{{commit}}")  # a tag's commit, not the tag object
     extra = "-" + re.sub(r"[^A-Za-z0-9]+", "_", features) if features else ""
-    return f"hotpath-{commit[:16]}-{driver}-{toolchain}{extra}"
+    profile = "cgu1"  # BUILD_PROFILE: a binary built otherwise is not reused
+    return f"hotpath-{commit[:16]}-{driver}-{toolchain}-{profile}{extra}"
 
 
 def build_release(work, rev, cache, features=None):
