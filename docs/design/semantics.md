@@ -334,9 +334,12 @@ messages are dropped after the death point, so a panicking `Drop` does not
 change the exit reason; it is recorded in `ChildHandle::cleanup_failure()`
 (`mailbox_cleanup_failure()` is a deprecated alias), and a Transient child
 restarts on it. A panic payload whose own destructor panics is forgotten
-(`dispose_panic`) to stop the cascade.
+(`dispose_panic`) to stop the cascade; this holds for every caught panic
+(`started()`, handlers, `stopped()`, helpers, factories, native group roots),
+so such a payload never skips `stopped()` or changes the reason.
 Checked by: [`mailbox_drop_panic`][mailbox_drop_panic] (5 placements x 1/2/256
-destructors), [`panic_safety`][panic_safety], [`native_mailbox_drop`][native_mailbox_drop],
+destructors), [`panic_payload_drop`][panic_payload_drop] (each hook, both
+modes, a managed actor), [`panic_safety`][panic_safety], [`native_mailbox_drop`][native_mailbox_drop],
 `queued_drop_panic`/`queued_drop_shutdown_restarts` lifecycle traces.
 
 **L7. Exit publication is last.** The exit reason is published after
@@ -904,6 +907,7 @@ See the [ranked backlog](../../ROADMAP.md#ranked-backlog).
 [native_mailbox_drop]: ../../concurrency/tests/native_mailbox_drop.rs
 [nested_supervision]: ../../concurrency/tests/nested_supervision.rs
 [panic_safety]: ../../concurrency/tests/panic_safety.rs
+[panic_payload_drop]: ../../concurrency/tests/panic_payload_drop.rs
 [payload_stress]: ../../concurrency/tests/payload_stress.rs
 [protocol_timeouts]: ../../concurrency/tests/protocol_timeouts.rs
 [request_histories]: ../../concurrency/tests/request_histories.rs
