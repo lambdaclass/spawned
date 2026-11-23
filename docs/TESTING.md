@@ -144,7 +144,7 @@ section maps each one to what spawned does and lists where it is still behind.
 | Fault injection | Failpoints at named sites in the lifecycle code; suites that panic in every user callback and drop every public future at every await point |
 | Formal specifications | TLA+ models of every lifecycle protocol, each invariant with a negative control that must fail; Apalache proofs of the safety invariants |
 | Specs tied to the code | Trace validation of real runs against the models, trace coverage, and the required `model-sync` check: code that changes modelled behaviour without its model fails CI |
-| Proving the tests work | The [planted-bug matrix](#planted-bug-sensitivity) (all 24 realistic bugs caught, each by two or more layers), `cargo-mutants`, and the [semantics coverage](#semantics-coverage) matrix (a check that fails for all 50 guarantees) |
+| Proving the tests work | The [planted-bug matrix](#planted-bug-sensitivity) (all 27 planted bugs caught: the 24 of the main matrix each by two or more layers, the three panic-injection bugs 37-39 by the fuzzer), `cargo-mutants`, and the [semantics coverage](#semantics-coverage) matrix (a check that fails for all 50 guarantees) |
 | Fuzzing, metamorphic testing | The coverage-guided [scenario fuzzer](#scenario-fuzzing-fuzz) with contract oracles; one workload on every backend must give the same result |
 | Linearizability checking | A Porcupine-style checker over concurrent request histories |
 | Memory-model checking | Loom, ThreadSanitizer, LeakSanitizer and Kani proofs |
@@ -957,8 +957,8 @@ oracle's name, so shrinking can match it):
 | S1-S4 | A complete system shutdown leaves no managed actor running and no coordinator failure; a shut-down system admits nothing; targets stop in reverse admission order |
 | M5, S3, S5 | After teardown: every actor state dropped, no registered name left, and the simulator's task count back to its starting value |
 | M6 (panic injection) | Every injected-fault payload (message, reply, job result, `done` captures, emit, helper locals, panic payload) is destroyed exactly once: never leaked, never twice |
-| L6 (panic injection) | A payload destructor that panics on its owner's own task (a queued message at the death point, a fenced or cancelled job's result, `done` or emit) is that actor's recorded `cleanup_failure()`; with one stop request as the only cause, the published reason is still the requested one (X8 no longer excuses destructor panics) |
-| R1, R6 (panic injection) | Every `Fx` request resolves exactly once, deferred ones included (unbounded deadline, collected after teardown): `Ok` with its own nonce, `ActorStopped`/`NoProc`, `RequestTimeout` not before its timeout, or `ReplyDropped`/`Overloaded` only for a deferred reply |
+| L6 (panic injection) | A payload destructor that panics on its owner's own task (a queued message at the death point, a fenced or cancelled job's result, `done` or emit, a reply payload outside the actor's own `reply()` call) is that actor's recorded `cleanup_failure()`; with one stop request as the only cause, the published reason is still the requested one (X8 no longer excuses destructor panics) |
+| R1, R6 (panic injection) | Every `Fx` request resolves exactly once, deferred ones included (unbounded deadline; collected at a fence once resolved, at the latest after teardown): `Ok` with its own nonce, `ActorStopped`/`NoProc`, `RequestTimeout` not before its timeout, or `ReplyDropped`/`Overloaded` only for a deferred reply |
 
 Order checks run only after quiescing (timers cancelled, requests collected,
 every actor fenced, no child starting or backing off) and when every
@@ -1066,12 +1066,16 @@ panic paths are covered by `panic_safety`, `native_mailbox_drop` and
 `cargo run --release --example sites -- CORPUS` replays a corpus and counts,
 per site, the runs that armed it and made it go off. On the corpus of a
 40-minute run (2026-11-21, fede, 6 workers, 10.6 million executions, no
-failure with #309; 5,769 inputs), the runs in which each site went off:
-`MSG_DROP` 143, `MSG_CLONE` 36, `REPLY_DROP` 8, `RESULT_DROP` 23,
+failure with #309; 5,769 inputs), replayed with the harness of 2026-11-23
+(no failure), the runs in which each site went off:
+`MSG_DROP` 113, `MSG_CLONE` 36, `REPLY_DROP` 8, `RESULT_DROP` 23,
 `DONE_DROP` 47, `DONE_PANIC` 34, `WORK_PANIC` 34, `DOWN_PANIC` 5,
-`EXIT_PANIC` 9, `PAYLOAD_DROP` 221, `TRACING` 478, `CONFIGURE_PANIC` 298,
+`EXIT_PANIC` 9, `PAYLOAD_DROP` 425, `TRACING` 478, `CONFIGURE_PANIC` 298,
 `EMIT_DROP` 50, `NOTE_PANIC` 3, `HELPER_DROP` 6, and `FMT` 0 (the
-framework formats no user payload yet).
+framework formats no user payload yet). Each site was armed in 400 to 743
+runs. (An earlier count also credited a `Clone` panic to the payload's
+`MSG_DROP`; subscriber and `configure` panics now carry an exploding
+payload too.)
 
 Findings: the payload of a caught panic was dropped in place at the
 `started()`, handler and `stopped()` boundaries (both modes), at helpers,
@@ -1717,8 +1721,9 @@ times the other rows'); its unpatched control missed in C and in F (300 s,
 Before the follow-ups (2026-11-11, `cc60801d`, five layers, no K): caught
 T 22, S 15, C 6, F 9, V 4; bugs 08 and 20 hung T; F missed every
 restart-decision, budget, backoff and exit-reason bug (01-04, 06, 08, 13, 14).
-Now all 24 are caught by at least one layer and every bug by at least two
-(15, which used to escape everything, by T, S, C and F; see below).
+Now all 24 of this matrix are caught by at least one layer and every one by at least two
+(15, which used to escape everything, by T, S, C and F; see below). The
+panic-injection bugs 37-39 have their own table below.
 
 - **F now catches 22 of 24** (was 9), all but one within 60 s. The new oracles
   (see "Scenario fuzzing") check which children a restart rebuilds (03, 04:

@@ -388,6 +388,26 @@ pub mod site {
     pub const NOTE_PANIC: u16 = 1 << 14;
     /// A panic in a helper future's destructor (`ctx.spawn_helper`).
     pub const HELPER_DROP: u16 = 1 << 15;
+
+    /// Site names by bit index.
+    pub const NAMES: [&str; 16] = [
+        "MSG_DROP",
+        "MSG_CLONE",
+        "REPLY_DROP",
+        "RESULT_DROP",
+        "DONE_DROP",
+        "DONE_PANIC",
+        "WORK_PANIC",
+        "DOWN_PANIC",
+        "EXIT_PANIC",
+        "PAYLOAD_DROP",
+        "FMT",
+        "TRACING",
+        "CONFIGURE_PANIC",
+        "EMIT_DROP",
+        "NOTE_PANIC",
+        "HELPER_DROP",
+    ];
 }
 
 /// A fault-injection step (decoded only in [`Format::Faults`]).
@@ -398,8 +418,8 @@ pub enum FaultOp {
     /// previous arming.
     Arm { sites: u16, mask: u16 },
     /// Send `cmd` to an actor as an `Fx` message, or request it in its own
-    /// task (`request`; collected at the next fence), with no or any
-    /// timeout.
+    /// task (`request`; collected at the next fence once resolved, a
+    /// deferred one at the latest after teardown), with no or any timeout.
     Send {
         to: u8,
         cmd: FaultCmd,

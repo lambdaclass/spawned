@@ -23,28 +23,19 @@ mod oracles;
 pub mod scenario;
 mod world;
 
-pub use driver::run_body;
-
-/// Violation details (kind: detail) of the last failing run on this thread.
-pub fn last_details() -> Vec<String> {
-    driver::LAST_DETAILS
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .clone()
-}
-/// Injection-site statistics of the last run on this thread: per site bit,
-/// payloads created armed and payloads that went off; then subscriber panics.
-pub fn last_sites() -> ([u64; 16], [u64; 16], u64) {
-    *driver::LAST_SITES.lock().unwrap_or_else(|p| p.into_inner())
-}
+pub use driver::{run_body, run_body_reporting, Report};
 pub use scenario::*;
+pub use world::Sites;
 
 use spawned_rt::tasks::sim::{
     self,
     explore::{explore, Strategy},
     Tape,
 };
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 /// The strategy a [`Sched`] stands for (one run).
 pub fn strategy(sched: Sched) -> Strategy {
@@ -70,45 +61,49 @@ pub struct Run {
     /// Decision tape of the run (always for random runs and failures).
     pub tape: Option<Tape>,
     pub polls: u64,
+    /// Violation details (kind: detail) of a failing run.
+    pub details: Vec<String>,
+    /// Injection-site statistics of the run.
+    pub sites: Sites,
 }
 
 /// Run `scenario` once under its own seed and strategy, or strictly replay
 /// `tape` instead.
 pub fn execute(scenario: &Scenario, tape: Option<&Tape>) -> Run {
     init();
-    let body = |seed: u64| run_body(scenario.clone(), seed);
-    if let Some(tape) = tape {
+    let report = Arc::new(Mutex::new(Report::default()));
+    let body = |seed: u64| run_body_reporting(scenario.clone(), seed, Some(report.clone()));
+    let (failure, polls, tape) = if let Some(tape) = tape {
         let outcome = sim::run_once(tape.seed, Some(tape), &body);
-        return Run {
-            failure: outcome.failure,
-            polls: outcome.stats.steps,
-            tape: Some(outcome.tape),
-        };
-    }
-    match scenario.sched {
-        Sched::Random => {
-            let outcome = sim::run_once(scenario.seed, None, &body);
-            Run {
-                failure: outcome.failure,
-                polls: outcome.stats.steps,
-                tape: Some(outcome.tape),
+        (outcome.failure, outcome.stats.steps, Some(outcome.tape))
+    } else {
+        match scenario.sched {
+            Sched::Random => {
+                let outcome = sim::run_once(scenario.seed, None, &body);
+                (outcome.failure, outcome.stats.steps, Some(outcome.tape))
+            }
+            sched => {
+                // One run: the report is that run's.
+                let report = explore(&strategy(sched), scenario.seed, 1, &body);
+                match report.found {
+                    Some(found) => (
+                        found.outcome.failure,
+                        found.outcome.stats.steps,
+                        Some(found.outcome.tape),
+                    ),
+                    None => (None, report.max_polls, None),
+                }
             }
         }
-        sched => {
-            let report = explore(&strategy(sched), scenario.seed, 1, &body);
-            match report.found {
-                Some(found) => Run {
-                    failure: found.outcome.failure,
-                    polls: found.outcome.stats.steps,
-                    tape: Some(found.outcome.tape),
-                },
-                None => Run {
-                    failure: None,
-                    polls: report.max_polls,
-                    tape: None,
-                },
-            }
-        }
+    };
+    let Report { details, sites } =
+        std::mem::take(&mut *report.lock().unwrap_or_else(|p| p.into_inner()));
+    Run {
+        failure,
+        tape,
+        polls,
+        details,
+        sites,
     }
 }
 
@@ -120,7 +115,7 @@ pub fn fuzz_one(scenario: &Scenario) {
         return;
     };
     eprintln!("spawned-fuzz: FAILED: {failure}");
-    for detail in last_details() {
+    for detail in &run.details {
         eprintln!("spawned-fuzz:   {detail}");
     }
     eprintln!(

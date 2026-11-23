@@ -68,10 +68,7 @@ fn instance<'a>(s: &'a State, c: &Call) -> Option<(usize, &'a Inst)> {
 
 /// Something other than its supervisor may have stopped this instance.
 fn could_stop_itself(s: &State, x: &Inst) -> bool {
-    !x.published
-        || x.panicked
-        || cleanup_failed(x)
-        || x.id.is_none_or(|id| s.may_stop.contains(&id))
+    !x.published || x.panicked || x.drop_panicked || x.id.is_none_or(|id| s.may_stop.contains(&id))
 }
 
 /// Tick at which an attempt ended: the factory's return, or the drop of the

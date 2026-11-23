@@ -1,5 +1,7 @@
 //! Panic-injection coverage of a corpus: for every injection site, how many
-//! runs armed it and made it go off, and how often.
+//! runs armed it and made it go off, and how often. "payloads armed" counts
+//! payloads created while their site was armed (payload sites only; a
+//! callback site has no payload).
 //!
 //! ```sh
 //! cd fuzz
@@ -7,26 +9,9 @@
 //!   cargo run --release --example sites -- <corpus-dir> [max-inputs]
 //! ```
 
-use spawned_fuzz::{decode_faults, execute, last_sites};
+use spawned_fuzz::{decode_faults, execute, site::NAMES};
 
-const NAMES: [&str; 16] = [
-    "MSG_DROP",
-    "MSG_CLONE",
-    "REPLY_DROP",
-    "RESULT_DROP",
-    "DONE_DROP",
-    "DONE_PANIC",
-    "WORK_PANIC",
-    "DOWN_PANIC",
-    "EXIT_PANIC",
-    "PAYLOAD_DROP",
-    "FMT",
-    "TRACING",
-    "CONFIGURE_PANIC",
-    "EMIT_DROP",
-    "NOTE_PANIC",
-    "HELPER_DROP",
-];
+const N: usize = NAMES.len();
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -44,29 +29,30 @@ fn main() {
         .map(|e| e.path())
         .collect();
     paths.sort();
-    let (mut armed, mut fired) = ([0u64; 16], [0u64; 16]);
-    let (mut runs_armed, mut runs_fired) = ([0u64; 16], [0u64; 16]);
+    let (mut armed, mut fired) = ([0u64; N], [0u64; N]);
+    let (mut runs_armed, mut runs_fired) = ([0u64; N], [0u64; N]);
     let (mut runs, mut failed) = (0u64, 0u64);
     for path in paths.iter().take(max) {
         let Some(scenario) = decode_faults(&std::fs::read(path).unwrap_or_default()) else {
             continue;
         };
         runs += 1;
-        failed += execute(&scenario, None).failure.is_some() as u64;
-        let (a, f, _) = last_sites();
-        for i in 0..16 {
-            armed[i] += a[i];
-            fired[i] += f[i];
-            runs_armed[i] += (a[i] > 0) as u64;
-            runs_fired[i] += (f[i] > 0) as u64;
+        let run = execute(&scenario, None);
+        failed += run.failure.is_some() as u64;
+        let sites = run.sites;
+        for i in 0..N {
+            armed[i] += sites.payloads_armed[i];
+            fired[i] += sites.fired[i];
+            runs_armed[i] += (sites.armed & (1 << i) != 0) as u64;
+            runs_fired[i] += (sites.fired[i] > 0) as u64;
         }
     }
     println!("{runs} inputs, {failed} failing");
     println!(
         "{:<16} {:>12} {:>12} {:>12} {:>12}",
-        "site", "runs armed", "runs fired", "armed", "fired"
+        "site", "runs armed", "runs fired", "payloads armed", "fired"
     );
-    for i in 0..16 {
+    for i in 0..N {
         println!(
             "{:<16} {:>12} {:>12} {:>12} {:>12}",
             NAMES[i], runs_armed[i], runs_fired[i], armed[i], fired[i]

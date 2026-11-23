@@ -16,7 +16,7 @@
 //! `regressions/<name>.tape` and `tests/<name>.rs`, a test that replays the
 //! minimized tape strictly and sweeps the scenario over simulator seeds.
 
-use spawned_fuzz::{decode_as, execute, last_details, run_body, strategy, Format};
+use spawned_fuzz::{decode_as, execute, run_body, strategy, Format};
 use spawned_rt::tasks::sim;
 use std::path::Path;
 
@@ -70,7 +70,7 @@ fn main() {
         return;
     };
     println!("FAIL: {failure}");
-    for detail in last_details() {
+    for detail in &run.details {
         println!("  {detail}");
     }
     let tape = run.tape.expect("a failing run records its tape");

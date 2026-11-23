@@ -18,7 +18,7 @@ use crate::world::{Worker, World};
 use spawned_concurrency::{
     message::Message,
     tasks::{Context, Handler, JobCtx, JobOptions, JobOutcome, ReplyTo},
-    PendingReply,
+    DeferError, PendingReply,
 };
 use spawned_rt::tasks::{self as rt, sim};
 use std::{sync::Arc, time::Duration};
@@ -34,6 +34,9 @@ pub struct BombRec {
     pub armed: bool,
     /// It went off, on this instance's task (`None`: another task).
     pub fired: Option<Option<usize>>,
+    /// It went off inside its owner's own `reply()` call: a panic of the
+    /// actor's own, not a cleanup failure.
+    pub own_panic: bool,
 }
 
 pub struct Bomb {
@@ -61,6 +64,7 @@ impl Bomb {
                 dropped: 0,
                 armed: armed & site != 0,
                 fired: None,
+                own_panic: false,
             });
             s.bombs.len() - 1
         };
@@ -82,24 +86,25 @@ impl Bomb {
     fn live(&self) -> bool {
         !self.defused && !std::thread::panicking() && !self.world.in_caller()
     }
-    /// Record that it goes off here; attribute it to the instance whose task
-    /// runs now.
+    /// The destructor goes off here: record it on this payload and attribute
+    /// it to the instance whose task runs now.
     fn fire(&self, what: &'static str) -> ! {
         let task_owner = self.world.task_owner();
         {
             let mut s = self.world.lock();
             s.bombs[self.id].fired = Some(task_owner);
-            if let Some(i) = task_owner {
-                if Some(i) == self.owner && self.site == site::REPLY_DROP {
-                    // A reply dropped on its owner's task: in a turn it is a
-                    // handler panic, after D a cleanup failure.
+            if let Some(i) = task_owner.filter(|i| Some(*i) == self.owner) {
+                if s.insts[i].replying {
+                    // Inside the actor's own `reply()` (a caller that left):
+                    // a panic of its own, in a turn or in `stopped()`.
                     s.insts[i].relaxed = true;
-                    let id = s.insts[i].id;
-                    if let Some(id) = id {
+                    s.bombs[self.id].own_panic = true;
+                    if let Some(id) = s.insts[i].id {
                         s.stoppable(id);
                     }
-                } else if Some(i) == self.owner {
-                    s.insts[i].cleanup_fired = true;
+                } else {
+                    // Anywhere else on its task the payload dies past D: a
+                    // cleanup failure (L6), the reason unchanged.
                     s.insts[i].drop_panicked = true;
                 }
             }
@@ -128,15 +133,20 @@ impl Drop for Bomb {
 impl Clone for Bomb {
     fn clone(&self) -> Self {
         if self.clone_armed && self.live() {
-            count(&self.world, site::MSG_CLONE);
-            self.fire("fuzz: injected message clone panic");
+            // Counted as `MSG_CLONE` only: this payload's destructor (its
+            // `MSG_DROP` record) has not gone off. Clones happen in the timer
+            // task (`send_interval`), never in the owner's turn or cleanup.
+            self.world.count(site::MSG_CLONE);
+            panic!("fuzz: injected message clone panic");
         }
         let mut copy = Bomb::new(&self.world, self.site, self.owner);
-        // A copy keeps the original's arming, not the current one.
+        // A copy keeps the original's arming, not the current one, and a
+        // defused original's copy stays defused.
         copy.world.lock().bombs[copy.id].armed = self.drop_armed;
         copy.drop_armed = self.drop_armed;
         copy.clone_armed = self.clone_armed;
         copy.fmt_armed = self.fmt_armed;
+        copy.defused = self.defused;
         copy
     }
 }
@@ -144,6 +154,7 @@ impl Clone for Bomb {
 impl std::fmt::Debug for Bomb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.fmt_armed && self.live() {
+            self.world.count(site::FMT);
             panic!("fuzz: injected Debug panic");
         }
         write!(f, "Bomb({})", self.id)
@@ -167,10 +178,16 @@ impl Drop for PayloadBomb {
     fn drop(&mut self) {
         {
             let mut s = self.world.lock();
-            s.bombs[self.id].dropped += 1;
+            let rec = &mut s.bombs[self.id];
+            rec.dropped += 1;
+            if rec.dropped > 1 {
+                let detail = format!("panic payload {}", self.id);
+                s.violate("M6: a user payload was destroyed twice", detail);
+            }
         }
         if !std::thread::panicking() && !self.world.in_caller() {
-            self.world.lock().bombs[self.id].fired = Some(self.world.task_owner());
+            let task_owner = self.world.task_owner();
+            self.world.lock().bombs[self.id].fired = Some(task_owner);
             panic!("fuzz: injected panic payload destructor panic");
         }
     }
@@ -178,14 +195,6 @@ impl Drop for PayloadBomb {
 
 /// Panic with `what`, or with a [`PayloadBomb`] when `PAYLOAD_DROP` is armed
 /// (now, or for the instance: `faults`).
-/// Count a fault that is not a payload (a callback panic) for the stats.
-pub fn count(world: &World, site: u16) {
-    let bit = site.trailing_zeros() as usize;
-    if bit < 16 {
-        world.lock().site_fires[bit] += 1;
-    }
-}
-
 pub fn inject_panic(world: &Arc<World>, faults: u16, what: &'static str) -> ! {
     if (world.armed() | faults) & site::PAYLOAD_DROP != 0 {
         let id = {
@@ -196,6 +205,7 @@ pub fn inject_panic(world: &Arc<World>, faults: u16, what: &'static str) -> ! {
                 dropped: 0,
                 armed: true,
                 fired: None,
+                own_panic: false,
             });
             s.bombs.len() - 1
         };
@@ -227,9 +237,9 @@ impl tracing::Subscriber for Subscriber {
             && !std::thread::panicking()
             && !self.world.in_caller()
         {
-            self.world.lock().subscriber_panics += 1;
-            count(&self.world, site::TRACING);
-            panic!("fuzz: injected tracing subscriber panic");
+            // No state lock here: an event may be emitted while it is held.
+            self.world.count(site::TRACING);
+            inject_panic(&self.world, 0, "fuzz: injected tracing subscriber panic");
         }
     }
     fn enter(&self, _: &tracing::span::Id) {}
@@ -271,14 +281,27 @@ impl Message for Emitted {
 }
 
 impl Worker {
-    /// Answer a deferred token (unless its caller is gone: the payload would
-    /// be dropped in this turn, a handler panic by design).
+    /// Answer a deferred token. If the caller left, `reply` drops the
+    /// payload here, in this turn (or in `stopped()`): a panic of the
+    /// actor's own (attributed as `relaxed`), like any user code in a turn.
+    /// (Only requests defer: a send or timer `Fx` has no caller, so its
+    /// `defer()` fails and no nonce-0 token exists.)
     fn answer(&self, nonce: u64, token: ReplyTo<Answer>) {
-        // If the caller left, `reply` drops the payload here, in this turn
-        // (or in `stopped()`): a panic of the actor's own (attributed as
-        // `relaxed`), like any user code in a turn.
         let bomb = Bomb::new(&self.world, site::REPLY_DROP, Some(self.instance));
-        token.reply(Answer { nonce, bomb });
+        self.replying(|| token.reply(Answer { nonce, bomb }));
+    }
+
+    /// Run `f`, the actor's own `reply()` call, marked as such (`relaxed`).
+    fn replying<T>(&self, f: impl FnOnce() -> T) -> T {
+        struct Reset<'a>(&'a World, usize);
+        impl Drop for Reset<'_> {
+            fn drop(&mut self) {
+                self.0.lock().insts[self.1].replying = false;
+            }
+        }
+        self.world.lock().insts[self.instance].replying = true;
+        let _reset = Reset(&self.world, self.instance);
+        f()
     }
 
     /// `stopped()`: answer every deferred token.
@@ -326,7 +349,7 @@ impl Worker {
                 done_bomb.defuse();
                 drop(done_bomb);
                 if done_panic {
-                    count(&world, site::DONE_PANIC);
+                    world.count(site::DONE_PANIC);
                     {
                         let mut s = world.lock();
                         s.insts[instance].panicked = true;
@@ -346,7 +369,7 @@ impl Worker {
         // A refused job's `work` and `done` drop inside this call (R7: "on
         // `Err`, `work` and `done` are dropped"): the handler's own context.
         let caller = self.world.clone();
-        let result = caller.calling(|| {
+        let _ = caller.calling(|| {
             if blocking {
                 ctx.pipe_blocking(
                     opts,
@@ -365,7 +388,7 @@ impl Worker {
                             };
                         }
                         if work_panic {
-                            count(&world, site::WORK_PANIC);
+                            world.count(site::WORK_PANIC);
                             inject_panic(&world, faults, "fuzz: injected job panic");
                         }
                         Bomb::new(&world, site::RESULT_DROP, Some(instance))
@@ -394,7 +417,7 @@ impl Worker {
                             rt::sleep(Duration::from_millis(10 * sleep as u64)).await;
                         }
                         if work_panic {
-                            count(&world, site::WORK_PANIC);
+                            world.count(site::WORK_PANIC);
                             inject_panic(&world, faults, "fuzz: injected job panic");
                         }
                         Bomb::new(&world, site::RESULT_DROP, Some(instance))
@@ -403,7 +426,6 @@ impl Worker {
                 )
             }
         });
-        let _ = result;
     }
 }
 
@@ -422,9 +444,19 @@ impl Handler<Fx> for Worker {
         }
         match msg.cmd {
             FaultCmd::Defer => {
-                self.world.lock().deferred.insert(msg.nonce);
-                if let Ok(token) = reply.defer() {
-                    self.deferred.push_back((msg.nonce, token));
+                // A send or timer has no caller (`NoCaller`): nothing to
+                // defer or answer. A deferred token may later be dropped
+                // (`ReplyDropped`); at the credit bound the caller is
+                // answered `Overloaded` now. Either makes that error valid.
+                match reply.defer() {
+                    Ok(token) => {
+                        self.world.lock().deferred.insert(msg.nonce);
+                        self.deferred.push_back((msg.nonce, token));
+                    }
+                    Err(DeferError::Overloaded) => {
+                        self.world.lock().deferred.insert(msg.nonce);
+                    }
+                    Err(_) => {}
                 }
                 return;
             }
@@ -467,9 +499,11 @@ impl Handler<Fx> for Worker {
         if msg.nonce == 0 {
             bomb.defuse();
         }
-        reply.reply(Answer {
-            nonce: msg.nonce,
-            bomb,
+        self.replying(|| {
+            reply.reply(Answer {
+                nonce: msg.nonce,
+                bomb,
+            })
         });
     }
 }
@@ -498,7 +532,8 @@ impl Handler<Emitted> for Worker {
     }
 }
 
-/// The simulated task running now.
-pub fn task() -> u64 {
-    sim::task_id().to_string().parse().unwrap_or(u64::MAX)
+/// The simulated task running now; `None` outside the simulation (a
+/// thread that is not a run's, where `task_id` would read the root's id).
+pub fn task() -> Option<sim::Id> {
+    sim::Handle::try_current().is_ok().then(sim::task_id)
 }

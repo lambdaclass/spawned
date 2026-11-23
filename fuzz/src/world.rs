@@ -14,7 +14,7 @@ use spawned_rt::tasks::{self as rt, sim};
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     sync::{
-        atomic::{AtomicU16, Ordering},
+        atomic::{AtomicU16, AtomicU64, Ordering},
         Arc, Mutex, MutexGuard,
     },
     time::Duration,
@@ -70,14 +70,13 @@ pub struct Inst {
     /// Taken in `started()`; the published reason is read after teardown.
     pub handle: Option<ChildHandle>,
     pub reason: Option<ExitReason>,
-    /// Simulated task running the instance (set in `started()`).
-    pub task: Option<u64>,
-    /// An injected payload destructor of this instance went off on its own
-    /// task: a cleanup failure (L6), never a reason.
-    pub cleanup_fired: bool,
-    /// A reply payload went off on its task (in a turn: a handler panic; after
-    /// D: a cleanup failure): its reason is not predicted.
+    /// A reply payload went off inside the actor's own `reply()` call (in a
+    /// turn or `stopped()`): a panic of its own, so its reason is not
+    /// predicted. (One that goes off on its task anywhere else is past D: a
+    /// cleanup failure, L6.)
     pub relaxed: bool,
+    /// The actor is inside its own `reply()` call (see `relaxed`).
+    pub replying: bool,
     /// `ChildHandle::cleanup_failure()` after teardown.
     pub cleanup_failure: Option<String>,
 }
@@ -189,23 +188,40 @@ pub struct State {
     /// `Fx` requests whose reply was deferred: `ReplyDropped` is a valid answer.
     pub deferred: HashSet<u64>,
     /// Simulated task -> worker instance.
-    pub tasks: HashMap<u64, usize>,
+    pub tasks: HashMap<sim::Id, usize>,
+}
+
+/// Injection-site statistics of one run (`examples/sites.rs`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Sites {
+    /// Sites armed at some point of the run (`scenario::site` bits).
+    pub armed: u16,
+    /// Per site bit: payloads created armed (payload sites only).
+    pub payloads_armed: [u64; 16],
+    /// Per site bit: faults that went off.
+    pub fired: [u64; 16],
+    /// Subscriber panics (`TRACING`).
     pub subscriber_panics: u64,
-    /// Callback faults that went off, per site bit (stats).
-    pub site_fires: [u64; 16],
 }
 
 pub struct World {
     state: Mutex<State>,
     /// Sites armed now (`scenario::site`).
     armed: AtomicU16,
+    /// Sites armed at some point of the run (stats).
+    ever_armed: AtomicU16,
     /// The driver's task and its request tasks: the caller's context, where
     /// no injected fault goes off.
-    callers: Mutex<HashSet<u64>>,
-    /// A handler is inside its own call into the framework (`ctx.pipe*`,
-    /// `ctx.spawn_helper`): a payload the call refuses is dropped there, in
-    /// the caller's context.
-    calling: std::sync::atomic::AtomicBool,
+    callers: Mutex<HashSet<sim::Id>>,
+    /// Tasks whose handler is inside its own call into the framework
+    /// (`ctx.pipe*`, `ctx.spawn_helper`), with the nesting depth: a payload
+    /// the call refuses is dropped there, in the caller's context.
+    calling: Mutex<HashMap<sim::Id, u32>>,
+    /// Callback faults that went off, per site bit (stats). Atomics, so the
+    /// subscriber never takes the state lock (a `tracing` event emitted
+    /// while it is held would deadlock on it).
+    site_fires: [AtomicU64; 16],
+    subscriber_panics: AtomicU64,
 }
 
 impl World {
@@ -213,8 +229,11 @@ impl World {
         Arc::new(Self {
             state: Mutex::new(State::default()),
             armed: AtomicU16::new(0),
+            ever_armed: AtomicU16::new(0),
             callers: Mutex::new(HashSet::new()),
-            calling: std::sync::atomic::AtomicBool::new(false),
+            calling: Mutex::new(HashMap::new()),
+            site_fires: Default::default(),
+            subscriber_panics: AtomicU64::new(0),
         })
     }
     pub fn armed(&self) -> u16 {
@@ -222,36 +241,94 @@ impl World {
     }
     pub fn arm(&self, sites: u16) {
         self.armed.store(sites, Ordering::Relaxed);
+        self.ever_armed.fetch_or(sites, Ordering::Relaxed);
     }
-    pub fn add_caller(&self, task: u64) {
-        self.callers
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(task);
+    /// Count a fault that went off (stats).
+    pub fn count(&self, site: u16) {
+        let bit = site.trailing_zeros() as usize;
+        if bit < 16 {
+            self.site_fires[bit].fetch_add(1, Ordering::Relaxed);
+        }
+        if site == crate::scenario::site::TRACING {
+            self.subscriber_panics.fetch_add(1, Ordering::Relaxed);
+        }
     }
-    /// Run `f`, a handler's call into the framework, as caller context.
-    pub fn calling<T>(&self, f: impl FnOnce() -> T) -> T {
-        struct Reset<'a>(&'a std::sync::atomic::AtomicBool);
-        impl Drop for Reset<'_> {
-            fn drop(&mut self) {
-                self.0.store(false, Ordering::Relaxed);
+    /// The run's injection-site statistics.
+    pub fn sites(&self) -> Sites {
+        let mut sites = Sites {
+            armed: self.ever_armed.load(Ordering::Relaxed),
+            subscriber_panics: self.subscriber_panics.load(Ordering::Relaxed),
+            ..Sites::default()
+        };
+        for (bit, n) in self.site_fires.iter().enumerate() {
+            sites.fired[bit] = n.load(Ordering::Relaxed);
+        }
+        for b in &self.lock().bombs {
+            let bit = b.site.trailing_zeros() as usize;
+            if bit < 16 {
+                sites.payloads_armed[bit] += b.armed as u64;
+                sites.fired[bit] += b.fired.is_some() as u64;
             }
         }
-        self.calling.store(true, Ordering::Relaxed);
-        let _reset = Reset(&self.calling);
+        sites
+    }
+    /// Mark `task` as the caller's context (the driver, a request task).
+    pub fn add_caller(&self, task: Option<sim::Id>) {
+        if let Some(task) = task {
+            self.callers
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(task);
+        }
+    }
+    /// Run `f`, a handler's call into the framework, as caller context of
+    /// the current task (reentrant: a nested call keeps the outer one's).
+    pub fn calling<T>(&self, f: impl FnOnce() -> T) -> T {
+        struct Reset<'a>(&'a World, Option<sim::Id>);
+        impl Drop for Reset<'_> {
+            fn drop(&mut self) {
+                let Some(task) = self.1 else { return };
+                let mut calling = self.0.calling.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(depth) = calling.get_mut(&task) {
+                    *depth -= 1;
+                    if *depth == 0 {
+                        calling.remove(&task);
+                    }
+                }
+            }
+        }
+        let task = crate::fault::task();
+        if let Some(task) = task {
+            *self
+                .calling
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .entry(task)
+                .or_default() += 1;
+        }
+        let _reset = Reset(self, task);
         f()
     }
+    /// No injected fault goes off here: the caller's context, or outside
+    /// the simulation (no task the harness models).
     pub fn in_caller(&self) -> bool {
-        self.calling.load(Ordering::Relaxed)
+        let Some(task) = crate::fault::task() else {
+            return true;
+        };
+        self.calling
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains_key(&task)
             || self
                 .callers
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .contains(&crate::fault::task())
+                .contains(&task)
     }
     /// The worker instance whose task runs now.
     pub fn task_owner(&self) -> Option<usize> {
-        self.lock().tasks.get(&crate::fault::task()).copied()
+        let task = crate::fault::task()?;
+        self.lock().tasks.get(&task).copied()
     }
     pub fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
@@ -441,9 +518,9 @@ impl Actor for Worker {
             inst.id = Some(id);
             inst.started_begin = Some(seq);
             inst.handle = Some(ctx.actor_ref().child_handle());
-            let task = crate::fault::task();
-            inst.task = Some(task);
-            s.tasks.insert(task, self.instance);
+            if let Some(task) = crate::fault::task() {
+                s.tasks.insert(task, self.instance);
+            }
             if twice {
                 s.violate("L1: started() ran twice", format!("w{}", self.instance));
             }
@@ -518,7 +595,7 @@ impl Worker {
         if self.faults & site == 0 {
             return;
         }
-        crate::fault::count(&self.world, site);
+        self.world.count(site);
         {
             let mut s = self.world.lock();
             s.insts[self.instance].panicked = true;
