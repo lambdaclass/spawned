@@ -355,8 +355,9 @@ async fn trace_failed_replacement_starts_a_new_round() {
     }
 }
 
-/// A turn held until the test releases it (V3's collateral child).
-struct Hold;
+/// A turn held until the test releases it (V3's collateral child); the
+/// sender is answered once the turn holds the gate.
+struct Hold(spawned_rt::tasks::oneshot::Sender<()>);
 impl Message for Hold {
     type Result = ();
 }
@@ -376,11 +377,12 @@ impl Handler<Crash> for Held {
 impl Handler<Hold> for Held {
     async fn handle(
         &mut self,
-        _: Hold,
+        Hold(entered): Hold,
         reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         let gate = self.0.lock().unwrap().take();
+        let _ = entered.send(());
         if let Some(gate) = gate {
             let _ = gate.await;
         }
@@ -399,7 +401,10 @@ async fn trace_collateral_child_killed_or_stuck() {
         SupervisorStrategy::OneForAll,
         SupervisorStrategy::RestForOne,
     ] {
-        for release in [true, false] {
+        // Stuck first: with a regression that skips the kill, the stuck
+        // run still writes its trace (CStuck without CKill, rejected by
+        // Cohorts.tla) before the released run fails waiting for CKill.
+        for release in [false, true] {
             let system = ActorSystem::new().unwrap();
             let group = system.async_group("cohort-trace", 2).unwrap();
             let mut tree = system
@@ -442,8 +447,12 @@ async fn trace_collateral_child_killed_or_stuck() {
                 .unwrap();
             let supervisor = within!(tree.start()).await.unwrap();
             let first_held = held.current().unwrap();
-            first_held.send(Hold).unwrap();
-            spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
+            let (entered, holding) = spawned_rt::tasks::oneshot::channel();
+            first_held.send(Hold(entered)).unwrap();
+            spawned_rt::tasks::timeout(LIMIT, holding)
+                .await
+                .expect("the held turn never began")
+                .unwrap();
             origin.current().unwrap().send(Crash).unwrap();
             let mut open = Some(open);
             if release {
@@ -456,6 +465,7 @@ async fn trace_collateral_child_killed_or_stuck() {
                 .await
                 .expect("the collateral child was not killed");
                 let _ = open.take().unwrap().send(());
+                // A ready generation after the first (strictly greater).
                 spawned_rt::tasks::timeout(LIMIT, held.wait_for_generation(1))
                     .await
                     .unwrap()
@@ -476,10 +486,9 @@ async fn trace_collateral_child_killed_or_stuck() {
                     .await
                     .unwrap();
             }
-            assert_eq!(
-                first_held.wait_exit().await,
-                spawned_concurrency::ExitReason::Killed
-            );
+            let reason = first_held.wait_exit().await;
+            // The trace is written before the reason is checked, so the
+            // model judges the run either way.
             write_trace(
                 &format!(
                     "collateral-{}-{strategy:?}",
@@ -489,6 +498,7 @@ async fn trace_collateral_child_killed_or_stuck() {
                 strategy,
                 &["Permanent", "Permanent"],
             );
+            assert_eq!(reason, spawned_concurrency::ExitReason::Killed);
             let _ = system.shutdown(LIMIT).await;
         }
     }

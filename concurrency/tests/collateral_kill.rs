@@ -1,12 +1,17 @@
 //! V3 for a OneForAll/RestForOne round: a collateral child the round stops
 //! that has not reached its death point `shutdown_timeout` after its signal
 //! is killed (`Killed`, design E3), and its slot is stuck (failing the tree)
-//! only if it also misses a second `shutdown_timeout` after the kill.
+//! only if it also misses a second `shutdown_timeout` after the kill. Also
+//! for a trapping child, which queues the round's parent exit signal behind
+//! its held turn: its deadline still starts at the round's stop.
 //!
 //! The collateral child's handler awaits a release that the test controls
 //! (it cannot be preempted, L3), so the timing of the kill and of the
 //! stuck decision is observable. Seeded and in virtual time under
-//! `--cfg spawned_sim`; once on Tokio otherwise.
+//! `--cfg spawned_sim`; once on Tokio otherwise, with wider intervals. A
+//! kill in flight is not observable without the lifecycle trace, so the
+//! release is timed half way between the kill and the stuck decision;
+//! `cohort_trace` waits on the recorded kill instead.
 #![cfg(feature = "async")]
 
 use spawned_concurrency::{
@@ -16,13 +21,20 @@ use spawned_concurrency::{
     tasks::{Actor, Context, Handler},
     ExitReason, PendingReply,
 };
+use spawned_rt::tasks::oneshot;
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
 
+/// Virtual time under sim; on Tokio, wide enough that scheduling lag does
+/// not move the release out of the window between the kill and the stuck
+/// decision.
+#[cfg(spawned_sim)]
 const SHUTDOWN: Duration = Duration::from_millis(100);
-const LIMIT: Duration = Duration::from_secs(5);
+#[cfg(not(spawned_sim))]
+const SHUTDOWN: Duration = Duration::from_millis(400);
+const LIMIT: Duration = Duration::from_secs(10);
 
 fn config(strategy: SupervisorStrategy) -> SupervisorConfig {
     SupervisorConfig::default()
@@ -41,26 +53,38 @@ struct Crash;
 impl Message for Crash {
     type Result = ();
 }
-/// Awaits the shared gate: a turn that will not return until released.
-struct Hold;
+/// Awaits the shared gate: a turn that will not return until released. The
+/// sender is answered once the turn holds the gate.
+struct Hold(oneshot::Sender<()>);
 impl Message for Hold {
     type Result = ();
 }
 
-type Gate = Arc<Mutex<Option<spawned_rt::tasks::oneshot::Receiver<()>>>>;
+type Gate = Arc<Mutex<Option<oneshot::Receiver<()>>>>;
 
 struct Worker {
     gate: Gate,
+    trap: bool,
 }
-impl Actor for Worker {}
+impl Actor for Worker {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        ctx.trap_exit(self.trap);
+    }
+}
 impl Handler<Crash> for Worker {
     async fn handle(&mut self, _: Crash, _: PendingReply<'_, ()>, _: &Context<Self>) {
         panic!("crash for a round");
     }
 }
 impl Handler<Hold> for Worker {
-    async fn handle(&mut self, _: Hold, reply: PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        Hold(entered): Hold,
+        reply: PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         let gate = self.gate.lock().unwrap().take();
+        let _ = entered.send(());
         if let Some(gate) = gate {
             let _ = gate.await;
         }
@@ -68,14 +92,16 @@ impl Handler<Hold> for Worker {
     }
 }
 
-/// Start `origin` (index 0, which crashes) and `held` (index 1, whose turn
-/// is held), run the round, and return what the held child ended with and
-/// whether the supervisor failed, plus the virtual time the round's
-/// outcome took. `release_after`: when the held turn is let go (None:
-/// never within the round).
+/// Start `origin` (index 0, which crashes) and `held` (index 1, after the
+/// origin, so RestForOne stops it too; its turn is held), run the round,
+/// and return what the held child ended with and whether the supervisor
+/// failed, plus the virtual time the round's outcome took.
+/// `release_after`: when the held turn is let go (None: never within the
+/// round). `trap`: the held child traps exits.
 async fn round(
     strategy: SupervisorStrategy,
     release_after: Option<Duration>,
+    trap: bool,
 ) -> (ExitReason, Option<String>, Duration) {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("collateral", 2).unwrap();
@@ -85,12 +111,13 @@ async fn round(
             ChildSpec::new("origin", &group, |_| async {
                 Ok::<_, String>(Worker {
                     gate: Arc::new(Mutex::new(None)),
+                    trap: false,
                 })
             })
             .shutdown_timeout(SHUTDOWN),
         )
         .unwrap();
-    let (release, gate) = spawned_rt::tasks::oneshot::channel();
+    let (release, gate) = oneshot::channel();
     let gate: Gate = Arc::new(Mutex::new(Some(gate)));
     let first_gate = gate.clone();
     let held = builder
@@ -102,7 +129,7 @@ async fn round(
                 } else {
                     Arc::new(Mutex::new(None))
                 };
-                async move { Ok::<_, String>(Worker { gate }) }
+                async move { Ok::<_, String>(Worker { gate, trap }) }
             })
             .shutdown_timeout(SHUTDOWN),
         )
@@ -110,11 +137,14 @@ async fn round(
     let supervisor = builder.start().await.unwrap();
     let held_first = held.wait_ready().await.unwrap();
     let held_handle = held_first.child_handle();
-    held_first.send(Hold).unwrap();
-    spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
+    let (entered, holding) = oneshot::channel();
+    held_first.send(Hold(entered)).unwrap();
+    spawned_rt::tasks::timeout(LIMIT, holding)
+        .await
+        .expect("the held turn never began")
+        .unwrap();
     let began = spawned_rt::time::Instant::now();
     origin.wait_ready().await.unwrap().send(Crash).unwrap();
-    // RestForOne stops the children after the origin: make `held` later.
     let mut release = Some(release);
     let outcome = loop {
         if let (Some(after), Some(_)) = (release_after, release.as_ref()) {
@@ -142,7 +172,7 @@ async fn round(
     let reason = spawned_rt::tasks::timeout(LIMIT, held_handle.wait_exit_async())
         .await
         .expect("the held child never exited");
-    drop(system);
+    let _ = system.shutdown(LIMIT).await;
     (reason, outcome, took)
 }
 
@@ -154,12 +184,14 @@ async fn collateral_child_is_killed_at_shutdown_timeout() {
         SupervisorStrategy::OneForAll,
         SupervisorStrategy::RestForOne,
     ] {
-        let (reason, failure, _) = round(strategy, Some(SHUTDOWN * 3 / 2)).await;
-        assert_eq!(reason, ExitReason::Killed, "{strategy:?}");
-        assert_eq!(
-            failure, None,
-            "{strategy:?}: the round gave up after one interval"
-        );
+        for trap in [false, true] {
+            let (reason, failure, _) = round(strategy, Some(SHUTDOWN * 3 / 2), trap).await;
+            assert_eq!(reason, ExitReason::Killed, "{strategy:?} trap={trap}");
+            assert_eq!(
+                failure, None,
+                "{strategy:?} trap={trap}: the round gave up before the kill"
+            );
+        }
     }
 }
 
@@ -172,9 +204,20 @@ async fn collateral_child_is_stuck_only_after_the_kill_and_a_second_interval() {
         SupervisorStrategy::OneForAll,
         SupervisorStrategy::RestForOne,
     ] {
-        let (reason, failure, took) = round(strategy, None).await;
-        assert!(failure.is_some(), "{strategy:?}");
-        assert!(took >= SHUTDOWN * 2, "{strategy:?}: stuck after {took:?}");
-        assert_eq!(reason, ExitReason::Killed, "{strategy:?}");
+        for trap in [false, true] {
+            let (reason, failure, took) = round(strategy, None, trap).await;
+            // Stuck by the child's controller after its kill, not given up
+            // on by the round coordinator's backstop.
+            let failure = failure.unwrap_or_default();
+            assert!(
+                failure.contains("actor cleanup stuck"),
+                "{strategy:?} trap={trap}: {failure:?}"
+            );
+            assert!(
+                took >= SHUTDOWN * 2,
+                "{strategy:?} trap={trap}: stuck after {took:?}"
+            );
+            assert_eq!(reason, ExitReason::Killed, "{strategy:?} trap={trap}");
+        }
     }
 }

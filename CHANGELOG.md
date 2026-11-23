@@ -12,7 +12,10 @@
   supervisor's: the child is killed at `shutdown_timeout` (OTP's shutdown,
   then kill) and its slot is stuck, failing the tree, only if it also
   misses a second interval after the kill; the coordinator's own wait is a
-  backstop beyond both. `Cohorts.tla` gains `CKill` and `CStuck` with
+  backstop beyond both. The child's controller observes the round's stop
+  directly, so the deadline also starts at the stop for a child that traps
+  exits (its parent exit signal waits behind its current handler).
+  `Cohorts.tla` gains `CKill` and `CStuck` with
   `StuckOnlyAfterKill` (it had no kill or stuck step, so it permitted the
   bug), trace-validated by a new `cohort_trace` scenario; a `#[sim_test]`
   (`collateral_kill`) and planted bug 35 cover it.
