@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Hygiene from an external review: stop tracking 1,644 build artifacts under
+  `examples/thread_only/target/` (`.gitignore` now ignores every `target/`);
+  the crates.io README example uses the 0.8 API (it did not compile) and is
+  now a doctest, so it cannot drift again; the README roadmap, project tree,
+  `semantics.md` status line and the `stack_budget` row in `TESTING.md` match
+  the current state.
 - Bump `url` to 2.5.9 in `Cargo.lock` (RUSTSEC-2026-0592, a stack overflow in
   `Url::origin()`); only the `updater` examples use it, through `reqwest`.
 - Fixed (V3, soundness): a OneForAll or RestForOne round never killed a

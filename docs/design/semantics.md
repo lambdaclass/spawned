@@ -1,6 +1,6 @@
 # Spawned semantics
 
-Status: describes `main` (v0.7.1 plus merged work), 2026-11-10. This is the
+Status: describes `main` (v0.8.0 plus merged 0.9 work), 2026-11-23. This is the
 contract: every guarantee Spawned gives, what checks it, and what it does not
 promise. New designs are reviewed against it ([roadmap](../../ROADMAP.md) rank 5d).
 Usage lives in the [guide](../GUIDE.md); the supervision design rationale in
