@@ -1637,15 +1637,15 @@ times the other rows'); its unpatched control missed in C and in F (300 s,
 | 22 | `send_interval` keeps ticking after its actor stops | 149 (2 tests) | 66 (1 test) | 30 | 52 (T2) | - | - |
 | 23 | System shutdown stops targets in admission order | 65 | 12 | 8 | <1 (S2) | - | - |
 | 24 | System shutdown ignores admission order between actors and trees | 40 | 13 | - | 11 (S2) | - | - |
-| 35 | A round's collateral stop is never killed; stuck after one interval (V3) | 116 (2 tests) | 55 (1 test) | n/r | n/r | - | n/r |
+| 35 | A round's collateral stop is never killed; stuck after one interval (V3) | 116 (2 tests) | 55 (1 test) | n/r | n/r | 50 (1 trace rejected) | n/r |
 | | **Caught** | **24** | **18** | **14** | **22** | **4** | **2** |
 
 Row 35 (layers T, S and V only, so it is not in the totals; n/r is not run;
-T and S 2026-11-21 at `c08d3202`, V V35_DATE): V catches it since the
-trace scenario runs its stuck case first and writes each trace before
-checking the exit reason, so the bug's `CStuck` without a `CKill` reaches
-the model (before, the scenario failed waiting for the kill and wrote no
-trace).
+T and S on 2026-11-21 at `c08d3202`; V on 2026-11-23 on a laptop, the
+collateral trace test and its check only). V catches it because the trace
+scenario runs its stuck case first and writes each trace before checking
+the exit reason, so the bug's `CStuck` without a `CKill` reaches the model.
+Before, the scenario failed waiting for the kill and wrote no trace.
 
 Before the follow-ups (2026-11-11, `cc60801d`, five layers, no K): caught
 T 22, S 15, C 6, F 9, V 4; bugs 08 and 20 hung T; F missed every
