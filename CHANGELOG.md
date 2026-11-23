@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bump `url` to 2.5.9 in `Cargo.lock` (RUSTSEC-2026-0592, a stack overflow in
+  `Url::origin()`); only the `updater` examples use it, through `reqwest`.
 - Release qualification harness, `benchmarks/qualification/`: the client
   canaries and the ethrex memory run, consolidated from the hand-built 0.7.x
   and 0.8.0 runs into one parameterised, manual-only harness. It builds a
