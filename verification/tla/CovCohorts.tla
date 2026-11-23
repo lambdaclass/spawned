@@ -15,6 +15,8 @@ CovNext ==
  \/ \E c \in Children, r \in Epochs, n \in Children : CSelect(c,r,n) /\ L("CSelect", c, r, "")
  \/ \E c \in Children, r \in Epochs :
       \/ CStop(c,r) /\ L("CStop", c, r, "")
+      \/ CKill(c,r) /\ L("CKill", c, r, "")
+      \/ CStuck(c,r) /\ L("CStuck", c, r, "")
       \/ CClean(c,r) /\ L("CClean", c, r, "")
       \/ CResume(c,r) /\ L("CResume", c, r, "")
       \/ CAck(c,r) /\ L("CAck", c, r, "")
