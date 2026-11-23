@@ -1279,9 +1279,12 @@ impl Scope {
             {
                 Either::Left(_) => Err(HelperError::Cancelled),
                 Either::Right((Ok(value), _)) => Ok(value),
-                Either::Right((Err(payload), _)) => Err(HelperError::Panicked(
-                    crate::error::panic_message(&*payload),
-                )),
+                Either::Right((Err(payload), _)) => {
+                    let message = crate::error::panic_message(&*payload);
+                    // The payload's destructor is user code (L6).
+                    crate::mailbox::dispose_panic(payload);
+                    Err(HelperError::Panicked(message))
+                }
             }
         };
         Ok(ScopedTask(self.handle.spawn(Tracked {
@@ -1335,8 +1338,12 @@ where
             drop(work);
             return Err(HelperError::Cancelled);
         }
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
-            .map_err(|p| HelperError::Panicked(crate::error::panic_message(&*p)))
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).map_err(|p| {
+            let message = crate::error::panic_message(&*p);
+            // The payload's destructor is user code (L6).
+            crate::mailbox::dispose_panic(p);
+            HelperError::Panicked(message)
+        })
     }
 }
 

@@ -27,6 +27,17 @@
   scheduled. Its first run (2.5 h, 40 million executions) found no framework
   bug and one wrong oracle (L4 trusted a `trap_exit` made on an exited
   actor), fixed with the regression `untrapped_shutdown_after_late_trap`.
+- Fixed: a panic whose payload's destructor also panics no longer unwinds the
+  actor's lifecycle. The run loop (both modes), helpers, `ChildSpec`
+  factories and native group workers dropped a caught panic payload in place,
+  so a panic in `started()`, a handler or `stopped()` with such a payload
+  skipped `stopped()`, published "actor lifecycle unwound" instead of the
+  hook's reason, and left a managed actor in its group's running set (a
+  native group worker whose actor root unwound with such a payload would also
+  have ended). Every caught payload now goes
+  through `dispose_panic` (L6), and the two remaining unguarded `tracing`
+  calls on cleanup paths (`unfinished_at_stop`, a native root unwinding) are
+  contained. Found by the scenario fuzzer's panic injection.
 - CI reliability: drop `magic-nix-cache-action` (its GitHub Actions cache
   backend failed runs with FlakeHub authentication, cache-service and SSL
   errors); give TLC 75% of RAM (`TLC_HEAP`) so liveness checking no longer runs
