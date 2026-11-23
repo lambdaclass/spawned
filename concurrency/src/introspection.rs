@@ -28,7 +28,7 @@ use std::time::Duration;
 // Public types
 // ---------------------------------------------------------------------------
 
-/// Identity of an [`ActorSystem`](crate::system::ActorSystem), unique in the
+/// Identity of an `ActorSystem`, unique in the
 /// process. Every managed actor's [`ActorInfo::system`] names its system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SystemId(u64);
@@ -151,7 +151,7 @@ pub enum Parent {
     None,
     /// `start_linked` from this actor.
     Actor(ActorId),
-    /// Its [`ActorSystem`](crate::system::ActorSystem): an execution group
+    /// Its `ActorSystem`: an execution group
     /// placed it, or a supervisor (then [`ActorInfo::supervisor`] is set).
     System,
 }
