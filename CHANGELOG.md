@@ -44,7 +44,8 @@
   `CleanupKill`/`StopExited` and `StuckOnlyAfterKill`, which also covers the
   supervisor's wait. It is checked by two model faults, a `shutdown_kill`
   trace scenario (which found the code bug), two recorded-trace controls, a
-  `#[sim_test]` (`collateral_kill::shutdown_kills_a_stopped_child_without_failing_the_tree`)
+  `#[sim_test]` (`collateral_kill::shutdown_kills_a_stopped_child_without_failing_the_tree`,
+  also for a child that traps exits)
   and planted bug 36.
 - Release qualification harness, `benchmarks/qualification/`: the client
   canaries and the ethrex memory run, consolidated from the hand-built 0.7.x

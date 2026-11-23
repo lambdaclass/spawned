@@ -843,10 +843,10 @@ def main():
     require_rejected(stuck, stop_stuck_without_kill,
                      "a stopped child's slot stuck without its kill", args.tlc)
     killed = next(t for t in traces if t.get("name") == "shutdown_kill")
-    def stop_stuck_before_its_second_interval(events):
+    def stop_stuck_before_its_kill(events):
         kill = next(i for i, e in enumerate(events) if e["a"] == "CleanupKill")
         events.insert(kill, dict(events[kill], a="CleanupStuck"))
-    require_rejected(killed, stop_stuck_before_its_second_interval,
+    require_rejected(killed, stop_stuck_before_its_kill,
                      "a stopped child's slot stuck before its kill", args.tlc)
     deferred = next(t for t in traces if t["name"] == "ready_exit_deferred")
     def decide_at_once(events):
