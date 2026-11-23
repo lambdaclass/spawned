@@ -1037,10 +1037,11 @@ Before each release a multi-hour campaign runs by hand
    fixed; it is committed with the fix (and the TLA+ change, if the behaviour
    is modelled), renamed after the cause;
 4. the corpus is reduced with `cargo fuzz cmin` (libFuzzer's smallest subset
-   with the same coverage) and replaces the persistent corpus directory
+   with the same coverage, run on a copy) and, if that succeeded and kept
+   inputs, replaces the persistent corpus directory
    (`-c`, default `~/spawned-work/fuzz-corpus` on fede), so the next campaign
    starts where this one stopped. It is not committed: `fuzz/seeds` stays the
-   small checked-in corpus;
+   small checked-in corpus. A re-triage (`-T`) leaves it alone;
 5. `OUT/summary.txt` records the commit, host, time, executions, coverage,
    failures and emitted regressions.
 
@@ -1062,7 +1063,9 @@ harness false positive (regression `untrapped_shutdown_after_late_trap`, the
 script's 51-byte minimization; see the table below). No framework bug. With
 the oracle fixed, a re-triage (`-T`) of all nine reproduces none.
 
-The script exits non-zero when any failure reproduces. Triage each one as a
+The script exits non-zero when any failure reproduces, or when a replay is
+unresolved: `repro` hung past `REPRO_TIMEOUT` (900 s) or died without an
+oracle verdict (a crash outside the oracles is a failure too). Triage each one as a
 framework bug (fix it with the emitted test, and the model in the same PR if
 the behaviour is modelled) or a wrong oracle (fix the oracle; the emitted
 test stays as its regression). A campaign is clean only when a re-triage

@@ -22,8 +22,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 
 mkdir -p "$out"/corpus "$out"/artifacts "$out"/tapes "$out"/logs
 cp -n "$here"/seeds/* "$out"/corpus/ 2>/dev/null || true
-if [[ -n ${FUZZ_CORPUS:-} && -d $FUZZ_CORPUS ]]; then
-    cp -n "$FUZZ_CORPUS"/* "$out"/corpus/ 2>/dev/null || true
+if [[ -n ${FUZZ_CORPUS:-} && -d "$FUZZ_CORPUS" ]]; then
+    # find, not a glob: a large corpus would exceed ARG_MAX.
+    find "$FUZZ_CORPUS" -maxdepth 1 -type f -exec cp -n {} "$out"/corpus/ \; 2>/dev/null || true
 fi
 cd "$here"
 export RUSTFLAGS="${RUSTFLAGS:-} --cfg spawned_sim --cfg tokio_unstable"
