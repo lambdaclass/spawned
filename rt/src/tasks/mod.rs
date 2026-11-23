@@ -25,6 +25,7 @@ compile_error!(
 mod sim_test;
 pub use sim_test::{sim_test, SimTest};
 
+#[cfg(feature = "fmt-subscriber")]
 use crate::tracing::init_tracing;
 
 pub mod affinity;
@@ -80,8 +81,10 @@ pub fn control_runtime() -> std::io::Result<Runtime> {
         .build()
 }
 
-/// Create a tokio runtime, initialize tracing, and block on the given future.
+/// Create a tokio runtime and block on the given future. With the
+/// `fmt-subscriber` feature it first installs a default `tracing` subscriber.
 pub fn run<F: Future>(future: F) -> F::Output {
+    #[cfg(feature = "fmt-subscriber")]
     init_tracing();
 
     let rt = Runtime::new().unwrap();

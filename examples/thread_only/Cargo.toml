@@ -10,7 +10,7 @@ publish = false
 
 [dependencies]
 spawned-concurrency = { path = "../../concurrency", default-features = false, features = ["threads"] }
-spawned-rt = { path = "../../rt", default-features = false }
+spawned-rt = { path = "../../rt", default-features = false, features = ["fmt-subscriber"] }
 
 [features]
 metrics = ["spawned-concurrency/metrics"]

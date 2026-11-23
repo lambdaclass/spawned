@@ -18,4 +18,5 @@ pub mod sync;
 pub mod tasks;
 pub mod threads;
 pub mod time;
+#[cfg(feature = "fmt-subscriber")]
 mod tracing;
