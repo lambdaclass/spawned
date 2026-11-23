@@ -24,6 +24,7 @@ pub use std::{
 #[cfg(all(feature = "async", not(spawned_sim)))]
 use crate::tasks::Runtime;
 // Native actors keep real Tokio under simulation: they run on OS threads.
+#[cfg(feature = "fmt-subscriber")]
 use crate::tracing::init_tracing;
 #[cfg(all(feature = "async", spawned_sim))]
 use tokio::runtime::Runtime;
@@ -31,8 +32,10 @@ use tokio::runtime::Runtime;
 /// Global list of Ctrl+C subscribers
 static CTRL_C_SUBSCRIBERS: OnceLock<Mutex<Vec<std_mpsc::Sender<()>>>> = OnceLock::new();
 
-/// Initialize tracing and run the given function.
+/// Run the given function. With the `fmt-subscriber` feature it first
+/// installs a default `tracing` subscriber.
 pub fn run(f: fn()) {
+    #[cfg(feature = "fmt-subscriber")]
     init_tracing();
 
     f()
