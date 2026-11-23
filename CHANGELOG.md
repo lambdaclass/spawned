@@ -19,6 +19,14 @@
   codegen unit, so instruction counts follow the code rather than how generic
   code is partitioned across units (which moved `async_ct_burst` by about
   +2.6% between v0.8.0 and main with no change on its path).
+- Release fuzz campaign: `fuzz/release-campaign.sh` fuzzes for hours (default
+  4 h, 8 workers), replays and groups every failure, minimizes each distinct
+  one and writes it as a regression test (`fuzz/tests/campaign_*.rs`, its
+  input and shrunk tape), and keeps a `cmin`-reduced corpus for the next
+  campaign. A manual item of the release checklist (docs/TESTING.md); never
+  scheduled. Its first run (2.5 h, 40 million executions) found no framework
+  bug and one wrong oracle (L4 trusted a `trap_exit` made on an exited
+  actor), fixed with the regression `untrapped_shutdown_after_late_trap`.
 - Fixed: a panic whose payload's destructor also panics no longer unwinds the
   actor's lifecycle. The run loop (both modes), helpers, `ChildSpec`
   factories and native group workers dropped a caught panic payload in place,

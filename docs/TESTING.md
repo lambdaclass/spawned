@@ -1013,6 +1013,64 @@ regressions, generated inputs) and a 60 s single-process smoke run on pull
 requests that touch `rt`, `concurrency`, `macros` or `fuzz`; longer
 campaigns are `workflow_dispatch` only. There is no scheduled run.
 
+#### Release fuzz campaign
+
+Sixty seconds per pull request is a smoke test, not a search: the V1/V2
+oracle fixed in #303 was wrong on main and only a long local run found it.
+Before each release a multi-hour campaign runs by hand
+([release checklist](#release-checklist)), with
+`fuzz/release-campaign.sh`:
+
+1. `campaign.sh` in fork mode (default 4 h, 8 workers) from `fuzz/seeds`
+   plus the previous campaign's minimized corpus;
+2. every crash, timeout and OOM artifact is replayed with `repro` (no
+   libFuzzer) and grouped by the failure it reproduces (`OUT/triage.tsv`); a
+   wall-clock timeout that does not reproduce under the simulator is reported,
+   not emitted;
+3. for each distinct failure the smallest inputs are minimized (`cargo fuzz
+   tmin`; a minimized input that now fails differently is dropped for its
+   original) and the smallest becomes a regression,
+   `fuzz/regressions/campaign_<oracle>_<hash>.{input,tape}` and
+   `fuzz/tests/campaign_<oracle>_<hash>.rs`: the strict replay of its shrunk
+   decision tape (permissive once a fix changes the task structure), plus 32
+   other seeds. The test fails until the framework bug or the oracle is
+   fixed; it is committed with the fix (and the TLA+ change, if the behaviour
+   is modelled), renamed after the cause;
+4. the corpus is reduced with `cargo fuzz cmin` (libFuzzer's smallest subset
+   with the same coverage, run on a copy) and, if that succeeded and kept
+   inputs, replaces the persistent corpus directory
+   (`-c`, default `~/spawned-work/fuzz-corpus` on fede), so the next campaign
+   starts where this one stopped. It is not committed: `fuzz/seeds` stays the
+   small checked-in corpus. A re-triage (`-T`) leaves it alone;
+5. `OUT/summary.txt` records the commit, host, time, executions, coverage,
+   failures and emitted regressions.
+
+```sh
+# on fede, in a spawned checkout under ~/spawned-work, at the release commit
+export CARGO_INCREMENTAL=0
+nice -n 10 fuzz/release-campaign.sh -t 14400 -j 8 -o ~/spawned-work/fuzz-release-<version>
+fuzz/release-campaign.sh -T -o ~/spawned-work/fuzz-release-<version>   # re-triage after a fix
+rm -rf fuzz/target                                                      # about 3 GB
+```
+
+**First release campaign** (2026-11-21, fede, 2.5 h, 8 workers at `nice
+10` on a shared 30-core host, main at `96803e5e` plus the #303 oracle fix):
+40.2 million executions (330-1,100 per second), edge coverage 11,380 after
+one minute and 12,170 at the end, corpus 6,513 inputs reduced to 4,660
+(19 MB). Nine failing inputs, all one failure: the L4 oracle misread the
+trap flag of an actor the driver called `trap_exit` on after it had exited, a
+harness false positive (regression `untrapped_shutdown_after_late_trap`, the
+script's 51-byte minimization; see the table below). No framework bug. With
+the oracle fixed, a re-triage (`-T`) of all nine reproduces none.
+
+The script exits non-zero when any failure reproduces, or when a replay is
+unresolved: `repro` hung past `REPRO_TIMEOUT` (900 s) or died without an
+oracle verdict (a crash outside the oracles is a failure too). Triage each one as a
+framework bug (fix it with the emitted test, and the model in the same PR if
+the behaviour is modelled) or a wrong oracle (fix the oracle; the emitted
+test stays as its regression). A campaign is clean only when a re-triage
+(`-T`) of all its artifacts, on the fixed tree, emits nothing.
+
 **First campaign** (2026-11-11, a shared 30-core Linux server, libFuzzer fork
 mode with 4 then 2 workers at `nice 19`, `-s none`): about 3 h 10 min and
 20 million executions over eight segments; each segment restarted from the
@@ -1043,6 +1101,7 @@ input and, for random schedules, its tape:
 | X3 | `ctx.link` from an exited actor's context is a no-op (`register_link` sees its own table closed), while linking to an exited peer delivers its reason (X5); found by the generated-input test before the campaign. The asymmetry is not stated in the semantics contract. |
 | livelock | a nested subtree that restarts more slowly than its parent's budget refills retries forever; the start is now bounded at 30 s |
 | V5 exhaustion | the oracle measured the window at the end of the exhausting child's last attempt, but a collateral OneForAll child reserves only after its round's cleanup, and a superseding round (a sibling's failed rebuild) makes it reserve again later; the oracle now takes the most grants at any moment up to the tree's last grant (`budget_reserved_after_round`) |
+| L4 (release campaign) | an actor panicked, then an untrapped `Shutdown` replaced the reason during `stopped()` (allowed for a non-trapping actor), but the oracle took the driver's later `trap_exit(true)` on the exited actor as its flag; a trap flag set on an exiting or exited actor is now unknown (`untrapped_shutdown_after_late_trap`) |
 
 ## Scope
 
@@ -2341,6 +2400,11 @@ publishes to crates.io):
    attributed by owner). Link both `SUMMARY.md` files in the release PR. Start
    them by hand; the two runs use different ports and can share a host if the
    disk allows.
+6. A 4-hour [release fuzz campaign](#release-fuzz-campaign) on fede at the
+   release commit (`fuzz/release-campaign.sh -t 14400 -j 8`), started by hand.
+   Every failure it finds is triaged and fixed (framework or oracle) with its
+   emitted regression test before tagging; link `summary.txt` and the
+   triage in the release PR.
 
 ## CI hardening
 
