@@ -204,7 +204,7 @@ Status of each layer. "Planned" items are tracked in the
 | Full functional proofs | Verus or Creusot | Restart budget, backoff window and generation logic wrong for inputs beyond Kani's bound | Later, once the APIs settle |
 | Pure arithmetic | Kani | Overflow, panics and off-by-one in backoff, jitter, the restart window and recovery ids, for all inputs in a bound | `concurrency/src/kani_proofs.rs`, weekly and on `concurrency/src` PRs |
 | Test quality | cargo-mutants | Tests that still pass when the code is broken | Weekly over supervision and system code |
-| Resource budgets | `future_layout`, `stack_budget` | Growth of handles, futures and lifecycle stack depth (a real client stack overflow before v0.7.1) | Sizes in CI; stack budgets in review (PR #220) |
+| Resource budgets | `future_layout`, `stack_budget` | Growth of handles, futures and lifecycle stack depth (a real client stack overflow before v0.7.1) | Sizes and stack budgets in CI (`future_layout`, `stack_budget`) |
 | Compatibility | cargo-semver-checks | Unexpected public API removals | In CI |
 | Macro misuse | trybuild compile-fail tests | `#[protocol]` and `#[actor]` misuse that compiles or gives an unclear error | In CI on the pinned toolchain ([macro diagnostics](#macro-diagnostics)) |
 | Feature separation | cargo-hack | Missing dependencies hidden by dev-dependency feature unification | CI builds each library feature, default, no-default and all features without dev dependencies |

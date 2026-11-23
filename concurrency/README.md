@@ -7,28 +7,31 @@ This crate is part of [spawned](https://github.com/lambdaclass/spawned). See the
 ## Quick Example
 
 ```rust
-use spawned_concurrency::{protocol, Response};
 use spawned_concurrency::tasks::{Actor, ActorStart as _, Context, Handler};
+use spawned_concurrency::{actor, protocol, Response};
 use spawned_rt::tasks as rt;
 
 #[protocol]
 pub trait CounterProtocol: Send + Sync {
-    fn increment(&self);
+    fn increment(&self) -> Response<()>;
     fn get(&self) -> Response<u64>;
 }
 
-pub struct MyCounter { count: u64 }
+use counter_protocol::{Get, Increment};
 
-impl Actor for MyCounter {}
-
-impl Handler<counter_protocol::Increment> for MyCounter {
-    async fn handle(&mut self, _msg: counter_protocol::Increment, _ctx: &Context<Self>) {
-        self.count += 1;
-    }
+pub struct MyCounter {
+    count: u64,
 }
 
-impl Handler<counter_protocol::Get> for MyCounter {
-    async fn handle(&mut self, _msg: counter_protocol::Get, _ctx: &Context<Self>) -> u64 {
+#[actor(protocol = CounterProtocol)]
+impl MyCounter {
+    #[request_handler]
+    async fn handle_increment(&mut self, _msg: Increment, _ctx: &Context<Self>) {
+        self.count += 1;
+    }
+
+    #[request_handler]
+    async fn handle_get(&mut self, _msg: Get, _ctx: &Context<Self>) -> u64 {
         self.count
     }
 }
@@ -36,12 +39,14 @@ impl Handler<counter_protocol::Get> for MyCounter {
 fn main() {
     rt::run(async {
         let counter = MyCounter { count: 0 }.start();
-        counter.increment();
+        counter.increment().await.unwrap();
         let value = counter.get().await.unwrap();
         assert_eq!(value, 1);
     })
 }
 ```
+
+This example is compiled and run as a doctest, so it cannot drift from the API.
 
 ## Two Execution Modes
 
