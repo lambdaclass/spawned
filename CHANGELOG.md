@@ -7,6 +7,11 @@
   reliability campaign runner, the `fede_*`/`collect_*`/`render_*` research
   scripts, their requirements files and an unused Dockerfile. They are at
   `bf59ace0`; the conclusions stay in `benchmarks/README.md`.
+- **Breaking:** `spawned-rt` no longer sets a global `tracing` subscriber in
+  `run()` unless the new opt-in `fmt-subscriber` feature is enabled (the
+  examples enable it), and depends on Tokio with only the features it uses
+  instead of `full`. Downstream crates stop compiling `tracing-subscriber`
+  and Tokio's `fs`/`net`/`process`. See docs/MIGRATION.md.
 - Hygiene from an external review: stop tracking 1,644 build artifacts under
   `examples/thread_only/target/` (`.gitignore` now ignores every `target/`);
   the crates.io README example uses the 0.8 API (it did not compile) and is
