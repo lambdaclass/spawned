@@ -1773,16 +1773,16 @@ Now all 24 are caught by at least one layer and every bug by at least two
 | 17 | Fuzzer **L7** (monitor waiters): after the leak checks, an observer that exits while monitoring a live target leaves the task count where it was before the observer started. A fixed end-of-run probe, so every input catches it | F, C, T, S (was T, S) |
 | 22 | Fuzzer **T2** (stop): a `send_interval` task starts no round after its actor's exit is published (the harness counts clones of the timer message) | F, C, T, S (was T, S) |
 
-**Panic-injection bugs (25-27).** Three patches plant containment bugs on
+**Panic-injection bugs (37-39).** Three patches plant containment bugs on
 the paths the [panic injection](#panic-injection) reaches, each run against
 C and F (600 s) on the injection branch with the payload-disposal fix (#309),
 after a clean baseline (C and F missed, 636,000 executions):
 
 | Bug | Planted fault | C (s) | F (s, oracle) |
 |---|---|---|---|
-| 25 | A payload destroyed after the death point (queued message, discarded job result or callback) is dropped without containment | - | 9 (L6: not recorded as a cleanup failure) |
-| 26 | A fenced job terminal drops `done` and its result in the owner's turn | - | 269 (M: an actor stopped without any cause) |
-| 27 | The handler-panic diagnostic calls the subscriber unguarded (a panicking subscriber skips `stopped()`) | 30 (`exploding_panic_payload_keeps_stopped`) | 3 (L5: `stopped()` did not run after a handler panic) |
+| 37 | A payload destroyed after the death point (queued message, discarded job result or callback) is dropped without containment | - | 9 (L6: not recorded as a cleanup failure) |
+| 38 | A fenced job terminal drops `done` and its result in the owner's turn | - | 269 (M: an actor stopped without any cause) |
+| 39 | The handler-panic diagnostic calls the subscriber unguarded (a panicking subscriber skips `stopped()`) | 30 (`exploding_panic_payload_keeps_stopped`) | 3 (L5: `stopped()` did not run after a handler panic) |
 
 Bug 15 used to be unobservable: before 0.8 `demonitor` was best-effort ("the
 message may still arrive"), so a `Down` after it returned was allowed. Since

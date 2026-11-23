@@ -1,4 +1,4 @@
-Planted bug 27 (handler-panic-log-unguarded): The handler-panic diagnostic calls the tracing subscriber unguarded, so a panicking subscriber unwinds the lifecycle and skips stopped()
+Planted bug 39 (handler-panic-log-unguarded): The handler-panic diagnostic calls the tracing subscriber unguarded, so a panicking subscriber unwinds the lifecycle and skips stopped()
 
 diff --git a/concurrency/src/tasks/actor/lifecycle.rs b/concurrency/src/tasks/actor/lifecycle.rs
 index c4d3764f..8474b2c6 100644

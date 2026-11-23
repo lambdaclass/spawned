@@ -1,4 +1,4 @@
-Planted bug 25 (cleanup-drop-uncontained): A payload the framework destroys after the death point (queued message, discarded job result or callback) is dropped without containment
+Planted bug 37 (cleanup-drop-uncontained): A payload the framework destroys after the death point (queued message, discarded job result or callback) is dropped without containment
 
 diff --git a/concurrency/src/mailbox.rs b/concurrency/src/mailbox.rs
 index 6d473e27..000d0b3b 100644

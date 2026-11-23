@@ -1,4 +1,4 @@
-Planted bug 26 (fenced-job-drop-in-turn): A fenced job terminal drops its done callback and result in the owner's turn, so their destructor panic kills the owner
+Planted bug 38 (fenced-job-drop-in-turn): A fenced job terminal drops its done callback and result in the owner's turn, so their destructor panic kills the owner
 
 diff --git a/concurrency/src/tasks/jobs.rs b/concurrency/src/tasks/jobs.rs
 index fa83ae99..7a546e2d 100644
