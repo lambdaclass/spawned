@@ -744,6 +744,8 @@ async fn message_loop<A: Actor, C: Fn()>(
             }
             if let Err(panic) = result {
                 let msg = panic_message(&*panic);
+                // The payload is user code too: its destructor may panic (L6).
+                crate::mailbox::dispose_panic(panic);
                 crate::actor_cleanup::log_safely(|| {
                     tracing::error!("Panic in message handler: {msg}");
                 });
@@ -876,6 +878,8 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
         match start_result {
             Err(panic) => {
                 let msg = panic_message(&*panic);
+                // The payload is user code too: its destructor may panic (L6).
+                crate::mailbox::dispose_panic(panic);
                 crate::actor_cleanup::log_safely(|| {
                     tracing::error!("Panic in started() callback: {msg}");
                 });
@@ -1015,6 +1019,8 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
     .await;
     if let Err(panic) = stop_result {
         let msg = panic_message(&*panic);
+        // The payload is user code too: its destructor may panic (L6).
+        crate::mailbox::dispose_panic(panic);
         crate::actor_cleanup::log_safely(|| {
             tracing::error!("Panic in stopped() callback: {msg}");
         });
