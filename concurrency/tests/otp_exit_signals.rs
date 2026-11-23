@@ -1420,7 +1420,9 @@ mod threads_mode {
                 .send_request(Ping, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
                 .unwrap();
             actor.child_handle().kill();
-            release.send(()).unwrap();
+            // The kill may win before `Block` is dequeued: then `Block` is
+            // dropped with the mailbox and the gate is already closed.
+            let _ = release.send(());
             assert_eq!(ended(&actor.child_handle()), ExitReason::Killed);
             stopped_with(queued, &ExitReason::Killed);
             stopped_with(stored, &ExitReason::Killed);
