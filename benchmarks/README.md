@@ -56,9 +56,39 @@ python3 benchmarks/hotpath.py abba --cores 12-15 --reps 30  # wall clock, before
 ```
 
 `gate` is the `perf-gate` CI check: it fails when instructions per operation
-grow more than 3% over the merge base. `abba` alternates base and head on the
+grow more than 3% over the merge base, or more than 3% over the last release
+tag (`--release`; the cumulative budget per release cycle, so small per-PR
+regressions cannot add up). `abba` alternates base and head on the
 same cores and reports the median and spread. See
 [performance gate](../docs/TESTING.md#performance-gate).
+
+## Client qualification
+
+`qualification/` runs a client built on a spawned candidate next to the
+client's `main` on one host, for a day or two on a real network, and judges
+it against fixed thresholds. It is a release gate (a 24 h paired ethlambda run
+and a 48 h ethrex memory run per release); manual only, never scheduled.
+
+| File | Role |
+|---|---|
+| `qualify.py` | CLI: `init`, `build` (clone, build, single-spawned check), `launch` (preflight, detached controller), `run`, `status`, `stop` (bounded), `analyze`, `check-binary` |
+| `clients.py` | per-client ports, command lines, probes and fault hooks (ethlambda; ethrex with its Lighthouse) |
+| `sampler.py` | CPU, RSS, fds, threads, head/sync, peers, datadir, spawned metrics, host RAM |
+| `analyze.py` | `results/SUMMARY.md` and `verdict.json`: pass/fail checks, per-node tables, shutdowns, faults, supervision events, heap-growth attribution |
+| `node.sh` | runs one node with a per-run log and PID file |
+| `patches/ethrex-jemalloc-stats.patch` | optional ethrex patch: jemalloc counters and raw dumps for `HEAP_PROFILE=1` |
+
+```sh
+D=~/spawned-work/qual-ethlambda-<release>
+python3 benchmarks/qualification/qualify.py init $D PRESET=ethlambda-paired-24h \
+  CANDIDATE_REF=pull/783/head SPAWNED_REV=<commit> BUILD_ENV=$D/build.env
+python3 benchmarks/qualification/qualify.py build $D
+python3 benchmarks/qualification/qualify.py launch $D
+python3 benchmarks/qualification/qualify.py check-binary <binary> --lock Cargo.lock
+```
+
+The plan, the settings, the thresholds and how to read the summary are in
+[client qualification](../docs/TESTING.md#client-qualification).
 
 ## Reliability campaign
 

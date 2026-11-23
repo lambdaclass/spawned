@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Release qualification harness, `benchmarks/qualification/`: the client
+  canaries and the ethrex memory run, consolidated from the hand-built 0.7.x
+  and 0.8.0 runs into one parameterised, manual-only harness. It builds a
+  client's port at a spawned commit and the client's `main`, fails a
+  candidate that links a second spawned (the 0.5.0 copy that hid in the
+  0.8.0 ethlambda build), runs both side by side through warmup, paired
+  TERM/INT shutdown cycles, fault injection and a long soak, samples process,
+  sync, host-RAM and spawned metrics (optionally jemalloc heap profiles
+  attributed by owner), and writes a summary with pass/fail thresholds. The
+  release checklist now requires a 24 h paired ethlambda run and a 48 h
+  ethrex memory run (docs/TESTING.md, "Client qualification").
+- Perf gate: every measured binary (release, base, head) is built with one
+  codegen unit, so instruction counts follow the code rather than how generic
+  code is partitioned across units (which moved `async_ct_burst` by about
+  +2.6% between v0.8.0 and main with no change on its path).
 - CI reliability: drop `magic-nix-cache-action` (its GitHub Actions cache
   backend failed runs with FlakeHub authentication, cache-service and SSL
   errors); give TLC 75% of RAM (`TLC_HEAP`) so liveness checking no longer runs
@@ -46,6 +61,15 @@
   non-blocking disposal and checks the queue drains and every worker retires
   after its keep-alive (`disposal.keep_alive` failpoint with `failpoints`).
   The soak harness judges the three gauges.
+- `perf-gate` also holds every PR to a cumulative budget: the head may grow
+  at most 3% instructions per operation over the last release tag
+  (`git describe --match 'v*'`), not only over its merge base, so small
+  per-PR regressions cannot add up across a release cycle. The job summary
+  table shows release, base and head with both changes. The release binary
+  is built once per release and cached (`hotpath.py build-release` on pushes
+  to main). `threads_request_seq`, whose thread
+  interleaving varies on a loaded host, takes the median of nine run pairs
+  instead of three.
 - Fix the flaky `supervision::transient_startup_timeout_retries_after_actual_cleanup`
   (a 20 ms startup deadline raced the fast starts on a loaded host, which also
   made cargo-mutants report surviving mutants as caught): the replacement's

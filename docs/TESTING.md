@@ -2097,6 +2097,111 @@ nice -n 19 taskset -c 26-29 target/release/deps/soak-<hash> \
 Runs are by hand only: no schedule. Run a 4-hour soak before each release
 ([release checklist](#release-checklist)).
 
+## Client qualification
+
+The soak harness churns spawned alone; client qualification runs the two
+production clients on a release candidate for a day or two on a real network.
+`benchmarks/qualification/` is the checked-in harness, consolidated from the
+hand-built canaries of 0.7.x and 0.8.0 (the ethlambda 24 h paired canary, the
+combined 0.8.0 canary and the ethrex 48 h memory run), so every release runs
+the same test with the same thresholds.
+
+**What one run does.** `qualify.py build` clones the client, checks out the
+candidate (a commit, branch or `pull/<N>/head`) and the control (the client's
+`main`), and builds both in release with `CARGO_INCREMENTAL=0` and the
+client's own `rust-toolchain.toml`; the target directory is deleted afterwards.
+With `SPAWNED_REV` the candidate is pointed at that spawned commit by
+[`client-compat-patch.sh`](#client-compatibility), so the same version rules
+apply. It then checks the candidate contains **exactly one spawned**: one
+`spawned-concurrency` in `Cargo.lock`, and one spawned source root among the
+panic-location paths embedded in the binary (crates.io `spawned-concurrency-X/`,
+git `checkouts/spawned-*/<rev>/` or a local path). The 0.8.0 canary's first
+ethlambda build passed every test with spawned 0.5.0 linked next to 0.8.0
+through `ethrex-p2p`; that binary fails this check.
+
+`qualify.py launch` runs the preflight (ports free, disk, binaries, a fault
+hook in the candidate) and starts the controller detached with `setsid`; the
+nodes run in a tmux session named after the run directory. The plan:
+
+1. start control and candidate side by side on the same host (ports
+   `prefix * 10000 + base`, control prefix 1, candidate 2; ethrex nodes each
+   get their own Lighthouse), wait until their APIs answer;
+2. warm up (`WARMUP_S`, 15 min); with `WAIT_SYNC=1` also wait until every node
+   is synced for 10 probes in a row;
+3. paired shutdown cycles: for each of `TERM INT TERM INT TERM INT`, stop
+   control then candidate with that signal, restart both, wait 120 s; each stop
+   is bounded (`STOP_TIMEOUT_S`, 40 s, then SIGKILL) and recorded with the
+   elapsed time, exit code and the client's logged shutdown time;
+4. fault injection on the candidate (`ETHLAMBDA_FAULT_INJECTION` /
+   `ETHREX_FAULT_INJECTION`, SIGUSR1 crashes a supervised actor): three
+   spaced crashes that must each log a supervised restart (and, for ethlambda,
+   the HTTP API must answer again), then a burst that must exhaust the restart
+   budget and log a give-up; then the candidate restarts clean;
+5. soak to `DURATION_S` after launch (or after sync with `SOAK_ANCHOR=sync`),
+   with jemalloc heap profiles every `HEAP_EVERY_S` when `HEAP_PROFILE=1`;
+6. bounded stop of everything, a final sample, and the analysis.
+
+A sampler records every `SAMPLE_S` (30 s): per node CPU, RSS (anon/file),
+threads, fds, head, sync distance, peers, API health, datadir size and the core
+spawned counters (`results/samples.csv`); every `spawned_*` series in long
+form (`spawned_metrics.csv`); host RAM as the operator sees it (MemTotal -
+MemAvailable), `/proc/meminfo` and the anon RSS of every other process, since
+the host is shared (`host.csv`); and the full `/metrics` every 10 minutes.
+With `HEAP_PROFILE=1` (ethrex), the build adds `jemalloc_profiling` and line
+tables, `patches/ethrex-jemalloc-stats.patch` adds jemalloc's counters to the
+samples, and the summary attributes heap growth between profiles to RocksDB,
+the client, spawned, Tokio or other code by the first non-allocator frame.
+
+**Pass/fail** (`results/SUMMARY.md`, `results/verdict.json`; `qualify.py
+analyze` reruns it any time). The soak window starts `SETTLE_S` (1 h) after
+the soak began, on the process that ran the whole window. The run FAILs on:
+
+| Check | Fails when |
+|---|---|
+| single spawned version | the candidate binary or lock holds a second spawned |
+| bounded shutdown | any candidate stop needed SIGKILL |
+| fault injection | an expected restart or give-up was not logged, or the API did not come back |
+| panics outside injected faults | any panic line in a candidate log, excluding the fault-phase process after the phase began |
+| unexpected exits | the candidate exited without being stopped (the run stops early) |
+| RSS drift | paired: candidate RSS slope more than 10 MB/h (or 10% of the control's slope, if larger) above the control's; alone: above 25 MB/h |
+| fd slope | paired: candidate fd slope more than 5/h (or 10% of the control's) above the control's; alone: above 5/h |
+| sync distance | under 99% of samples within 2 slots (ethlambda) or 2 blocks behind the CL (ethrex), unless within 1 point of the control |
+| API answers | under 99% of samples |
+| spawned counters | any `messages_rejected` or `handlers_panicked` (fault process excluded), or any `requests_timed_out` in the soak window; missing spawned metrics fail too |
+
+Trends on windows shorter than `MIN_TREND_S` (1 h) are reported but not
+judged. Every threshold is a `TH_*` setting. A run stopped early (STOP file,
+disk guard, a candidate crash) is INCOMPLETE, never a pass. The comparison is
+the client's port against its `main`, so a difference can be the client's
+change as well as spawned's; a failure is investigated, never waved through by
+raising a threshold. Calibration on the 0.8.0 ethlambda canary: both nodes had
+an fd slope of about +19/h (the client's own growth) and RSS slopes of -1.5 and
+-5.9 MB/h, which pass the paired checks.
+
+```sh
+H=benchmarks/qualification        # a spawned checkout on the qualification host
+D=~/spawned-work/qual-ethlambda-0.9.0
+python3 $H/qualify.py init $D PRESET=ethlambda-paired-24h \
+  CANDIDATE_REF=pull/783/head SPAWNED_REV=<release commit> \
+  BUILD_ENV=$D/build.env PUBLIC_IP=<host address>
+python3 $H/qualify.py build $D
+python3 $H/qualify.py launch $D
+python3 $H/qualify.py status $D   # any time
+python3 $H/qualify.py stop $D     # bounded early stop (or: touch $D/STOP)
+```
+
+Presets: `ethlambda-paired-24h`; `ethrex-memory-48h` (one ethrex node with
+its Lighthouse, fresh datadirs, 48 h after sync, heap profiles every 4 h, no
+cycles or faults; needs `LIGHTHOUSE_BIN` and disk for a hoodi node pair); and
+`smoke` (every phase shortened to 45 minutes; a harness check, not a
+qualification). Run `qualify.py --help` and see `DEFAULTS` in `qualify.py` for
+every setting. Host-specific values (`BUILD_ENV` with `LIBCLANG_PATH` or
+OpenSSL paths, `PUBLIC_IP`, an existing datadir in `DATA_CANDIDATE`) are given
+per run and never committed. jwt secrets and node keys are generated per run
+under `$D/secrets` (mode 0600) unless given. The harness never deletes or
+regenerates chain data, and never installs cron, systemd or any schedule:
+every run is started by hand.
+
 ## Performance gate
 
 Robustness features must add no cost on the default path, and a performance
@@ -2112,18 +2217,55 @@ across releases (`#[actor]` handlers, `request()`, `send()`).
 **CI: instruction counts** (`perf-gate` workflow, every PR and the merge
 queue). Wall-clock numbers on shared runners are too noisy, so the gate counts
 instructions with callgrind. Each benchmark runs at two sizes (2,000 and 6,000
-operations, three runs each); instructions per operation is the difference
-divided by the extra operations, so process start, runtime and actor setup
-cancel. Only deterministic benchmarks are gated: the async ones on a Tokio
-current-thread runtime (`async_ct_*`: burst, sequential and 16-task
-`request()`, `send` from one and two producer tasks; identical counts run to
-run) and threads-mode sequential `request()` (a lockstep pair of threads,
-within 0.5%). On a multi-threaded runtime, or with free-running OS-thread
+operations); instructions per operation is the difference divided by the
+extra operations, so process start, runtime and actor setup cancel, and the
+gate takes the median over run pairs. Every measured binary is built with one
+codegen unit: with the default sixteen, how generic code is split across
+units changes with unrelated code size, and with it which futures are
+inlined, which moved the same workload by up to ±5% between builds (more
+than the budget). Only deterministic benchmarks are
+gated: the async ones on a Tokio current-thread runtime (`async_ct_*`: burst,
+sequential and 16-task `request()`, `send` from one and two producer tasks;
+identical counts run to run, three pairs) and threads-mode sequential
+`request()` (a lockstep pair of threads, nine pairs). Valgrind runs one guest
+thread at a time, but a thread blocked in a syscall lets the other run, so
+the host scheduler decides how the requester and the actor interleave, and
+how often they spin, park and wake. On an idle machine, such as the CI
+runner, a woken thread finds a free CPU at once and the count repeats (run
+pairs within 0.05%). Under load it does not: on fede (load average 40-80 on
+30 CPUs) run pairs spread 5-6%. In twenty gates there (two sets of ten)
+the median of nine pairs the gate now uses kept the change against an
+identical base within -0.8% to +1.4% and against v0.8.0 within -0.2% to
++1.6%. On the same samples the old median of three reached +3.8% against
+the release, a false failure.
+Two other fixes were tried and rejected. The minimum over runs, on the
+theory that contention only adds instructions, moved -1.6% to +3.5%, one
+false failure: the noise is in both sizes, so the difference of the minima
+is not a lower bound. Pinning each run to one CPU gave 1.5% spreads on
+loaded fede but 10% on the CI runner, where every hand-off then depends on
+wakeup preemption. On a multi-threaded runtime, or with free-running OS-thread
 producers (threads-mode burst and `send`), how often actors park and wake
 changes from run to run (up to ±20% instructions), so those run only in the
 wall-clock check. The gate fails when any benchmark's instructions per operation grow
 more than 3% over the merge base (`--threshold`, or `HOTPATH_THRESHOLD` in the
-workflow). The job summary has the per-benchmark table. The workflow always
+workflow).
+
+A per-PR budget alone lets regressions add up: ten PRs at +2.5% each all pass.
+So the same job also measures the last release tag (`git describe --tags
+--abbrev=0 --match 'v*'`) with the same driver and harness, and fails when
+any benchmark grows more than 3% over that release (`--release`,
+`--release-threshold`, or `HOTPATH_RELEASE_THRESHOLD`): the cumulative budget
+for a release cycle. A PR that is under 3% on its own can still fail because
+of earlier PRs; then the fix is to win back instructions on that path, not to
+raise the threshold. A deliberate cost (a new guarantee on the request path)
+is argued in the PR and the release budget is reset only by tagging the next
+release. The release binary is built once per release, driver and toolchain:
+pushes to main build it into the Actions cache (`hotpath.py build-release`),
+and PRs restore it. The release is built with the default features, which
+every release has; features removed since (such as the `*-experiments` ones
+in 0.9) are not used by the driver. The job summary has the per-benchmark
+table: release, base and head instructions per operation, the change against
+the base and against the release. The workflow always
 reports, so it can be a required check, but it only builds and measures when
 `concurrency/src`, `rt/src`, `macros/src`, the driver, a Cargo manifest or
 lockfile, or the pinned Rust toolchain changed. Release version bumps run the
@@ -2133,6 +2275,7 @@ gate too; they cannot inherit a passing source check without measurement.
 python3 benchmarks/hotpath.py gate                  # HEAD vs merge base with main
 python3 benchmarks/hotpath.py gate --base origin/main --head origin/my-branch --threshold 3
 python3 benchmarks/hotpath.py gate --features metrics   # both sides with the metrics feature
+python3 benchmarks/hotpath.py gate --release v0.8.0   # also the cumulative check, as in CI
 ```
 
 CI gates the default build. `--features` builds both sides with extra
@@ -2202,6 +2345,13 @@ publishes to crates.io):
 4. The wall-clock [performance](#performance-gate) A/B against the previous
    release on a quiet machine: no hot-path benchmark more than 5% slower.
    Link the table in the release PR.
+5. [Client qualification](#client-qualification) for both clients on the
+   release commit (`SPAWNED_REV`), each a PASS: a 24 h paired ethlambda run
+   (`PRESET=ethlambda-paired-24h`, the client's port PR against its `main`)
+   and a 48 h ethrex memory run (`PRESET=ethrex-memory-48h`, heap profiles
+   attributed by owner). Link both `SUMMARY.md` files in the release PR. Start
+   them by hand; the two runs use different ports and can share a host if the
+   disk allows.
 
 ## CI hardening
 
