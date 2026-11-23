@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Breaking:** `spawned-rt` no longer sets a global `tracing` subscriber in
+  `run()` unless the new opt-in `fmt-subscriber` feature is enabled (the
+  examples enable it), and depends on Tokio with only the features it uses
+  instead of `full`. Downstream crates stop compiling `tracing-subscriber`
+  and Tokio's `fs`/`net`/`process`. See docs/MIGRATION.md.
 - Bump `url` to 2.5.9 in `Cargo.lock` (RUSTSEC-2026-0592, a stack overflow in
   `Url::origin()`); only the `updater` examples use it, through `reqwest`.
 - Release qualification harness, `benchmarks/qualification/`: the client
