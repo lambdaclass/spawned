@@ -129,8 +129,6 @@ async fn start_link_through_an_exiting_parent_is_refused() {
     }
     .start()
     .await
-    .unwrap()
-    .started()
     .unwrap();
     let result = parent.request(StopThenLink).await.unwrap();
     assert!(
@@ -184,8 +182,6 @@ async fn ready_after_the_group_closed_fails_the_start() {
     .with_options(&group)
     .start()
     .await
-    .unwrap()
-    .started()
     .unwrap();
     let shutdown = {
         let system = system.clone();
@@ -276,8 +272,7 @@ async fn the_init_timer_never_kills_a_ready_child() {
         .start()
         .await;
     match result {
-        Ok(outcome) => {
-            let actor = outcome.started().unwrap();
+        Ok(actor) => {
             spawned_rt::tasks::sleep(Duration::from_millis(20)).await;
             assert!(
                 actor.request(Ping).await.is_ok(),
@@ -308,8 +303,6 @@ async fn a_timer_reaching_the_cell_after_ready_loses() {
         .with_options(StartOptions::new().init_timeout(Duration::from_millis(20)))
         .start()
         .await
-        .unwrap()
-        .started()
         .unwrap();
     // Until the delayed timer has reached the cell.
     let deadline = std::time::Instant::now() + LIMIT;

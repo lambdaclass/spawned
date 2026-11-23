@@ -57,10 +57,13 @@ pub struct Mock {
     start: StartHooks,
 }
 
+/// A mock's `started()` override.
+type OnStarted = Box<dyn FnOnce(&Context<Mock>) -> Init<Mock> + Send>;
+
 /// The mock's start behaviour (`on_started`, `start_delay`, `drop_flag`).
 #[derive(Default)]
 struct StartHooks {
-    on_started: Option<Box<dyn FnOnce(&Context<Mock>) -> Init<Mock> + Send>>,
+    on_started: Option<OnStarted>,
     delay: Option<Duration>,
     drop_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
