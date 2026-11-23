@@ -672,10 +672,10 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                 Either::Left(_) => return Err("construction cancelled".into()),
                 Either::Right((Ok(result), _)) => result,
                 Either::Right((Err(payload), _)) => {
-                    return Err(format!(
-                        "factory panicked: {}",
-                        crate::error::panic_message(&*payload)
-                    ))
+                    let message = crate::error::panic_message(&*payload);
+                    // The payload's destructor is user code (L6).
+                    crate::mailbox::dispose_panic(payload);
+                    return Err(format!("factory panicked: {message}"));
                 }
             };
             let actor = result?;
