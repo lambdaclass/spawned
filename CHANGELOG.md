@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- CI: AI review runs Codex, Claude and Grok automatically; Kimi, DeepSeek and
+  Gemini only on demand (`/review`, `/kimi`, `/deepseek`, `/gemini`).
 - Bump `url` to 2.5.9 in `Cargo.lock` (RUSTSEC-2026-0592, a stack overflow in
   `Url::origin()`); only the `updater` examples use it, through `reqwest`.
 - Release qualification harness, `benchmarks/qualification/`: the client
