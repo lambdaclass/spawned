@@ -144,7 +144,7 @@ section maps each one to what spawned does and lists where it is still behind.
 | Fault injection | Failpoints at named sites in the lifecycle code; suites that panic in every user callback and drop every public future at every await point |
 | Formal specifications | TLA+ models of every lifecycle protocol, each invariant with a negative control that must fail; Apalache proofs of the safety invariants |
 | Specs tied to the code | Trace validation of real runs against the models, trace coverage, and the required `model-sync` check: code that changes modelled behaviour without its model fails CI |
-| Proving the tests work | The [planted-bug matrix](#planted-bug-sensitivity) (all 24 realistic bugs caught, each by two or more layers), `cargo-mutants`, and the [semantics coverage](#semantics-coverage) matrix (a check that fails for all 50 guarantees) |
+| Proving the tests work | The [planted-bug matrix](#planted-bug-sensitivity) (all 24 realistic bugs of the six-layer run caught, each by two or more layers; each later bug, added with the fix it guards, caught by the layers it targets), `cargo-mutants`, and the [semantics coverage](#semantics-coverage) matrix (a check that fails for all 50 guarantees) |
 | Fuzzing, metamorphic testing | The coverage-guided [scenario fuzzer](#scenario-fuzzing-fuzz) with contract oracles; one workload on every backend must give the same result |
 | Linearizability checking | A Porcupine-style checker over concurrent request histories |
 | Memory-model checking | Loom, ThreadSanitizer, LeakSanitizer and Kani proofs |
@@ -204,7 +204,7 @@ Status of each layer. "Planned" items are tracked in the
 | Full functional proofs | Verus or Creusot | Restart budget, backoff window and generation logic wrong for inputs beyond Kani's bound | Later, once the APIs settle |
 | Pure arithmetic | Kani | Overflow, panics and off-by-one in backoff, jitter, the restart window and recovery ids, for all inputs in a bound | `concurrency/src/kani_proofs.rs`, weekly and on `concurrency/src` PRs |
 | Test quality | cargo-mutants | Tests that still pass when the code is broken | Weekly over supervision and system code |
-| Resource budgets | `future_layout`, `stack_budget` | Growth of handles, futures and lifecycle stack depth (a real client stack overflow before v0.7.1) | Sizes in CI; stack budgets in review (PR #220) |
+| Resource budgets | `future_layout`, `stack_budget` | Growth of handles, futures and lifecycle stack depth (a real client stack overflow before v0.7.1) | Sizes and stack budgets in CI (`future_layout`, `stack_budget`) |
 | Compatibility | cargo-semver-checks | Unexpected public API removals | In CI |
 | Macro misuse | trybuild compile-fail tests | `#[protocol]` and `#[actor]` misuse that compiles or gives an unclear error | In CI on the pinned toolchain ([macro diagnostics](#macro-diagnostics)) |
 | Feature separation | cargo-hack | Missing dependencies hidden by dev-dependency feature unification | CI builds each library feature, default, no-default and all features without dev dependencies |
@@ -1610,7 +1610,9 @@ python3 -m unittest scripts/tests/test_model_sync.py            # self-tests and
 Mutation testing breaks one operator at a time. To measure whether the stack
 catches the bugs a reviewer would actually miss, 24 realistic bugs were written
 by hand (`verification/planted/patches/`, one patch each, listed in
-`INDEX.tsv`) and each was run, alone, against six layers:
+`INDEX.tsv`) and each was run, alone, against six layers. Later bugs are
+added with the fix they guard and numbered by PR (25-34 #293, 35 #310), and
+run on the layers that target them (their rows say which):
 
 | Layer | What runs | Budget |
 |---|---|---|
@@ -1623,7 +1625,7 @@ by hand (`verification/planted/patches/`, one patch each, listed in
 
 ```sh
 verification/planted/run.sh -l TSCFVK -f 900 -o /tmp/planted baseline   # control: every layer must miss
-verification/planted/run.sh -l TSCFVK -f 600 -o /tmp/planted             # all 24 patches
+verification/planted/run.sh -l TSCFVK -f 600 -o /tmp/planted             # every patch
 verification/planted/run.sh -l TS -o /tmp/planted verification/planted/patches/09-*.patch
 ```
 
@@ -1694,7 +1696,15 @@ times the other rows'); its unpatched control missed in C and in F (300 s,
 | 22 | `send_interval` keeps ticking after its actor stops | 149 (2 tests) | 66 (1 test) | 30 | 52 (T2) | - | - |
 | 23 | System shutdown stops targets in admission order | 65 | 12 | 8 | <1 (S2) | - | - |
 | 24 | System shutdown ignores admission order between actors and trees | 40 | 13 | - | 11 (S2) | - | - |
+| 35 | A round's collateral stop is never killed; stuck after one interval (V3) | 116 (2 tests) | 55 (1 test) | n/r | n/r | 50 (1 trace rejected) | n/r |
 | | **Caught** | **24** | **18** | **14** | **22** | **4** | **2** |
+
+Row 35 (layers T, S and V only, so it is not in the totals; n/r is not run;
+T and S on 2026-11-21 at `c08d3202`; V on 2026-11-23 on a laptop, the
+collateral trace test and its check only). V catches it because the trace
+scenario runs its stuck case first and writes each trace before checking
+the exit reason, so the bug's `CStuck` without a `CKill` reaches the model.
+Before, the scenario failed waiting for the kill and wrote no trace.
 
 Before the follow-ups (2026-11-11, `cc60801d`, five layers, no K): caught
 T 22, S 15, C 6, F 9, V 4; bugs 08 and 20 hung T; F missed every

@@ -7,6 +7,10 @@
 (* again when selected (supervision.rs charge_round). Exhaustion itself is *)
 (* Supervision's (BudgetBounded); here RoundCharged pins the charge to the *)
 (* rounds. Fault "PerChildCharge" restores v0.7's charge per rebuilt child.*)
+(* A stopped child that misses its shutdown time is killed (CKill, V3, OTP *)
+(* shutdown then kill); its slot is stuck (CStuck, failing the tree) only  *)
+(* after the kill. Fault "StuckWithoutKill" lets a slot be stuck without   *)
+(* it (the pre-fix round path: the round gave up after one interval).     *)
 EXTENDS Naturals, FiniteSets, Sequences, TLC
 (* `@type:` comments are Apalache annotations (CohortsInd.tla); TLC       *)
 (* ignores them. Integer ranges with a state-dependent bound are written   *)
@@ -38,8 +42,9 @@ ASSUME Mode \in [Children -> {"Permanent", "Transient", "Temporary"}]
 \*   scanned: Set(Int), affected: Set(Int), stopped: Set(Int),
 \*   clean: Set(Int), resumed: Set(Int), ack: Set(Int), terminal: Set(Int),
 \*   gen: Int -> Int, live: Int -> Set(Int), published: Int -> Int,
-\*   begun: Set(Int), charged: Int,
-\*   badBarrier: Bool, badClosed: Bool, badTerminal: Bool, badRetry: Bool };
+\*   begun: Set(Int), charged: Int, killed: Set(Int),
+\*   badBarrier: Bool, badClosed: Bool, badTerminal: Bool, badRetry: Bool,
+\*   badStuck: Bool };
 CohortTypeAliases == TRUE
 VARIABLE
  \* @type: $cohortState;
@@ -54,9 +59,9 @@ Init ==
       affected |-> {}, stopped |-> {}, clean |-> {}, resumed |-> {},
       ack |-> {}, terminal |-> {}, gen |-> [c \in Children |-> 0],
       live |-> [c \in Children |-> {}], published |-> [c \in Children |-> 0],
-      begun |-> {}, charged |-> 0,
+      begun |-> {}, charged |-> 0, killed |-> {},
       badBarrier |-> FALSE, badClosed |-> FALSE, badTerminal |-> FALSE,
-      badRetry |-> FALSE]
+      badRetry |-> FALSE, badStuck |-> FALSE]
 Range == {j \in 0..N : s.start <= j}   \* = s.start..N, since start \in 0..N
 Active == Children \ s.terminal
 CRequest(c,r,x) ==
@@ -75,7 +80,8 @@ CSelect(c,r,n) ==
           !.covered = [j \in Children |-> IF j >= n THEN r ELSE s.covered[j]],
           !.pending = {j \in s.pending : j < n},
           !.scanned = {}, !.affected = {}, !.stopped = {}, !.clean = {},
-          !.resumed = {}, !.ack = {}, !.begun = {}, !.phase = "Assign"]
+          !.resumed = {}, !.ack = {}, !.begun = {}, !.killed = {},
+          !.phase = "Assign"]
 CAssign(c,r,x) ==
  /\ s.phase = "Assign" /\ r = s.epoch
  /\ Range \ s.scanned # {} /\ c = Minimum(Range \ s.scanned)
@@ -90,6 +96,18 @@ CStop(c,r) ==
  /\ s.affected \ s.clean # {} /\ c = Maximum(s.affected \ s.clean)
  /\ c \notin s.stopped
  /\ s' = [s EXCEPT !.stopped = @ \cup {c}]
+\* The stopped child missed its shutdown time: its controller kills it.
+CKill(c,r) ==
+ /\ s.phase = "Stopping" /\ r = s.epoch
+ /\ c \in s.stopped \ s.clean /\ s.live[c] # {} /\ c \notin s.killed
+ /\ s' = [s EXCEPT !.killed = @ \cup {c}]
+\* It missed a second interval after the kill: its slot is stuck (the tree
+\* fails; its close is CClose). Not before the kill (V3).
+CStuck(c,r) ==
+ /\ s.phase = "Stopping" /\ r = s.epoch
+ /\ c \in s.stopped \ s.clean /\ s.live[c] # {}
+ /\ c \in s.killed \/ Fault = "StuckWithoutKill"
+ /\ s' = [s EXCEPT !.badStuck = @ \/ c \notin s.killed]
 CClean(c,r) ==
  /\ c \in Children /\ 1 <= r /\ r <= s.epoch
  /\ IF r < s.epoch THEN s' = s
@@ -169,6 +187,7 @@ TypeOK ==
  /\ s.live \in [Children -> SUBSET (1..MaxGen)]
  /\ s.published \in [Children -> 0..MaxGen]
  /\ s.charged \in 0..(MaxRounds * N)
+ /\ s.killed \subseteq Children
 AtMostOneGeneration == \A c \in Children : Cardinality(s.live[c]) <= 1
 PublishedIsLive == \A c \in Children : s.published[c] # 0 => s.published[c] \in s.live[c]
 StrategySelection == s.epoch = 0 \/ s.start = ExpectedStart(s.origin)
@@ -183,15 +202,18 @@ DoneMeansQuiescent == s.phase = "Done" => \A c \in Children : s.live[c] = {}
 \* Rank 5f: one restart grant per selected round (superseded ones included),
 \* none per rebuilt child.
 RoundCharged == s.charged = s.epoch
+\* V3: a stopped child's slot is stuck only after its kill.
+StuckOnlyAfterKill == ~s.badStuck
 Safety == TypeOK /\ AtMostOneGeneration /\ PublishedIsLive /\ StrategySelection
           /\ WholeCohortBarrier /\ NoStartAfterClose /\ NoRetiredParticipant
           /\ TemporaryStartsOnce /\ DoneMeansQuiescent /\ OneStartPerRound
-          /\ FirstStartOnce /\ RoundCharged
+          /\ FirstStartOnce /\ RoundCharged /\ StuckOnlyAfterKill
 Next ==
  \/ \E c \in Children, r \in Epochs, x \in {"true","false"} : CRequest(c,r,x)
  \/ \E c \in Children, r \in Epochs, n \in Children : CSelect(c,r,n)
  \/ \E c \in Children, r \in Epochs, x \in {"true","false"} : CAssign(c,r,x)
  \/ \E c \in Children, r \in Epochs : CStop(c,r) \/ CClean(c,r) \/ CResume(c,r) \/ CAck(c,r) \/ CRetire(c,r)
+ \/ \E c \in Children, r \in Epochs : CKill(c,r) \/ CStuck(c,r)
  \/ \E c \in Children, r \in Epochs, n \in 1..MaxGen : CBegin(c,r,n) \/ CReady(c,r,n)
  \/ \E c \in Children, n \in 1..MaxGen : CJoined(c,n)
  \/ \E r \in Epochs, x \in {"complete","superseded"} : CEnd(r,x)

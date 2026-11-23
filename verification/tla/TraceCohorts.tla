@@ -8,6 +8,8 @@ TraceAction(e) ==
  [] e.a = "CSelect" -> CSelect(e.c,e.r,e.n)
  [] e.a = "CAssign" -> CAssign(e.c,e.r,e.x)
  [] e.a = "CStop" -> CStop(e.c,e.r)
+ [] e.a = "CKill" -> CKill(e.c,e.r)
+ [] e.a = "CStuck" -> CStuck(e.c,e.r)
  [] e.a = "CClean" -> CClean(e.c,e.r)
  [] e.a = "CResume" -> CResume(e.c,e.r)
  [] e.a = "CBegin" -> CBegin(e.c,e.r,e.n)
