@@ -566,9 +566,7 @@ async fn group_ready_wait_is_cancel_safe() {
                 spawned_rt::tasks::timeout(LIMIT, actor.ready())
                     .await
                     .unwrap()
-                    .unwrap()
-                    .started()
-                    .expect("started");
+                    .unwrap();
                 assert!(registry::registered().contains(&name));
                 usable(&actor).await;
                 fx.finish(&[&actor]).await;
@@ -778,11 +776,7 @@ async fn system_shutdown_is_cancel_safe() {
                 let mut probe = fx.probe();
                 probe.name = Some(name.clone());
                 let actor = fx.spawn(probe);
-                within!(actor.ready())
-                    .await
-                    .unwrap()
-                    .started()
-                    .expect("started");
+                within!(actor.ready()).await.unwrap();
                 let helper_gate = Arc::new(Notify::new());
                 actor.request(Cmd::Helper(helper_gate)).await.unwrap();
                 let system = fx.system.as_ref().unwrap();
@@ -818,11 +812,7 @@ async fn system_shutdown_is_cancel_safe() {
                 let mut probe = fx.probe();
                 probe.stop_gate = Some(gate.clone());
                 let actor = fx.spawn(probe);
-                within!(actor.ready())
-                    .await
-                    .unwrap()
-                    .started()
-                    .expect("started");
+                within!(actor.ready()).await.unwrap();
                 // A short grace, not zero: the trapping probe must dispatch the
                 // parent's exit and enter stopped() before the kill at grace
                 // (E3). With zero grace the kill can land first and skip
@@ -861,11 +851,7 @@ async fn helper_join_is_cancel_safe() {
             async move {
                 let fx = Fx::new(place);
                 let actor = fx.spawn(fx.probe());
-                within!(actor.ready())
-                    .await
-                    .unwrap()
-                    .started()
-                    .expect("started");
+                within!(actor.ready()).await.unwrap();
                 let gate = Arc::new(Notify::new());
                 let waiting = gate.clone();
                 let task = actor

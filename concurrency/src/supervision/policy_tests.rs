@@ -78,9 +78,7 @@ async fn initial_placement_failure_has_deterministic_failed_slots() {
                 rt::timeout(Duration::from_secs(10), occupied.ready())
                     .await
                     .unwrap()
-                    .unwrap()
-                    .started()
-                    .expect("started");
+                    .unwrap();
                 let mut tree = system.supervisor(SupervisorConfig::default()).unwrap();
                 let first = tree
                     .add(ChildSpec::new("first", &group, |_| async {
@@ -288,9 +286,7 @@ async fn admission_closure_after_readiness_preserves_fixed_system_order() {
                 .unwrap()
                 .ready()
                 .await
-                .unwrap()
-                .started()
-                .expect("started");
+                .unwrap();
             }
             let mut builder = system.supervisor(SupervisorConfig::default()).unwrap();
             let child_log = log.clone();
@@ -322,9 +318,7 @@ async fn admission_closure_after_readiness_preserves_fixed_system_order() {
             .unwrap()
             .ready()
             .await
-            .unwrap()
-            .started()
-            .expect("started");
+            .unwrap();
             let (entered, arrival) = rt::oneshot::channel();
             let (release, gate) = rt::oneshot::channel();
             Ordered {
@@ -338,9 +332,7 @@ async fn admission_closure_after_readiness_preserves_fixed_system_order() {
             .unwrap()
             .ready()
             .await
-            .unwrap()
-            .started()
-            .expect("started");
+            .unwrap();
             let shutdown = system.shutdown(limit);
             tokio::pin!(shutdown);
             assert!(futures::poll!(&mut shutdown).is_pending());
@@ -411,9 +403,7 @@ async fn startup_completion_or_drop_after_readiness_preserves_system_order() {
                     .unwrap()
                     .ready()
                     .await
-                    .unwrap()
-                    .started()
-                    .expect("started");
+                    .unwrap();
                 }
                 let mut builder = system.supervisor(SupervisorConfig::default()).unwrap();
                 let child_log = log.clone();
@@ -458,9 +448,7 @@ async fn startup_completion_or_drop_after_readiness_preserves_system_order() {
                 .unwrap()
                 .ready()
                 .await
-                .unwrap()
-                .started()
-                .expect("started");
+                .unwrap();
                 let (entered, arrival) = rt::oneshot::channel();
                 let (release, gate) = rt::oneshot::channel();
                 Ordered {
@@ -474,9 +462,7 @@ async fn startup_completion_or_drop_after_readiness_preserves_system_order() {
                 .unwrap()
                 .ready()
                 .await
-                .unwrap()
-                .started()
-                .expect("started");
+                .unwrap();
                 let shutdown = system.shutdown(limit);
                 tokio::pin!(shutdown);
                 assert!(futures::poll!(&mut shutdown).is_pending());

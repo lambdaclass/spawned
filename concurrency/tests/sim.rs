@@ -146,9 +146,7 @@ async fn shutdown_order(log: Log) -> Vec<u32> {
             .unwrap()
             .ready()
             .await
-            .unwrap()
-            .started()
-            .expect("started");
+            .unwrap();
     }
     let mut tree = system
         .supervisor(config(SupervisorStrategy::OneForOne))
@@ -174,9 +172,7 @@ async fn shutdown_order(log: Log) -> Vec<u32> {
             .unwrap()
             .ready()
             .await
-            .unwrap()
-            .started()
-            .expect("started");
+            .unwrap();
     }
     let report = system.shutdown(LIMIT).await;
     assert!(report.complete, "shutdown incomplete");

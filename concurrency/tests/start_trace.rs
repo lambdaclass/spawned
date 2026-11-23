@@ -152,8 +152,6 @@ async fn parent(trap: bool) -> (spawned_concurrency::tasks::ActorRef<Parent>, Se
     }
     .start()
     .await
-    .unwrap()
-    .started()
     .unwrap();
     (p, seen)
 }
@@ -268,8 +266,6 @@ async fn link_ready_then_stop() {
     let child = Child::new(Outcome::Ready)
         .start_link(&p.context())
         .await
-        .unwrap()
-        .started()
         .unwrap();
     child.request(Work).await.unwrap();
     child.request(Stop).await.unwrap();
@@ -423,8 +419,6 @@ async fn named_start_clash_and_release() {
         .with_options(StartOptions::new().name(NAME.clone()))
         .start()
         .await
-        .unwrap()
-        .started()
         .unwrap();
     assert_eq!(NAME.whereis().map(|a| a.id()), Some(first.id()));
     let clash = Child::new(Outcome::Ready)
@@ -444,8 +438,6 @@ async fn named_start_clash_and_release() {
         .with_options(StartOptions::new().name(NAME.clone()))
         .start()
         .await
-        .unwrap()
-        .started()
         .unwrap();
     again.request(Stop).await.unwrap();
     again.wait_exit().await;
@@ -477,10 +469,10 @@ async fn ignore_answers_ignored() {
     let spawned = Child::new(Outcome::Ignore).spawn();
     assert!(matches!(
         spawned.ready().await,
-        Ok(StartOutcome::Ignored { pending: None })
+        Err(StartError::Ignored { pending: None })
     ));
     assert_eq!(spawned.wait_exit().await, ExitReason::Normal);
-    let waited = Child::new(Outcome::Ignore).start().await.unwrap();
+    let waited = StartOutcome::from_result(Child::new(Outcome::Ignore).start().await).unwrap();
     assert!(waited.is_ignored());
     // Invalid options: refused before anything exists.
     assert!(matches!(
@@ -641,8 +633,8 @@ async fn kill_and_admin_stop_during_started() {
     // OTP gen_server:stop: the stop waits for started(); the start succeeds,
     // then the actor exits with the stop's reason through stopped().
     let child = match starting.await {
-        Ok(StartOutcome::Started(child)) => child,
-        other => panic!("{other:?}"),
+        Ok(child) => child,
+        Err(error) => panic!("{error:?}"),
     };
     assert_eq!(child.wait_exit().await, ExitReason::Shutdown(None));
     children_done(2).await;
@@ -719,8 +711,6 @@ async fn unlinked_child_sends_no_notice() {
     let child = Child::new(Outcome::Ready)
         .start_link(&p.context())
         .await
-        .unwrap()
-        .started()
         .unwrap();
     child.request(Unlink(p.child_handle())).await.unwrap();
     child.request(Stop).await.unwrap();
@@ -754,15 +744,11 @@ async fn inherited_thread_group_capacity() {
     .with_options(&group)
     .start()
     .await
-    .unwrap()
-    .started()
     .unwrap();
     lifecycle_trace::record_start_parent(&p.child_handle());
     let first = Child::new(Outcome::Ready)
         .start_link(&p.context())
         .await
-        .unwrap()
-        .started()
         .unwrap();
     let full = Child::new(Outcome::Ready).start_monitor(&p.context()).await;
     assert!(matches!(full, Err(StartError::Capacity)), "{full:?}");
@@ -772,8 +758,6 @@ async fn inherited_thread_group_capacity() {
     let (second, _monitor) = Child::new(Outcome::Ready)
         .start_monitor(&p.context())
         .await
-        .unwrap()
-        .started()
         .unwrap();
     second.request(Stop).await.unwrap();
     second.wait_exit().await;
@@ -851,11 +835,10 @@ async fn stuck_ignore_answers_pending() {
     let (p, _) = parent(false).await;
     lifecycle_trace::record_start_parent(&p.child_handle());
     let (release, hang) = std::sync::mpsc::channel();
-    let outcome = Stuck(Some(HangsInDrop(hang))).start().await.unwrap();
-    let pending = match outcome {
-        StartOutcome::Ignored {
+    let pending = match Stuck(Some(HangsInDrop(hang))).start().await {
+        Err(StartError::Ignored {
             pending: Some(pending),
-        } => pending,
+        }) => pending,
         other => panic!("{other:?}"),
     };
     release.send(()).unwrap();
@@ -913,10 +896,7 @@ async fn threads_mode_link_and_continuation() {
         let log = log.clone();
         move || {
             let failed = threads::ActorStart::start_link(TChild(true, log.clone()), &ctx);
-            let ready = threads::ActorStart::start_link(TChild(false, log), &ctx)
-                .unwrap()
-                .started()
-                .unwrap();
+            let ready = threads::ActorStart::start_link(TChild(false, log), &ctx).unwrap();
             ready.request(Stop).unwrap();
             ready.wait_exit();
             (failed, ready)
@@ -966,8 +946,6 @@ async fn dispatch_failure_after_commit_kills_child() {
     .with_options(&group)
     .start()
     .await
-    .unwrap()
-    .started()
     .unwrap();
     lifecycle_trace::record_start_parent(&p.child_handle());
     failpoints::configure("system.dispatch_actor", FailPoint::new(Action::Error)).unwrap();

@@ -120,11 +120,7 @@ async fn completed_turn_is_not_reported_while_helper_cleanup_remains() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("canary-helper", 1).unwrap();
     let actor = Worker.with_options(&group).spawn().unwrap();
-    within!(actor.ready())
-        .await
-        .unwrap()
-        .started()
-        .expect("started");
+    within!(actor.ready()).await.unwrap();
     actor.context().register_name("canary-standalone").unwrap();
     let (entered, arrival) = oneshot::channel();
     let (release, gate) = std::sync::mpsc::channel();
@@ -435,11 +431,7 @@ async fn panicked_turn_is_cleared_before_stopped_hook() {
     .with_options(&group)
     .spawn()
     .unwrap();
-    within!(actor.ready())
-        .await
-        .unwrap()
-        .started()
-        .expect("started");
+    within!(actor.ready()).await.unwrap();
     assert!(actor.request(Quit(ExitReason::Kill)).await.is_err());
     spawned_rt::tasks::timeout(LIMIT, arrival)
         .await
@@ -490,17 +482,9 @@ async fn trapped_exit_diagnostics_use_the_public_signal_name() {
     .with_options(&group)
     .spawn()
     .unwrap();
-    within!(observer.ready())
-        .await
-        .unwrap()
-        .started()
-        .expect("started");
+    within!(observer.ready()).await.unwrap();
     let source = Worker.with_options(&group).spawn().unwrap();
-    within!(source.ready())
-        .await
-        .unwrap()
-        .started()
-        .expect("started");
+    within!(source.ready()).await.unwrap();
     observer.context().link(&source.child_handle());
     source
         .child_handle()

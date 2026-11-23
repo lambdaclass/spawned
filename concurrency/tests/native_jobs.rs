@@ -72,7 +72,7 @@ async fn shutdown_waits_for_the_blocking_job(borrowed: bool) {
     .with_options(&group)
     .spawn()
     .unwrap();
-    actor.ready().await.unwrap().started().expect("started");
+    actor.ready().await.unwrap();
     for _ in 0..500 {
         if running.load(Ordering::SeqCst) {
             break;
@@ -263,7 +263,7 @@ async fn an_unused_permit_does_not_hold_the_scope(borrowed: bool) {
         system.async_group("unused-permit-owned", 1).unwrap()
     };
     let actor = Owner.with_options(&group).spawn().unwrap();
-    actor.ready().await.unwrap().started().expect("started");
+    actor.ready().await.unwrap();
     // Reserved through a cloned context and kept outside the actor, unused.
     let permit: BlockingJobPermit<Owner> = actor
         .context()

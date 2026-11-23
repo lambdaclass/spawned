@@ -71,9 +71,7 @@ async fn managed_actor_stopped_before_first_poll_starts_then_stops() {
     spawned_rt::tasks::timeout(LIMIT, owner.ready())
         .await
         .unwrap()
-        .unwrap()
-        .started()
-        .expect("started");
+        .unwrap();
     let (entered, arrival) = tokio::sync::oneshot::channel();
     let (release, gate) = std::sync::mpsc::channel();
     // Intentionally occupy the sole worker to force the next root to remain
@@ -121,7 +119,7 @@ async fn managed_actor_stopped_before_first_poll_starts_then_stops() {
         spawned_rt::tasks::timeout(LIMIT, actor.ready())
             .await
             .unwrap(),
-        Ok(spawned_concurrency::StartOutcome::Started(()))
+        Ok(())
     ));
     assert_eq!(counts.started.load(Ordering::SeqCst), 1);
     assert_eq!(counts.stopped.load(Ordering::SeqCst), 1);

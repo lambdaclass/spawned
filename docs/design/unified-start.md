@@ -84,6 +84,36 @@ mid-`init` in OTP except by returning `{stop, R}`, so it is the same as
 `ReadyReturnCommitsReady` (control `AdminStopFailsInit`, revision 3's row 3);
 trace control "an administrative stop during started() fails the start".
 
+**Revision 5 (maintainer decision, after implementation): the waiting verbs
+return `Result<T, StartError>`, with `ignore` as `Err(StartError::Ignored)`.**
+Revisions 1-4 returned `Result<StartOutcome<T>, StartError>`, so every
+ordinary start read `a.start().await?.started().unwrap()` (103 sites in the
+implementation PR alone), and the `.unwrap()` panics exactly when an actor
+does return `ignore`. The section 17 row "`Err(Ignored)` is not Rust-forced"
+judged the shape by OTP's term (`ignore` beside `{ok, Pid}`); that is still
+true, and it is reversed on **ergonomics, not semantics**: Erlang matches the
+three-way term in one `case`, while in Rust the two-level type forces every
+caller, including the large majority whose actors never ignore, through a
+second unwrap. Nothing observable changes: `Init::ignore()` still commits
+`Ignored`, ends the child `Normal`, is answered after publication (or with
+`pending: Some` at the cleanup deadline), never kills a non-trapping parent,
+and is still distinct from every failure (`StartError::is_ignored`; the
+variant carries the same `pending`). The startup cell, its commitment, the
+publication order, `Start.tla`, `TraceStart.tla` and the trace (`SAnswer`/
+`SReady` still record `ignored`) are unchanged: the cell answers
+`StartOutcome` internally and the verbs convert at the API boundary.
+Supervisors never read the verbs' result type (they observe the instance's
+startup state), so their handling of `ignore` is unchanged (section 9 is not
+yet implemented; a supervised `Init::ignore()` is still a failed start).
+**One adapter instead of new verbs:** `StartOutcome::from_result(result)`
+turns any `Result<T, StartError>` back into `Ok(Started(T))`,
+`Ok(Ignored { pending })` or the failure. It covers `start`, `start_link`,
+`start_monitor`, `with_options(..)` and `ready()` in both modes with one
+associated function, where `start_with_outcome` would need three verbs on
+`ActorStart`, three on `Starter` and a threads copy of each; a
+`StartOptions` flag cannot change the return type. `StartOutcome` stays the
+shared shape with the dynamic supervisor (section 18).
+
 Revision 2 answered both round-one reviews. Revision 3 answers both round-two
 reviews (Codex and agy, both "approve after the listed changes", no P0). What
 changed and why is in [Review resolutions](#20-review-resolutions).
@@ -108,7 +138,7 @@ changed and why is in [Review resolutions](#20-review-resolutions).
 
 | # | Decision | OTP |
 |---|---|---|
-| 1 | `start`, `start_link` and `start_monitor` wait for the child's `started()`. They answer `Started` when it is ready, `Ignored` for `Init::ignore()`, or the error. An error is returned only after the child's publication: it is dead, its state is dropped and its name is free | `gen_server:start*` are synchronous on `init/1`; `sync_start` awaits the `'DOWN'` |
+| 1 | `start`, `start_link` and `start_monitor` wait for the child's `started()`. They answer the ready actor, or the error (`StartError::Ignored`, which is not a failure, for `Init::ignore()`; revision 5). An error is returned only after the child's publication: it is dead, its state is dropped and its name is free | `gen_server:start*` are synchronous on `init/1`; `sync_start` awaits the `'DOWN'` |
 | 2 | `spawn` does not wait; `ActorRef::ready()` returns the same committed result later | `proc_lib:spawn` |
 | 3 | `started()` may fail. It returns `()`, `Result<(), E>` or `Init<Self>`: ready, continue, error, stop or ignore | `init/1` returns `{ok,S}`, `{ok,S,{continue,C}}`, `{error,R}` (OTP 26 `init_fail/3`), `{stop,R}` or `ignore` |
 | 4 | Each start has one **startup cell** with one terminal commitment: ready, failed, ignored or timed out. It is committed exactly once, by the child at the end of `started()` or by the init timer. Readiness is final and independent of the waiter | `init_ack` is sent before the loop starts; the timer and the ack race in the caller's `receive` |
@@ -176,7 +206,7 @@ impl<A: Actor> Starter<A> {
 #[must_use = "the actor runs; await this to learn whether it started"]
 pub struct Starting<A: Actor, T> { /* ... */ }
 impl<A: Actor, T> IntoFuture for Starting<A, T> {
-    type Output = Result<StartOutcome<T>, StartError>;
+    type Output = Result<T, StartError>;            // ignore: Err(StartError::Ignored)
 }
 impl<A: Actor, T> Starting<A, T> {
     /// The unready instance, without waiting or consuming the result (Err
@@ -191,20 +221,24 @@ impl<A: Actor, T> Starting<A, T> {
 #[must_use]
 pub enum StartOutcome<T> { Started(T), Ignored { pending: Option<ChildHandle> } }
 impl<T> StartOutcome<T> {
+    /// Ok(t) -> Ok(Started(t)); Err(Ignored { pending }) -> Ok(Ignored { pending });
+    /// any other Err unchanged. One adapter for every verb and ready() (revision 5).
+    pub fn from_result(result: Result<T, StartError>) -> Result<Self, StartError>;
     pub fn started(self) -> Option<T>;
     pub fn is_ignored(&self) -> bool;
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> StartOutcome<U>;
 }
 
 impl<A: Actor> ActorRef<A> {
     /// The committed startup result of this instance, for every placement.
-    pub async fn ready(&self) -> Result<StartOutcome<()>, StartError>;
+    pub async fn ready(&self) -> Result<(), StartError>;
 }
 ```
 
 ### 2.2 threads (`spawned_concurrency::threads`)
 
 The verbs and `with_options` have the same names. The waiting forms block
-and return `Result<StartOutcome<T>, StartError>`. `ready()` blocks. threads
+and return `Result<T, StartError>`. `ready()` blocks. threads
 mode has one placement (a thread), so its `StartOptions` has no `group`,
 `backend` or `placement_of`; these are tasks-only, like `ActorSystem`. The
 only difference between the modes is `.await` against blocking, as for
@@ -281,7 +315,7 @@ The startup decision therefore wins, and its requested reason **is** the
 final reason. The starter's answer, `wait_exit`, and every linked parent's
 `Exit` or `Down` all carry the same reason:
 
-- `Ok(Ignored)` and `InitFailed` always mean the child ended `Normal`;
+- `Ignored` and `InitFailed` always mean the child ended `Normal`;
 - a non-trapping linked parent is never killed by an ignored or `Normal`
   failed start.
 
@@ -301,9 +335,9 @@ which reopens the window) and `KillBeforeDIsKilled` (control
 | 5 | `ctx.stop*(r)` was called in `started()` | `r` | **no** (as `{stop, r}`) | failed → `InitExited` |
 | 6 | `Init::stop(r)` | `r` | no | failed → `InitExited` |
 | 7 | `Err(e)` / `Init::error(e)` | `Normal` | no | failed → `InitFailed { cause: e }` |
-| 8 | `Init::ignore()` | `Normal` | no | ignored → `Ok(Ignored)` |
+| 8 | `Init::ignore()` | `Normal` | no | ignored → `Err(Ignored)` (not a failure) |
 | 9 | `Init::ready()` / `continue_with(m)`, but the child's admission closed: its group, or for an owned child its owner's scope gate, which only an ancestor's or the system's shutdown closes (S1), never the parent's own exit (4.1) | `Shutdown` | no | failed → `InitExited` |
-| 10 | `Init::ready()` / `continue_with(m)` | runs | later | **ready** → `Ok(Started(..))` |
+| 10 | `Init::ready()` / `continue_with(m)` | runs | later | **ready** → `Ok(actor)` |
 
 - **Held signals in rows 9-10.** A held `Normal` signal to a non-trapping
   child is dropped (E2). For a child that traps, every held trappable signal
@@ -417,7 +451,10 @@ pub enum StartError {
     InitFailed { cause: String, pending: Option<ChildHandle> },
     InitExited { reason: ExitReason, pending: Option<ChildHandle> },
     InitTimeout { pending: Option<ChildHandle> },
+    // not a failure: Init::ignore() (OTP ignore), the child ended Normal (revision 5)
+    Ignored { pending: Option<ChildHandle> },
 }
+impl StartError { pub fn is_ignored(&self) -> bool; }
 ```
 
 - **`pending`.** It is `None` when the child was published before the
@@ -431,10 +468,12 @@ pub enum StartError {
   `pending: Some`, only destruction and publication are still outstanding.
   A timed-out child still inside `started()` reports `Killed`, the kill it
   was sent.
-- **A stuck `ignore`** answers `Ok(Ignored { pending: Some(handle) })` (Codex
+- **A stuck `ignore`** answers `Err(Ignored { pending: Some(handle) })` (Codex
   R4).
-- **`ignore`** is the `Ok(StartOutcome::Ignored)` outcome, not an error, as
-  OTP returns `ignore` beside `{ok, Pid}` (Codex 9).
+- **`ignore`** is `Err(StartError::Ignored)` at the verbs and `ready()`
+  (revision 5, for ergonomics), and not a failure: OTP returns `ignore`
+  beside `{ok, Pid}` (Codex 9), which `StartOutcome::from_result` restores
+  as `Ok(StartOutcome::Ignored)`.
 - **Removed:** `SystemError::StartupFailed`. `ready()` returns these
   variants.
 
@@ -809,8 +848,8 @@ parent's exit for a non-trapping parent (control `AbandonDropsNotice`), and
 
 | Committed | Waiter answers | `ready()` answers |
 |---|---|---|
-| `Ready` | at once: `Ok(Started(..))` | `Ok(Started(()))` |
-| `Ignored` | after publication: `Ok(Ignored { pending: None })`; at the cleanup deadline: `Ok(Ignored { pending: Some(h) })` | the same |
+| `Ready` | at once: `Ok(actor)` | `Ok(())` |
+| `Ignored` | after publication: `Err(Ignored { pending: None })`; at the cleanup deadline: `Err(Ignored { pending: Some(h) })` | the same |
 | `Failed` | after publication: `InitFailed`/`InitExited { reason: final, pending: None }`; at the cleanup deadline: `{ reason: requested, pending: Some(h) }` | the same |
 | `TimedOut` | after publication: `InitTimeout { pending: None }`; at the cleanup deadline: `{ pending: Some(h) }` | the same |
 
@@ -990,7 +1029,7 @@ ChildSpec::new(id, &group, |fctx| async { Ok(MyActor::new(..)) })   // or Ok(Chi
     and owned, under V3's stuck rule: cleanup deadline, then stuck. A cohort
     barrier treats it as not yet clean, so no replacement overlaps it. The
     spec becomes `Ignored` only after publication. A direct waiter gets
-    `Ok(Ignored { pending: Some(h) })` at the cleanup deadline (5.5).
+    `Err(Ignored { pending: Some(h) })` at the cleanup deadline (5.5).
   - **Model and traces.** `Supervision.tla` and `Cohorts.tla` gain the
     `Ignored` state and the cohort rule, and traces gain an `Ignore(c, g)`
     event between `Attempt` and the round's barrier, with `trace_check.py`
@@ -1040,7 +1079,7 @@ Erlang lacks).
 |---|---|---|
 | `gen_server:start/start_link/start_monitor`, synchronous on `init/1` | `start`, `start_link`, `start_monitor` | aligned; the parent is explicit (R: no `self()`) |
 | `proc_lib:spawn/spawn_opt` | `spawn`, `with_options(o).spawn()` | aligned |
-| `{ok, Pid}` / `ignore` / `{error, R}` | `Ok(Started)` / `Ok(Ignored)` / `Err` | aligned |
+| `{ok, Pid}` / `ignore` / `{error, R}` | `Ok(actor)` / `Err(Ignored)` / `Err(failure)`; `StartOutcome::from_result` gives `Ok(Started)` / `Ok(Ignored)` / `Err` | aligned; `ignore` rides in the error type for ergonomics (revision 5), still distinct from failures |
 | `init_ack` before the loop; the ack is final | readiness commits before the continuation and is final | aligned |
 | `{timeout, T}` default `infinity`; on expiry `kill_flush_EXIT`, then `{error, timeout}` after `'DOWN'` | `init_timeout` default `Infinity`; the notice is suppressed instead of unlinked; `InitTimeout` after publication | aligned observably; the wait for publication is bounded (R) |
 | a kill ends `init` at once | applied when `started()` returns (L3) | R: no preemption; abort at an await is the 0.10 design |
@@ -1070,7 +1109,7 @@ Erlang lacks).
 | `a.start_linked(&ctx)` | `a.start_link(&ctx).await?` | **changes:** inherits placement, waits, refuses an exiting parent |
 | `ctx.monitor(&a.start().child_handle())` | `a.start_monitor(&ctx).await?` | atomic |
 | `ctx.register_name(n)` in `started()` | `StartOptions::name(n)` | atomic; released at publication |
-| `ready().await -> Result<(), SystemError>` (managed only) | `-> Result<StartOutcome<()>, StartError>`, every placement | type |
+| `ready().await -> Result<(), SystemError>` (managed only) | `-> Result<(), StartError>`, every placement; `Err(Ignored)` for `Init::ignore()` | type |
 | `SystemError::StartupFailed(r)` | `StartError::InitExited { reason: r, .. }` | |
 | `ChildSpec::startup_timeout(d)` | unchanged (whole attempt) | same |
 | `ChildSpec::{max_outstanding, max_native_jobs}` | `.options(StartOptions::new().max_*(..))` | same |
@@ -1490,7 +1529,9 @@ client branches that carry the mapped rewrite:
 | Answer at D (revision 1) | A retry could overlap the old `Drop` (P0-3) |
 | Abort `started()` at an `.await` on a kill or timeout (agy P1-5) | Not in 0.9. Kills are cooperative everywhere (L3); aborting a turn at an await is introspection's 0.10 design and should cover handlers and `started()` together, with its own model. Until then the stuck policy (section 6) applies |
 | Typed start data (`A::StartData`, Gleam's `returning`, #245's G4) | OTP's `gen_server` start returns only `{ok, Pid}`; the data channel is `proc_lib`'s, which `gen_server` does not expose. Under the match-Erlang rule, deferred; #245 drops `Started::data` (section 18). The associated type would also be required in every `impl Actor` (no stable defaults) |
-| `Err(Ignored)` (revision 1) | Not Rust-forced; OTP returns `ignore` beside `{ok, Pid}`; the dynamic supervisor's `StartOutcome` already has the shape (Codex 9) |
+| `Ok(StartOutcome<T>)` from the verbs (revisions 2-4) | Reversed by revision 5 (maintainer decision). Revision 1's `Err(Ignored)` was rejected as not Rust-forced (Codex 9), which is still true of the semantics; the cost is in Rust's ergonomics: every ordinary start needed `.started().unwrap()`, a panic on the one result it was meant to expose. The verbs return `Result<T, StartError>` with `Ignored` distinct from failures, and `StartOutcome::from_result` keeps the shared shape |
+| `start_with_outcome` / `start_link_with_outcome` / `start_monitor_with_outcome` | Six methods per mode (`ActorStart` and `Starter`) for what one associated function, `StartOutcome::from_result`, does for every verb and `ready()` |
+| A `StartOptions` flag selecting the outcome shape | An option value cannot change the verbs' return type |
 | Inheritance for plain starts (ambient current actor) | A cost per turn, misses helpers, moves 20 client sites |
 | Continuation from every handler | A branch per turn |
 | `#[actor]` derives a child spec | A spec needs a factory; the derive saves nothing |
@@ -1506,7 +1547,7 @@ branch, which its own author maintains.
 
 | Item | Agreed shape | Unified start | #245 dynamic supervisor | #256 introspection |
 |---|---|---|---|---|
-| Start result | `StartOutcome<T> { Started(T), Ignored { pending: Option<ChildHandle> } }` | `T = ActorRef<A>` or `(ActorRef<A>, MonitorRef)` | `StartOutcome<Started<A>>` (rename from `StartOutcome<A>`); `Ignored` gains `pending` for a stuck ignoring instance (round 2, Codex R4) | n/a |
+| Start result | `StartOutcome<T> { Started(T), Ignored { pending: Option<ChildHandle> } }` | `T = ActorRef<A>` or `(ActorRef<A>, MonitorRef)`; the verbs return `Result<T, StartError>` and `StartOutcome::from_result` gives this shape (revision 5) | `StartOutcome<Started<A>>` (rename from `StartOutcome<A>`); `Ignored` gains `pending` for a stuck ignoring instance (round 2, Codex R4) | n/a |
 | `Started` | `{ actor, child }` | n/a | **drop `data: A::StartData`** (deferred, section 17) | n/a |
 | Factory result | `ChildStart<A> { Actor(A), Ignore }`, `From<A>` | static `ChildSpec` | as proposed | n/a |
 | `ignore` | static: spec kept, `ChildState::Ignored`, restarted in later cohort rounds, Temporary removed; dynamic: nothing stored (first start) or removed (restart), no `ChildState` variant needed | section 9 | as proposed | `ChildState::Ignored` appears only for static children; counted in `specs` and `workers`, not `active` |
@@ -1542,7 +1583,7 @@ and the model.
 | agy P0-1 = Codex 1: readiness depends on the waiter | **True** in revision 1: `res` pending kept the edge mark, and `ChildDie` → `AckFail` was reachable after `StartedEnd` committed ready. Codex's `GClose → StartedEnd → AckOk` also passed | **Accepted.** A child-side ready commit clears the marks before any continuation or dispatch (5.1). Invariants `ReadyIsFinal`, `ResultMatchesCommit`, `ReadyOnlyWhileOpen`; controls `DivertAfterReady`, `ReadyAfterClose`; tests in 16.1 |
 | agy P0-2 = Codex 2: timeout, abandonment and failure arbitration | **True**: revision 1's timer acted only while a waiter existed, and the waiter path removed edges | **Accepted.** One cell with a CAS commit and a separate waiter state; a framework-owned timer; the notice disposed of at publication (5.1, 5.2, 6). `TimeoutNeverKillsReady`, control `TimerIgnoresCommit`; the bounded wait is explicit (`pend`, `pending`) |
 | agy P0-3 = Codex 5: D vs publication | **True**: revision 1 released the name and answered at D, before destruction | **Accepted.** The answer, the name release and the slot release come at publication (5.2, 7). `FailureAfterPublication`, `NoOverlapOnReuse`, `NameFreeBeforeObservation`; controls `EarlyFailAck`, `UnregisterAtDeath`, `LateUnregister`. A hung `Drop` answers with `pending` at the bound |
-| agy P1-7 = Codex 9: `ignore` and cross-design types | **True**: cohort behaviour was undefined; `Err(Ignored)` diverged from #245 | **Accepted.** OTP `ignore` semantics for static supervisors (9), `Ok(StartOutcome::Ignored)` everywhere, and the shared types (18). The `Supervision`/`Cohorts` model and trace updates are in the implementation PR, with named controls |
+| agy P1-7 = Codex 9: `ignore` and cross-design types | **True**: cohort behaviour was undefined; `Err(Ignored)` diverged from #245 | **Accepted.** OTP `ignore` semantics for static supervisors (9), `Ok(StartOutcome::Ignored)` everywhere (revision 5: `Err(StartError::Ignored)` at the verbs, `StartOutcome` through `from_result`), and the shared types (18). The `Supervision`/`Cohorts` model and trace updates are in the implementation PR, with named controls |
 | agy P1-7 = Codex 3: factory deadline | **True** | **Accepted.** `startup_timeout` stays, covering the whole attempt, with `Timeout::Infinity` (9) |
 | agy P1-8/P1-9 = Codex 10/11: weak invariants, trace validation | **Partly true.** Revision 1's `LiveInG` already excluded dead children (agy quoted a different text). But `Cap = 2` with a managed parent never held two children at once (true), capacity was released at D rather than publication (true), and the other weaknesses were true | **Accepted.** `Cap = 3`; slots are held until publication; real edge-creation history; notice counters with reasons; committed-outcome history; liveness `StartAnswered`; controls `DoubleNotice`, `ErrorAsOk`, `NoAnswerIgnore`. The lock protocol is in 3 and 5.2, and the event-to-action mapping with linearization points is in 16.2. Fault-only actions are excluded from coverage |
 | Codex 4: refusal needs a commit protocol | **True** | **Accepted.** Prepare and an atomic commit under a global lock order (3); `Lookup` observer; control `SplitCommit`; Loom tests |

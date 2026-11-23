@@ -1540,13 +1540,7 @@ mod threads_mode {
                 reply: spawned_concurrency::PendingReply<'_, ActorRef<Late>>,
                 ctx: &Context<Self>,
             ) {
-                reply.reply(
-                    Late(self.0.clone())
-                        .start_link(ctx)
-                        .expect("start_link")
-                        .started()
-                        .expect("ready"),
-                );
+                reply.reply(Late(self.0.clone()).start_link(ctx).expect("start_link"));
             }
         }
 

@@ -83,17 +83,9 @@ async fn native_context_placement_uses_a_free_slot_and_validates_helper_budgets(
         .with_options(&group.shard(0).unwrap())
         .spawn()
         .unwrap();
-    within!(actor.ready())
-        .await
-        .unwrap()
-        .started()
-        .expect("started");
+    within!(actor.ready()).await.unwrap();
     let peer = actor.request(StartPeer).await.unwrap().unwrap();
-    within!(peer.ready())
-        .await
-        .unwrap()
-        .started()
-        .expect("started");
+    within!(peer.ready()).await.unwrap();
     assert!(peer.request(Audit).await.unwrap().0.ends_with("actor-1"));
     assert!(matches!(
         actor.request(StartPeer).await.unwrap(),
@@ -159,16 +151,8 @@ async fn persistent_native_slots_bound_admission_and_helpers_progress_during_blo
         .with_options(&group.shard(1).unwrap())
         .spawn()
         .unwrap();
-    within!(a.ready())
-        .await
-        .unwrap()
-        .started()
-        .expect("started");
-    within!(b.ready())
-        .await
-        .unwrap()
-        .started()
-        .expect("started");
+    within!(a.ready()).await.unwrap();
+    within!(b.ready()).await.unwrap();
     assert!(matches!(
         Probe.with_options(&group).spawn(),
         Err(StartError::Capacity)
@@ -225,11 +209,7 @@ async fn native_capacity_is_released_only_after_registered_helper_cleanup() {
     let system = ActorSystem::new().unwrap();
     let group = system.thread_group("slot-cleanup", 1).unwrap();
     let actor = Probe.with_options(&group).spawn().unwrap();
-    within!(actor.ready())
-        .await
-        .unwrap()
-        .started()
-        .expect("started");
+    within!(actor.ready()).await.unwrap();
     let (entered_tx, entered) = tokio::sync::oneshot::channel();
     let (release, release_rx) = std::sync::mpsc::channel();
     let helper = actor
@@ -262,11 +242,7 @@ async fn native_capacity_is_released_only_after_registered_helper_cleanup() {
     })
     .await
     .unwrap();
-    within!(replacement.ready())
-        .await
-        .unwrap()
-        .started()
-        .expect("started");
+    within!(replacement.ready()).await.unwrap();
     assert!(system.shutdown(LIMIT).await.complete);
 }
 // Not simulated: native execution groups need OS threads.
@@ -369,17 +345,9 @@ async fn pinned_shards_preserve_explicit_cpu_placement_and_cross_shard_requests(
         })
         .collect();
     for (i, actor) in actors.iter().enumerate() {
-        within!(actor.ready())
-            .await
-            .unwrap()
-            .started()
-            .expect("started");
+        within!(actor.ready()).await.unwrap();
         let peer_on_same_shard = actor.request(StartPeer).await.unwrap().unwrap();
-        within!(peer_on_same_shard.ready())
-            .await
-            .unwrap()
-            .started()
-            .expect("started");
+        within!(peer_on_same_shard.ready()).await.unwrap();
         assert_eq!(
             peer_on_same_shard.request(Audit).await.unwrap().1,
             Some(cpus[i])
@@ -444,11 +412,7 @@ mod tls_join {
         let cpu = spawned_rt::tasks::affinity::available_cpus().unwrap()[0];
         let group = system.pinned_group("tls-owner", vec![cpu]).unwrap();
         let actor = Probe.with_options(&group).spawn().unwrap();
-        within!(actor.ready())
-            .await
-            .unwrap()
-            .started()
-            .expect("started");
+        within!(actor.ready()).await.unwrap();
         let (entered_tx, entered) = tokio::sync::oneshot::channel();
         let (release, release_rx) = std::sync::mpsc::channel();
         actor
@@ -583,11 +547,7 @@ fn partial_pinned_construction_rolls_back_before_returning_error() {
     let runtime = spawned_rt::tasks::control_runtime().unwrap();
     runtime.block_on(async {
         let actor = Probe.with_options(&group).spawn().unwrap();
-        within!(actor.ready())
-            .await
-            .unwrap()
-            .started()
-            .expect("started");
+        within!(actor.ready()).await.unwrap();
         assert!(actor.request(Audit).await.is_ok());
         assert!(system.shutdown(LIMIT).await.complete);
     });

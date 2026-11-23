@@ -62,9 +62,7 @@ fn borrowed_groups_join_owned_work_and_leave_the_runtime_and_ambient_tasks_alive
             tokio::time::timeout(LIMIT, actor.ready())
                 .await
                 .unwrap()
-                .unwrap()
-                .started()
-                .expect("started");
+                .unwrap();
             if current_thread {
                 assert_eq!(
                     actor.request(Identity).await.unwrap(),

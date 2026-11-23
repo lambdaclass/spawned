@@ -76,7 +76,7 @@ Both provide identical Actor API. The `tasks` module has `Backend` enum: `Async`
 | `ActorStart` | `spawn` (no wait), `start` / `start_link(&ctx)` / `start_monitor(&ctx)` (wait for `started()`), `with_options(opts)` (v0.9) |
 | `StartOptions<A>` / `Name<A>` | Placement (`group`, `backend`, `placement_of`; link/monitor inherit the parent's), typed start-time name, `init_timeout`, `label`, `stack_size`, per-instance bounds (v0.9) |
 | `Init<A>` | What `started()` returns: `ready`, `continue_with(msg)`, `error(e)`, `stop(r)`, `ignore` (also `()`, `Result`) (v0.9) |
-| `Starting<A, T>` / `StartOutcome<T>` / `StartError` | A started instance's wait (`actor_ref()`, drop = abandon); `Started`/`Ignored`; stage-1 refusals and `InitFailed`/`InitExited`/`InitTimeout`, answered after publication (v0.9) |
+| `Starting<A, T>` / `StartError` / `StartOutcome<T>` | A started instance's wait (`actor_ref()`, drop = abandon; resolves to `Result<T, StartError>`); stage-1 refusals and `InitFailed`/`InitExited`/`InitTimeout`/`Ignored` (OTP `ignore`, not a failure), answered after publication; `StartOutcome::from_result` splits `Started`/`Ignored` (v0.9) |
 
 ## Actor Lifecycle
 
@@ -91,7 +91,7 @@ Death has one point (`actor_cleanup.rs`): every caller is answered and links/mon
 ```rust
 // Start an actor (ActorStart trait; v0.9 OTP verbs)
 let ns = NameServer::new().spawn();              // no wait
-let ns = NameServer::new().start().await?.started().unwrap(); // waits for started()
+let ns = NameServer::new().start().await?; // waits for started()
 let child = Worker::new().start_link(&ctx).await?;   // linked, parent's placement
 let worker = Worker::new().with_options(&group).spawn()?; // in an ExecutionGroup
 
