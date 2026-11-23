@@ -21,8 +21,9 @@ TypeInd ==
         gen: [Children -> 0..MaxGen], live: [Children -> SUBSET (1..MaxGen)],
         published: [Children -> 0..MaxGen],
         begun: SUBSET Children, charged: 0..(MaxRounds * N),
+        killed: SUBSET Children,
         badBarrier: BOOLEAN, badClosed: BOOLEAN, badTerminal: BOOLEAN,
-        badRetry: BOOLEAN]
+        badRetry: BOOLEAN, badStuck: BOOLEAN]
 
 -----------------------------------------------------------------------------
 (* Helper lemmas, each with the reason it holds in every reachable state. *)

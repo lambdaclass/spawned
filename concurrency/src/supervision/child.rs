@@ -110,8 +110,11 @@ impl<A: Actor> View<A> {
             let _ = changes.changed().await;
         }
     }
-    pub(super) async fn recovery_stopping(&self, after: u64) {
-        self.next_recovery(after).await.stop.cancelled().await;
+    /// The next round after `after`, once it has stopped this child.
+    pub(super) async fn recovery_stopping(&self, after: u64) -> Arc<RecoverySlot> {
+        let round = self.next_recovery(after).await;
+        round.stop.cancelled().await;
+        round
     }
     pub(super) fn finish_unless_recovering(&self, after: u64, failed: bool) -> bool {
         {
@@ -261,6 +264,11 @@ impl<A: Actor> ChildControl for View<A> {
     }
     /// Collateral stop (OneForAll/RestForOne): the supervisor's parent exit
     /// signal (E3); the controller escalates to a kill at `shutdown_timeout`.
+    /// The slot was assigned first (`assign_recovery`) and its stop is
+    /// cancelled before the signal, so the controller observes the stop on
+    /// that token (its deadline starts there, also for a trapping child that
+    /// queues the signal). No newer round can replace the slot before this
+    /// one sees it cleaned: the coordinator runs one round at a time.
     fn stop_generation(&self, slot: &RecoverySlot) {
         slot.stop.cancel();
         let scope = system::lock(&self.data).scope.clone();
