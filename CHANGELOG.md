@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Examples consolidated from 19 crates to 10 with no example
+  removed: each tasks/threads pair (`bank`, `chat_room`, `ping_pong`,
+  `signal_test`, `updater`) is one package whose second binary is
+  `<name>_threads` (`cargo run -p bank --bin bank_threads`), and
+  `blocking_genserver`, `busy_genserver_warning` and `exit_reason` are
+  binaries of `spawned-capability-examples`. examples/README.md has the
+  new commands.
 - **Breaking:** `spawned-rt` no longer sets a global `tracing` subscriber in
   `run()` unless the new opt-in `fmt-subscriber` feature is enabled (the
   examples enable it), and depends on Tokio with only the features it uses

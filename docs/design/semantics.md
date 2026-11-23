@@ -927,7 +927,7 @@ See the [ranked backlog](../../ROADMAP.md#ranked-backlog).
 [supervision_trace]: ../../concurrency/tests/supervision_trace.rs
 [supervisor_policies]: ../../concurrency/tests/supervisor_policies.rs
 [tree_trace]: ../../concurrency/tests/tree_trace.rs
-[ex_exit_reason]: ../../examples/exit_reason
+[ex_exit_reason]: ../../examples/capabilities/src/bin/exit_reason.rs
 [ex_exit_signals]: ../../examples/capabilities/src/bin/exit_signals.rs
 [ex_native_lifecycle]: ../../examples/capabilities/src/bin/native_lifecycle.rs
 [ex_panic_abort]: ../../concurrency/examples/panic_abort.rs

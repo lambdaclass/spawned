@@ -3,13 +3,10 @@ name = "updater"
 version = "0.1.0"
 edition = "2021"
 publish = false
+default-run = "updater"
 
 [dependencies]
 spawned-rt = { workspace = true, features = ["async", "fmt-subscriber"] }
 spawned-concurrency = { workspace = true }
 tracing = { workspace = true }
 reqwest = { version = "0.12", features = ["blocking"] }
-
-[[bin]]
-name = "updater"
-path = "src/main.rs"
