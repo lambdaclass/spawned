@@ -1,6 +1,6 @@
 # Spawned semantics
 
-Status: describes `main` (v0.7.1 plus merged work), 2026-11-10. This is the
+Status: describes `main` (v0.8.0 plus merged 0.9 work), 2026-11-23. This is the
 contract: every guarantee Spawned gives, what checks it, and what it does not
 promise. New designs are reviewed against it ([roadmap](../../ROADMAP.md) rank 5d).
 Usage lives in the [guide](../GUIDE.md); the supervision design rationale in
@@ -542,7 +542,12 @@ Checked by: `Supervision!AtMostOneGeneration`, `Cohorts!AtMostOneGeneration`,
 `repeated_crash_producer_and_shutdown_races_never_overlap_generations`,
 `stuck_stopped_hook_triggers_cleanup_deadline_before_terminal_publication`;
 [`otp_exit_signals::tasks_mode::supervisor_shutdown_is_the_parents_exit_signal`][otp_exit_signals]
-(the kill at `shutdown_timeout`).
+(the kill at `shutdown_timeout`); for a OneForAll/RestForOne round's stop,
+`Cohorts!StuckOnlyAfterKill` (`CKill`/`CStuck`, trace-validated by
+[`cohort_trace`][cohort_trace]`::trace_collateral_child_killed_or_stuck`, with
+a model fault and two recorded-trace controls in `negative_checks.py`) and
+[`collateral_kill`][collateral_kill] (`#[sim_test]`: killed at
+`shutdown_timeout`, stuck only after a second interval; planted bug 35).
 
 **V4. Generations and publication.** Each construction attempt increments the
 slot's generation. `SupervisedChild::current()` returns only the latest live,
@@ -887,6 +892,7 @@ See the [ranked backlog](../../ROADMAP.md#ranked-backlog).
 [actor_scenarios]: ../../concurrency/tests/actor_scenarios.rs
 [cancellation_safety]: ../../concurrency/tests/cancellation_safety.rs
 [cohort_trace]: ../../concurrency/tests/cohort_trace.rs
+[collateral_kill]: ../../concurrency/tests/collateral_kill.rs
 [context_exit]: ../../concurrency/tests/context_exit.rs
 [cross_backend]: ../../concurrency/tests/cross_backend.rs
 [otp_exit_signals]: ../../concurrency/tests/otp_exit_signals.rs
