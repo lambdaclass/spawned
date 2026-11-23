@@ -25,3 +25,4 @@ id	name	file	bug
 24	sys-targets-unsorted	system.rs	System shutdown stops all standalone actors before all trees, ignoring admission order
 35	sup-round-stop-skips-kill	supervision/run.rs	A round's collateral stop takes the self-exit path: no kill at shutdown_timeout, stuck after one interval (V3)
 36	sup-shutdown-wait-races-kill	supervision/run.rs	The shutdown loop waits one shutdown_timeout for a stopped child, racing its kill, and fails the tree (V3)
+40	sup-unpublished-stop-skips-kill	supervision/run.rs	A generation stopped before publication is never killed: its cleanup is stuck after one shutdown_timeout (V3)

@@ -1,0 +1,15 @@
+Planted bug 40 (sup-unpublished-stop-skips-kill): a generation stopped before it was published is never killed; its cleanup is stuck after one shutdown_timeout (V3)
+
+diff --git a/concurrency/src/supervision/run.rs b/concurrency/src/supervision/run.rs
+index adb4a921..b4acfbe3 100644
+--- a/concurrency/src/supervision/run.rs
++++ b/concurrency/src/supervision/run.rs
+@@ -969,7 +969,7 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>,
+         // between ready and publication) has had no death-point wait: it
+         // gets the same kill at shutdown_timeout, and is stuck only after a
+         // second interval from the kill.
+-        let unpublished_killed = !joined && exit.is_none();
++        let unpublished_killed = false;
+         if unpublished_killed {
+             fail_point!("supervisor.before_unpublished_kill", async);
+             trace::atomic(|| {
