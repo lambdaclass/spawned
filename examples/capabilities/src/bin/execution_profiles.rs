@@ -30,8 +30,8 @@ async fn main() {
     let native = system.thread_group("blocking-roots", 2).unwrap();
     let a = Worker.with_options(&native).spawn().unwrap();
     let b = Worker.with_options(&native).spawn().unwrap();
-    a.ready().await.unwrap().started().expect("started");
-    b.ready().await.unwrap().started().expect("started");
+    a.ready().await.unwrap();
+    b.ready().await.unwrap();
     assert!(
         Worker.with_options(&native).spawn().is_err(),
         "capacity is two live scopes"
@@ -59,7 +59,7 @@ async fn main() {
                 .with_options(&pipeline.shard(index).unwrap())
                 .spawn()
                 .unwrap();
-            stage.ready().await.unwrap().started().expect("started");
+            stage.ready().await.unwrap();
             let location = stage.request(Location).await.unwrap();
             assert_eq!(location.1, Some(*cpu));
             println!("pinned stage {index}: {location:?}");

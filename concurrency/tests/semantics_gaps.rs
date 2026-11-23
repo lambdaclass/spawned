@@ -1657,12 +1657,7 @@ mod tasks_contract {
             );
             assert_eq!(handled.load(Ordering::SeqCst), 0, "L2 {place:?}");
             release.send(()).unwrap();
-            timeout(LIMIT, actor.ready())
-                .await
-                .unwrap()
-                .unwrap()
-                .started()
-                .expect("started");
+            timeout(LIMIT, actor.ready()).await.unwrap().unwrap();
             for (i, reply) in replies.into_iter().enumerate() {
                 assert_eq!(timeout(LIMIT, reply).await.unwrap().unwrap(), i);
             }
@@ -2353,7 +2348,7 @@ mod supervision_contract {
         .with_options(&group)
         .spawn()
         .unwrap();
-        late.ready().await.unwrap().started().expect("started");
+        late.ready().await.unwrap();
         let result = Arc::new(Mutex::new(None));
         let prober = Prober {
             late: late.clone(),
@@ -2362,7 +2357,7 @@ mod supervision_contract {
         .with_options(&group)
         .spawn()
         .unwrap();
-        prober.ready().await.unwrap().started().expect("started");
+        prober.ready().await.unwrap();
         assert!(system.shutdown(LIMIT).await.complete);
         let (registered, started) = result.lock().unwrap().expect("probe ran");
         assert!(!registered, "S1: registration admitted during shutdown");
@@ -2416,7 +2411,7 @@ mod supervision_contract {
         .with_options(&group)
         .spawn()
         .unwrap();
-        earlier.ready().await.unwrap().started().expect("started");
+        earlier.ready().await.unwrap();
         let (stopping, stopping_rx) = oneshot::channel();
         let (release, release_rx) = oneshot::channel();
         let later = Gated {
@@ -2426,7 +2421,7 @@ mod supervision_contract {
         .with_options(&group)
         .spawn()
         .unwrap();
-        later.ready().await.unwrap().started().expect("started");
+        later.ready().await.unwrap();
         drop(group);
         let began = Instant::now();
         drop(system);

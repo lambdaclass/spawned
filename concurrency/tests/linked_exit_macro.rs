@@ -96,11 +96,7 @@ mod synchronous {
         let (tx, rx) = std::sync::mpsc::channel();
         let observer = Observer { seen: tx }.spawn();
         observer.context().trap_exit(true);
-        let child = Failing
-            .start_link(&observer.context())
-            .expect("start_link")
-            .started()
-            .expect("ready");
+        let child = Failing.start_link(&observer.context()).expect("start_link");
         let event = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
         assert_eq!(event.from, child.id());
         assert!(matches!(event.reason, ExitReason::Panic(_)));

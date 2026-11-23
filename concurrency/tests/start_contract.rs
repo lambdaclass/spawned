@@ -158,8 +158,6 @@ mod tasks_mode {
         }
         .start()
         .await
-        .unwrap()
-        .started()
         .unwrap();
         (p, seen)
     }
@@ -182,11 +180,19 @@ mod tasks_mode {
             for waiting in [true, false] {
                 let child = Child::new(then);
                 let hooks = child.hooks.clone();
-                let result = if waiting {
-                    child.start().await.map(|o| o.map(|_| ()))
+                let raw = if waiting {
+                    child.start().await.map(|_| ())
                 } else {
                     child.spawn().ready().await
                 };
+                // The verbs and ready() answer ignore as Err(Ignored);
+                // from_result gives OTP's three-way split.
+                assert_eq!(
+                    matches!(raw, Err(StartError::Ignored { pending: None })),
+                    matches!(then, Then::Ignore),
+                    "{then:?}"
+                );
+                let result = StartOutcome::from_result(raw);
                 let failed = !matches!(result, Ok(StartOutcome::Started(())));
                 if failed {
                     // Answered after publication: the state is already gone.
@@ -242,7 +248,7 @@ mod tasks_mode {
         let starting = Child::new(Then::PanicLater).start_monitor(&p.context());
         let child = starting.actor_ref().unwrap();
         assert!(matches!(child.wait_exit().await, ExitReason::Panic(_)));
-        let (_, monitor) = starting.await.unwrap().started().unwrap();
+        let (_, monitor) = starting.await.unwrap();
         tokio::time::timeout(LIMIT, async {
             while seen.downs.lock().unwrap().is_empty() {
                 tokio::time::sleep(Duration::from_millis(1)).await;
@@ -391,27 +397,22 @@ mod tasks_mode {
             .with_options(&group)
             .start()
             .await
-            .unwrap()
-            .started()
             .unwrap();
             let name = group.name();
             for verb in 0..4 {
                 let child = Child::new(Then::Ready);
                 let seen_group = child.group.clone();
                 let started = match verb {
-                    0 => child.start_link(&p.context()).await.map(|o| o.map(|_| ())),
-                    1 => child
-                        .start_monitor(&p.context())
-                        .await
-                        .map(|o| o.map(|_| ())),
-                    2 => child.start().await.map(|o| o.map(|_| ())),
+                    0 => child.start_link(&p.context()).await.map(|_| ()),
+                    1 => child.start_monitor(&p.context()).await.map(|_| ()),
+                    2 => child.start().await.map(|_| ()),
                     _ => child
                         .with_options(StartOptions::new().placement_of(&p.context()))
                         .start()
                         .await
-                        .map(|o| o.map(|_| ())),
+                        .map(|_| ()),
                 };
-                assert!(matches!(started, Ok(StartOutcome::Started(()))));
+                assert!(matches!(started, Ok(())));
                 let expected = if verb == 2 { None } else { name.clone() };
                 assert_eq!(*seen_group.lock().unwrap(), Some(expected), "verb {verb}");
             }
@@ -435,8 +436,6 @@ mod tasks_mode {
         .with_options(&group)
         .start()
         .await
-        .unwrap()
-        .started()
         .unwrap();
         let child = Child::new(Then::Ready);
         let hooks = child.hooks.clone();
@@ -461,8 +460,6 @@ mod tasks_mode {
             .with_options(StartOptions::new().name(NAME.clone()))
             .start()
             .await
-            .unwrap()
-            .started()
             .unwrap();
         assert_eq!(NAME.whereis().map(|a| a.id()), Some(holder.id()));
         let loser = Child::new(Then::Ready);
@@ -514,13 +511,7 @@ mod tasks_mode {
         }
         let system = spawned_concurrency::system::ActorSystem::new().unwrap();
         let group = system.async_group("start-contract-ctx", 2).unwrap();
-        let holder = Registrar
-            .with_options(&group)
-            .start()
-            .await
-            .unwrap()
-            .started()
-            .unwrap();
+        let holder = Registrar.with_options(&group).start().await.unwrap();
         match Child::new(Then::Ready)
             .with_options(StartOptions::new().name("start-contract-ctx"))
             .start()
@@ -563,7 +554,7 @@ mod tasks_mode {
             )
             .start()
             .await;
-        assert!(matches!(ok, Ok(StartOutcome::Started(_))));
+        assert!(ok.is_ok());
     }
 
     /// L9: a trapping child whose parent exits while it initialises commits
@@ -598,7 +589,7 @@ mod tasks_mode {
         p.child_handle().stop();
         p.wait_exit().await;
         release.send(()).unwrap();
-        assert!(matches!(starting.await, Ok(StartOutcome::Started(_))));
+        assert!(starting.await.is_ok());
         assert_eq!(child.wait_exit().await, ExitReason::Normal);
         assert_eq!(*log.lock().unwrap(), ["continue", "stopped"]);
     }
@@ -810,11 +801,17 @@ mod threads_mode {
             for waiting in [true, false] {
                 let child = Child::new(then);
                 let hooks = child.hooks.clone();
-                let result = if waiting {
-                    child.start().map(|o| o.map(|_| ()))
+                let raw = if waiting {
+                    child.start().map(|_| ())
                 } else {
                     child.spawn().ready()
                 };
+                assert_eq!(
+                    matches!(raw, Err(StartError::Ignored { pending: None })),
+                    matches!(then, Then::Ignore),
+                    "{then:?}"
+                );
+                let result = StartOutcome::from_result(raw);
                 if !matches!(result, Ok(StartOutcome::Started(()))) {
                     assert_eq!(hooks.dropped.load(Ordering::SeqCst), 1, "{then:?}");
                 }
@@ -875,8 +872,6 @@ mod threads_mode {
         let (p, _, downs) = parent(false);
         let (child, monitor) = Child::new(Then::PanicLater)
             .start_monitor(&p.context())
-            .unwrap()
-            .started()
             .unwrap();
         assert!(matches!(child.wait_exit(), ExitReason::Panic(_)));
         let deadline = std::time::Instant::now() + LIMIT;
@@ -891,7 +886,7 @@ mod threads_mode {
     fn continuation_runs_first() {
         let child = Child::new(Then::Continue);
         let log = child.log.clone();
-        let child = child.start().unwrap().started().unwrap();
+        let child = child.start().unwrap();
         child.request(Work).unwrap();
         assert_eq!(*log.lock().unwrap(), ["continue", "work"]);
     }
@@ -902,8 +897,6 @@ mod threads_mode {
         let holder = Child::new(Then::Ready)
             .with_options(StartOptions::new().name(NAME.clone()))
             .start()
-            .unwrap()
-            .started()
             .unwrap();
         assert_eq!(NAME.whereis().map(|a| a.id()), Some(holder.id()));
         let loser = Child::new(Then::Ready);
@@ -969,7 +962,7 @@ mod threads_mode {
         let (release, gate) = std::sync::mpsc::channel();
         let (done_tx, done) = std::sync::mpsc::channel();
         let (entered_tx, entered) = std::sync::mpsc::channel();
-        let p = Waiter.start().unwrap().started().unwrap();
+        let p = Waiter.start().unwrap();
         p.request(LinkGated(Mutex::new(Some((
             Gated(Mutex::new(Some(gate)), entered_tx),
             done_tx,

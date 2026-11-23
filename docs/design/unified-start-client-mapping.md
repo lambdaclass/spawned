@@ -33,7 +33,12 @@ an actor's handler, come from the source.
 - **Optional upgrades** (marked U): an async site may use
   `.start().await?` instead of `.spawn()` to get init failures (today they
   are only logged or invisible). This is a behaviour change: the caller waits
-  for `started()`.
+  for `started()`. The waiting verbs return `Result<ActorRef<A>, StartError>`
+  (design section 2.2), so the upgrade is exactly `.start().await?`. No
+  client actor returns `Init::ignore()` (0.8 has no ignore), so
+  `StartError::Ignored` cannot reach these sites; a client that adds an
+  ignoring actor and treats the opt-out as a success wraps the call in
+  `StartOutcome::from_result`.
 - **Handler sites** (marked H) start a child from inside an actor's turn.
   They stay unmanaged, which is the S6 footgun. `start_link` (or
   `placement_of(ctx)`) would admit the child to the parent's group, so that

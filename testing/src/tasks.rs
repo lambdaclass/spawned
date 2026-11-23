@@ -20,9 +20,9 @@ use spawned_concurrency::system::{ActorSystem, ExecutionGroup, ShutdownReport};
 use spawned_concurrency::tasks::{
     Actor, ActorRef, ActorStart, Context, Handler, Receiver, Recipient, StartOptions,
 };
+use spawned_concurrency::StartError;
 use spawned_concurrency::{ChildHandle, ExitReason};
 use spawned_concurrency::{Deadline, PendingReply, ReplyReceiver};
-use spawned_concurrency::{StartError, StartOutcome};
 use spawned_rt::tasks::{sleep, timeout};
 use std::future::Future;
 use std::ops::Deref;
@@ -516,8 +516,8 @@ impl TestSystem {
     /// the start fails or is ignored.
     pub async fn start<A: Actor>(&self, actor: A) -> ActorRef<A> {
         match ActorStart::with_options(actor, &self.group).start().await {
-            Ok(StartOutcome::Started(actor)) => actor,
-            Ok(StartOutcome::Ignored { .. }) => panic!("start on test group: ignored"),
+            Ok(actor) => actor,
+            Err(StartError::Ignored { .. }) => panic!("start on test group: ignored"),
             Err(error) => panic!("start on test group: {error}"),
         }
     }

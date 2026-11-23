@@ -93,11 +93,7 @@ fn main() {
     ));
     assert_eq!(observer.request(Counts).unwrap(), (0, 0));
     // A ready child's later death is an ordinary Exit, and Down to a monitor.
-    let (started, monitor) = FailsAfterStart
-        .start_monitor(&observer.context())
-        .unwrap()
-        .started()
-        .unwrap();
+    let (started, monitor) = FailsAfterStart.start_monitor(&observer.context()).unwrap();
     observer.context().link(&started.child_handle());
     let down = down_rx.recv_timeout(LIMIT).unwrap();
     assert_eq!(down.monitor_ref, monitor);

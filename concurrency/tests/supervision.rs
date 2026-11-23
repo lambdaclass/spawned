@@ -737,11 +737,7 @@ async fn system_shutdown_orders_standalone_actors_and_supervisor_trees_together(
     .with_options(&group)
     .spawn()
     .unwrap();
-    within!(a.ready())
-        .await
-        .unwrap()
-        .started()
-        .expect("started");
+    within!(a.ready()).await.unwrap();
     let mut trees = Vec::new();
     for name in ["b", "d"] {
         let mut tree = system.supervisor(config(5)).unwrap();
@@ -762,9 +758,7 @@ async fn system_shutdown_orders_standalone_actors_and_supervisor_trees_together(
             .unwrap()
             .ready()
             .await
-            .unwrap()
-            .started()
-            .expect("started");
+            .unwrap();
         }
     }
     assert!(system.shutdown(LIMIT).await.complete);
@@ -822,11 +816,7 @@ async fn stuck_supervisor_does_not_prevent_earlier_standalone_shutdown_after_sys
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("stuck-tree-order", 1).unwrap();
     let earlier = Counter(0).with_options(&group).spawn().unwrap();
-    within!(earlier.ready())
-        .await
-        .unwrap()
-        .started()
-        .expect("started");
+    within!(earlier.ready()).await.unwrap();
     let (entered_tx, entered) = tokio::sync::oneshot::channel();
     let (release, release_rx) = tokio::sync::oneshot::channel();
     let args = Arc::new(std::sync::Mutex::new(Some((entered_tx, release_rx))));

@@ -646,9 +646,7 @@ impl Env {
                         .unwrap();
                     self.bounded(actor.ready())
                         .expect("managed actor readiness timed out")
-                        .unwrap()
-                        .started()
-                        .expect("started");
+                        .unwrap();
                     actor
                 }
             };
@@ -1443,9 +1441,7 @@ fn stop_before_first_poll_follows_managed_and_legacy_contract() {
             .unwrap();
     rt.block_on(async { tokio::time::timeout(LIMIT, blocker.ready()).await })
         .unwrap()
-        .unwrap()
-        .started()
-        .expect("started");
+        .unwrap();
     let (release, wait) = std::sync::mpsc::channel();
     let (entered, blocked) = std::sync::mpsc::channel();
     blocker

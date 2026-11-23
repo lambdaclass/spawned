@@ -248,7 +248,7 @@ async fn handle_tick(&mut self, _msg: Tick, ctx: &Context<Self>) {
 | `actor_ref.id()` | The actor's `ActorId` |
 | `actor_ref.child_handle()` | Type-erased `ChildHandle` for monitors, links and exit observation |
 | `actor_ref.exit_reason()` / `actor_ref.wait_exit()` | The `ExitReason` once stopped |
-| `actor_ref.ready()` | The instance's committed startup result: `Started`, `Ignored` or the start's error (every placement, v0.9) |
+| `actor_ref.ready()` | The instance's committed startup result: `Ok(())` once ready, or the start's error (`StartError::Ignored` for `Init::ignore()`; every placement, v0.9) |
 | `actor_ref.mailbox_depth()` | Queued messages (with the `metrics` feature) |
 
 ### Starting an actor (v0.9)
@@ -268,7 +268,7 @@ use spawned_concurrency::tasks::{ActorStart as _, Backend, StartOptions};
 use spawned_concurrency::{StartError, StartOutcome};
 
 let actor = MyActor::new().spawn();                              // no wait
-let actor = MyActor::new().start().await?.started().unwrap();    // waits for started()
+let actor = MyActor::new().start().await?;                       // waits for started()
 let actor = MyActor::new().with_options(Backend::Thread).spawn()?;
 let actor = MyActor::new().with_options(&group).spawn()?;        // an ExecutionGroup
 let actor = MyActor::new()
@@ -277,9 +277,21 @@ let actor = MyActor::new()
     .await?;
 ```
 
-A waiting start answers `Ok(StartOutcome::Started(..))` when `started()`
-returned ready, `Ok(StartOutcome::Ignored { .. })` for `Init::ignore()`, or a
-`StartError`. Stage 1 runs in the call (before any `.await`), so a dropped
+A waiting start answers `Ok(actor)` when `started()` returned ready (`Ok((actor,
+monitor_ref))` for `start_monitor`), or a `StartError`. `Init::ignore()`
+answers `Err(StartError::Ignored { .. })`: OTP's `ignore`, not a failure
+(`StartError::is_ignored`), carried in the error so that the common case reads
+`a.start().await?`. A caller that treats `ignore` as a success converts any
+verb's result, or `ready()`'s, with `StartOutcome::from_result`:
+
+```rust
+match StartOutcome::from_result(Worker::new().start_link(&ctx).await)? {
+    StartOutcome::Started(worker) => self.worker = Some(worker),
+    StartOutcome::Ignored { .. } => {} // disabled by configuration
+}
+```
+
+Stage 1 runs in the call (before any `.await`), so a dropped
 `Starting` still started the actor; dropping it only abandons the wait.
 `Starting::actor_ref()` gives the not-yet-ready instance.
 
@@ -289,7 +301,8 @@ returned ready, `Ok(StartOutcome::Ignored { .. })` for `Init::ignore()`, or a
 (`Err(e)` or `Init::error(e)`, the child ended `Normal`), `InitExited {
 reason }` (a kill, an untrapped exit signal, a panic, `ctx.stop*` or
 `Init::stop` during `started()`; `reason` is the final one),
-`InitTimeout`. An error is answered only after the child's publication: its
+`InitTimeout`, and `Ignored` (not a failure: the child ended `Normal`). An
+error is answered only after the child's publication: its
 state is dropped, its notices are sent and its name is free, so a retry never
 overlaps it. If its destructor hangs past the cleanup deadline (5 s
 unmanaged), the answer carries `pending: Some(handle)`.
@@ -301,7 +314,7 @@ unmanaged), the answer carries `pending: Some(handle)`.
 #[started]
 async fn started(&mut self, ctx: &Context<Self>) -> Result<Init<Self>, std::io::Error> {
     let socket = bind(self.port).await?;            // Err(e): InitFailed
-    if self.disabled { return Ok(Init::ignore()); } // Ok(Ignored)
+    if self.disabled { return Ok(Init::ignore()); } // Err(StartError::Ignored)
     self.socket = Some(socket);
     Ok(Init::continue_with(Handshake))              // ready; Handshake runs first
 }
@@ -341,7 +354,7 @@ holder's handle), found with `Name::whereis()`, released at publication
 before any notice or answer.
 
 threads mode has the same verbs; the waiting ones block and return
-`Result<StartOutcome<T>, StartError>`, and `StartOptions` has no placement.
+`Result<T, StartError>`, and `StartOptions` has no placement.
 
 ---
 

@@ -32,7 +32,7 @@ account for when upgrading.
 | | `a.start_link(&ctx).actor_ref()?` (then drop the `Starting`) | the 0.8 behaviour (no wait; notices delivered ordinarily), but with inherited placement |
 | `ctx.monitor(&a.start().child_handle())` | `a.start_monitor(&ctx).await?` → `(ActorRef, MonitorRef)` | atomic; the parent needs `Handler<Down>` |
 | `ctx.register_name(n)` in `started()` | `a.with_options(StartOptions::new().name(n))` | atomic with the start; released at publication; `Name<A>` is typed |
-| `actor.ready().await -> Result<(), SystemError>` (managed only) | `actor.ready().await -> Result<StartOutcome<()>, StartError>` | every placement; `Ok(Ignored)` for `Init::ignore()` |
+| `actor.ready().await -> Result<(), SystemError>` (managed only) | `actor.ready().await -> Result<(), StartError>` | every placement; `Err(StartError::Ignored)` for `Init::ignore()` |
 | `SystemError::StartupFailed(r)` | `StartError::InitExited { reason: r, .. }` (or `InitFailed`, `InitTimeout`) | removed |
 | `SystemError::UnmanagedActor` from `ready()` | `ready()` answers for unmanaged actors too | |
 | threads `a.start()` | `a.spawn()`, or `a.start()?` (blocks for `started()`) | same / waits |
@@ -50,7 +50,17 @@ New, no migration needed: `started()` may return `Result<(), E>`,
 `error(e)`, `stop(reason)`, `ignore()`); `StartOptions` (`name`, `label`,
 `init_timeout`, `stack_size`, `max_outstanding`, `max_native_jobs`, and in
 tasks mode `group`, `backend`, `placement_of`); `Starting::actor_ref()`;
-`StartOutcome`, `StartError`, `Timeout`.
+`StartError`, `StartOutcome`, `Timeout`.
+
+**Return types.** The waiting verbs and `ready()` return `Result<T,
+StartError>` (`T` is `ActorRef<A>`, `(ActorRef<A>, MonitorRef)` for
+`start_monitor`, `()` for `ready()`): `a.start().await?` is the ready actor.
+An `Init::ignore()` start is `Err(StartError::Ignored { pending })`, which is
+OTP's `ignore`, not a failure (`StartError::is_ignored()`). Code that must
+treat `ignore` as a success wraps any verb's result in
+`StartOutcome::from_result(..)`, which gives `Ok(Started(T))`,
+`Ok(Ignored { pending })` or the failure. Pre-release 0.9 code that read
+`.start().await?.started().unwrap()` drops the `.started().unwrap()`.
 
 Behaviour changes to check at call sites:
 
@@ -75,10 +85,12 @@ Behaviour changes to check at call sites:
   `stopped()` for cleanup must do that cleanup in `started()` and return
   `Init::stop(reason)` or `Init::error(e)` (or `Err(e)`) instead; RAII guards
   are dropped with the state either way.
-- **`#[must_use]`.** `Starting` and `StartOutcome` are `#[must_use]`:
-  `a.start();` without `.await` still starts the actor (stage 1 is eager) and
-  warns. `actor.ready().await.unwrap()` now yields a `StartOutcome<()>`:
-  check it (`.started().expect(..)`) or ignore it explicitly.
+- **`#[must_use]`.** `Starting` is `#[must_use]`: `a.start();` without
+  `.await` still starts the actor (stage 1 is eager) and warns.
+- **`ignore` is an `Err`.** Only actors whose `started()` can return
+  `Init::ignore()` see `StartError::Ignored`; a caller that propagates it
+  with `?` treats an opt-out as an error. Match `Err(e) if e.is_ignored()`,
+  or use `StartOutcome::from_result`, where an ignore is expected.
 - **Not in this release** (still 0.8 behaviour): scope ownership of linked
   children (S8: a linked child of a managed parent is admitted to the
   parent's group but not owned by its scope), `ChildStart::Ignore` and

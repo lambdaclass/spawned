@@ -1590,8 +1590,8 @@ mod coordinator_tests {
                     .with_options(&group)
                     .spawn()
                     .unwrap();
-                first.ready().await.unwrap().started().expect("started");
-                second.ready().await.unwrap().started().expect("started");
+                first.ready().await.unwrap();
+                second.ready().await.unwrap();
                 let (done, _) = watch::channel(false);
                 let fault = Arc::new(FaultUnit {
                     allow_emergency: AtomicBool::new(false),

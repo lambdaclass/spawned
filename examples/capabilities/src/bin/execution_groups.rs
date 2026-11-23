@@ -40,7 +40,7 @@ async fn main() {
     let general = system.async_group("general", 2).unwrap();
     let worker = Worker.with_options(&general).spawn().unwrap();
     let router = Router(worker).with_options(&critical).spawn().unwrap();
-    router.ready().await.unwrap().started().expect("started");
+    router.ready().await.unwrap();
     assert_eq!(router.request(Double(21)).await.unwrap(), 42);
     let helper = router
         .context()

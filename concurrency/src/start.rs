@@ -30,7 +30,13 @@ use std::time::Duration;
 // Public types
 // ---------------------------------------------------------------------------
 
-/// The result of a start that did not fail: OTP's `{ok, Pid}` or `ignore`.
+/// A start's result with `ignore` as a success: OTP's `{ok, Pid}` or
+/// `ignore`.
+///
+/// The start verbs and `ready()` return `Result<T, StartError>`, with an
+/// `Init::ignore()` start as `Err(StartError::Ignored)` so that normal code
+/// reads `x.start().await?`. A caller that treats `ignore` as a success
+/// converts with [`StartOutcome::from_result`], which loses nothing.
 ///
 /// `pending` is `Some` when the ignoring instance was not yet published at
 /// its cleanup deadline (a hung destructor): it still holds its name and
@@ -46,11 +52,25 @@ pub enum StartOutcome<T> {
 }
 
 impl<T> StartOutcome<T> {
+    /// Split a start's result into OTP's three answers: `{ok, Pid}`
+    /// (`Ok(Started)`), `ignore` (`Ok(Ignored)`) and `{error, R}` (`Err`).
+    /// One adapter for every verb, both modes and `ready()`:
+    /// `StartOutcome::from_result(a.start().await)`.
+    pub fn from_result(result: Result<T, StartError>) -> Result<Self, StartError> {
+        match result {
+            Ok(value) => Ok(Self::Started(value)),
+            Err(StartError::Ignored { pending }) => Ok(Self::Ignored { pending }),
+            Err(error) => Err(error),
+        }
+    }
+    /// The verbs' shape: `Ignored` becomes `Err(StartError::Ignored)`.
+    pub(crate) fn into_result(self) -> Result<T, StartError> {
+        match self {
+            Self::Started(value) => Ok(value),
+            Self::Ignored { pending } => Err(StartError::Ignored { pending }),
+        }
+    }
     /// The started value, or `None` for an ignored start.
-    ///
-    /// `x.start().await?.started().unwrap()` panics if the actor's
-    /// `started()` can return `Init::ignore()`; for such actors `match` the
-    /// outcome (or use [`is_ignored`](Self::is_ignored)) instead.
     pub fn started(self) -> Option<T> {
         match self {
             Self::Started(value) => Some(value),
@@ -70,9 +90,11 @@ impl<T> StartOutcome<T> {
     }
 }
 
-/// Why a start failed.
+/// Why a start did not produce a ready actor.
 ///
-/// Stage 1 (nothing was created): `Closed`, `Capacity`, `AlreadyStarted`,
+/// `Ignored` is OTP's `ignore`, not a failure: the actor opted out and
+/// ended `Normal` (see [`is_ignored`](Self::is_ignored)). Every other
+/// variant is a failed start. Stage 1 (nothing was created): `Closed`, `Capacity`, `AlreadyStarted`,
 /// `ParentExited`, `InvalidOptions`, `System`. Stage 2 (the child existed
 /// and is gone, or still cleaning up when `pending` is `Some`): `InitFailed`,
 /// `InitExited`, `InitTimeout`. A stage-2 error with `pending: None` is
@@ -128,9 +150,21 @@ pub enum StartError {
     /// `started()` did not return within the start's `init_timeout`.
     #[error("started() did not return within the init timeout")]
     InitTimeout { pending: Option<ChildHandle> },
+    /// `started()` returned `Init::ignore()` (OTP `ignore`): not a failure.
+    /// The actor ended `Normal` without becoming ready; like the stage-2
+    /// errors it is answered after publication, or with `pending: Some` at
+    /// the cleanup deadline. [`StartOutcome::from_result`] turns it back
+    /// into `Ok(StartOutcome::Ignored)`.
+    #[error("started() returned Init::ignore()")]
+    Ignored { pending: Option<ChildHandle> },
 }
 
 impl StartError {
+    /// Whether this is an `Init::ignore()` start (OTP `ignore`) rather than
+    /// a failure.
+    pub fn is_ignored(&self) -> bool {
+        matches!(self, Self::Ignored { .. })
+    }
     /// A stage-1 refusal's name in the start trace (`SRefuse`).
     #[allow(dead_code)] // trace only
     pub(crate) fn trace_refusal(&self) -> &'static str {

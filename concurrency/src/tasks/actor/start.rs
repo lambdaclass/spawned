@@ -16,11 +16,11 @@ use std::marker::PhantomData;
 ///
 /// | `Init` | OTP | The start answers |
 /// |---|---|---|
-/// | `ready()` (`()`, `Ok(())`) | `{ok, S}` | `Ok(Started)` |
-/// | `continue_with(m)` | `{ok, S, {continue, C}}` | `Ok(Started)`; `m` is handled before any mailbox message |
+/// | `ready()` (`()`, `Ok(())`) | `{ok, S}` | `Ok(actor)` |
+/// | `continue_with(m)` | `{ok, S, {continue, C}}` | `Ok(actor)`; `m` is handled before any mailbox message |
 /// | `error(e)` (`Err(e)`) | `{error, R}` | `InitFailed { cause }`; the actor ends `Normal` |
 /// | `stop(r)` | `{stop, R}` | `InitExited { reason: r }` |
-/// | `ignore()` | `ignore` | `Ok(Ignored)`; the actor ends `Normal` |
+/// | `ignore()` | `ignore` | `Err(Ignored)` (not a failure; [`StartOutcome::from_result`](crate::StartOutcome::from_result) makes it `Ok(Ignored)`); the actor ends `Normal` |
 ///
 /// No failed start runs `stopped()` (OTP skips `terminate/2` when `init/1`
 /// fails): release resources acquired in `started()` before returning an
@@ -92,7 +92,7 @@ impl<A: Actor> Init<A> {
         }
     }
     /// Opt out (`ignore`): the actor ends `Normal`; the start answers
-    /// `Ok(StartOutcome::Ignored)`.
+    /// `Err(StartError::Ignored)`, which is not a failure.
     pub fn ignore() -> Self {
         Self {
             kind: InitKind::Ignore,
@@ -400,9 +400,11 @@ pub trait ActorStart: Actor {
             .spawn()
             .unwrap_or_else(|error| panic!("actor spawn failed: {error}"))
     }
-    /// Start and wait for `started()` (`gen_server:start`): `Started`,
-    /// `Ignored`, or the error, which comes only after the actor's
-    /// publication (its state dropped, its name free).
+    /// Start and wait for `started()` (`gen_server:start`): the ready
+    /// actor, or the error (`StartError::Ignored` for `Init::ignore()`),
+    /// which comes only after the actor's publication (its state dropped,
+    /// its name free). `StartOutcome::from_result` separates `ignore` from
+    /// the failures.
     fn start(self) -> Starting<Self, ActorRef<Self>> {
         Starter::new(self, StartOptions::new()).start()
     }
@@ -551,7 +553,7 @@ impl<A: Actor, T> Starting<A, T> {
 }
 
 impl<A: Actor, T: Send + 'static> std::future::IntoFuture for Starting<A, T> {
-    type Output = Result<StartOutcome<T>, StartError>;
+    type Output = Result<T, StartError>;
     type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
@@ -559,7 +561,9 @@ impl<A: Actor, T: Send + 'static> std::future::IntoFuture for Starting<A, T> {
             let outcome = observe(&waiting.actor, true).await;
             // Answered: nothing to abandon.
             waiting.guard.cell = None;
-            outcome.map(|o| o.map(|()| waiting.value.take().expect("value taken once")))
+            outcome
+                .and_then(StartOutcome::into_result)
+                .map(|()| waiting.value.take().expect("value taken once"))
         })
     }
 }

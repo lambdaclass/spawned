@@ -547,16 +547,8 @@ async fn slow_system_coordinator_reports_then_completes() {
     let started = Started::default();
     let a = Worker::new(&started).with_options(&group).spawn().unwrap();
     let b = Worker::new(&started).with_options(&group).spawn().unwrap();
-    within!(a.ready())
-        .await
-        .unwrap()
-        .started()
-        .expect("started");
-    within!(b.ready())
-        .await
-        .unwrap()
-        .started()
-        .expect("started");
+    within!(a.ready()).await.unwrap();
+    within!(b.ready()).await.unwrap();
     let report = system.shutdown(Duration::from_millis(50)).await;
     assert!(!report.complete);
     let report = report.wait(LIMIT).await;
@@ -588,18 +580,14 @@ async fn failed_group_start_rolls_back_and_frees_the_name() {
         .unwrap()
         .ready()
         .await
-        .unwrap()
-        .started()
-        .expect("started");
+        .unwrap();
     Worker::new(&started)
         .with_options(&threads)
         .spawn()
         .unwrap()
         .ready()
         .await
-        .unwrap()
-        .started()
-        .expect("started");
+        .unwrap();
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
@@ -641,9 +629,7 @@ async fn placement_failure_is_reported_and_fails_the_supervisor() {
         .unwrap()
         .ready()
         .await
-        .unwrap()
-        .started()
-        .expect("started");
+        .unwrap();
     assert!(started.handles().len() == 1);
     assert!(system.shutdown(LIMIT).await.complete);
 }
@@ -688,9 +674,7 @@ async fn injected_registration_error_leaves_no_entry() {
         .unwrap()
         .ready()
         .await
-        .unwrap()
-        .started()
-        .expect("started");
+        .unwrap();
     assert_eq!(*registration.lock().unwrap(), Some(false));
     assert!(registry::whereis::<ActorRef<Worker>>("fp-register-error").is_none());
     assert!(system.shutdown(LIMIT).await.complete);
@@ -914,11 +898,7 @@ async fn slow_stopped_reports_at_deadline_then_completes() {
     let mut worker = Worker::new(&Started::default());
     worker.trap = true;
     let actor = worker.with_options(&group).spawn().unwrap();
-    within!(actor.ready())
-        .await
-        .unwrap()
-        .started()
-        .expect("started");
+    within!(actor.ready()).await.unwrap();
     let report = system.shutdown(Duration::from_millis(100)).await;
     assert!(!report.complete);
     assert_eq!(report.unfinished_actors, [actor.id()]);
@@ -1011,11 +991,7 @@ async fn system_shutdown_coordinator_panic_is_reported_and_contained() {
         .with_options(&group)
         .spawn()
         .unwrap();
-    within!(actor.ready())
-        .await
-        .unwrap()
-        .started()
-        .expect("started");
+    within!(actor.ready()).await.unwrap();
     let report = system.shutdown(LIMIT).await;
     assert!(report.complete);
     assert!(
@@ -1769,7 +1745,7 @@ mod native {
         let actor = Target.spawn();
         // A ctx.stop() inside started() is Init::stop (no stopped()): stop
         // the running actor.
-        actor.ready().unwrap().started().expect("started");
+        actor.ready().unwrap();
         let began = Instant::now();
         actor.context().stop();
         actor.join();

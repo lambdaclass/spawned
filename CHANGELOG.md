@@ -89,8 +89,13 @@
 - **Breaking: unified start API** (rank 5h, gaps G1, G2, G8; design
   `docs/design/unified-start.md`). OTP's verbs in both modes: `spawn` (no
   wait), `start`, `start_link(&ctx)` and `start_monitor(&ctx)` (wait for
-  `started()` and answer `Started`, `Ignored` or a `StartError` after the
-  child's publication), `with_options(StartOptions)`. `started()` may fail:
+  `started()` and answer the ready `ActorRef` or a `StartError` after the
+  child's publication), `with_options(StartOptions)`. The waiting verbs and
+  `ready()` return `Result<T, StartError>`, so normal code reads
+  `a.start().await?`; `Init::ignore()` answers `Err(StartError::Ignored)`
+  (OTP `ignore`, not a failure: `StartError::is_ignored`), and
+  `StartOutcome::from_result` gives OTP's `Started`/`Ignored`/error split for
+  callers that treat `ignore` as a success. `started()` may fail:
   it returns `()`, `Result<(), E>`, `Result<Init<Self>, E>` or `Init<Self>`
   (`ready`, `continue_with`, `error`, `stop`, `ignore`), resolved by the
   design's precedence table; no failed start runs `stopped()` (also not

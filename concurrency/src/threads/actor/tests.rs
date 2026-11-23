@@ -843,11 +843,7 @@ fn start_linked_threads() {
             impl Actor for Child {}
 
             let parent = Parent.spawn();
-            let child = Child
-                .start_link(&parent.context())
-                .expect("start_link")
-                .started()
-                .expect("ready");
+            let child = Child.start_link(&parent.context()).expect("start_link");
 
             let _ = parent.send(PanicParent);
             parent.wait_exit();

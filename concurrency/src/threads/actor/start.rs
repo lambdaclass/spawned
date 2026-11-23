@@ -321,15 +321,14 @@ pub trait ActorStart: Actor {
             .spawn()
             .unwrap_or_else(|error| panic!("actor spawn failed: {error}"))
     }
-    /// Start and wait for `started()` (`gen_server:start`).
-    fn start(self) -> Result<StartOutcome<ActorRef<Self>>, StartError> {
+    /// Start and wait for `started()` (`gen_server:start`): the ready
+    /// actor, or the error (`StartError::Ignored` for `Init::ignore()`;
+    /// `StartOutcome::from_result` separates it from the failures).
+    fn start(self) -> Result<ActorRef<Self>, StartError> {
         Starter::new(self, StartOptions::new()).start()
     }
     /// Start linked to `parent`'s actor and wait (`gen_server:start_link`).
-    fn start_link<P: Actor>(
-        self,
-        parent: &Context<P>,
-    ) -> Result<StartOutcome<ActorRef<Self>>, StartError> {
+    fn start_link<P: Actor>(self, parent: &Context<P>) -> Result<ActorRef<Self>, StartError> {
         Starter::new(self, StartOptions::new()).start_link(parent)
     }
     /// Start monitored by `parent`'s actor and wait
@@ -337,7 +336,7 @@ pub trait ActorStart: Actor {
     fn start_monitor<P: Actor + Handler<Down>>(
         self,
         parent: &Context<P>,
-    ) -> Result<StartOutcome<(ActorRef<Self>, MonitorRef)>, StartError> {
+    ) -> Result<(ActorRef<Self>, MonitorRef), StartError> {
         Starter::new(self, StartOptions::new()).start_monitor(parent)
     }
     /// Start with options.
@@ -364,24 +363,25 @@ impl<A: Actor> Starter<A> {
         ActorRef::launch(self.actor, self.options, Verb::Spawn, None).map(|(actor, _)| actor)
     }
     /// Start and wait for `started()`.
-    pub fn start(self) -> Result<StartOutcome<ActorRef<A>>, StartError> {
+    pub fn start(self) -> Result<ActorRef<A>, StartError> {
         let (actor, _) = ActorRef::launch(self.actor, self.options, Verb::Start, None)?;
-        wait(&actor, true).map(|o| o.map(|()| actor))
+        wait(&actor, true)
+            .and_then(StartOutcome::into_result)
+            .map(|()| actor)
     }
     /// Start linked to `parent`'s actor and wait.
-    pub fn start_link<P: Actor>(
-        self,
-        parent: &Context<P>,
-    ) -> Result<StartOutcome<ActorRef<A>>, StartError> {
+    pub fn start_link<P: Actor>(self, parent: &Context<P>) -> Result<ActorRef<A>, StartError> {
         let verb = Verb::Link(parent.parent_parts());
         let (actor, _) = ActorRef::launch(self.actor, self.options, verb, None)?;
-        wait(&actor, true).map(|o| o.map(|()| actor))
+        wait(&actor, true)
+            .and_then(StartOutcome::into_result)
+            .map(|()| actor)
     }
     /// Start monitored by `parent`'s actor and wait.
     pub fn start_monitor<P: Actor + Handler<Down>>(
         self,
         parent: &Context<P>,
-    ) -> Result<StartOutcome<(ActorRef<A>, MonitorRef)>, StartError> {
+    ) -> Result<(ActorRef<A>, MonitorRef), StartError> {
         let verb = Verb::Monitor(parent.parent_parts());
         let parent = parent.clone();
         let arm: ArmMonitor = Box::new(move |child, monitor_ref, active, cell| {
@@ -389,7 +389,9 @@ impl<A: Actor> Starter<A> {
         });
         let (actor, monitor) = ActorRef::launch(self.actor, self.options, verb, Some(arm))?;
         let monitor = monitor.expect("start_monitor commits a monitor");
-        wait(&actor, true).map(|o| o.map(|()| (actor, monitor)))
+        wait(&actor, true)
+            .and_then(StartOutcome::into_result)
+            .map(|()| (actor, monitor))
     }
 }
 
