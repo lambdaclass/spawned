@@ -1598,7 +1598,7 @@ catches the bugs a reviewer would actually miss, 24 realistic bugs were written
 by hand (`verification/planted/patches/`, one patch each, listed in
 `INDEX.tsv`) and each was run, alone, against six layers. Later bugs are
 added with the fix they guard, numbered by PR (25-34 #293, 35 #310, 36 #311,
-37-39 #308, 40 #313), and run on the layers that target them (their rows say
+37-39 #308, 40 #315), and run on the layers that target them (their rows say
 which):
 
 | Layer | What runs | Budget |
