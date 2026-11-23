@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Remove the settled backend experiments: the `benchmarks/experiments` crate
+  and patch (with its ready-gate Loom harness and model-map entry), the
+  reliability campaign runner, the `fede_*`/`collect_*`/`render_*` research
+  scripts, their requirements files and an unused Dockerfile. They are at
+  `bf59ace0`; the conclusions stay in `benchmarks/README.md`.
 - Bump `url` to 2.5.9 in `Cargo.lock` (RUSTSEC-2026-0592, a stack overflow in
   `Url::origin()`); only the `updater` examples use it, through `reqwest`.
 - Release qualification harness, `benchmarks/qualification/`: the client

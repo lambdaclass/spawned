@@ -438,25 +438,11 @@ rejection permits no effect. Normal successful replies require their matching
 effect; the checker never treats ambiguous operations as acknowledged success.
 No automatic retry or exactly-once guarantee is introduced.
 
-The Linux campaign driver runs isolated owned process groups with CPU affinity,
-nice level, wall-time, sampled RSS, thread and descriptor budgets. Builds have a
-separate memory allowance from stress executables. It kills only its own process
-group on failure and writes commands, source revision, environment and resource
-peaks. The default 768-thread ceiling accommodates 256 offered-load producers
-and their collectors; they still share the declared CPU mask. Shared-page RSS
-can be counted more than once and short peaks can escape sampling.
-
-```sh
-python3 benchmarks/run_reliability.py --source . --out /tmp/spawned-reliability --cpus 2,3,4,5 --phase all --seconds 30 --replicates 3
-```
-
-Use an available CPU set appropriate to the machine. The benchmark phase records
-closed-loop requests, actor-to-actor graphs, concentrated offered load and actor
-churn/idle soaks. Benchmarks describe their generator as well as actor work; high
-producer counts do not imply that many actor workers. See the
-[recorded campaign](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/research/reliability/2026-11-06/README.md) for results,
-excluded preflights and reproducibility details. No throughput threshold is
-enforced in shared CI. Nightly CI retains failure coverage and stress logs.
+The isolated Linux reliability campaign (closed-loop requests, actor graphs,
+offered load, churn) and its runner were removed with the benchmark
+experiments; they are at `bf59ace0`, and the
+[recorded campaign](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/research/reliability/2026-11-06/README.md)
+is archived. No throughput threshold is enforced in shared CI.
 
 The suite generates 2–8 worker actors and an observer, with sequences of sends,
 requests, and dropped reply receivers. Every generated scenario runs on Tokio
@@ -2400,9 +2386,7 @@ setting but not CPU confinement.
 `deny.toml` configures cargo-deny (advisories, licenses, duplicate versions as
 warnings, crates.io as the only source) and `.cargo/audit.toml` configures
 cargo-audit; the `supply-chain` CI job runs both. Unmaintained, unsound and
-yanked crates fail the job like vulnerabilities. The benchmark experiments
-(monoio, pprof) are a standalone crate outside the workspace
-(`benchmarks/experiments`), so neither tool scans them. Each accepted
+yanked crates fail the job like vulnerabilities. Each accepted
 advisory is listed with its path and reason in `deny.toml`; keep both ignore
 lists identical and drop entries when the upstream path moves.
 
