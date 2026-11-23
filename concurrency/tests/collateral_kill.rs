@@ -21,7 +21,7 @@ use spawned_concurrency::{
     supervision::{Backoff, ChildSpec, SupervisorConfig, SupervisorStrategy},
     system::ActorSystem,
     tasks::{Actor, Context, Handler},
-    ExitReason, PendingReply,
+    ChildHandle, ExitReason, PendingReply,
 };
 use spawned_rt::tasks::oneshot;
 use std::{
@@ -277,4 +277,123 @@ async fn shutdown_kills_a_stopped_child_without_failing_the_tree() {
         assert_eq!(reason, ExitReason::Killed, "trap={trap}");
         assert!(system.shutdown(LIMIT).await.complete, "trap={trap}");
     }
+}
+
+/// A generation whose `started()` waits on a gate; it reports its handle
+/// once `started()` holds the gate.
+struct SlowStart {
+    gate: Gate,
+    entered: Option<oneshot::Sender<ChildHandle>>,
+}
+impl Actor for SlowStart {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        let gate = self.gate.lock().unwrap().take();
+        if let Some(entered) = self.entered.take() {
+            let _ = entered.send(ctx.actor_ref().child_handle());
+        }
+        if let Some(gate) = gate {
+            let _ = gate.await;
+        }
+    }
+}
+impl Handler<Crash> for SlowStart {
+    async fn handle(&mut self, _: Crash, _: PendingReply<'_, ()>, _: &Context<Self>) {
+        panic!("crash for a restart");
+    }
+}
+
+/// A supervisor shut down while a restarted generation is still in
+/// `started()`: the generation is never published, and its startup is given
+/// up when admission closes. Returns its final reason, the supervisor's
+/// failure and the virtual time from the shutdown to the outcome.
+/// `release_after`: when `started()` is let go (None: never).
+async fn unpublished(release_after: Option<Duration>) -> (ExitReason, Option<String>, Duration) {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("unpublished", 2).unwrap();
+    let mut builder = system
+        .supervisor(config(SupervisorStrategy::OneForOne))
+        .unwrap();
+    let (release, gate) = oneshot::channel();
+    let gate: Gate = Arc::new(Mutex::new(Some(gate)));
+    let (entered, entered_rx) = oneshot::channel();
+    let entered = Arc::new(Mutex::new(Some(entered)));
+    let held = builder
+        .add(
+            ChildSpec::new("held", &group, move |ctx| {
+                // The second generation is held in started().
+                let (gate, entered) = if ctx.generation() == 2 {
+                    (gate.clone(), entered.lock().unwrap().take())
+                } else {
+                    (Arc::new(Mutex::new(None)), None)
+                };
+                async move { Ok::<_, String>(SlowStart { gate, entered }) }
+            })
+            .startup_timeout(LIMIT)
+            .shutdown_timeout(SHUTDOWN),
+        )
+        .unwrap();
+    let supervisor = builder.start().await.unwrap();
+    held.wait_ready().await.unwrap().send(Crash).unwrap();
+    let handle = spawned_rt::tasks::timeout(LIMIT, entered_rx)
+        .await
+        .expect("the second generation never reached started()")
+        .unwrap();
+    let began = spawned_rt::time::Instant::now();
+    let shutdown = {
+        let supervisor = supervisor.clone();
+        spawned_rt::tasks::spawn(async move { supervisor.shutdown(LIMIT).await })
+    };
+    let mut release = Some(release);
+    let outcome = loop {
+        if let (Some(after), Some(_)) = (release_after, release.as_ref()) {
+            if began.elapsed() >= after {
+                let _ = release.take().unwrap().send(());
+            }
+        }
+        if let Some(failure) = supervisor.failure() {
+            break Some(failure);
+        }
+        if handle.exit_reason().is_some() {
+            break None;
+        }
+        assert!(
+            began.elapsed() < LIMIT,
+            "the generation neither ended nor was stuck"
+        );
+        spawned_rt::tasks::sleep(Duration::from_millis(5)).await;
+    };
+    let took = began.elapsed();
+    if let Some(release) = release.take() {
+        let _ = release.send(());
+    }
+    let _ = shutdown.await;
+    let reason = spawned_rt::tasks::timeout(LIMIT, handle.wait_exit_async())
+        .await
+        .expect("the held generation never exited");
+    let _ = system.shutdown(LIMIT).await;
+    (reason, outcome, took)
+}
+
+/// V3 for a generation stopped before it was published: released after the
+/// kill, within the second interval, it ends `Killed` and the shutdown does
+/// not fail the tree.
+#[spawned_concurrency::sim_test(flavor = "multi_thread", worker_threads = 2)]
+async fn unpublished_generation_is_killed_at_shutdown_timeout() {
+    let (reason, failure, _) = unpublished(Some(SHUTDOWN * 3 / 2)).await;
+    assert_eq!(reason, ExitReason::Killed);
+    assert_eq!(
+        failure, None,
+        "the unpublished generation was stuck without its kill"
+    );
+}
+
+/// Never released: stuck (failing the tree) only after the kill and a
+/// second interval, and its final reason is the kill's.
+#[spawned_concurrency::sim_test(flavor = "multi_thread", worker_threads = 2)]
+async fn unpublished_generation_is_stuck_only_after_the_kill() {
+    let (reason, failure, took) = unpublished(None).await;
+    let failure = failure.unwrap_or_default();
+    assert!(failure.contains("cleanup stuck"), "{failure:?}");
+    assert!(took >= SHUTDOWN * 2, "stuck after {took:?}");
+    assert_eq!(reason, ExitReason::Killed);
 }
