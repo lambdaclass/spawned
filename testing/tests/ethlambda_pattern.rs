@@ -60,7 +60,7 @@ fn check_and_forward(server: &Server, sidecars: Vec<Sidecar>) {
 async fn only_what_passes_is_forwarded_as_checked() {
     // Before: `struct RecordingChain(mpsc::UnboundedSender<Forwarded>)` plus a
     // full `impl P2PToBlockChain for RecordingChain`. After: one line.
-    let chain = Mock::new().allow_sends().start();
+    let chain = Mock::new().allow_sends().spawn();
     let server = Server {
         blockchain: Some(chain.to_p2p_to_block_chain_ref()),
     };

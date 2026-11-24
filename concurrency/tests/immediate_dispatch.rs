@@ -60,7 +60,7 @@ async fn direct_dispatch_keeps_patterns_returns_question_mark_and_name_hygiene()
     let actor = Worker {
         calls: calls.clone(),
     }
-    .start();
+    .spawn();
     assert_eq!(actor.request(Compute { value: 2 }).await.unwrap(), Ok(23));
     assert_eq!(actor.request(Compute { value: 0 }).await.unwrap(), Ok(11));
     assert_eq!(
@@ -78,7 +78,7 @@ async fn inherent_methods_and_public_handler_futures_stay_lazy() {
     let actor = Worker {
         calls: calls.clone(),
     }
-    .start();
+    .spawn();
     let context = actor.context();
     let mut direct = Worker {
         calls: calls.clone(),
@@ -105,7 +105,7 @@ async fn eligible_handler_uses_the_immediate_hook() {
     let actor = Worker {
         calls: calls.clone(),
     }
-    .start();
+    .spawn();
     let context = actor.context();
     let mut direct = Worker {
         calls: calls.clone(),
@@ -185,7 +185,7 @@ mod local_items {
     // test uses the real runtime: statics are not reset between simulator seeds.
     #[tokio::test]
     async fn local_items_have_one_identity_across_direct_and_mailbox_calls() {
-        let actor = ItemWorker.start();
+        let actor = ItemWorker.spawn();
         let context = actor.context();
         let mut direct = ItemWorker;
         assert_eq!(direct.count(ItemCounter, &context).await, 0);
@@ -242,7 +242,7 @@ mod fairness {
             calls,
             observed: observed.clone(),
         }
-        .start();
+        .spawn();
         for _ in 0..1024 {
             actor.send(Tick).unwrap();
         }
@@ -277,7 +277,7 @@ impl Opaque {
 }
 #[spawned_macros::sim_test]
 async fn opaque_macros_can_still_suspend() {
-    let actor = Opaque.start();
+    let actor = Opaque.spawn();
     assert_eq!(actor.request(Yielding).await.unwrap(), 9);
     actor.context().stop();
     actor.join().await;
@@ -313,7 +313,7 @@ async fn direct_dispatch_panic_answers_queued_callers_and_runs_stopped() {
     let actor = Panicker {
         stopped: stopped.clone(),
     }
-    .start();
+    .spawn();
     let first = actor.send_request(Explode, Deadline::Never).unwrap();
     let queued = actor.send_request(After, Deadline::Never).unwrap();
     for result in [first.await, queued.await] {
@@ -341,7 +341,7 @@ impl<'__spawned_reply_turn: 'static> Generic<'__spawned_reply_turn> {
 }
 #[spawned_macros::sim_test]
 async fn generic_lifetimes_do_not_shadow_generated_lifetimes() {
-    let actor = Generic::<'static>(std::marker::PhantomData).start();
+    let actor = Generic::<'static>(std::marker::PhantomData).spawn();
     assert_eq!(actor.request(GenericGet).await.unwrap(), 4);
     actor.context().stop();
     actor.join().await;
@@ -380,7 +380,7 @@ impl BorrowViews {
 }
 #[spawned_macros::sim_test]
 async fn shared_receiver_and_declared_context_types_keep_their_borrow_rules() {
-    let actor = BorrowViews(Arc::new(AtomicUsize::new(4))).start();
+    let actor = BorrowViews(Arc::new(AtomicUsize::new(4))).spawn();
     assert_eq!(actor.request(SharedRead).await.unwrap(), 8);
     assert_eq!(actor.request(ViewRead).await.unwrap(), 123);
     actor.context().stop();
@@ -447,7 +447,7 @@ async fn ignored_parameters_drop_after_the_body_in_mailbox_and_inherent_calls() 
             body_ran: body_ran.clone(),
             stopped: stopped.clone(),
         }
-        .start();
+        .spawn();
         let context = actor.context();
         let mut direct = DropWorker {
             body_ran: body_ran.clone(),
@@ -505,7 +505,7 @@ async fn ignored_parameter_destructor_panics_after_body_and_remains_contained() 
         body_ran: body_ran.clone(),
         stopped: stopped.clone(),
     }
-    .start();
+    .spawn();
     let result = actor
         .request(Ignored(DropOrder {
             body_ran,
@@ -530,7 +530,7 @@ async fn payload_destructors_keep_the_original_future_drop_boundary() {
         body_ran: body_ran.clone(),
         stopped: Arc::new(AtomicBool::new(false)),
     }
-    .start();
+    .spawn();
     let mut direct = DropWorker {
         body_ran: body_ran.clone(),
         stopped: Arc::new(AtomicBool::new(false)),
@@ -583,7 +583,7 @@ mod shadowed_prelude {
 }
 #[spawned_macros::sim_test]
 async fn generated_paths_do_not_capture_shadowed_prelude_names() {
-    let actor = shadowed_prelude::ShadowActor.start();
+    let actor = shadowed_prelude::ShadowActor.spawn();
     assert_eq!(actor.request(shadowed_prelude::Shadow).await.unwrap(), 19);
     actor.context().stop();
     actor.join().await;
@@ -616,7 +616,7 @@ impl Handler<Discard> for Discarder {
 }
 #[spawned_macros::sim_test]
 async fn direct_dispatch_commits_an_unanswered_obligation_on_normal_return() {
-    let actor = Discarder.start();
+    let actor = Discarder.spawn();
     assert!(matches!(
         actor.request(Discard).await,
         Err(ActorError::ReplyDropped)
@@ -659,7 +659,7 @@ async fn a_rejected_result_destructor_has_the_same_handler_panic_boundary() {
         dropped: dropped.clone(),
         stopped: stopped.clone(),
     }
-    .start();
+    .spawn();
     let receiver = actor.send_request(GetRejected, Deadline::Never).unwrap();
     drop(receiver);
     actor.join().await;

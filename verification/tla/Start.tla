@@ -40,6 +40,7 @@ CONSTANTS
     KillEnabled,      \* an outside kill (ChildHandle::kill) may hit a child
     AdminStopEnabled, \* an administrative stop may hit a child in started()
     ParentCanExit,    \* P may exit (Normal or Panic)
+    ParentKillEnabled,\* P's exit may be a kill (its start waits are abandoned)
     CloseEnabled,     \* G may close (system shutdown)
     OwnerCloseEnabled,\* P's scope may close (its supervisor's shutdown began)
     MaxMsgs,          \* messages others send to each child
@@ -69,6 +70,7 @@ VARIABLES
     phase, place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun,
     edge, mon, linkEver, monEver,
     began, killed, skill, xkill, astop, pex, qpex, pexAbn, ctrap,
+    rdyRet,   \* [Kids -> started() returned ready with nothing that fails the start]
     commit, commit0, initR, why, wait, res, resR, pend, dl, oref, closedBy,
     oref,     \* [Kids -> readiness refused because the owner gate was closed]
     closedBy, \* who closed the owner gate: "none", "ancestor" (or "parent" under a fault)
@@ -81,7 +83,7 @@ pV == <<pst, pplace, ptrap, pwhy, pcause, gopen, ownerOpen, gdone, sfired, pn, p
 oV == <<kind, expl, wname>>
 sV == <<phase, place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun>>
 eV == <<edge, mon, linkEver, monEver>>
-xV == <<began, killed, skill, xkill, astop, pex, qpex, pexAbn, ctrap>>
+xV == <<began, killed, skill, xkill, astop, pex, qpex, pexAbn, ctrap, rdyRet>>
 cV == <<commit, commit0, initR, why, wait, res, resR, pend, dl, oref, closedBy>>
 nV == <<lnote, mnote, pubAlive, div, divEver, handed, lost>>
 mV == <<cont, msgs, early>>
@@ -91,7 +93,10 @@ vars == <<pV, oV, sV, eV, xV, cV, nV, mV, rV, dV>>
 
 Waiting(k) == k \in {"start", "link", "monitor"}
 LiveP == {"starting", "ready", "exiting", "dead"}     \* holds name and slot
-PSlot == IF pplace = "G" /\ pst # "published" /\ ~(Fault = "ParentSlotAtD" /\ pst = "dead")
+\* P's slot is held until its scope completes: P published and its owned
+\* work joined (WorkDoneP), as a child's (ReleaseSlot).
+PSlot == IF pplace = "G" /\ ~(pst = "published" /\ pwork)
+            /\ ~(Fault = "ParentSlotAtD" /\ pst \in {"dead", "published"})
          THEN 1 ELSE 0
 Used == Cardinality(slots) + PSlot
 
@@ -122,7 +127,7 @@ TypeOK ==
     /\ linkEver \in [Kids -> BOOLEAN] /\ monEver \in [Kids -> BOOLEAN]
     /\ began \in [Kids -> BOOLEAN] /\ killed \in [Kids -> BOOLEAN]
     /\ skill \in [Kids -> BOOLEAN] /\ xkill \in [Kids -> BOOLEAN]
-    /\ astop \in [Kids -> BOOLEAN]
+    /\ astop \in [Kids -> BOOLEAN] /\ rdyRet \in [Kids -> BOOLEAN]
     /\ pex \in [Kids -> Reasons \cup {None}] /\ qpex \in [Kids -> Reasons \cup {None}]
     /\ pexAbn \in [Kids -> BOOLEAN] /\ ctrap \in [Kids -> BOOLEAN]
     /\ commit \in [Kids -> Commits] /\ commit0 \in [Kids -> Commits]
@@ -155,7 +160,7 @@ Init ==
     /\ edgeWhenRun = F(FALSE)
     /\ edge = F(FALSE) /\ mon = F(FALSE) /\ linkEver = F(FALSE) /\ monEver = F(FALSE)
     /\ began = F(FALSE) /\ killed = F(FALSE) /\ skill = F(FALSE) /\ xkill = F(FALSE)
-    /\ astop = F(FALSE) /\ pex = F(None) /\ qpex = F(None) /\ pexAbn = F(FALSE)
+    /\ astop = F(FALSE) /\ rdyRet = F(FALSE) /\ pex = F(None) /\ qpex = F(None) /\ pexAbn = F(FALSE)
     /\ ctrap = F(FALSE)
     /\ commit = F(None) /\ commit0 = F(None) /\ initR = F(None) /\ why = F(None)
     /\ wait = F("none") /\ res = F("none") /\ resR = F(None) /\ pend = F(FALSE)
@@ -320,7 +325,7 @@ ResolveD(c, r) ==
 StartedBegin(c) ==
     /\ phase[c] = "starting" /\ ~began[c] /\ ~killed[c] /\ ~skill[c] /\ ~xkill[c]
     /\ began' = [began EXCEPT ![c] = TRUE]
-    /\ UNCHANGED <<pV, oV, sV, eV, killed, skill, xkill, astop, pex, qpex, pexAbn, ctrap,
+    /\ UNCHANGED <<pV, oV, sV, eV, killed, skill, xkill, astop, rdyRet, pex, qpex, pexAbn, ctrap,
                    cV, nV, mV, rV, dV>>
 
 LateLink(c) ==
@@ -338,12 +343,12 @@ OutsideKill(c) ==
     \* Before D a kill makes the reason Killed at once (L3).
     /\ why' = IF phase[c] = "exiting" /\ Fault # "SkipEscalation"
               THEN [why EXCEPT ![c] = "Killed"] ELSE why
-    /\ UNCHANGED <<pV, oV, sV, eV, began, killed, skill, astop, pex, qpex, pexAbn, ctrap,
+    /\ UNCHANGED <<pV, oV, sV, eV, began, killed, skill, astop, rdyRet, pex, qpex, pexAbn, ctrap,
                    commit, commit0, initR, wait, res, resR, pend, dl, oref, closedBy, nV, mV, rV, dV>>
 AdminStop(c) ==
     /\ AdminStopEnabled /\ ~astop[c] /\ phase[c] = "starting"
     /\ astop' = [astop EXCEPT ![c] = TRUE]
-    /\ UNCHANGED <<pV, oV, sV, eV, began, killed, skill, xkill, pex, qpex, pexAbn, ctrap,
+    /\ UNCHANGED <<pV, oV, sV, eV, began, killed, skill, xkill, rdyRet, pex, qpex, pexAbn, ctrap,
                    cV, nV, mV, rV, dV>>
 
 AnyKill(c) == killed[c] \/ skill[c] \/ xkill[c]
@@ -358,13 +363,18 @@ KilledEarly(c) ==
                    pubAlive, div, divEver, handed, lost, mV, seen, blamed, dV>>
 
 \* started() returns; design 2.3 precedence. No failed row runs stopped().
-StartedEnd(c) ==
+\* started() returns one of `os` (trace validation pins the recorded one).
+StartedEndOf(c, os) ==
     /\ phase[c] = "starting" /\ began[c]
-    /\ \E o \in Outcomes, t \in (IF ChildCanTrap THEN BOOLEAN ELSE {FALSE}),
-          first \in {"admin", "signal"}:
+    /\ \E o \in os, t \in (IF ChildCanTrap THEN BOOLEAN ELSE {FALSE}):
+       \* Row 3 is a held untrapped non-Normal signal. An administrative stop
+       \* (astop) does not decide the start: as OTP's gen_server:stop it is
+       \* applied after a ready commitment (AdminStopApply) and stopped()
+       \* runs. AdminStopFailsInit (negative control) restores revision 3's
+       \* row 3, which failed the start.
        LET sig == pex[c] \in NonNormal /\ ~t /\ Fault # "DropHeld"
-           row3 == astop[c] \/ sig
-           r3 == IF astop[c] /\ (~sig \/ first = "admin") THEN "Shutdown" ELSE pex[c]
+           row3 == sig \/ (astop[c] /\ Fault = "AdminStopFailsInit")
+           r3 == IF sig THEN pex[c] ELSE "Shutdown"
            closed == (place[c] = "G" /\ ~gopen) \/ (owned[c] /\ ~ownerOpen)
            failWith(r) == /\ ResolveD(c, r)
                           /\ initR' = [initR EXCEPT ![c] = r]
@@ -372,6 +382,8 @@ StartedEnd(c) ==
                              ELSE UNCHANGED <<commit, commit0>>
                           /\ UNCHANGED <<cont, readyOpen, qpex, oref>>
        IN /\ ctrap' = [ctrap EXCEPT ![c] = t]
+          /\ rdyRet' = [rdyRet EXCEPT ![c] = o \in {"ready", "continue"} /\ ~AnyKill(c)
+                                             /\ ~sig /\ ~closed]
           /\ pex' = [pex EXCEPT ![c] = None]
           /\ IF AnyKill(c) THEN failWith("Killed")
              ELSE IF row3 THEN failWith(r3)
@@ -393,7 +405,9 @@ StartedEnd(c) ==
              ELSE /\ phase' = [phase EXCEPT ![c] = "ready"]
                   /\ SetCommit(c, "ready")
                   /\ readyOpen' = [readyOpen EXCEPT ![c] = ~closed]
-                  /\ cont' = [cont EXCEPT ![c] = o = "continue"]
+                  \* A held administrative stop is observed before the
+                  \* continuation begins, which discards it.
+                  /\ cont' = [cont EXCEPT ![c] = o = "continue" /\ ~astop[c]]
                   /\ qpex' = [qpex EXCEPT ![c] = IF t THEN pex[c] ELSE None]
                   /\ UNCHANGED <<why, initR, lnote, mnote, edge, mon, reg, slots, oref>>
     /\ UNCHANGED <<pV, oV, place, admOpen, owned, ownOpenAt, edgeWhenRun, linkEver, monEver,
@@ -401,31 +415,33 @@ StartedEnd(c) ==
                    wait, res, resR, pend, dl, closedBy, pubAlive, div, divEver, handed, lost,
                    msgs, early, seen, blamed, dV>>
 
+StartedEnd(c) == StartedEndOf(c, Outcomes)
+
 Send(c) ==
     /\ phase[c] \in {"starting", "ready"} /\ msgs[c] < MaxMsgs
     /\ msgs' = [msgs EXCEPT ![c] = msgs[c] + 1]
     /\ UNCHANGED <<pV, oV, sV, eV, xV, cV, nV, cont, early, rV, dV>>
 
 RunContinue(c) ==
-    /\ phase[c] = "ready" /\ cont[c]
+    /\ phase[c] = "ready" /\ cont[c] /\ ~astop[c]
     /\ cont' = [cont EXCEPT ![c] = FALSE]
     /\ UNCHANGED <<pV, oV, sV, eV, xV, cV, nV, msgs, early, rV, dV>>
 
 Handle(c) ==
-    /\ phase[c] = "ready" /\ msgs[c] > 0
+    /\ phase[c] = "ready" /\ msgs[c] > 0 /\ ~astop[c]
     /\ ~cont[c] \/ Fault = "ContinueQueued"
     /\ msgs' = [msgs EXCEPT ![c] = msgs[c] - 1]
     /\ early' = [early EXCEPT ![c] = early[c] \/ cont[c]]
     /\ UNCHANGED <<pV, oV, sV, eV, xV, cV, nV, cont, rV, dV>>
 
 HandleQueuedExit(c) ==
-    /\ phase[c] = "ready" /\ qpex[c] # None
+    /\ phase[c] = "ready" /\ qpex[c] # None /\ ~astop[c]
     /\ ~cont[c] \/ Fault = "ContinueQueued"
     /\ early' = [early EXCEPT ![c] = early[c] \/ cont[c]]
     /\ qpex' = [qpex EXCEPT ![c] = None]
     /\ ExitK(c, qpex[c])
     /\ UNCHANGED <<pV, oV, place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun, eV,
-                   began, killed, skill, xkill, astop, pex, pexAbn, ctrap,
+                   began, killed, skill, xkill, astop, rdyRet, pex, pexAbn, ctrap,
                    commit, commit0, initR, wait, res, resR, pend, dl, oref, closedBy, nV, cont, msgs, rV, dV>>
 
 ApplyParentExit(c) ==
@@ -433,7 +449,7 @@ ApplyParentExit(c) ==
     /\ pex' = [pex EXCEPT ![c] = None]
     /\ IF pex[c] \in NonNormal THEN ExitK(c, pex[c]) ELSE UNCHANGED <<phase, why>>
     /\ UNCHANGED <<pV, oV, place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun, eV,
-                   began, killed, skill, xkill, astop, qpex, pexAbn, ctrap,
+                   began, killed, skill, xkill, astop, rdyRet, qpex, pexAbn, ctrap,
                    commit, commit0, initR, wait, res, resR, pend, dl, oref, closedBy, nV, mV, rV, dV>>
 
 ReadyExit(c) ==
@@ -447,6 +463,16 @@ KillReady(c) ==
     /\ Exit(c, "Killed")
     /\ UNCHANGED <<pV, oV, place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun, eV,
                    xV, commit, commit0, initR, wait, res, resR, pend, dl, oref, closedBy, nV, mV, rV, dV>>
+
+\* An administrative stop held during started() begins the ready child's
+\* exit with the stop's reason; stopped() runs (OTP gen_server:stop).
+AdminStopApply(c) ==
+    /\ phase[c] = "ready" /\ astop[c]
+    /\ astop' = [astop EXCEPT ![c] = FALSE]
+    /\ ExitK(c, "Shutdown")
+    /\ UNCHANGED <<pV, oV, place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun, eV,
+                   began, killed, skill, xkill, rdyRet, pex, qpex, pexAbn, ctrap,
+                   commit, commit0, initR, wait, res, resR, pend, dl, oref, closedBy, nV, mV, rV, dV>>
 
 ChildUnlink(c) ==
     /\ UnlinkEnabled /\ phase[c] = "ready" /\ edge[c]
@@ -462,8 +488,12 @@ Die(c) ==
                    linkEver, monEver, xV, cV, pubAlive, div, divEver, handed, lost, mV,
                    seen, blamed, dV>>
 
-\* After destruction: the name is released (registry lock), then the slot
-\* (group lock); two atomic points, two trace events (design 5.2, 16.2).
+\* After destruction the name is released (registry lock), before
+\* publication. The slot (group lock) is released when the instance's scope
+\* completes: after publication and its owned work (the job join, helpers),
+\* because a thread group's slot is the native worker that still runs that
+\* join. Two atomic points, two trace events (design 5.2, 16.2; the slot's
+\* point moved after publication with the implementation).
 ReleaseName(c) ==
     /\ phase[c] = "dead"
     /\ phase' = [phase EXCEPT ![c] = "namerel"]
@@ -471,16 +501,14 @@ ReleaseName(c) ==
     /\ UNCHANGED <<pV, oV, place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun,
                    eV, xV, cV, nV, mV, seen, blamed, slots, dV>>
 ReleaseSlot(c) ==
-    /\ phase[c] = "namerel"
-    /\ phase' = [phase EXCEPT ![c] = "released"]
+    /\ c \in slots /\ phase[c] = "published" /\ cwork[c]
     /\ slots' = slots \ {c}
-    /\ UNCHANGED <<pV, oV, place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun,
-                   eV, xV, cV, nV, mV, reg, seen, blamed, dV>>
+    /\ UNCHANGED <<pV, oV, sV, eV, xV, cV, nV, mV, reg, seen, blamed, dV>>
 
 \* Publication: each taken notice is disposed of by the commitment and the
 \* waiter (design 5.2); answers become final.
 Publish(c) ==
-    /\ phase[c] = "released"
+    /\ phase[c] = "namerel"
     /\ phase' = [phase EXCEPT ![c] = "published"]
     /\ pubAlive' = [pubAlive EXCEPT ![c] = Alive(pst)]
     /\ LET r == why[c]
@@ -549,7 +577,7 @@ Timeout(c) ==
     /\ IF commit[c] = None \/ Fault = "RewriteCommit"
        THEN SetCommit(c, "timedout") ELSE UNCHANGED <<commit, commit0>>
     /\ killed' = [killed EXCEPT ![c] = TRUE]
-    /\ UNCHANGED <<pV, oV, sV, eV, began, skill, xkill, astop, pex, qpex, pexAbn, ctrap,
+    /\ UNCHANGED <<pV, oV, sV, eV, began, skill, xkill, astop, rdyRet, pex, qpex, pexAbn, ctrap,
                    initR, why, wait, res, resR, pend, dl, oref, closedBy, nV, mV, rV, dV>>
 
 \* The bounded wait for publication expires (measured from the commitment).
@@ -620,7 +648,11 @@ Abandon(c) ==
 \* ParentExitClosesOwner (negative control) closes the gate here.
 PExit ==
     /\ ParentCanExit /\ pst = "run"
-    /\ \E r \in {"Normal", "Panic"} : pst' = "exiting" /\ pwhy' = r
+    \* A kill (or an untrapped signal) also abandons P's pending start waits
+    \* in the code (review #291 item 7; OTP: the caller dies at once): the
+    \* model's Abandon, enabled while P exits.
+    /\ \E r \in {"Normal", "Panic"} \cup (IF ParentKillEnabled THEN {"Killed"} ELSE {}) :
+           pst' = "exiting" /\ pwhy' = r
     /\ IF Fault = "ParentExitClosesOwner" /\ ownerOpen
        THEN ownerOpen' = FALSE /\ closedBy' = "parent"
        ELSE UNCHANGED <<ownerOpen, closedBy>>
@@ -665,7 +697,7 @@ PPublish ==
                                         /\ phase[c] \in {"starting", "ready"})]
     /\ pn' = F(None)
     /\ UNCHANGED <<pplace, ptrap, pwhy, pcause, gopen, ownerOpen, gdone, sfired, pwork, cwork,
-                   oV, sV, eV, began, killed, skill, xkill, astop, ctrap, cV, nV, mV, rV, dV>>
+                   oV, sV, eV, began, killed, skill, xkill, astop, rdyRet, ctrap, cV, nV, mV, rV, dV>>
 
 \* S8: from P's exit begin, the scope deadline (a timer, not assumed fair)
 \* kills every live owned child directly, exiting ones included.
@@ -678,7 +710,7 @@ ScopeDeadline ==
     /\ why' = [c \in Kids |-> IF owned[c] /\ phase[c] = "exiting" /\ Fault \notin {"NoScopeKill", "SkipEscalation"}
                              THEN "Killed" ELSE why[c]]
     /\ UNCHANGED <<pst, pplace, ptrap, pwhy, pcause, gopen, ownerOpen, gdone, pn, pwork, cwork,
-                   oV, sV, eV, began, killed, xkill, astop, pex, qpex, pexAbn, ctrap,
+                   oV, sV, eV, began, killed, xkill, astop, rdyRet, pex, qpex, pexAbn, ctrap,
                    commit, commit0, initR, wait, res, resR, pend, dl, oref, closedBy, nV, mV, rV, dV>>
 
 \* Owned work (helpers, jobs) is joined after publication (0.8 scope
@@ -718,7 +750,7 @@ ChildStep(c) ==
     \/ StartedBegin(c) \/ LateLink(c) \/ OutsideKill(c) \/ AdminStop(c)
     \/ KilledEarly(c) \/ StartedEnd(c)
     \/ Send(c) \/ RunContinue(c) \/ Handle(c) \/ HandleQueuedExit(c)
-    \/ ApplyParentExit(c) \/ ReadyExit(c) \/ KillReady(c)
+    \/ ApplyParentExit(c) \/ ReadyExit(c) \/ KillReady(c) \/ AdminStopApply(c)
     \/ ChildUnlink(c) \/ Die(c) \/ ReleaseName(c) \/ ReleaseSlot(c) \/ Publish(c) \/ Deliver(c)
     \/ LateRelease(c) \/ WorkDoneC(c)
     \/ Timeout(c) \/ CleanupDeadline(c) \/ AckOk(c) \/ AckFail(c) \/ Abandon(c)
@@ -731,7 +763,7 @@ Next == (\E c \in Kids : ChildStep(c)) \/ Lookup \/ PExit \/ OwnerClose \/ PDie
 \* and the cleanup deadline are not assumed to fire.
 Progress(c) ==
     \/ StartedBegin(c) \/ KilledEarly(c) \/ StartedEnd(c) \/ RunContinue(c)
-    \/ HandleQueuedExit(c) \/ ApplyParentExit(c) \/ KillReady(c)
+    \/ HandleQueuedExit(c) \/ ApplyParentExit(c) \/ KillReady(c) \/ AdminStopApply(c)
     \/ Die(c) \/ ReleaseName(c) \/ ReleaseSlot(c) \/ Publish(c) \/ Deliver(c) \/ AckOk(c) \/ WorkDoneC(c)
 Fairness ==
     /\ \A c \in Kids : /\ WF_vars(Progress(c)) /\ WF_vars(Commit(c))
@@ -788,6 +820,10 @@ ResultMatchesCommit ==
         /\ res[c] = "failed" => commit0[c] = "failed"
         /\ res[c] = "ignored" => commit0[c] = "ignored"
         /\ res[c] = "timeout" => commit0[c] = "timedout"
+
+\* started() returned ready and no kill, held signal or closure failed it:
+\* the start commits ready (an administrative stop waits for it; OTP).
+ReadyReturnCommitsReady == \A c \in Kids : rdyRet[c] => commit0[c] = "ready"
 
 ReadyIsFinal == \A c \in Kids : commit0[c] = "ready" => res[c] \notin {"failed", "ignored", "timeout"}
 

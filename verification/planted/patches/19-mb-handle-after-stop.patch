@@ -1,17 +1,17 @@
 Planted bug 19 (mb-handle-after-stop): The run loop keeps handling queued messages after stop (D4)
 
 diff --git a/concurrency/src/tasks/actor/lifecycle.rs b/concurrency/src/tasks/actor/lifecycle.rs
-index a88489ac..443f67ff 100644
+index c05182ba..a4cafd84 100644
 --- a/concurrency/src/tasks/actor/lifecycle.rs
 +++ b/concurrency/src/tasks/actor/lifecycle.rs
-@@ -443,9 +443,7 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
-                     #[cfg(all(test, not(feature = "lifecycle-trace"), not(spawned_sim)))]
-                     stop_receive_probe::before_receive();
-                     let received = rx.poll_recv(cx);
--                    let result = cancellation_token.after_receive(received, |item| {
--                        rx.hold_for_shutdown(item);
--                    });
-+                    let result = received;
-                     #[cfg(feature = "lifecycle-trace")]
-                     if let std::task::Poll::Ready(Some(envelope)) = &result {
-                         crate::lifecycle_trace::life_emit(trace_id, || {
+@@ -901,9 +901,7 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
+                         #[cfg(all(test, not(feature = "lifecycle-trace"), not(spawned_sim)))]
+                         stop_receive_probe::before_receive();
+                         let received = rx.poll_recv(cx);
+-                        let result = cancellation_token.after_receive(received, |item| {
+-                            rx.hold_for_shutdown(item);
+-                        });
++                        let result = received;
+                         #[cfg(feature = "lifecycle-trace")]
+                         if let std::task::Poll::Ready(Some(envelope)) = &result {
+                             crate::lifecycle_trace::life_emit(trace_id, || {

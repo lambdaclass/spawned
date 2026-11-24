@@ -289,7 +289,7 @@ impl Handler<SpawnLinked> for Watcher {
         reply: spawned_concurrency::PendingReply<'_, ActorRef<Worker>>,
         ctx: &Context<Self>,
     ) {
-        let value = { Worker::new().start_linked(ctx) };
+        let value = { Worker::new().start_link(ctx).actor_ref().unwrap() };
         reply.reply(value);
     }
 }
@@ -454,7 +454,7 @@ pub async fn run(index: usize, rng: &mut Rng, env: &Env) -> R {
 /// Start a few actors on one backend, exercise requests, end each one.
 async fn churn(rng: &mut Rng, backend: Backend) -> R {
     let actors: Vec<_> = (0..1 + rng.below(6))
-        .map(|_| track(Worker::new().start_with_backend(backend)))
+        .map(|_| track(Worker::new().with_options(backend).spawn().unwrap()))
         .collect();
     for actor in &actors {
         for expected in 1..=1 + rng.below(3) {
@@ -478,9 +478,9 @@ async fn group(rng: &mut Rng, env: &Env) -> R {
     };
     let mut actors = Vec::new();
     for _ in 0..1 + rng.below(3) {
-        match group.start(Worker::new()) {
+        match Worker::new().with_options(group).spawn() {
             Ok(actor) => actors.push(track(actor)),
-            Err(SystemError::Capacity) => {
+            Err(spawned_concurrency::StartError::Capacity) => {
                 env.stats
                     .capacity
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -605,8 +605,13 @@ async fn supervisor(rng: &mut Rng, env: &Env, strategy: SupervisorStrategy, nest
 
 /// Bidirectional links: trapped exits, propagated exits, `start_linked`, unlink.
 async fn links(rng: &mut Rng) -> R {
-    let watcher = track(Watcher::new().start());
-    let peer = track(Worker::new().start_with_backend(backend(rng)));
+    let watcher = track(Watcher::new().spawn());
+    let peer = track(
+        Worker::new()
+            .with_options(backend(rng))
+            .spawn()
+            .expect("spawn"),
+    );
     match rng.below(4) {
         0 => {
             watcher.request(Trap(true)).await.map_err(e("trap"))?;
@@ -666,9 +671,16 @@ async fn links(rng: &mut Rng) -> R {
 /// Monitors, demonitors, monitoring an already-dead actor, and a watcher
 /// that stops before its targets.
 async fn monitors(rng: &mut Rng) -> R {
-    let watcher = track(Watcher::new().start());
+    let watcher = track(Watcher::new().spawn());
     let targets: Vec<_> = (0..1 + rng.below(4))
-        .map(|_| track(Worker::new().start_with_backend(backend(rng))))
+        .map(|_| {
+            track(
+                Worker::new()
+                    .with_options(backend(rng))
+                    .spawn()
+                    .expect("spawn"),
+            )
+        })
         .collect();
     let mut expected = 0;
     for target in &targets {
@@ -712,7 +724,12 @@ async fn monitors(rng: &mut Rng) -> R {
 
 /// `send_after` and `send_interval`, cancelled, fired, or live at stop.
 async fn timers(rng: &mut Rng) -> R {
-    let actor = track(Worker::new().start_with_backend(backend(rng)));
+    let actor = track(
+        Worker::new()
+            .with_options(backend(rng))
+            .spawn()
+            .expect("spawn"),
+    );
     let once = 1 + rng.below(4);
     let period = Duration::from_millis(1 + rng.below(4));
     actor
@@ -736,7 +753,7 @@ async fn timers(rng: &mut Rng) -> R {
 
 /// Unmanaged registry: register, look up, reject duplicates, unregister.
 async fn registry_names(rng: &mut Rng, env: &Env) -> R {
-    let actor = track(Worker::new().start());
+    let actor = track(Worker::new().spawn());
     let leak = leaks().registry;
     for _ in 0..1 + rng.below(4) {
         let id = env.stats.next_id();
@@ -762,7 +779,12 @@ async fn registry_names(rng: &mut Rng, env: &Env) -> R {
 
 /// Requests that time out, requests dropped mid-flight, requests to a stopped actor.
 async fn requests(rng: &mut Rng) -> R {
-    let actor = track(Worker::new().start_with_backend(backend(rng)));
+    let actor = track(
+        Worker::new()
+            .with_options(backend(rng))
+            .spawn()
+            .expect("spawn"),
+    );
     let timed_out = actor
         .request_with_timeout(
             Slow(Duration::from_millis(20 + rng.below(20))),
@@ -799,7 +821,12 @@ async fn requests(rng: &mut Rng) -> R {
 /// Stream listeners: a finite stream drained into the actor, and an endless
 /// one that must end when the actor stops.
 async fn streams(rng: &mut Rng) -> R {
-    let actor = track(Worker::new().start_with_backend(backend(rng)));
+    let actor = track(
+        Worker::new()
+            .with_options(backend(rng))
+            .spawn()
+            .expect("spawn"),
+    );
     let n = 1 + rng.below(64);
     drop(spawn_listener(
         actor.context(),
@@ -835,10 +862,20 @@ async fn system_cycle(rng: &mut Rng) -> R {
     };
     let mut actors = Vec::new();
     for _ in 0..1 + rng.below(4) {
-        actors.push(group.start(Worker::new()).map_err(e("start"))?);
+        actors.push(
+            Worker::new()
+                .with_options(&group)
+                .spawn()
+                .map_err(e("start"))?,
+        );
     }
     if let Some(native) = &native {
-        actors.push(native.start(Worker::new()).map_err(e("native start"))?);
+        actors.push(
+            Worker::new()
+                .with_options(native)
+                .spawn()
+                .map_err(e("native start"))?,
+        );
     }
     for actor in &actors {
         ensure!(actor.request(Inc).await.map_err(e("inc"))? == 1, "inc");
@@ -869,7 +906,12 @@ async fn system_cycle(rng: &mut Rng) -> R {
 
 /// Fill a mailbox with thousands of messages, then drain it or stop with it full.
 async fn burst(rng: &mut Rng) -> R {
-    let actor = track(Worker::new().start_with_backend(backend(rng)));
+    let actor = track(
+        Worker::new()
+            .with_options(backend(rng))
+            .spawn()
+            .expect("spawn"),
+    );
     let n = 1_000 + rng.below(20_000);
     for _ in 0..n {
         actor.send(Bump).map_err(e("burst send"))?;

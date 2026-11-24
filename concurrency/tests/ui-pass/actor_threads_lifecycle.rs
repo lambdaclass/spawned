@@ -46,7 +46,7 @@ impl<T: ToString + Send + 'static> Holder<T> {
 
 fn main() {
     let hooks = Arc::new(AtomicUsize::new(0));
-    let actor = Holder::new(7u32, hooks.clone()).start();
+    let actor = Holder::new(7u32, hooks.clone()).spawn();
     assert_eq!(actor.get().unwrap(), "7");
     actor.context().stop();
     actor.join();

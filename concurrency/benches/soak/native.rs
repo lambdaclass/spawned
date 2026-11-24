@@ -247,7 +247,7 @@ fn watcher() -> ActorRef<NWatcher> {
             downs: 0,
             exits: 0,
         }
-        .start(),
+        .spawn(),
     )
 }
 
@@ -323,7 +323,7 @@ pub const COUNT: usize = 5;
 
 fn churn(rng: &mut Rng) -> R {
     let actors: Vec<_> = (0..1 + rng.below(4))
-        .map(|_| track(NWorker::new().start()))
+        .map(|_| track(NWorker::new().spawn()))
         .collect();
     for actor in &actors {
         for expected in 1..=1 + rng.below(3) {
@@ -339,7 +339,7 @@ fn churn(rng: &mut Rng) -> R {
 
 fn links_monitors(rng: &mut Rng) -> R {
     let watcher = watcher();
-    let peer = track(NWorker::new().start());
+    let peer = track(NWorker::new().spawn());
     if rng.one_in(2) {
         let trap = rng.one_in(2);
         watcher.request(Trap(trap)).map_err(e("trap"))?;
@@ -377,7 +377,7 @@ fn links_monitors(rng: &mut Rng) -> R {
 }
 
 fn timers_streams(rng: &mut Rng) -> R {
-    let actor = track(NWorker::new().start());
+    let actor = track(NWorker::new().spawn());
     if rng.one_in(2) {
         let once = 1 + rng.below(3);
         let period = Duration::from_millis(1 + rng.below(3));
@@ -399,7 +399,7 @@ fn timers_streams(rng: &mut Rng) -> R {
 }
 
 fn registry_requests(rng: &mut Rng, stats: &Stats) -> R {
-    let actor = track(NWorker::new().start());
+    let actor = track(NWorker::new().spawn());
     let id = stats.next_id();
     let name = format!("soak-native-{id}");
     registry::register(&name, actor.clone()).map_err(e("register"))?;
@@ -427,7 +427,7 @@ fn registry_requests(rng: &mut Rng, stats: &Stats) -> R {
 }
 
 fn burst(rng: &mut Rng) -> R {
-    let actor = track(NWorker::new().start());
+    let actor = track(NWorker::new().spawn());
     let n = 1_000 + rng.below(10_000);
     for _ in 0..n {
         actor.send(Bump).map_err(e("burst send"))?;

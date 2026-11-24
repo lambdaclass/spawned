@@ -67,14 +67,14 @@ async fn exported_protocols_support_actors_configured_refs_and_downstream_fakes(
     let fake: Arc<dyn SharedProtocol> = Arc::new(Fake);
     assert_eq!(fake.value().unwrap(), 7);
     assert_eq!(GenericFake("state").value().unwrap(), 8);
-    let native = native::Worker.start();
+    let native = native::Worker.spawn();
     assert_eq!(native.value().unwrap(), 42);
     let configured = native.with_request_timeout(Duration::from_secs(5));
     assert_eq!(configured.to_shared_ref().value().unwrap(), 42);
     assert_eq!(configured.to_where_ref().version().unwrap(), 1);
     native.context().stop();
     native.join();
-    let actor = asynchronous::Worker.start();
+    let actor = asynchronous::Worker.spawn();
     assert_eq!(actor.value().await.unwrap(), 42);
     let configured = actor.with_request_timeout(Duration::from_secs(5));
     assert_eq!(configured.to_shared_ref().value().await.unwrap(), 42);

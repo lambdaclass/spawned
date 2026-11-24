@@ -51,14 +51,14 @@ fn assert_debug<T: Debug>(_: &T) {}
 async fn main() {
     use spawned_concurrency::tasks::ActorStart as _;
     use spawned_concurrency::threads::ActorStart as _;
-    let native = native::Native.start();
+    let native = native::Native.spawn();
     let configured = native.with_request_timeout(Duration::from_secs(5));
     assert_debug(&configured);
     assert_eq!(configured.to_probe_ref().value().unwrap(), 42);
     assert_eq!(native.kind(), "native");
     assert_eq!(native.to_custom_ref().other().unwrap(), 7);
     native.context().stop(); native.join();
-    let actor = asynchronous::Async.start();
+    let actor = asynchronous::Async.spawn();
     assert_eq!(actor.with_request_timeout(Duration::from_secs(5)).to_probe_ref().value().await.unwrap(),42);
     assert_eq!(actor.kind(), "async");
     assert_eq!(actor.to_custom_ref().other().await.unwrap(),7);

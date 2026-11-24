@@ -54,7 +54,7 @@ impl Handler<Tick> for Observer {
     }
 }
 fn main() {
-    let counter = Counter(0).start();
+    let counter = Counter(0).spawn();
     assert_eq!(counter.next().unwrap(), 1);
     assert_eq!(
         counter
@@ -72,7 +72,7 @@ fn main() {
     .unwrap();
     assert_eq!(named.next().unwrap(), 4);
     let events = Arc::new(AtomicUsize::new(0));
-    let observer = Observer(events.clone()).start();
+    let observer = Observer(events.clone()).spawn();
     observer.context().monitor(&counter.child_handle());
     spawned_concurrency::threads::send_after(Duration::from_millis(5), observer.context(), Tick);
     counter
@@ -95,8 +95,8 @@ fn main() {
     assert_eq!(observer.wait_exit(), ExitReason::Normal);
     spawned_concurrency::registry::unregister("thread-only-counter");
     // Links retain the same exit semantics without an async runtime.
-    let first = Counter(0).start();
-    let second = Counter(0).start();
+    let first = Counter(0).spawn();
+    let second = Counter(0).spawn();
     first.context().link(&second.child_handle());
     second
         .child_handle()

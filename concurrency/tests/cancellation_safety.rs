@@ -322,12 +322,13 @@ impl Fx {
     }
     fn spawn(&self, probe: Probe) -> ActorRef<Probe> {
         match self.place {
-            Place::Async => probe.start_with_backend(Backend::Async),
-            Place::Blocking => probe.start_with_backend(Backend::Blocking),
-            Place::Thread => probe.start_with_backend(Backend::Thread),
-            Place::GroupAsync | Place::GroupThread => {
-                self.group.as_ref().unwrap().start(probe).unwrap()
-            }
+            Place::Async => probe.with_options(Backend::Async).spawn().unwrap(),
+            Place::Blocking => probe.with_options(Backend::Blocking).spawn().unwrap(),
+            Place::Thread => probe.with_options(Backend::Thread).spawn().unwrap(),
+            Place::GroupAsync | Place::GroupThread => probe
+                .with_options(self.group.as_ref().unwrap())
+                .spawn()
+                .unwrap(),
         }
     }
     fn probe(&self) -> Probe {

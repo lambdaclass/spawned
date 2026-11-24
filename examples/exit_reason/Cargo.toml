@@ -13,3 +13,8 @@ spawned-concurrency = { workspace = true }
 spawned-rt = { workspace = true, features = ["async", "fmt-subscriber"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+# Manual `impl Actor` `started()` methods return `()`, refining the trait's
+# `impl Into<Init<Self>>` (`#[started]` adds this allow itself).
+[lints.rust]
+refining_impl_trait = { level = "allow", priority = -1 }

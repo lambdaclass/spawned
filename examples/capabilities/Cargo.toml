@@ -25,3 +25,8 @@ required-features = ["metrics"]
 [[bin]]
 name = "shutdown_diagnostics"
 required-features = ["diagnostics"]
+
+[lints.rust]
+# Manual `impl Actor` `started()` methods return `()` or an `Init`, refining
+# the trait's `impl Into<Init<Self>>` (`#[started]` adds this allow itself).
+refining_impl_trait = { level = "allow", priority = -1 }

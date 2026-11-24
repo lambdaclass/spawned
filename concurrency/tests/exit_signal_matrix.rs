@@ -68,9 +68,9 @@ mod native {
         for relation in [Relation::Link, Relation::Monitor] {
             for trapping in [false, true] {
                 for reason in reasons() {
-                    let source = Idle.start();
+                    let source = Idle.spawn();
                     let (send, notices) = mpsc::channel();
-                    let observer = Observer(send).start();
+                    let observer = Observer(send).spawn();
                     source.request(Ping).unwrap();
                     observer.request(Ping).unwrap();
                     observer.context().trap_exit(trapping);
@@ -127,9 +127,9 @@ mod asynchronous {
         for relation in [Relation::Link, Relation::Monitor] {
             for trapping in [false, true] {
                 for reason in reasons() {
-                    let source = Idle.start();
+                    let source = Idle.spawn();
                     let (send, notices) = mpsc::channel();
-                    let observer = Observer(send).start();
+                    let observer = Observer(send).spawn();
                     source.request(Ping).await.unwrap();
                     observer.request(Ping).await.unwrap();
                     observer.context().trap_exit(trapping);

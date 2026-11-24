@@ -336,18 +336,22 @@ giving collateral children their own backoff fails
 | R3 | `protocol_timeouts` precedence; `tasks_contract::default_request_timeout_*` (4.9 s Ok, 5.1 s timeout, no timer before first poll) | A N, Sim | partial → covered | send-only methods: by type (no `Response`) |
 | R4 | `cancellation_safety`; `request_histories` pending ops | A B T G TG, Sim | covered | |
 | R5 | `semantics_gaps::*::panicking_request_handler_*`; `cross_backend` | A B T N G TG P | covered | |
-| L1 | `sim_ordering::turns_*`; `*_contract::hooks_and_turns_*`; Fz | A B T N G TG, Sim (PCT, DFS) | covered (A only) → covered | |
-| L2 | `startup_admission`; `execution_groups::failed_startup_*`; `tasks_contract::managed_readiness_*` (historical `ready()`) | G TG, Sim (G) | partial → covered | |
+| L1 | `sim_ordering::turns_*`; `*_contract::hooks_and_turns_*`; Fz; v0.9: `start_contract::*::init_outcomes_*` (no `stopped()` after any failed start), `early_stop_regression::stop_in_started_*` | A B T N G TG, Sim (PCT, DFS) | covered (A only) → covered | |
+| L2 | `startup_admission`; `execution_groups::failed_startup_*`; `tasks_contract::managed_readiness_*` (historical `ready()`); v0.9 every placement: `start_contract::*::ready_then_immediate_crash_*`, `Start!ReadyIsFinal`, `Start!ReadyOnlyWhileOpen` | A N G TG, Sim (G), Model | partial → covered | |
 | L3 | `context_exit` (first reason wins); `sim_ordering::turns_*` (stop never splits a turn); `*_partial::stop_reason_precedence_through_cleanup` (every requested reason x second request, `stopped()` panic, kill then `stopped()` panic, destructor panic after D) | A B T N G TG, Sim | partial → covered | |
 | L4 | `exit_signal_matrix`, `context_exit`, `panic_safety`; `shutdown_payload` (`{shutdown, Term}`: `join`, `Down`, trapped `Exit`, untrapped linked peer, exit signals, metrics class) | A B T N G TG | covered | owned by #240 |
 | L5 | `foreign_panics` (strict); `tasks_contract::panics_in_hooks_*` | A B T N G TG | covered (B, T unchecked) → covered | |
 | L6 | `mailbox_drop_panic` (5 placements x 1/2/256), `native_mailbox_drop`, lifecycle traces | A B T N G TG | covered | not simulated (subprocesses) |
 | L7 | `shutdown_publication`; `*_contract::stop_window_*`; `sim_ordering::stop_discards_*`; `src/tasks/actor/monitor_cleanup_regressions.rs::observer_cancels_its_monitors_before_publishing_its_exit` (wake order on a current-thread runtime) | A B T N G TG, Sim | partial → covered | monitor ordering only on A (the cleanup is shared with threads mode) |
+| L8 (v0.9) | `Start.tla` (8 configurations, 40 controls); start traces (16 scenarios, 15 recorded-trace controls); `start_contract::*::{init_outcomes_*, names_*}`, `tasks_mode::{start_link_through_dead_context_is_refused, stuck_started_reports_pending_*}`; `link_fence_loom::start_edge_commit_races_parent_exit_begin` | A T N G TG, Model, Loom | new: covered | the sim and fuzz layers of design 16.3-16.4 |
+| L9 (v0.9) | `Start!KillBeforeDIsKilled`, `Start!IgnoredExitsNormal`, `Start!ReadyReturnCommitsReady` (control `AdminStopFailsInit`: a held administrative stop waits for the start); traces `kill_and_admin_stop_during_started`, `parent_exit_during_child_started`; `start_contract::*::init_outcomes_*` (every row but 1-3 per mode), `trapping_child_with_parent_exit_*` | A N, Model | new: covered | rows 2-3 not in threads mode tests |
+| L10 (v0.9) | `Start!ContinueFirst`; trace `continuation_precedes_queued_messages` and its control; `start_contract::*::continuation_*` | A N, Model | new: covered | |
 | X1 | `actor_scenarios` monitor races; `exit_signal_matrix`; Fz | A B T N, Sim | covered | owned by #240 |
 | X2 | unit `demonitor_*`, `closed_monitor_table_*`; `leaks` | A N | covered | demonitor checks use a bounded window |
 | X3 | unit link tests; `exit_signal_matrix`; Fz | A N, Sim | covered | owned by #240; threads lacks the Normal and chain variants (after #240) |
 | X4 | `kill_links` | A N | covered | owned by #240 |
-| X5 | unit link tests; `link_regression_tests` | A N | covered | owned by #240 |
+| X5 | unit link tests; `link_regression_tests`; v0.9: `Start!LinkBeforeStarted`, `Start!EdgeOnlyToRunningParent`, the trace control "edge committed after started() began", `link_fence_loom::start_edge_commit_races_parent_exit_begin`, `start_contract::*::start_link_through_dead_context_is_refused`/`names_and_refusals` | A N, Model, Loom | covered | owned by #240 |
+| X8 (v0.9) | `Start!{FailureFlushed, NoticeOnce, NoLostNotice, TimeoutContained, AbandonedNoticeDelivered}`; traces with diverted, dropped and handed-on notices and their controls; `start_contract::*::failed_start_notices_*`, `tasks_mode::{abandoned_start_monitor_*, init_timeout_never_reaches_the_parent}` | A N, Model | new: covered | |
 | X6 | `link_regression_tests` | A | covered | owned by #240 |
 | X7 | `semantics_gaps::*::exit_and_down_follow_*`; `sim_ordering::exit_and_down_follow_the_last_message_*`; `*_partial::linked_stop_waits_for_the_running_handler_*`; Fz | A B T N G TG, Sim (PCT, DFS) | partial → covered | |
 | V1 | `supervisor_policies` oracle; `supervision::restart_modes_*` (real `Normal`, `Shutdown`, `Shutdown` with a payload and panic exits); `shutdown_payload::*_restart_table_*` (payload on G and TG); `Supervision!RestartFollowsPolicy`, `TemporaryStartsOnce` (`MCSupervisionTemporary`) | G, Sim, Model | covered | |
@@ -365,12 +369,19 @@ giving collateral children their own backoff fails
 | S4 | `src/system.rs::coordinator_fault_*`; failpoints | G, Model | covered | not simulated (failpoints) |
 | S5 | `execution_groups`, `supervision`, `src/registry.rs` tests; Fz | G, Sim | covered | |
 | S6 | `execution_groups::ambient_actor_*`; `tasks_contract::unmanaged_tasks_and_threads_*` | G | partial → covered | |
+| S7 (v0.9) | `Start!InheritedPlacement`, `CapacityRespected`; trace `inherited_thread_group_capacity` and its control; `start_contract::tasks_mode::{link_and_monitor_inherit_*, inherited_start_into_full_thread_group_*}` | G TG, Model | new: covered | pinned shards and the Blocking/Thread backends are not asserted (no backend query) |
+| S9 (v0.9) | `Start!{NameUnique, NameKeptWhileLive, NoOverlapOnReuse, NameFreeBeforeObservation}`; trace `named_start_clash_and_release` and its controls; `start_contract::*::names_*` | A N, Model | new: covered | |
 | T1 | `semantics_gaps::tasks::send_after_fires_once_*` (paused time); `resource_cleanup`; `cross_backend::timers_match` | A B T N G TG P | covered | |
 | T2 | `semantics_gaps::tasks::send_interval_is_fixed_delay_*` (paused time) | A | covered | threads by construction |
 | T3 | `semantics_gaps::tasks::timers_are_not_carried_*`; `tasks_contract::managed_timers_run_on_the_group_*` | G | partial → covered | `send_message_on` in threads |
+| T5 (v0.9) | `Start!TimeoutNeverKillsReady`; traces `init_timeout_waiting`, `abandoned_timeout_delivers_killed` and the control "init timer wins after a ready commitment"; `start_contract::tasks_mode::{init_timeout_never_reaches_the_parent, stuck_started_reports_pending_*}` | A, Model | new: covered | threads mode; the timer under the simulator's virtual time |
 | T4 | paused-time tests and the simulator clock; `src/threads/timer_tests.rs::threads_send_*`; `supervision::native_restart_window_expires_on_the_monotonic_clock` | A N TG, Sim | partial → covered | |
 | P1 | `panic_safety`; `foreign_panics`; `mailbox_drop_panic`; failpoints | A B T N G TG | covered | not simulated |
 | P2 | `panic-abort` CI job; `foreign_panics::panicking_panic_hook_*` | A N | covered | no observer for `Down`/`Exit` |
+| I1 | `introspection::*::info_returns_during_a_wedged_turn`; `introspection::sim_mode::reads_do_not_change_the_tape` | A B T N G TG, Sim | new (0.9) | console reads: later steps |
+| I3 | `introspection::*::lifecycle_walks_*` (a destructor held between D and publication); `child_handle_info_after_every_ref_is_dropped` | A B T N G TG, Sim | new (0.9, tier 0 part) | counters: `introspection` feature |
+| I10 | `crash_reports` (panics in every hook, abnormal self-exit, no report for clean exits, kills and untrapped signals, supervised fields) | A N G | new (0.9, crash part) | supervisor reports, sessions |
+| I11 | perf gate (`hotpath.py gate`, against the merge base and the last release) | A N | new (0.9) | codegen diff: step 2 |
 
 Bugs found: none. Every gap test passed on the first correct run in both
 builds; the two initial `sim_ordering` failures were test errors (a stop
@@ -922,7 +933,7 @@ replays from the input alone.
 | Part | Contents |
 |---|---|
 | Schedule | `Random` (seeded walk), `Pct { d = 1..4, k = 1..4000 }` (one PCT run) or `Canonical` (smallest ready task), all from `sim::explore` |
-| Actors | spawn unmanaged (`start`), managed (`start_on` an async group of up to three systems) or `start_linked`; hooks that sleep (virtual time) or panic in `started()`, `stopped()` or the state destructor |
+| Actors | spawn unmanaged (`spawn`), managed (`with_options(&group)` an async group of up to three systems) or `start_link`; hooks that sleep (virtual time) or panic in `started()`, `stopped()` or the state destructor |
 | Messages | `send` (by `ActorRef` or `Recipient`), requests inline or in their own task with no or any timeout; handler commands: no-op, panic, sleep, stop self with any `ExitReason`, send a `Note`, link, unlink, monitor, trap exits, register a name, stop another actor |
 | Signals | link, unlink, monitor, demonitor and `trap_exit` from outside; `stop`, `shutdown`, `stop_with_reason(Kill/Panic)` |
 | Timers and time | `send_after`, `send_interval`, cancel; advance virtual time; yield |
@@ -948,7 +959,7 @@ oracle's name, so shrinking can match it):
 | X2 (flush) | No `Down` of a monitor is handled after the driver's `demonitor` of it returned (dispatch and the handler's record are one poll, so a `Down` whose dispatch began earlier is already recorded) |
 | X3, X5 | `Exit` carries the peer's published reason; a trapping, still-linked actor gets it (no more often than links were made); a non-trapping one does not survive a peer's abnormal exit |
 | X7 | No `Note` from a source after its `Down`/`Exit` at the same receiver |
-| X8 | An actor whose only possible stop cause was one driver `stop`, `shutdown` or `stop_with_reason` on it while alive publishes exactly that reason (skipped if a hook or the state destructor panicked) |
+| X8 | An actor whose only possible stop cause was one driver `stop`, `shutdown` or `stop_with_reason` on it while alive publishes exactly that reason (skipped if a hook panicked; a destructor panic after D is no excuse, L6) |
 | X3 (reason) | A standalone, non-trapping actor whose only possible stop cause was its link to a peer survives the peer's `Normal` exit, and after `Shutdown`, `Panic` or `Kill` publishes the peer's reason, so the crash keeps propagating |
 | X5 (unlink) | After the driver unlinks two running actors (and does not link them again), neither receives an `Exit` from the other, and a standalone actor whose only stop causes were links to that peer outlives it |
 | T1 (cancel) | A timer cancelled at time `c` delivers at most the ticks due by `c` (`send_after`: at most one, none if cancelled before its period; `send_interval`: one per elapsed period) |
@@ -963,6 +974,9 @@ oracle's name, so shrinking can match it):
 | V4, V9 | `current()` never returns an exited generation; a finished supervisor has every child `Stopped` or `Failed`, no live generation, and runs no factory afterwards; children stop in reverse declaration order |
 | S1-S4 | A complete system shutdown leaves no managed actor running and no coordinator failure; a shut-down system admits nothing; targets stop in reverse admission order |
 | M5, S3, S5 | After teardown: every actor state dropped, no registered name left, and the simulator's task count back to its starting value |
+| M6 (panic injection) | Every injected-fault payload (message, reply, job result, `done` captures, emit, helper locals, panic payload) is destroyed exactly once: never leaked, never twice |
+| L6 (panic injection) | A payload destructor that panics on its owner's own task (a queued message at the death point, a fenced or cancelled job's result, `done` or emit, a reply payload outside the actor's own `reply()` call) is that actor's recorded `cleanup_failure()`; with one stop request as the only cause, the published reason is still the requested one (X8 no longer excuses destructor panics) |
+| R1, R6 (panic injection) | Every `Fx` request resolves exactly once, deferred ones included (unbounded deadline; collected at a fence once resolved, at the latest after teardown): `Ok` with its own nonce, `ActorStopped`/`NoProc`, `RequestTimeout` not before its timeout, or `ReplyDropped`/`Overloaded` only for a deferred reply |
 
 Order checks run only after quiescing (timers cancelled, requests collected,
 every actor fenced, no child starting or backing off) and when every
@@ -1014,6 +1028,84 @@ for `Supervision.tla`, OneForAll and RestForOne, cohort actions only, for
 `Cohorts.tla`; nested trees are not exported), and
 `fuzz/tla-sample.sh CORPUS [MAX] [OUT]` replays a corpus and runs
 `trace_check.py` on them (`nix develop -c fuzz/tla-sample.sh ...`).
+
+#### Panic injection
+
+The fuzz target reads its input in the fault format (`Format::Faults`): an
+operation whose 4-byte discriminant is `7 (mod 8)` is a fault step instead,
+and everything else decodes as before, so the committed seeds and the older
+regressions (`Format::Base`, `decode`, `assert_passes`, `repro --base`) keep
+their meaning. Fault steps arm entry points (`FaultOp::Arm`, each site about
+one time in four), send or request `Fx` commands (answer, defer, answer or
+drop deferred tokens, start a job, panic, spawn a helper) and arm `Fx`
+timers. Payloads are `Bomb`s: armed when their site was armed at creation,
+defused by the user code that takes them, so an armed one goes off only where
+the framework destroys or copies it on its own. Nothing goes off in the
+driver, its request tasks, or inside a handler's own call into the framework
+(a refused `pipe` drops `work` and `done` there by design, R7): those are the
+caller's context. All of it is harness code: the framework and the default
+build are untouched.
+
+Every place spawned runs user code, and how the harness reaches it:
+
+| Entry point | Runs on | Injection | Expected (contract) |
+|---|---|---|---|
+| `started()` | actor task | `Hooks` bits 0-2 (panic), `started_sleep` | `Panic`, no `stopped()` (L5) |
+| handlers (`Do`, `Fx`) | actor task | `Cmd::Panic`, `FaultCmd::Panic` | `Panic`, then `stopped()` (L5) |
+| `stopped()` | actor task | `Hooks` bits 3-5, `stopped_sleep`; answers deferred tokens | `Panic` unless killed (L3, L5) |
+| `exit_received` | actor task | `EXIT_PANIC` | handler panic (L4) |
+| `Down` handler | actor task | `DOWN_PANIC` | handler panic (L4) |
+| `Note` handler | actor task | `NOTE_PANIC` | handler panic (L4) |
+| state `Drop` | actor task, after D | `Hooks` bits 6-7 | cleanup failure, reason unchanged (L6) |
+| queued message `Drop` | actor task, after D | `MSG_DROP` | cleanup failure, reason unchanged (L6) |
+| refused message `Drop` | sender (driver, handler or timer task) | `MSG_DROP` | the sender's context |
+| timer message `Clone` (`send_interval`) | timer task | `MSG_CLONE` | the timer task ends; the actor is unaffected |
+| cancelled timer's message `Drop` | timer task | `MSG_DROP` | the timer task ends |
+| reply payload `Drop` (immediate and deferred replies) | wherever the slot dies: caller, deadline service, disposal worker | `REPLY_DROP` | contained off the caller (P1) |
+| deferred `ReplyTo`: answered in a turn, a job's `done`, `stopped()`, or dropped | actor task | `FaultCmd::{Defer, Answer, DropToken}`, `Pipe { answer }` | every caller answered once (R6) |
+| job work (async, blocking) | job task | `WORK_PANIC` | `JobError::Panicked` (R7) |
+| job `done` | actor task (a turn) | `DONE_PANIC` | handler panic |
+| job `done` dropped unrun (fenced, cancelled) | actor task or deadline service | `DONE_DROP` | contained; on the owner's task, a cleanup failure |
+| job result `Drop` (fenced, cancelled, keyed replacement, deadline, owner exit) | actor task, job task or deadline service | `RESULT_DROP` | contained (R7, L6) |
+| job emit `Drop` (`emit`, `emit_at`, fenced or expired) | actor task, job task or deadline service | `EMIT_DROP` | contained |
+| panic payload `Drop` | wherever the panic is caught | `PAYLOAD_DROP` (every injected panic) | `dispose_panic` forgets the secondary (L6) |
+| `tracing` subscriber | every task that logs | `TRACING` | contained where the contract says so (P1) |
+| `Debug` / `Display` of user payloads | none on main | `FMT` | armed for introspection (#301, #304, #305) |
+| `ChildSpec` factory (error, panic) | supervisor task | `WorkerDef::{fail_mask, panic_mask}` | a failed attempt (V1-V5) |
+| nested `configure` | supervisor task | `CONFIGURE_PANIC` | a failed attempt |
+| helper future body, `Drop` | helper task | `Cmd::Helper`, `HELPER_DROP` | `HelperError`, joined by the scope |
+
+Not reachable from the harness (single-threaded simulator, `tasks` mode
+only): `threads` mode, `Backend::Blocking`/`Thread` and native groups (their
+panic paths are covered by `panic_safety`, `native_mailbox_drop` and
+`foreign_panics`), stream listeners (`spawn_listener`, `send_message_on`),
+`spawned-test`'s `in_actor` closures, and wakers of user futures.
+
+`cargo run --release --example sites -- CORPUS` replays a corpus and counts,
+per site, the runs that armed it and made it go off. On the corpus of a
+40-minute run (2026-11-21, fede, 6 workers, 10.6 million executions, no
+failure with #309; 5,769 inputs), replayed with the harness of 2026-11-23
+(no failure), the runs in which each site went off:
+`MSG_DROP` 113, `MSG_CLONE` 36, `REPLY_DROP` 8, `RESULT_DROP` 23,
+`DONE_DROP` 47, `DONE_PANIC` 34, `WORK_PANIC` 34, `DOWN_PANIC` 5,
+`EXIT_PANIC` 9, `PAYLOAD_DROP` 425, `TRACING` 478, `CONFIGURE_PANIC` 298,
+`EMIT_DROP` 50, `NOTE_PANIC` 3, `HELPER_DROP` 6, and `FMT` 0 (the
+framework formats no user payload yet). Each site was armed in 400 to 743
+runs. (An earlier count also credited a `Clone` panic to the payload's
+`MSG_DROP`; subscriber and `configure` panics now carry an exploding
+payload too.)
+
+Findings: the payload of a caught panic was dropped in place at the
+`started()`, handler and `stopped()` boundaries (both modes), at helpers,
+factories and native group roots, so a payload whose destructor panicked
+unwound the lifecycle (no `stopped()` after a handler panic, reason "actor
+lifecycle unwound"); fixed in #309, regression
+`exploding_panic_payload_keeps_stopped` (45 bytes after `tmin`). Harness
+false positives kept as regressions: `refused_job_drops_in_handler_call`
+(a refused `pipe` drops `work` and `done` in the caller's call, R7) and
+`transient_restarts_on_job_payload_cleanup` (a job payload's destructor
+failed on the deadline service: still the owner's cleanup failure, which
+restarts a Transient child).
 
 CI (`fuzz.yml`) runs rustfmt, clippy and the harness tests (seeds,
 regressions, generated inputs) and a 60 s single-process smoke run on pull
@@ -1328,9 +1420,10 @@ restart generations and factory calls, supervisor and system shutdown order.
 (mapped to logical indices), cross-sender interleaving at one actor, and
 arrival order between distinct timer deadlines. One lifecycle difference is
 the intended contract, asserted by
-`stop_before_first_poll_follows_managed_and_legacy_contract`: a managed actor
-canceled before startup skips both hooks and drops its state; legacy unmanaged
-tasks and threads actors retain their existing behavior of running both hooks.
+`stop_before_first_poll_follows_managed_and_legacy_contract`: since 0.9 every
+placement runs both hooks when stopped (`ChildHandle::stop`) before startup
+(the stop waits for `started()`, OTP); a managed actor whose admission closes
+before startup skips both and drops its state (`startup_admission`).
 
 **Cancellation contract observed:** `request`-family futures are `async fn`
 and enqueue nothing until first polled; after that, dropping the caller never
@@ -1618,7 +1711,7 @@ Mutation testing breaks one operator at a time. To measure whether the stack
 catches the bugs a reviewer would actually miss, 24 realistic bugs were written
 by hand (`verification/planted/patches/`, one patch each, listed in
 `INDEX.tsv`) and each was run, alone, against six layers. Later bugs are
-added with the fix they guard and numbered by PR (25-34 #293, 35 #310), and
+added with the fix they guard and numbered by PR (25-34 #293, 35 #310, 37-39 #308), and
 run on the layers that target them (their rows say which):
 
 | Layer | What runs | Budget |
@@ -1716,8 +1809,9 @@ Before, the scenario failed waiting for the kill and wrote no trace.
 Before the follow-ups (2026-11-11, `cc60801d`, five layers, no K): caught
 T 22, S 15, C 6, F 9, V 4; bugs 08 and 20 hung T; F missed every
 restart-decision, budget, backoff and exit-reason bug (01-04, 06, 08, 13, 14).
-Now all 24 are caught by at least one layer and every bug by at least two
-(15, which used to escape everything, by T, S, C and F; see below).
+Now all 24 of this matrix are caught by at least one layer and every one by at least two
+(15, which used to escape everything, by T, S, C and F; see below). The
+panic-injection bugs 37-39 have their own table below.
 
 - **F now catches 22 of 24** (was 9), all but one within 60 s. The new oracles
   (see "Scenario fuzzing") check which children a restart rebuilds (03, 04:
@@ -1771,6 +1865,17 @@ Now all 24 are caught by at least one layer and every bug by at least two
 | 15 | Fuzzer **X2** (flush): no `Down` is handled after the driver's `demonitor` of it returned; the minimized input is the regression `down_after_demonitor` | F, C, T (was none in the matrix; see below) |
 | 17 | Fuzzer **L7** (monitor waiters): after the leak checks, an observer that exits while monitoring a live target leaves the task count where it was before the observer started. A fixed end-of-run probe, so every input catches it | F, C, T, S (was T, S) |
 | 22 | Fuzzer **T2** (stop): a `send_interval` task starts no round after its actor's exit is published (the harness counts clones of the timer message) | F, C, T, S (was T, S) |
+
+**Panic-injection bugs (37-39).** Three patches plant containment bugs on
+the paths the [panic injection](#panic-injection) reaches, each run against
+C and F (600 s) on the injection branch with the payload-disposal fix (#309),
+after a clean baseline (C and F missed, 636,000 executions):
+
+| Bug | Planted fault | C (s) | F (s, oracle) |
+|---|---|---|---|
+| 37 | A payload destroyed after the death point (queued message, discarded job result or callback) is dropped without containment | - | 9 (L6: not recorded as a cleanup failure) |
+| 38 | A fenced job terminal drops `done` and its result in the owner's turn | - | 269 (M: an actor stopped without any cause) |
+| 39 | The handler-panic diagnostic calls the subscriber unguarded (a panicking subscriber skips `stopped()`) | 30 (`exploding_panic_payload_keeps_stopped`) | 3 (L5: `stopped()` did not run after a handler panic) |
 
 Bug 15 used to be unobservable: before 0.8 `demonitor` was best-effort ("the
 message may still arrive"), so a `Down` after it returned was allowed. Since

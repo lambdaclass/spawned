@@ -1,0 +1,24 @@
+# spawned-sim tape v2
+seed 5202017910563
+spin 10000
+c 0
+c 0
+c 0
+p 2
+p 1
+c 0
+t 1000000
+c 0
+t 2000000
+c 0
+c 3
+c 1
+c 0
+c 4
+t 12000000
+c 0
+c 5
+p 6
+c 0
+c 4
+c 0

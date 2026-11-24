@@ -35,6 +35,8 @@ mod envelope;
 use envelope::*;
 mod actor_ref;
 mod context;
+mod introspect;
+use introspect::probe_of;
 mod lifecycle;
 #[cfg(test)]
 use lifecycle::run_actor_receiving;
@@ -65,7 +67,10 @@ pub trait Actor: Send + Sized + 'static {
     /// `#[actor(max_native_jobs = N)]`.
     const MAX_NATIVE_JOBS: Option<usize> = None;
 
-    fn started(&mut self, _ctx: &Context<Self>) {}
+    /// Initialisation, before any message (OTP `init/1`). Returns `()`,
+    /// `Result<(), E>`, `Result<Init<Self>, E>` or [`Init<Self>`]. A failed
+    /// start never runs `stopped()`.
+    fn started(&mut self, _ctx: &Context<Self>) -> impl Into<Init<Self>> {}
     fn stopped(&mut self, _ctx: &Context<Self>) {}
 
     /// Called when a linked actor stops, if this actor has called
@@ -219,23 +224,9 @@ impl<A: Actor> Clone for ActorRef<A> {
 // Actor::start
 // ---------------------------------------------------------------------------
 
-/// Extension trait for starting an actor. Automatically implemented for all [`Actor`] types.
-pub trait ActorStart: Actor {
-    /// Start the actor on a dedicated OS thread.
-    fn start(self) -> ActorRef<Self> {
-        ActorRef::spawn(self, None)
-    }
-
-    /// Start linked to `parent_ctx`'s actor, which becomes this instance's
-    /// parent (E3). The link is registered before `started()`. The parent's
-    /// exit ends a trapping child normally (its `stopped()` runs; it never
-    /// reaches `exit_received`), a non-trapping child as any link notice.
-    fn start_linked<P: Actor>(self, parent_ctx: &Context<P>) -> ActorRef<Self> {
-        ActorRef::spawn(self, Some(parent_ctx.actor_ref().child_handle()))
-    }
-}
-
-impl<A: Actor> ActorStart for A {}
+mod start;
+pub use start::{ActorStart, Init, Name, StartOptions, Starter};
+use start::{ArmMonitor, ParentParts, Verb};
 
 // ---------------------------------------------------------------------------
 // send_message_on (utility)

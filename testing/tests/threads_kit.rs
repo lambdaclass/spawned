@@ -54,13 +54,13 @@ fn native_mock_and_probe() {
     let ledger = Mock::new()
         .on::<ledger_protocol::Balance>(|msg| if msg.account == 1 { 100 } else { 0 })
         .on::<ledger_protocol::Record>(|_| ())
-        .start();
+        .spawn();
     let alerts = Probe::<Overdrawn>::new();
     let teller = Teller {
         ledger: ledger.to_ledger_ref(),
         alerts: alerts.recipient(),
     }
-    .start();
+    .spawn();
 
     assert!(teller.withdraw(1, 40).unwrap());
     assert!(!teller.withdraw(2, 40).unwrap());
@@ -78,7 +78,7 @@ fn native_delay_forces_timeout_and_unconfigured_fails_loudly() {
     let slow = Mock::new()
         .on::<ledger_protocol::Balance>(|_| 1)
         .delay::<ledger_protocol::Balance>(Duration::from_millis(300))
-        .start();
+        .spawn();
     let via_protocol = slow
         .with_request_timeout(Duration::from_millis(20))
         .balance(1);
@@ -91,7 +91,7 @@ fn native_delay_forces_timeout_and_unconfigured_fails_loudly() {
         .unwrap_err();
     assert!(matches!(error, ActorError::RequestTimeout));
 
-    let strict = Mock::new().start();
+    let strict = Mock::new().spawn();
     assert!(strict.balance(1).is_err());
     let ExitReason::Panic(reason) = join_within(&strict, WAIT) else {
         panic!("strict mock should panic");
@@ -105,7 +105,7 @@ fn native_message_faults_and_settle() {
     let mock = Mock::new()
         .discard::<ledger_protocol::Record>()
         .on::<ledger_protocol::Balance>(|_| 5)
-        .start();
+        .spawn();
     mock.record(1, 1).unwrap();
     mock.settle();
     assert_eq!(mock.received()[0].outcome, Outcome::Discarded);
@@ -119,7 +119,7 @@ fn native_message_faults_and_settle() {
 
     let crashing = Mock::new()
         .crash_on::<ledger_protocol::Record>("disk full")
-        .start();
+        .spawn();
     crashing.record(1, 1).unwrap();
     assert_eq!(
         join_within(&crashing, WAIT),
@@ -166,13 +166,13 @@ fn native_exit_injection() {
         ExitReason::Shutdown(None),
         ExitReason::Panic("injected".into()),
     ] {
-        let actor = Idle.start();
+        let actor = Idle.spawn();
         settle(&actor, Ping, WAIT);
         faults::exit(&actor.child_handle(), reason.clone());
         assert_eq!(join_within(&actor, WAIT), reason);
     }
     // Normal is ignored by a non-trapping target.
-    let actor = Idle.start();
+    let actor = Idle.spawn();
     faults::exit(&actor.child_handle(), ExitReason::Normal);
     settle(&actor, Ping, WAIT);
     assert_eq!(actor.child_handle().exit_reason(), None);
@@ -182,7 +182,7 @@ fn native_exit_injection() {
 
 #[test]
 fn native_kill_injection() {
-    let actor = Idle.start();
+    let actor = Idle.spawn();
     faults::exit(&actor.child_handle(), ExitReason::Kill);
     assert_eq!(join_within(&actor, WAIT), ExitReason::Killed);
 }
@@ -190,7 +190,7 @@ fn native_kill_injection() {
 #[test]
 #[should_panic(expected = "did not exit within")]
 fn native_exit_within_fails_instead_of_hanging() {
-    let actor = Idle.start();
+    let actor = Idle.spawn();
     exit_within(&actor.child_handle(), Duration::from_millis(20));
 }
 
@@ -211,7 +211,7 @@ fn native_expect_waits_for_the_reply_closure() {
             gate.recv().unwrap();
             q.0 * 10
         })
-        .start();
+        .spawn();
     let caller = {
         let mock = mock.clone();
         std::thread::spawn(move || mock.request_with_timeout(Quote(4), WAIT))
@@ -237,7 +237,7 @@ fn native_expect_no_message_reports_in_flight_messages() {
             let _ = gate.recv();
             q.0
         })
-        .start();
+        .spawn();
     let _reply = mock
         .send_request(Quote(1), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
         .unwrap();
@@ -249,7 +249,7 @@ fn native_expect_no_message_reports_in_flight_messages() {
 fn native_panicking_reply_closure_still_logs_the_message() {
     let mock = Mock::new()
         .on::<Quote>(|_| panic!("reply exploded"))
-        .start();
+        .spawn();
     assert!(mock.request_with_timeout(Quote(7), WAIT).is_err());
     assert_eq!(
         join_within(&mock, WAIT),
@@ -292,7 +292,7 @@ fn native_nothing_is_logged_after_close_returns() {
 
 #[test]
 fn native_panic_injection_into_an_exited_target_is_a_no_op() {
-    let actor = Idle.start();
+    let actor = Idle.spawn();
     actor
         .child_handle()
         .stop_with_reason(spawned_concurrency::ExitReason::Shutdown(None));
@@ -305,7 +305,7 @@ fn native_panic_injection_into_an_exited_target_is_a_no_op() {
 #[test]
 fn native_kill_injection_is_reliable() {
     for _ in 0..200 {
-        let actor = Idle.start();
+        let actor = Idle.spawn();
         faults::exit(&actor.child_handle(), ExitReason::Kill);
         assert_eq!(join_within(&actor, WAIT), ExitReason::Killed);
     }
@@ -415,8 +415,8 @@ fn native_helpers_name_their_caller() {
 
 #[test]
 fn kill_stops_a_trapping_target_and_other_signals_are_trapped() {
-    let target = Idle.start();
-    let observer = Idle.start();
+    let target = Idle.spawn();
+    let observer = Idle.spawn();
     target.context().trap_exit(true);
     observer.context().trap_exit(true);
     observer.context().link(&target.child_handle());
@@ -426,7 +426,7 @@ fn kill_stops_a_trapping_target_and_other_signals_are_trapped() {
     assert_eq!(observer.child_handle().exit_reason(), None);
     observer.context().stop();
     assert_eq!(join_within(&observer, WAIT), ExitReason::Normal);
-    let target = Idle.start();
+    let target = Idle.spawn();
     target.context().trap_exit(true);
     faults::exit(&target.child_handle(), ExitReason::Shutdown(None));
     settle(&target, Ping, WAIT);
@@ -453,7 +453,7 @@ fn native_in_actor_runs_a_closure_in_a_turn() {
     impl Message for AddOne {
         type Result = ();
     }
-    let tally = Tally(0).start();
+    let tally = Tally(0).spawn();
     tally.send(AddOne(2)).unwrap();
     let (seen, own) = spawned_test::threads::in_actor(&tally, |state, ctx| {
         state.0 += 1;

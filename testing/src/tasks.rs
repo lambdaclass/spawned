@@ -16,10 +16,11 @@ use crate::shared::SETTLE_TIMEOUT;
 use spawned_concurrency::error::ActorError;
 use spawned_concurrency::message::Message;
 use spawned_concurrency::supervision::{ChildState, SupervisedChild, Supervisor, SupervisorReport};
-use spawned_concurrency::system::{ActorSystem, ExecutionGroup, ShutdownReport, SystemError};
+use spawned_concurrency::system::{ActorSystem, ExecutionGroup, ShutdownReport};
 use spawned_concurrency::tasks::{
-    Actor, ActorRef, ActorStart, Context, Handler, Receiver, Recipient,
+    Actor, ActorRef, ActorStart, Context, Handler, Receiver, Recipient, StartOptions,
 };
+use spawned_concurrency::StartError;
 use spawned_concurrency::{ChildHandle, ExitReason};
 use spawned_concurrency::{Deadline, PendingReply, ReplyReceiver};
 use spawned_rt::tasks::{sleep, timeout};
@@ -46,7 +47,7 @@ use std::time::Duration;
 /// [`MockRef::assert_no_unexpected`] / [`MockRef::received`] say why.
 ///
 /// ```ignore
-/// let prices = Mock::new().on::<price_protocol::Price>(|_| 7).start();
+/// let prices = Mock::new().on::<price_protocol::Price>(|_| 7).spawn();
 /// assert_eq!(invoice(&prices.to_price_ref(), 3).await, 21);
 /// let _asked: price_protocol::Price = prices.expect(Duration::from_secs(1)).await;
 /// ```
@@ -72,20 +73,20 @@ impl Mock {
         self
     }
 
-    /// Start on the ambient Tokio runtime.
-    pub fn start(self) -> MockRef {
+    /// Spawn on the ambient Tokio runtime (unmanaged, `Backend::Async`).
+    pub fn spawn(self) -> MockRef {
         let inbox = self.inbox.clone();
         MockRef {
-            actor: ActorStart::start(self),
+            actor: ActorStart::spawn(self),
             inbox,
         }
     }
 
-    /// Start on an [`ExecutionGroup`].
-    pub fn start_on(self, group: &ExecutionGroup) -> Result<MockRef, SystemError> {
+    /// Spawn with options: an [`ExecutionGroup`], a backend, a name.
+    pub fn spawn_with(self, options: impl Into<StartOptions<Mock>>) -> Result<MockRef, StartError> {
         let inbox = self.inbox.clone();
         Ok(MockRef {
-            actor: ActorStart::start_on(self, group)?,
+            actor: ActorStart::with_options(self, options).spawn()?,
             inbox,
         })
     }
@@ -503,15 +504,33 @@ impl TestSystem {
         &self.group
     }
 
-    /// Start `actor` on the test group. Panics if the system is closed.
-    pub fn start<A: Actor>(&self, actor: A) -> ActorRef<A> {
-        ActorStart::start_on(actor, &self.group).expect("start on test group")
+    /// Spawn `actor` on the test group without waiting for `started()`.
+    /// Panics if the system is closed.
+    pub fn spawn<A: Actor>(&self, actor: A) -> ActorRef<A> {
+        ActorStart::with_options(actor, &self.group)
+            .spawn()
+            .expect("spawn on test group")
     }
 
-    /// Start a mock on the test group.
-    pub fn start_mock(&self, mock: Mock) -> MockRef {
-        mock.start_on(&self.group)
-            .expect("start mock on test group")
+    /// Start `actor` on the test group and wait for `started()`. Panics if
+    /// the start fails or is ignored.
+    pub async fn start<A: Actor>(&self, actor: A) -> ActorRef<A> {
+        match ActorStart::with_options(actor, &self.group).start().await {
+            Ok(actor) => actor,
+            Err(StartError::Ignored { .. }) => panic!("start on test group: ignored"),
+            Err(error) => panic!("start on test group: {error}"),
+        }
+    }
+
+    /// Start options placing an actor on the test group.
+    pub fn options<A: Actor>(&self) -> StartOptions<A> {
+        StartOptions::new().group(&self.group)
+    }
+
+    /// Spawn a mock on the test group.
+    pub fn spawn_mock(&self, mock: Mock) -> MockRef {
+        mock.spawn_with(&self.group)
+            .expect("spawn mock on test group")
     }
 
     /// [`shutdown_system`]: panics with a report if not complete by `grace`.

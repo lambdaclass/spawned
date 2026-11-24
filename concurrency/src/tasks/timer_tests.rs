@@ -89,7 +89,7 @@ pub fn test_send_interval_and_cancellation() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let repeater = Repeater::new(0).start();
+                let repeater = Repeater::new(0).spawn();
 
                 // The interval keeps firing.
                 let count = wait_for_async(
@@ -188,7 +188,7 @@ pub fn test_send_after_and_cancellation() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let repeater = Delayed::new(0).start();
+                let repeater = Delayed::new(0).spawn();
 
                 let ctx = repeater.context();
                 let _ = send_after(Duration::from_millis(100), ctx, Inc);
@@ -222,7 +222,7 @@ pub fn test_send_after_gen_server_teardown() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let repeater = Delayed::new(0).start();
+                let repeater = Delayed::new(0).spawn();
 
                 let ctx = repeater.context();
                 let _ = send_after(Duration::from_millis(100), ctx, Inc);

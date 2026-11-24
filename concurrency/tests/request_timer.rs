@@ -28,7 +28,7 @@ impl Handler<Park> for Idle {
 async fn requests_after_virtual_time_advance_keep_their_full_timeout() {
     // An absolute wall-clock sleep_until would incorrectly be in the past.
     tokio::time::advance(Duration::from_secs(120)).await;
-    let actor = Idle(None).start();
+    let actor = Idle(None).spawn();
     for duration in [Duration::from_millis(20), Duration::from_millis(40)] {
         let began = tokio::time::Instant::now();
         assert!(matches!(
@@ -49,7 +49,7 @@ async fn wall_time_while_paused_cannot_expire_a_new_request() {
     // would. Tokio's paused clock does not advance during synchronous work.
     let _ = Deadline::after(Duration::from_secs(1));
     std::thread::sleep(Duration::from_millis(100));
-    let actor = Idle(None).start();
+    let actor = Idle(None).spawn();
     let duration = Duration::from_millis(20);
     let began = tokio::time::Instant::now();
     assert!(matches!(
@@ -67,7 +67,7 @@ async fn wall_time_while_paused_cannot_expire_a_new_request() {
 
 #[spawned_macros::sim_test]
 async fn overflowing_relative_timeout_remains_unbounded() {
-    let actor = Idle(None).start();
+    let actor = Idle(None).spawn();
     let answer = spawned_rt::tasks::timeout(
         Duration::from_secs(5),
         actor.request_with_timeout(Park, Duration::MAX),

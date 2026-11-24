@@ -118,6 +118,8 @@ fn controlled_failures_reach_every_required_window_on_every_backend() {
             reached.insert(REQUIRED[3]);
         }
         {
+            // The stop arrives while started() runs: it is applied once the
+            // start commits ready, and stopped() runs (OTP gen_server:stop).
             let (started, mut control) = gate();
             let actor = Handle::start(
                 backend,

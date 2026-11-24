@@ -211,7 +211,7 @@ mod tasks_mode {
             log: log.clone(),
             gates: Vec::new(),
         }
-        .start();
+        .spawn();
         (actor, log)
     }
 
@@ -572,11 +572,11 @@ mod tasks_mode {
 
     #[spawned_macros::sim_test]
     async fn router_delegates_with_pipe_reply_while_serving_its_mailbox() {
-        let backend = Backend.start();
+        let backend = Backend.spawn();
         let router = Router {
             backend: backend.clone(),
         }
-        .start();
+        .spawn();
         let slow = router
             .send_request(Route(200), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
             .unwrap();
@@ -592,12 +592,12 @@ mod tasks_mode {
 
     #[spawned_macros::sim_test]
     async fn pipe_reply_refuses_a_token_of_another_actor() {
-        let backend = Backend.start();
+        let backend = Backend.spawn();
         let router = Router {
             backend: backend.clone(),
         }
-        .start();
-        let holder = Holder(None).start();
+        .spawn();
+        let holder = Holder(None).spawn();
         let rx = holder.send_request(Hold, Deadline::Never).unwrap();
         let token = holder.request(Give).await.unwrap().unwrap();
         assert!(router.request(Foreign(token)).await.unwrap());
@@ -686,7 +686,7 @@ mod threads_mode {
     #[test]
     fn native_jobs_answer_deferred_requests() {
         let log = Arc::new(Log::default());
-        let actor: ActorRef<Owner> = Owner { log: log.clone() }.start();
+        let actor: ActorRef<Owner> = Owner { log: log.clone() }.spawn();
         let rx = actor.send_request(Compute(7), Deadline::Never).unwrap();
         assert_eq!(rx.recv().unwrap(), 49);
         assert!(matches!(

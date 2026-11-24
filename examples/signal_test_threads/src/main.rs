@@ -66,8 +66,8 @@ fn main() {
         tracing::info!("Starting signal test for threads Actor");
         tracing::info!("Press Ctrl+C to test signal handling...");
 
-        let actor1 = TickingActor::new("actor-1").start();
-        let actor2 = TickingActor::new("actor-2").start();
+        let actor1 = TickingActor::new("actor-1").spawn();
+        let actor2 = TickingActor::new("actor-2").spawn();
 
         send_message_on(actor1.context(), rt::ctrl_c(), Shutdown);
         send_message_on(actor2.context(), rt::ctrl_c(), Shutdown);

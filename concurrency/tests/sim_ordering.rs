@@ -107,7 +107,7 @@ impl Handler<Echo> for Sink {
 /// and exactly once, and every reply must carry its own request's key.
 async fn per_sender_fifo_body() {
     let seen = log();
-    let sink = Sink(seen.clone()).start();
+    let sink = Sink(seen.clone()).spawn();
     let by_ref = sink.clone();
     let by_recipient: Recipient<Put> = sink.recipient();
     let mixed = (sink.clone(), sink.recipient::<Put>());
@@ -233,7 +233,7 @@ impl Handler<Work> for Turns {
 /// another task stops the actor, so handlers race both hooks.
 async fn turns_body() {
     let events = log();
-    let actor = Turns(events.clone()).start();
+    let actor = Turns(events.clone()).spawn();
     let mut tasks = Vec::new();
     for sender in 0..2 {
         let actor = actor.clone();
@@ -429,7 +429,7 @@ const PER_QUEUER: usize = 4;
 async fn stop_discards_body() {
     let seen = log();
     let drops = Arc::new(AtomicUsize::new(0));
-    let actor = Holder(seen.clone()).start();
+    let actor = Holder(seen.clone()).spawn();
     let (entered_tx, entered_rx) = oneshot::channel();
     let (release_tx, release_rx) = oneshot::channel();
     actor
@@ -663,8 +663,8 @@ impl Handler<Burst> for Source {
 async fn exit_after_last_message_body(end: End) {
     let notices = log();
     let (notify, mut notified) = mpsc::channel();
-    let observer: ActorRef<Observer> = Observer(notices.clone(), notify).start();
-    let source = Source.start();
+    let observer: ActorRef<Observer> = Observer(notices.clone(), notify).spawn();
+    let source = Source.spawn();
     observer
         .request_with_timeout(Watch(source.child_handle()), LIMIT)
         .await

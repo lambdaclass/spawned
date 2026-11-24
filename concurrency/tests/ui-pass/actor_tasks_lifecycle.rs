@@ -52,13 +52,13 @@ fn main() {
     use spawned_concurrency::tasks::ActorStart as _;
     use spawned_concurrency::threads::ActorStart as _;
     spawned_rt::tasks::run(async {
-        let echo = asynchronous::Echo.start();
+        let echo = asynchronous::Echo.spawn();
         assert_eq!(echo.request(Ping(1)).await.unwrap(), 2);
         assert_eq!(echo.request(Pong(4)).await.unwrap(), 8);
         echo.child_handle().stop();
         echo.join().await;
     });
-    let idle = native::Idle.start();
+    let idle = native::Idle.spawn();
     idle.context().stop();
     idle.join();
 }

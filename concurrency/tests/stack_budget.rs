@@ -177,7 +177,7 @@ mod tasks_chain {
                 system.async_group("stack", 2)
             }
             .unwrap();
-            let hops = chain(|hop| group.start(hop).unwrap());
+            let hops = chain(|hop| hop.with_options(&group).spawn().unwrap());
             rt.block_on(async {
                 tokio::time::timeout(LIMIT, drive(hops[0].clone()))
                     .await
@@ -197,7 +197,7 @@ mod tasks_chain {
             let rt = small_runtime();
             let hops = {
                 let _entered = rt.enter();
-                chain(|hop| hop.start())
+                chain(|hop| hop.spawn())
             };
             rt.block_on(async {
                 tokio::time::timeout(LIMIT, drive(hops[0].clone()))
@@ -336,7 +336,7 @@ mod threads_chain {
             let mut hops: Vec<ActorRef<Hop>> = Vec::new();
             for index in (0..depth()).rev() {
                 let next = hops.last().cloned();
-                hops.push(Hop { index, next }.start());
+                hops.push(Hop { index, next }.spawn());
             }
             hops.reverse();
             for round in 0..ROUNDS {

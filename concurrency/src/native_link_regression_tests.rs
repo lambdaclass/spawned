@@ -21,24 +21,29 @@ fn start_linked_registers_before_threads_started() {
                 fn started(&mut self, ctx: &ThreadContext<Self>) {
                     let h = ctx.actor_ref().child_handle();
                     self.seen
-                        .send(link::has_link(h.links(), self.parent))
+                        .send(link::has_link(h.link_table(), self.parent))
                         .unwrap();
                     ctx.stop();
                 }
             }
-            let parent = Parent.start();
+            let parent = Parent.spawn();
             for _ in 0..32 {
                 let (tx, rx) = std::sync::mpsc::channel();
-                let child = Child {
+                // The child stops itself in started(): a failed start, answered
+                // after its publication with its final reason.
+                let result = Child {
                     parent: parent.id(),
                     seen: tx,
                 }
-                .start_linked(&parent.context());
+                .start_link(&parent.context());
                 assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap());
-                assert_eq!(
-                    child.child_handle().wait_exit_blocking(),
-                    ExitReason::Normal
-                );
+                assert!(matches!(
+                    result,
+                    Err(crate::StartError::InitExited {
+                        reason: ExitReason::Normal,
+                        pending: None
+                    })
+                ));
             }
             parent.child_handle().stop();
             parent.child_handle().wait_exit_blocking();

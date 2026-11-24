@@ -92,7 +92,7 @@ use spawned_rt::tasks as rt;
 
 fn main() {
     rt::run(async {
-        let ns = NameServer::new().start();
+        let ns = NameServer::new().spawn();
 
         ns.add("Joe".into(), "At Home".into()).await.unwrap();
 
@@ -170,7 +170,9 @@ For developers familiar with Erlang/OTP:
 | `gen_server:call/2` | `ns.find(...)` | Direct method call on ActorRef |
 | `gen_server:cast/2` | `ns.notify(...)` | Direct method call (send variant) |
 | `Pid` | `ActorRef<T>` | Handle to a running actor |
-| `start_link/0` | `actor.start_linked(&ctx)` | Start the actor |
+| `proc_lib:spawn/1` | `actor.spawn()` | Start without waiting for `started()` |
+| `gen_server:start/3`, `start_link/3`, `start_monitor/3` | `actor.start()`, `actor.start_link(&ctx)`, `actor.start_monitor(&ctx)` | Start and wait for `started()` (`.await` in tasks mode) |
+| `{ok, S}` / `{ok, S, {continue, C}}` / `{error, R}` / `{stop, R}` / `ignore` | `started()` returning `()`, `Init::continue_with(c)`, `Err(e)`, `Init::stop(r)`, `Init::ignore()` | Init results |
 | `register/2` | `registry::register(name, ref)` | Register an actor by name |
 | `whereis/1` | `registry::whereis(name)` | Look up an actor by name |
 
@@ -321,7 +323,7 @@ async fn bump(counter: ActorRef<Counter>) {
 // Before: passes almost every run, and fails in CI once in a while.
 #[tokio::test(flavor = "multi_thread")]
 async fn read_modify_write_loses_an_update() {
-    let counter = Counter::default().start();
+    let counter = Counter::default().start().await.unwrap();
     let a = tokio::spawn(bump(counter.clone()));
     let b = tokio::spawn(bump(counter.clone()));
     a.await.unwrap();
@@ -336,11 +338,11 @@ async fn read_modify_write_loses_an_update() { /* ... */ }
 ```
 
 ```text
-spawned_sim: `read_modify_write_loses_an_update` failed under pct:d=3,k=15,fair=20000
-  at run 2 (seed 1) after 13 polls at virtual time 0ns: assertion `left == right` failed: lost update
-  replay seed: SPAWNED_SIM_STRATEGY=pct:d=3,k=15,fair=20000 SPAWNED_SIM_SEED=1 RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" cargo test ...
-  tape:        $TMPDIR/spawned-sim/read_modify_write_loses_an_update-pct-seed1.tape (13 polls, 3 non-canonical)
-  shrunk tape: $TMPDIR/spawned-sim/read_modify_write_loses_an_update-pct-seed1.min.tape
+spawned_sim: `read_modify_write_loses_an_update` failed under pct:d=3,k=16,fair=20000
+  at run 5 (seed 4) after 15 polls at virtual time 0ns: assertion `left == right` failed: lost update
+  replay seed: SPAWNED_SIM_STRATEGY=pct:d=3,k=16,fair=20000 SPAWNED_SIM_SEED=4 RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" cargo test ...
+  tape:        $TMPDIR/spawned-sim/read_modify_write_loses_an_update-pct-seed4.tape
+  shrunk tape: $TMPDIR/spawned-sim/read_modify_write_loses_an_update-pct-seed4.min.tape
 ```
 
 Rerun with `SPAWNED_SIM_SEED=n` or `SPAWNED_SIM_TAPE=path` to get exactly the

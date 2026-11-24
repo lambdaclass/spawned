@@ -63,12 +63,14 @@ pub(crate) fn register<K: Hash + Eq, V>(
     active: impl FnOnce(),
 ) -> Registration {
     let mut guard = lock(table);
-    if observer_exiting() {
-        return Registration::Inert;
-    }
+    // The table's closure first: `observer_exiting` may take effects (a
+    // start registers its name there) that a closed table must not see.
     let Some(entries) = guard.as_mut() else {
         return Registration::Inert;
     };
+    if observer_exiting() {
+        return Registration::Inert;
+    }
     if target_dead() {
         late();
         entries.insert(key, Entry::Queued);
@@ -164,6 +166,20 @@ pub(crate) fn demonitor<K: Hash + Eq, V>(
         Entry::Active(value) => Some(value),
         Entry::Queued => None,
     }
+}
+
+/// The values of the active entries (introspection, out of band).
+#[allow(dead_code)] // the Loom model includes this file
+pub(crate) fn active_values<K, V, T>(table: &Entries<K, V>, mut f: impl FnMut(&V) -> T) -> Vec<T> {
+    lock(table).as_ref().map_or_else(Vec::new, |entries| {
+        entries
+            .values()
+            .filter_map(|entry| match entry {
+                Entry::Active(value) => Some(f(value)),
+                Entry::Queued => None,
+            })
+            .collect()
+    })
 }
 
 /// The observer's exit: close the table and take every active entry, whose
