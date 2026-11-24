@@ -27,6 +27,10 @@ impl<A: Actor> ActorRef<A> {
             trap_exit.clone(),
             linked_reason.clone(),
             cancellation_token.clone(),
+            crate::introspection::Meta::new(
+                std::any::type_name::<A>(),
+                crate::introspection::Host::Native,
+            ),
         );
 
         let shared = Arc::new(ActorShared {
@@ -47,6 +51,7 @@ impl<A: Actor> ActorRef<A> {
             )),
             cleaned: Arc::default(),
         });
+        shared.signal.meta.set_probe(probe_of(&shared));
         let actor_ref = ActorRef {
             shared: shared.clone(),
         };
@@ -70,7 +75,8 @@ impl<A: Actor> ActorRef<A> {
         )
         .with_mailbox_failures(actor_ref.shared.sender.failures())
         .with_replies(actor_ref.shared.replies.clone())
-        .with_jobs(actor_ref.shared.jobs.clone());
+        .with_jobs(actor_ref.shared.jobs.clone())
+        .with_report(actor_ref.shared.signal.clone());
         let startup = crate::actor_cleanup::ActorStartup::new(
             (actor, ctx, rx, cancellation_token),
             cleanup,

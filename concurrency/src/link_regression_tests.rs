@@ -311,7 +311,7 @@ impl Actor for LinkedAtStart {
         self.seen
             .take()
             .unwrap()
-            .send(link::has_link(handle.links(), self.parent))
+            .send(link::has_link(handle.link_table(), self.parent))
             .unwrap();
         ctx.stop();
     }

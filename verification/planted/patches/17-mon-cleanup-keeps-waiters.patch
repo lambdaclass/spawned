@@ -1,14 +1,14 @@
 Planted bug 17 (mon-cleanup-keeps-waiters): An exiting observer does not cancel its monitor waiters (they hold its handle until the target dies)
 
 diff --git a/concurrency/src/monitor.rs b/concurrency/src/monitor.rs
-index 2a7c5d66..e4459eda 100644
+index 83f4ef1a..ecd31c20 100644
 --- a/concurrency/src/monitor.rs
 +++ b/concurrency/src/monitor.rs
-@@ -94,9 +94,7 @@ impl Drop for MonitorCleanup {
+@@ -115,9 +115,7 @@ impl Drop for MonitorCleanup {
                  monitors.sort_unstable_by_key(|(r, _)| r.0);
                  monitors
              };
--            for (_, token) in monitors {
+-            for (_, (_, token)) in monitors {
 -                token.cancel();
 -            }
 +            std::mem::forget(monitors);

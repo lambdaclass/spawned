@@ -35,6 +35,8 @@ mod envelope;
 use envelope::*;
 mod actor_ref;
 mod context;
+mod introspect;
+use introspect::probe_of;
 mod lifecycle;
 #[cfg(test)]
 use lifecycle::run_actor_receiving;

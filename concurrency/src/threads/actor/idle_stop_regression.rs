@@ -73,6 +73,7 @@ fn stop_while_receiving_does_not_dispatch_a_later_request() {
                         trap.clone(),
                         request.clone(),
                         token.clone(),
+                        Default::default(),
                     ),
                     mailbox: crate::instrumentation::Mailbox::default(),
                     replies: Registry::new_native(ActorId::next(), DEFAULT_MAX_OUTSTANDING),

@@ -26,6 +26,7 @@ or model that checks each one, are collected in the
 - [spawned-rt](#spawned-rt)
 - [Links, monitors and exit signals](#links-monitors-and-exit-signals) (v0.8)
 - [Execution groups and supervision](#execution-groups-and-supervision) (v0.7)
+- [Introspection](#introspection) (v0.9)
 - [Metrics](#metrics)
 - [Testing your actors](#testing-your-actors)
 - [Experimental in 0.8](#experimental-in-08)
@@ -1537,8 +1538,68 @@ enable the test-only `failpoints` feature in dev-dependencies and arm named
 sites from tests; see [failpoints](TESTING.md#failpoints). Never enable it in
 production builds.
 
+## Introspection
 
+What is each actor doing, and what is it linked to? `info()` answers that
+on a live process, the way OTP's `process_info/1` does
+([design](design/introspection.md), semantics section 13). It is free on the
+default path: nothing is added to send, dispatch or a turn.
 
+```rust
+use spawned_concurrency::introspection::Lifecycle;
+
+let info = actor.info(); // on an ActorRef, a Context or a ChildHandle
+println!("{} {} {:?} {:?}", info.id, info.actor_type, info.label, info.lifecycle);
+if info.lifecycle == Lifecycle::InTurn { /* busy with a turn */ }
+```
+
+`info()` is **out of band**: it reads shared state and short metadata locks
+and never queues behind the mailbox or waits for a turn, so it answers while a
+handler is wedged (an ordinary request would time out). Each field of one
+`ActorInfo` is read once, not all at one instant.
+
+| Field | Meaning (OTP) |
+|---|---|
+| `id`, `actor_type` | identity and `type_name` (`initial_call`) |
+| `label` | set with `ctx.set_label(..)` (OTP 27 `proc_lib:set_label`) |
+| `name` | the first registry name the actor holds (`registered_name`); a value stored with plain `registry::register` is not tied to an actor |
+| `lifecycle` | `Starting` (in `started()`), `Idle`, `InTurn`, `Exiting` (exit began; `stopped()` may run), `Dead { reason, published }` |
+| `trap_exit`, `links`, `monitors` | as in OTP; `ChildHandle::links()` and `monitors()` list the ids |
+| `parent` | `None` (bare start), `Actor(id)` (`start_linked`), `System` (an execution group or a supervisor) |
+| `supervisor` | `ChildSpec` name, generation and restarts of a supervised instance |
+| `system`, `placement` | the `ActorSystem` (`system.id()`) and the backend or execution group |
+| `deferred_outstanding`, `jobs_running` | live `ReplyTo` tokens and running pipe-to-self jobs |
+| `activity`, `mailbox` | turn ids, ages, message type and mailbox counters: `Unavailable(Feature)` until the `introspection` feature lands |
+
+`Dead { published: false }` is the window between the death point and
+publication: every caller is already answered and sends get `NoProc`, but the
+state's destructor (or a queued payload's) is still running, so `wait_exit()`
+is not ready yet. A destructor that hangs shows up here.
+
+Label actors that exist in large numbers so operators can tell them apart:
+
+```rust
+async fn started(&mut self, ctx: &Context<Self>) {
+    ctx.set_label(format!("peer {}", self.peer_id));
+}
+```
+
+A label is for people and tools, not for lookup (use the
+[registry](#registry)). Setting one takes a short lock at that call only.
+
+### Crash reports
+
+An actor that ends with an abnormal reason it produced itself (a panic in
+`started()`, a handler or `stopped()`, or a self-exit such as
+`ctx.stop_with_reason(ExitReason::Kill)`) emits one `tracing` event at
+`ERROR` with target `spawned::crash`, once every caller is answered and before
+its state is destroyed (OTP's `proc_lib` crash report). A clean exit
+(`Normal`, `Shutdown`) is not reported, nor is a reason that a kill, an
+untrapped exit signal or a runtime drop imposed on the actor: as in OTP, a
+process killed by a signal runs no code. The fields are a contract (stable
+from 1.0): `actor_id`, `system`, `actor_type`, `label`, `name`, `reason`,
+`ancestors`, `generation`, `group`, `links`. Select them with
+`RUST_LOG=spawned::crash=error`.
 
 ## Metrics
 

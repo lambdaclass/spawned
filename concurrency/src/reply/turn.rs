@@ -120,7 +120,8 @@ impl<T> TurnPhase<T> {
         debug_assert!(previous > 0, "deferred token ownership underflow");
     }
 
-    #[cfg(all(test, feature = "async"))]
+    /// Live deferred tokens (also read by `info()`, out of band).
+    #[allow(dead_code)] // the Loom model includes this file
     pub(crate) fn external_count(&self) -> usize {
         self.external.load(Ordering::Acquire)
     }
