@@ -194,5 +194,25 @@
   "A|Take",
   "A|Wait",
   "A|Woke"
+ ],
+ "Introspection": [
+  "A|Admit",
+  "A|Answer",
+  "A|Die",
+  "A|Dispatch",
+  "A|Drop",
+  "A|End",
+  "A|Exit",
+  "A|HookBegin",
+  "A|HookEnd",
+  "A|HookPanic",
+  "A|Kill",
+  "A|Panic",
+  "A|Publish",
+  "A|Send",
+  "A|StartEnd",
+  "A|StartPanic",
+  "A|Status",
+  "A|Stop"
  ]
 }

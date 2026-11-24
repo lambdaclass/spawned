@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check recorded lifecycle traces against Supervision.tla (and, by schema,
 Cohorts.tla, NestedSupervision.tla, DeferredJobs.tla, DeferredReplies.tla,
-Disposal.tla, Lifecycle.tla and Coordinator.tla).
+Disposal.tla, Lifecycle.tla, Coordinator.tla and Introspection.tla).
 
 Each JSON trace (written by concurrency/tests/supervision_trace.rs with the
 `lifecycle-trace` feature) looks like:
@@ -50,7 +50,7 @@ def tla_event(event, cohort=False):
 def generate(trace, workdir):
     schema = trace.get("schema", "one-for-one-v1")
     if schema not in {"one-for-one-v1", "cohort-v1", "tree-v1", "jobs-v1", "replies-v1",
-                      "lifecycle-v1", "start-v1", "coordinator-v1", "disposal-v1"}:
+                      "lifecycle-v1", "start-v1", "coordinator-v1", "disposal-v1", "introspection-v1"}:
         raise ValueError(f"unsupported trace schema: {schema}")
     if schema == "start-v1":
         return generate_start(trace, workdir)
@@ -66,6 +66,8 @@ def generate(trace, workdir):
         return generate_coordinator(trace, workdir)
     if schema == "disposal-v1":
         return generate_disposal(trace, workdir)
+    if schema == "introspection-v1":
+        return generate_introspection(trace, workdir)
     cohort = schema == "cohort-v1"
     modules = ("Cohorts.tla", "TraceCohorts.tla") if cohort else MODELS
     for model in modules:
@@ -227,6 +229,30 @@ def generate_disposal(trace, workdir):
                   "    MaxTime = 1\n    Workers = 64\n"
                   "    Blocking <- TraceBlocking\n    InitIdle <- TraceInitIdle\n"
                   "    Fault = \"None\"\n    Trace <- TraceLog\n"
+                  "INVARIANT Safety\nINVARIANT TraceIncomplete\n")
+
+
+def generate_introspection(trace, workdir):
+    """One actor's activities and status turn against Introspection.tla.
+    MaxTurns is the number of messages sent (admitted or refused); the
+    model allows one status request."""
+    for model in ("Introspection.tla", "TraceIntrospection.tla"):
+        shutil.copy(os.path.join(HERE, model), workdir)
+    events = trace["events"]
+    if not events:
+        raise ValueError("an introspection trace needs at least one event")
+    if sum(1 for e in events if e["a"] == "Status") > 1:
+        raise ValueError("Introspection.tla models one status request per trace")
+    sends = sum(1 for e in events if e["a"] == "Send")
+    records = ",\n    ".join(
+        "[a |-> {}, x |-> {}]".format(tla_string(e["a"]), tla_string(e["x"])) for e in events)
+    with open(os.path.join(workdir, "TraceRun.tla"), "w") as out:
+        out.write("---- MODULE TraceRun ----\nEXTENDS TraceIntrospection\n"
+                  f"TraceLog == <<\n    {records}\n>>\n====\n")
+    with open(os.path.join(workdir, "TraceRun.cfg"), "w") as out:
+        out.write("INIT TraceInit\nNEXT TraceNext\nCONSTANTS\n"
+                  f"    MaxTurns = {sends}\n    Fault = \"None\"\n"
+                  "    Trace <- TraceLog\n"
                   "INVARIANT Safety\nINVARIANT TraceIncomplete\n")
 
 

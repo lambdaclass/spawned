@@ -147,6 +147,14 @@ pub enum ActorError {
     /// replies are at `MAX_OUTSTANDING`).
     #[error("Actor overloaded")]
     Overloaded,
+    /// A `get_state` callback or an `Inspect` formatter panicked in its
+    /// status turn (OTP `{callback_failed, ...}`). The actor continues: a
+    /// caught callback panic does not end it. The panic's message is logged
+    /// at the status turn (`spawned::status`, WARN), not carried here: a
+    /// heap payload would grow `ActorError`'s drop glue, which every request
+    /// result pays for, and keep it from being inlined.
+    #[error("status callback failed")]
+    CallbackFailed,
 }
 
 /// Classification helpers, so callers need not match every variant (the enum
@@ -159,6 +167,7 @@ pub enum ActorError {
 /// | `RequestTimeout` | `false` | `true` | `true` | `None` |
 /// | `ReplyDropped` | `false` | `false` | `false` | `None` |
 /// | `Overloaded` | `false` | `false` | `true` | `None` |
+/// | `CallbackFailed` | `false` | `false` | `false` | `None` |
 impl ActorError {
     /// The target actor is gone: it died before answering
     /// (`ActorStopped`) or was already past its death point (`NoProc`).
@@ -259,6 +268,7 @@ mod tests {
             ActorError::RequestTimeout,
             ActorError::ReplyDropped,
             ActorError::Overloaded,
+            ActorError::CallbackFailed,
         ];
         for error in &all {
             match error {
@@ -266,7 +276,8 @@ mod tests {
                 | ActorError::NoProc
                 | ActorError::RequestTimeout
                 | ActorError::ReplyDropped
-                | ActorError::Overloaded => {}
+                | ActorError::Overloaded
+                | ActorError::CallbackFailed => {}
             }
         }
         all
@@ -296,6 +307,7 @@ mod tests {
                 ActorError::RequestTimeout => (false, true, true, None),
                 ActorError::ReplyDropped => (false, false, false, None),
                 ActorError::Overloaded => (false, false, true, None),
+                ActorError::CallbackFailed => (false, false, false, None),
             };
             let actual = (
                 error.target_gone(),
@@ -369,5 +381,21 @@ mod tests {
     fn exit_reason_size_is_unchanged() {
         assert_eq!(std::mem::size_of::<ExitReason>(), 24);
         assert_eq!(std::mem::size_of::<Option<ExitReason>>(), 24);
+    }
+
+    /// Every request result carries an `ActorError`: a new variant must not
+    /// grow it (`CallbackFailed` is an `Arc<str>` for this).
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn actor_error_size_is_unchanged() {
+        assert_eq!(std::mem::size_of::<ActorError>(), 24);
+        assert_eq!(std::mem::size_of::<Result<u64, ActorError>>(), 24);
+        assert_eq!(std::mem::size_of::<crate::Response<u64>>(), {
+            if cfg!(feature = "metrics") {
+                48
+            } else {
+                24
+            }
+        });
     }
 }

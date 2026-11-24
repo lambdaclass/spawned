@@ -52,6 +52,19 @@
   codegen unit, so instruction counts follow the code rather than how generic
   code is partitioned across units (which moved `async_ct_burst` by about
   +2.6% between v0.8.0 and main with no change on its path).
+- Introspection, step 1b (0.9): `get_state(f)` and `get_status()` on
+  `ActorRef` (and `with_request_timeout(d)`), `get_status()` /
+  `get_status_with_timeout(d)` on `ChildHandle` (OTP `sys:get_state`,
+  `sys:get_status`). They run in a status turn of their own, between handler
+  turns and in mailbox order, with the request's 5 s default timeout; a
+  panicking callback answers the new `ActorError::CallbackFailed` and the
+  actor continues; a status request whose caller already gave up is not run
+  (the one exception to R4). `get_status` reports `info()` and the state,
+  redacted unless the actor opts in with `#[actor(inspect)]` (through
+  `introspection::Inspect`, OTP `format_status/1`) or
+  `#[actor(inspect = debug)]`; new `Actor::FORMAT_STATUS` const. Status
+  turns take no deferred-reply credit and bypass `metrics` accounting.
+  Semantics I4, I5.
 - Introspection, step 1a (0.9, docs/design/introspection.md tier 0):
   `info()` on `ActorRef`, `Context` and `ChildHandle` returns an
   `introspection::ActorInfo` (OTP `process_info`): id, type, label, registered

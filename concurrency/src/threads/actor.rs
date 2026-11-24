@@ -67,6 +67,13 @@ pub trait Actor: Send + Sized + 'static {
     /// `#[actor(max_native_jobs = N)]`.
     const MAX_NATIVE_JOBS: Option<usize> = None;
 
+    /// How `get_status` shows this actor's state (OTP `format_status/1`).
+    /// `None` (the default) redacts it: type-erased state appears only for
+    /// actors that opt in, with `#[actor(inspect)]` (through
+    /// [`Inspect`](crate::introspection::Inspect)) or
+    /// `#[actor(inspect = debug)]` (its `Debug` form).
+    const FORMAT_STATUS: Option<fn(&Self) -> String> = None;
+
     /// Initialisation, before any message (OTP `init/1`). Returns `()`,
     /// `Result<(), E>`, `Result<Init<Self>, E>` or [`Init<Self>`]. A failed
     /// start never runs `stopped()`.

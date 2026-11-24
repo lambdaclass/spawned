@@ -46,8 +46,25 @@ enum ResponseState<T> {
     /// Being awaited.
     #[cfg(feature = "async")]
     Receiver(Pin<Box<ReplyFuture<T>>>),
+    /// A status request (`get_state`/`get_status`), sent: its answer carries
+    /// a callback failure (`CallbackFailed`) beside the value.
+    #[cfg(feature = "async")]
+    StatusSent(ReplyReceiver<StatusAnswer<T>>),
+    /// A status request being awaited.
+    #[cfg(feature = "async")]
+    StatusReceiver(Pin<Box<ReplyFuture<StatusAnswer<T>>>>),
     Ready(Result<T, ActorError>),
     Done,
+}
+
+/// What a status turn answers: the callback's value, or its panic message.
+pub(crate) type StatusAnswer<T> = Result<T, ()>;
+
+/// A status answer as the caller sees it.
+pub(crate) fn status_result<T>(
+    answer: Result<StatusAnswer<T>, ActorError>,
+) -> Result<T, ActorError> {
+    answer.and_then(|answer| answer.map_err(|()| ActorError::CallbackFailed))
 }
 
 /// Concrete wrapper for protocol request-response methods that works in both
@@ -136,7 +153,17 @@ impl<T> Response<T> {
                 result
             }
             #[cfg(feature = "async")]
-            ResponseState::Receiver(_) => {
+            ResponseState::StatusSent(rx) => {
+                if on_async_runtime() {
+                    panic!(
+                        "called {op}() on a pending Response inside an async runtime; \
+                         .await it instead"
+                    );
+                }
+                status_result(rx.recv())
+            }
+            #[cfg(feature = "async")]
+            ResponseState::Receiver(_) | ResponseState::StatusReceiver(_) => {
                 panic!("called {op}() on a Response that is being awaited; .await it")
             }
             ResponseState::Done => panic!("called {op}() on a Response already consumed"),
@@ -172,7 +199,10 @@ impl<T> Response<T> {
         match &self.0 {
             ResponseState::Ready(result) => result,
             #[cfg(feature = "async")]
-            ResponseState::Sent(_) | ResponseState::Receiver(_) => {
+            ResponseState::Sent(_)
+            | ResponseState::Receiver(_)
+            | ResponseState::StatusSent(_)
+            | ResponseState::StatusReceiver(_) => {
                 panic!("called {op}() on a pending Response; .await it, or use into_result()")
             }
             ResponseState::Done => panic!("called {op}() on a Response already consumed"),
@@ -211,6 +241,19 @@ impl<T> From<Result<ReplyReceiver<T>, ActorError>> for Response<T> {
     }
 }
 
+#[cfg(feature = "async")]
+impl<T> Response<T> {
+    /// A sent status request. Not a request for `metrics` (introspection
+    /// I4): no observation.
+    pub(crate) fn status(rx: ReplyReceiver<StatusAnswer<T>>) -> Self {
+        Self(
+            ResponseState::StatusSent(rx),
+            #[cfg(feature = "metrics")]
+            None,
+        )
+    }
+}
+
 impl<T: Send + 'static> Future for Response<T> {
     type Output = Result<T, ActorError>;
 
@@ -237,6 +280,30 @@ impl<T: Send + 'static> Future for Response<T> {
             ResponseState::Ready(_) => match std::mem::replace(&mut this.0, ResponseState::Done) {
                 ResponseState::Ready(result) => std::task::Poll::Ready(result),
                 _ => unreachable!(),
+            },
+            #[cfg(feature = "async")]
+            ResponseState::StatusSent(_) => {
+                let ResponseState::StatusSent(rx) =
+                    std::mem::replace(&mut this.0, ResponseState::Done)
+                else {
+                    unreachable!("matched above")
+                };
+                let mut rx = Box::pin(rx.into_timed_future());
+                match rx.as_mut().poll(_cx) {
+                    std::task::Poll::Ready(answer) => std::task::Poll::Ready(status_result(answer)),
+                    std::task::Poll::Pending => {
+                        this.0 = ResponseState::StatusReceiver(rx);
+                        std::task::Poll::Pending
+                    }
+                }
+            }
+            #[cfg(feature = "async")]
+            ResponseState::StatusReceiver(rx) => match rx.as_mut().poll(_cx) {
+                std::task::Poll::Ready(answer) => {
+                    this.0 = ResponseState::Done;
+                    std::task::Poll::Ready(status_result(answer))
+                }
+                std::task::Poll::Pending => std::task::Poll::Pending,
             },
             #[cfg(feature = "async")]
             ResponseState::Sent(_) => unreachable!("converted above"),

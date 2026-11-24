@@ -529,6 +529,60 @@ INTROSPECTION_CONTROLS = [
 ]
 
 
+def introspection_trace_controls(traces, tlc):
+    """Recorded status-turn traces (TraceIntrospection.tla), edited into the
+    bugs the design lists: each edit must be rejected."""
+    by_name = {t["name"]: t for t in traces if t.get("schema") == "introspection-v1"}
+
+    def at(events, action, x=None):
+        return next(i for i, e in enumerate(events)
+                    if e["a"] == action and (x is None or e["x"] == x))
+
+    def answer_after_skip(events):
+        # The callback runs although its admission found the slot closed.
+        events.insert(at(events, "Admit", "skip") + 1, {"a": "Answer", "x": "ok"})
+    require_rejected(by_name["introspection_status_skipped_after_timeout"], answer_after_skip,
+                     "status answered after its admission skipped it", tlc)
+
+    def answer_outside_turn(events):
+        # The status answered before its turn (inside another one).
+        answer = events.pop(at(events, "Answer"))
+        events.insert(at(events, "Dispatch", "status"), answer)
+    require_rejected(by_name["introspection_status_between_turns"], answer_outside_turn,
+                     "status answered outside its own turn", tlc)
+
+    def panic_ends_actor(events):
+        # A caught callback panic treated as a handler panic.
+        events[at(events, "End", "status")] = {"a": "Panic", "x": "turn"}
+    require_rejected(by_name["introspection_callback_panic_contained"], panic_ends_actor,
+                     "a caught callback panic ends the actor", tlc)
+
+    def answered_twice(events):
+        # A queued status request answered in a turn after D answered it.
+        events.insert(at(events, "Die"), {"a": "Answer", "x": "ok"})
+    require_rejected(by_name["introspection_status_queued_at_death_after_kill"], answered_twice,
+                     "a status request answered besides its discharge at D", tlc)
+
+    def dispatch_after_kill(events):
+        # The kill recorded before the dispatch it must prevent.
+        kill = events.pop(at(events, "Kill"))
+        events.insert(at(events, "Dispatch"), kill)
+    require_rejected(by_name["introspection_status_queued_at_death_after_kill"],
+                     dispatch_after_kill, "dispatch after a kill", tlc)
+
+    def stopped_after_kill(events):
+        # stopped() decided after a kill.
+        events[at(events, "Exit", "skip")]["x"] = "run"
+    require_rejected(by_name["introspection_status_queued_at_death_after_kill"],
+                     stopped_after_kill, "stopped() run after a kill", tlc)
+
+    def wrong_reason(events):
+        # A kill during stopped() lost to Normal.
+        events[at(events, "Die")]["x"] = "Shutdown"
+    require_rejected(by_name["introspection_kill_during_stopped"], wrong_reason,
+                     "a kill during stopped() not the final reason", tlc)
+
+
 def disposal_trace_controls(traces, tlc, directory):
     """Disposal traces Disposal.tla must reject: edits of recorded traces,
     and traces recorded from deliberately broken code (`controls/`)."""
@@ -1015,6 +1069,7 @@ def main():
     disposal_trace_controls(traces, args.tlc, args.traces)
     lifecycle_trace_controls(traces, args.tlc)
     start_trace_controls(traces, args.tlc)
+    introspection_trace_controls(traces, args.tlc)
     for module, fault, invariant in LIFECYCLE_CONTROLS:
         named_fault(module, fault, invariant, args.tlc)
     for module, fault, invariant in INTROSPECTION_CONTROLS:
