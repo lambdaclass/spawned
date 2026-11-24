@@ -445,8 +445,9 @@ budgeted runtimes use [execution groups](#execution-groups-and-supervision).
 Public owned parked pinned shards and bounded native pools are described under
 [execution groups](#execution-groups-and-supervision). The private research
 selectors (pinned and spinning shards, alternative schedulers) are not part of
-the published crates; they live in `benchmarks/experiments` (see
-[benchmarks](../benchmarks/README.md#experiments)), and Tokio stays the default. Their measurements and reproduction guides are
+the published crates (they were removed after the study, last at `bf59ace0`;
+see [benchmarks](../benchmarks/README.md#removed-experiments)), and Tokio
+stays the default. Their measurements and reproduction guides are
 archived in [the backend notes](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/BACKENDS.md) and the
 [backend research index](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/research/backend-experiments/README.md).
 

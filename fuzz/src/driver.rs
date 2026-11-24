@@ -124,6 +124,9 @@ struct Driver {
     links: Vec<LinkRec>,
     /// Trap flag set by the driver and the op index of its last change.
     traps: HashMap<ActorId, (bool, u64)>,
+    /// Actors whose trap flag the driver changed after their exit began:
+    /// the flag a late signal saw is unknown (L4 only).
+    trap_unknown: std::collections::HashSet<ActorId>,
     handles: HashMap<ActorId, ChildHandle>,
     first_exit: HashMap<ActorId, ExitReason>,
     /// Reason of a driver `Op::Stop` that reached a live actor (X8).
@@ -436,6 +439,7 @@ impl Driver {
             pending: Vec::new(),
             links: Vec::new(),
             traps: HashMap::new(),
+            trap_unknown: std::collections::HashSet::new(),
             handles: HashMap::new(),
             first_exit: HashMap::new(),
             requested: HashMap::new(),
@@ -789,6 +793,20 @@ impl Driver {
             }
             Op::TrapExit { who, on } => {
                 let Some(aref) = self.pick(who) else { return };
+                // On an exited actor the call is inert: the flag a signal
+                // saw is still the recorded one, so it is not overwritten.
+                // On one whose exit began it may or may not decide a later
+                // signal (one that arrives during `stopped()`), so L4 no
+                // longer knows which flag that signal saw. Only L4 reads
+                // `trap_unknown`; the run is cooperative, so nothing runs
+                // between these checks and the call.
+                if aref.child_handle().exit_reason().is_some() {
+                    aref.context().trap_exit(on);
+                    return;
+                }
+                if aref.context().exit_pending() {
+                    self.trap_unknown.insert(aref.id());
+                }
                 aref.context().trap_exit(on);
                 self.traps.insert(aref.id(), (on, self.op));
             }
@@ -1895,7 +1913,12 @@ impl Driver {
             // (semantics.md L4, `Lifecycle!LateSignalWins`; OTP: a signal
             // during `terminate` kills with its own reason). The only
             // non-abnormal reason a signal can carry is `Shutdown`.
-            let trapping = self.traps.get(&id).is_some_and(|t| t.0);
+            // Only a trap flag the driver set while the actor ran is known
+            // (a call on an exiting actor is not).
+            // Unknown counts as not trapping: it only excuses a
+            // `Shutdown`, the one reason either flag allows.
+            let trapping =
+                self.traps.get(&id).is_some_and(|t| t.0) && !self.trap_unknown.contains(&id);
             let late_shutdown = exit == ExitReason::Shutdown(None) && !trapping;
             // 0.9 (design 2.3): an untrapped exit signal held while started()
             // ran outranks its panic (row 3 over row 4: in OTP the signal

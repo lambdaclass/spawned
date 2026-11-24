@@ -270,11 +270,6 @@ code = ["concurrency/src/stop_token/core.rs"]
 files = ["concurrency/tests/mailbox_admission_loom.rs"]
 code = ["concurrency/src/mailbox_admission.rs"]
 
-[loom.ReadyGate]
-# The scheduler prototype's ready gate (benchmarks/experiments only).
-files = ["benchmarks/experiments/tests/ready_gate_loom.rs"]
-code = ["benchmarks/experiments/benches/support/ready_gate.rs"]
-
 # Trace events. Each [[trace]] table names one event struct of
 # concurrency/src/lifecycle_trace.rs, the calls that create one (a regex
 # matched in concurrency/src, and the 0-based index of the argument holding

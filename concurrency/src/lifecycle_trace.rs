@@ -1292,6 +1292,8 @@ mod imp {
         "CSelect",
         "CAssign",
         "CStop",
+        "CKill",
+        "CStuck",
         "CClean",
         "CResume",
         "CBegin",

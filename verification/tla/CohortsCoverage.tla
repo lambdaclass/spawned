@@ -8,8 +8,8 @@
 (* trace event's action, child, round and parameter.                      *)
 EXTENDS Cohorts
 
-ChildActions == {"CRequest", "CSelect", "CAssign", "CStop", "CClean", "CResume",
-                 "CBegin", "CReady", "CJoined", "CRetire", "CAck"}
+ChildActions == {"CRequest", "CSelect", "CAssign", "CStop", "CKill", "CStuck",
+                 "CClean", "CResume", "CBegin", "CReady", "CJoined", "CRetire", "CAck"}
 
 Ph == s.phase \o (IF s.open THEN "/open" ELSE "/closed")
               \o (IF s.committed THEN "" ELSE "/initial")

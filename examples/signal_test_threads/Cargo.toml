@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 spawned-concurrency = { workspace = true }
-spawned-rt = { workspace = true, features = ["async"] }
+spawned-rt = { workspace = true, features = ["async", "fmt-subscriber"] }
 tracing = { workspace = true }
 
 [[bin]]

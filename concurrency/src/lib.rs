@@ -232,3 +232,9 @@ macro_rules! __spawned_async_items { ($($item:item)*) => { $($item)* }; }
 macro_rules! __spawned_async_items {
     ($($item:item)*) => {};
 }
+
+/// The crate README's example, compiled and run as a doctest so the
+/// crates.io landing page cannot drift from the API.
+#[cfg(all(doctest, feature = "async"))]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctest;
