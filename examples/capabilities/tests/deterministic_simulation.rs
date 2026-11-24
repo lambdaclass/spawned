@@ -3,20 +3,21 @@
 //! A plain `cargo test` runs each test once on Tokio. Under the simulator
 //!
 //! ```sh
-//! RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" \
-//!   cargo test -p spawned-capability-examples --test deterministic_simulation
+//! cargo sim-test -p spawned-capability-examples --test deterministic_simulation
 //! ```
 //!
-//! each test runs on one thread over seeds `0..SPAWNED_SIM_SEEDS` (default 8):
-//! the seed picks which ready task runs next, and time is virtual, so timers
-//! fire as soon as nothing else is ready. A failing seed prints a replay
-//! command and the path of a decision tape. Rerun it with the same `RUSTFLAGS`
-//! plus `SPAWNED_SIM_SEED=<n>`, or `SPAWNED_SIM_TAPE=<path>` to replay the
-//! exact schedule; the `.min.tape` written beside it is a shrunk schedule that
-//! fails the same way. See `docs/TESTING.md`, "Seeds and decision tapes under
-//! `--cfg spawned_sim`", for what the simulator does not model. A crate that
-//! uses `#[cfg(spawned_sim)]` declares it under `[lints.rust]` in its
-//! `Cargo.toml` (`unexpected_cfgs`), as this package does.
+//! (the `.cargo/config.toml` alias for `RUSTFLAGS="--cfg spawned_sim --cfg
+//! tokio_unstable" cargo test`, built in target/sim) each test runs on one
+//! thread over seeds `0..SPAWNED_SIM_SEEDS` (default 8): the seed picks which
+//! ready task runs next, and time is virtual, so timers fire as soon as
+//! nothing else is ready. A failing seed prints a replay command and the path
+//! of a decision tape. Rerun it with `SPAWNED_SIM_SEED=<n>`, or
+//! `SPAWNED_SIM_TAPE=<path>` to replay the exact schedule; the `.min.tape`
+//! written beside it is a shrunk schedule that fails the same way. See
+//! `docs/TESTING.md`, "Seeds and decision tapes under `--cfg spawned_sim`",
+//! for what the simulator does not model. Tests marked
+//! `#[sim_test(sim_only)]` exist only under the simulator; the crate needs
+//! no `#[cfg(spawned_sim)]` and no `unexpected_cfgs` configuration.
 use spawned_concurrency::tasks::{Actor, ActorStart as _, Context, Handler};
 use spawned_concurrency::{actor, error::ActorError, protocol, Response};
 use spawned_rt::tasks as rt;
@@ -81,11 +82,10 @@ async fn per_sender_order_holds_under_every_schedule() {
 }
 
 /// Virtual time: an actor whose timer is an hour away. On Tokio this test
-/// would take an hour, so it only exists under the simulator, where it takes
-/// milliseconds of wall-clock time.
-#[cfg(spawned_sim)]
-mod virtual_time {
-    use super::*;
+/// would take an hour, so it only exists under the simulator (`sim_only`),
+/// where it takes milliseconds of wall-clock time.
+#[spawned_concurrency::sim_test(sim_only)]
+async fn an_hour_long_timer_fires_in_virtual_time() {
     use spawned_concurrency::tasks::send_after;
     use std::time::Duration;
 
@@ -118,20 +118,90 @@ mod virtual_time {
         }
     }
 
-    #[spawned_concurrency::sim_test]
-    async fn an_hour_long_timer_fires_in_virtual_time() {
-        // The real clock: inside a simulated run `std::time::Instant` reads
-        // virtual time too (determinism D1).
-        let wall = spawned_rt::tasks::sim::wall_now();
-        let virtual_start = spawned_rt::time::Instant::now();
-        let reminder = Reminder::default().start();
+    // The real clock: inside a simulated run `std::time::Instant` reads
+    // virtual time too (determinism D1).
+    let wall = spawned_rt::tasks::sim::wall_now();
+    let virtual_start = spawned_rt::time::Instant::now();
+    let reminder = Reminder::default().start();
 
-        rt::sleep(HOUR - Duration::from_secs(1)).await;
-        assert!(!reminder.rung().await.unwrap());
-        rt::sleep(Duration::from_secs(2)).await;
-        assert!(reminder.rung().await.unwrap());
+    rt::sleep(HOUR - Duration::from_secs(1)).await;
+    assert!(!reminder.rung().await.unwrap());
+    rt::sleep(Duration::from_secs(2)).await;
+    assert!(reminder.rung().await.unwrap());
 
-        assert!(virtual_start.elapsed() >= HOUR);
-        assert!(spawned_rt::tasks::sim::wall_now() - wall < Duration::from_secs(10));
+    assert!(virtual_start.elapsed() >= HOUR);
+    assert!(spawned_rt::tasks::sim::wall_now() - wall < Duration::from_secs(10));
+}
+
+// A race that Tokio hides and the simulator finds (README, "Testing your own
+// actors deterministically"): two clients bump a counter with a
+// read-modify-write over two requests, so both can read the same value.
+#[protocol]
+pub trait CounterProtocol: Send + Sync {
+    fn get(&self) -> Response<u64>;
+    fn set(&self, value: u64) -> Response<()>;
+    fn increment(&self) -> Response<u64>;
+}
+
+#[derive(Default)]
+struct Counter(u64);
+
+#[actor(protocol = CounterProtocol)]
+impl Counter {
+    #[request_handler]
+    async fn handle_get(&mut self, _: counter_protocol::Get, _: &Context<Self>) -> u64 {
+        self.0
     }
+
+    #[request_handler]
+    async fn handle_set(&mut self, msg: counter_protocol::Set, _: &Context<Self>) {
+        self.0 = msg.value;
+    }
+
+    #[request_handler]
+    async fn handle_increment(&mut self, _: counter_protocol::Increment, _: &Context<Self>) -> u64 {
+        self.0 += 1;
+        self.0
+    }
+}
+
+/// Before: on Tokio this passes almost every run. The simulator explores the
+/// schedules and finds the one that loses an update, on every run, with a
+/// seed and a tape that replay it (`sim_only`: on Tokio it is flaky).
+#[spawned_concurrency::sim_test(sim_only, explore = "pct:d=3", iterations = 200)]
+#[should_panic(expected = "lost update")]
+async fn read_modify_write_loses_an_update() {
+    let counter = Counter::default().start();
+    let clients: Vec<_> = (0..2)
+        .map(|_| {
+            let counter = counter.clone();
+            rt::spawn(async move {
+                let n = counter.get().await.unwrap();
+                counter.set(n + 1).await.unwrap();
+            })
+        })
+        .collect();
+    for client in clients {
+        client.await.unwrap();
+    }
+    assert_eq!(counter.get().await.unwrap(), 2, "lost update");
+}
+
+/// After: the increment is one message, handled in one turn, so it holds on
+/// every schedule the simulator tries (and on Tokio).
+#[spawned_concurrency::sim_test(explore = "pct:d=3", iterations = 200)]
+async fn one_message_increment_never_loses_an_update() {
+    let counter = Counter::default().start();
+    let clients: Vec<_> = (0..2)
+        .map(|_| {
+            let counter = counter.clone();
+            rt::spawn(async move {
+                counter.increment().await.unwrap();
+            })
+        })
+        .collect();
+    for client in clients {
+        client.await.unwrap();
+    }
+    assert_eq!(counter.get().await.unwrap(), 2);
 }

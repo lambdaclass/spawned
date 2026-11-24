@@ -618,6 +618,14 @@ async fn sim_test_dfs_passes_bug_free_body() {
     assert_eq!(writes(&bump_all(&[0]).await), vec![1]);
 }
 
+/// `sim_only` and `crate = path` (for a renamed dependency) together; the
+/// expansion goes through `spawned_concurrency::__private`.
+#[spawned_macros::sim_test(sim_only, crate = spawned_concurrency, seeds = 2)]
+async fn sim_test_takes_sim_only_and_a_crate_path(seed: u64) {
+    assert!(seed < 2);
+    assert_eq!(writes(&bump_all(&[0]).await), vec![1]);
+}
+
 /// Codex (round 2): a PCT failure found with `k` left to the strategy
 /// reproduces from its seed and the reported strategy alone (`k` and the
 /// fairness cutoff filled in), without the tape.
