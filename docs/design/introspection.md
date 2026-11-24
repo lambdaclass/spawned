@@ -1448,7 +1448,8 @@ observed for 9.8 s in `info()` and `ShutdownReport`.
    a cleanup failure), as SASL does, never for a supervisor-ordered stop,
    with the action decided after the restart budget; `shutdown_error` is a
    child that missed its shutdown time (supervisor shutdown or a
-   OneForAll/RestForOne round) and is killed.
+   OneForAll/RestForOne round) and is killed (action `killed`), then, if
+   the kill does not end it within another interval, `stuck`.
 2. Tables (`console` or `introspection`), `processes()`, `snapshot()`, wire
    structs; tier 1 activity slot, interner, clock, mailbox counters; fold
    `diagnostics`; benchmark gate and codegen check.

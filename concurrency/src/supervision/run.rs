@@ -308,18 +308,10 @@ pub(super) async fn run_recoveries(core: Arc<Core>) {
                 Either::Left(_) => return,
                 Either::Right((Ok(true), _)) => (),
                 _ => {
-                    // OTP's `shutdown_error`: the collateral child missed its
-                    // shutdown time. It is not killed here: the round fails
-                    // the tree instead of OTP's brutal_kill (semantics V3, Rust-forced).
-                    let snapshot = child.snapshot();
-                    core.report(
-                        tracing::Level::ERROR,
-                        "shutdown_error",
-                        &snapshot.name,
-                        snapshot.generation,
-                        None,
-                        "stuck",
-                    );
+                    // The child's controller already reported the kill and
+                    // the stuck slot (`shutdown_error`, actions `killed` and
+                    // `stuck`) unless it was starved; this backstop only
+                    // fails the tree.
                     core.fail_cleanup_for(
                         child.snapshot(),
                         format!("coordinated cleanup stuck for {}", child.snapshot().name),
@@ -907,7 +899,9 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                                     }
                                 });
                                 // OTP's `shutdown_error`: the child missed its
-                                // shutdown time and is killed.
+                                // shutdown time and is killed (its brutal_kill;
+                                // for a supervisor stop or a round's
+                                // collateral stop alike, V3).
                                 core.report(
                                     tracing::Level::ERROR,
                                     "shutdown_error",
@@ -931,6 +925,18 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                                     }
                                     Err(_) => {
                                         stuck = true;
+                                        // Rust-forced: the kill did not end
+                                        // it (L3), so the slot is stuck and
+                                        // fails the tree (V3), reported as a
+                                        // second `shutdown_error`.
+                                        core.report(
+                                            tracing::Level::ERROR,
+                                            "shutdown_error",
+                                            &spec.name,
+                                            generation,
+                                            None,
+                                            "stuck",
+                                        );
                                         // Reply traces: the cleanup deadline
                                         // passed before the child's death
                                         // point (DeferredReplies `CleanupDeadline`).

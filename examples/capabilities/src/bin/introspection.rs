@@ -84,7 +84,9 @@ async fn main() {
         peer: "0x3a1f",
         received: 0,
     }
-    .start();
+    .start()
+    .await
+    .expect("started");
     let (entered_tx, entered) = mpsc::channel();
     let (release_tx, release) = mpsc::channel();
     conn.send(Wedge(entered_tx, release)).unwrap();
@@ -156,15 +158,22 @@ async fn main() {
     }
     assert!(system.shutdown(Duration::from_secs(5)).await.complete);
 
-    // 4. Threads mode: the same calls, blocking.
-    use spawned_concurrency::threads::ActorStart as _;
-    let ledger = threads_peer::Ledger { entries: 0 }.start();
-    let status = ledger.get_status().unwrap();
-    println!(
-        "ledger: {:?} {:?}",
-        status.info.label.as_deref(),
-        status.state
-    );
-    ledger.child_handle().stop();
-    ledger.join();
+    // 4. Threads mode: the same calls, blocking (off the async runtime: a
+    // blocking wait inside one panics).
+    std::thread::spawn(|| {
+        use spawned_concurrency::threads::ActorStart as _;
+        let ledger = threads_peer::Ledger { entries: 0 }
+            .start()
+            .expect("started");
+        let status = ledger.get_status().unwrap();
+        println!(
+            "ledger: {:?} {:?}",
+            status.info.label.as_deref(),
+            status.state
+        );
+        ledger.child_handle().stop();
+        ledger.join();
+    })
+    .join()
+    .expect("threads demo");
 }

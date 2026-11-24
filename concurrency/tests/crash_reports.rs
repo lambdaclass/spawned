@@ -318,7 +318,7 @@ mod status_log {
 /// `spawned::supervisor` reports (OTP's SASL supervisor reports):
 /// `child_terminated` (unexpected exit), `child_restarted`, `start_failed`,
 /// `restart_intensity_reached`, `shutdown_error` (killed after its shutdown
-/// time), with the contract fields.
+/// time, then stuck if the kill does not end it), with the contract fields.
 #[cfg(feature = "async")]
 mod supervisor_reports {
     use super::*;
@@ -474,7 +474,9 @@ mod supervisor_reports {
         let child = builder
             .add(
                 ChildSpec::new("slow", &group, |_| async { Ok::<_, String>(Worker) })
-                    .shutdown_timeout(Duration::from_millis(50)),
+                    // Wide enough that the release after the kill lands
+                    // within the second interval (no `stuck`).
+                    .shutdown_timeout(Duration::from_millis(250)),
             )
             .unwrap();
         let sup = builder.start().await.unwrap();
@@ -506,8 +508,56 @@ mod supervisor_reports {
         assert!(system.shutdown(LIMIT).await.complete);
     }
 
+    /// A child the kill does not end within a second interval: `killed`,
+    /// then `stuck` (the slot fails the tree, V3).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_child_the_kill_does_not_end_is_reported_stuck() {
+        capture();
+        let system = ActorSystem::new().unwrap();
+        let group = system.async_group("reports-stuck", 2).unwrap();
+        let mut builder = system.supervisor(config("sup-stuck", 5)).unwrap();
+        let child = builder
+            .add(
+                ChildSpec::new("wedged", &group, |_| async { Ok::<_, String>(Worker) })
+                    .shutdown_timeout(Duration::from_millis(50)),
+            )
+            .unwrap();
+        let sup = builder.start().await.unwrap();
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let (release_tx, release) = std::sync::mpsc::channel();
+        child
+            .wait_ready()
+            .await
+            .unwrap()
+            .send(Wedge(entered_tx, release))
+            .unwrap();
+        entered.recv_timeout(LIMIT).unwrap();
+        sup.stop();
+        let until = Instant::now() + LIMIT;
+        while event(&of("sup-stuck"), "shutdown_error").len() < 2 {
+            assert!(Instant::now() < until, "no stuck shutdown_error");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        release_tx.send(()).unwrap();
+        sup.join().await;
+        let reports = of("sup-stuck");
+        let actions: Vec<_> = event(&reports, "shutdown_error")
+            .iter()
+            .map(|(level, f)| (*level, f["child"].clone(), f["action"].clone()))
+            .collect();
+        assert_eq!(
+            actions,
+            [
+                (tracing::Level::ERROR, "wedged".into(), "killed".into()),
+                (tracing::Level::ERROR, "wedged".into(), "stuck".into()),
+            ]
+        );
+        let _ = system.shutdown(LIMIT).await;
+    }
+
     /// OneForAll: a collateral child that misses its shutdown time when the
-    /// cohort is stopped for a sibling's crash is reported.
+    /// cohort is stopped for a sibling's crash is killed and reported, as a
+    /// supervisor stop's child is (V3), and the round goes on.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_collateral_child_missing_its_shutdown_time_is_a_shutdown_error() {
         capture();
@@ -527,7 +577,9 @@ mod supervisor_reports {
         let slow = builder
             .add(
                 ChildSpec::new("slow", &group, |_| async { Ok::<_, String>(Worker) })
-                    .shutdown_timeout(Duration::from_millis(50)),
+                    // Wide enough that the release after the kill lands
+                    // within the second interval (no `stuck`).
+                    .shutdown_timeout(Duration::from_millis(250)),
             )
             .unwrap();
         let _sup = builder.start().await.unwrap();
@@ -550,13 +602,15 @@ mod supervisor_reports {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         release_tx.send(()).unwrap();
+        // The kill ends it once its turn returns; the round restarts it.
+        slow.wait_for_generation(1).await.unwrap();
         let reports = of("sup-collateral");
         let error = event(&reports, "shutdown_error");
+        assert_eq!(error.len(), 1, "{reports:?}");
         assert_eq!(error[0].0, tracing::Level::ERROR);
         assert_eq!(error[0].1["child"], "slow");
-        // The round gives up on it (the tree fails, V3) instead of killing.
-        assert_eq!(error[0].1["action"], "stuck");
-        let _ = system.shutdown(LIMIT).await;
+        assert_eq!(error[0].1["action"], "killed");
+        assert!(system.shutdown(LIMIT).await.complete);
     }
 }
 

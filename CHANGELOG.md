@@ -80,7 +80,9 @@
   `SupervisedChild::info()`, `SupervisorConfig::name`. Supervisors emit
   `spawned::supervisor` reports (OTP SASL): `child_terminated`,
   `child_restarted`, `start_failed`, `restart_intensity_reached`,
-  `shutdown_error`. Semantics I7, I10.
+  `shutdown_error` (action `killed` at the kill a stopped child earns at its
+  shutdown time, then `stuck` if the kill does not end it). Semantics I7,
+  I10.
 - Introspection, step 1b (0.9): `get_state(f)` and `get_status()` on
   `ActorRef` (and `with_request_timeout(d)`), `get_status()` /
   `get_status_with_timeout(d)` on `ChildHandle` (OTP `sys:get_state`,

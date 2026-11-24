@@ -1755,16 +1755,18 @@ reports): `child_terminated` (WARN, an unexpected exit), `child_restarted`
 (INFO; `child_terminated`'s `action` is what the restart budget decided:
 `restart`, or `shutdown` when the intensity limit stops the supervisor), and
 at ERROR `start_failed`, `restart_intensity_reached` and `shutdown_error` (a
-child that missed its shutdown time: `killed` when the supervisor stops it,
-`stuck` when a OneForAll or RestForOne round gives up on it), with the
+child that missed its shutdown time when the supervisor stopped it, at
+shutdown or in a OneForAll or RestForOne round: `killed` when it is killed,
+then `stuck` if the kill does not end it within another interval), with the
 fields `supervisor`, `system`, `child`, `generation`, `reason`,
 `restarts_in_window`, `max_restarts`, `window_ms`, `action`.
 
 A `stuck` child is where Spawned differs from OTP on purpose: OTP's
 `brutal_kill` ends a process that ignores its shutdown and the supervisor
-carries on, but Rust cannot preempt a task or thread stuck in code that never
-yields, so a slot whose cleanup never finishes fails the supervisor instead
-of being reused (semantics V3).
+carries on. Spawned kills it too, but Rust cannot preempt a task or thread
+stuck in code that never yields, so the kill takes effect only when that code
+returns, and a slot whose child the kill does not end fails the supervisor
+instead of being reused (semantics V3).
 
 ### Crash reports
 
