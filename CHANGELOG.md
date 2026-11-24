@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- CI: AI review runs Codex, Claude and Grok automatically; Kimi, DeepSeek and
+  Gemini only on demand (`/review`, `/kimi`, `/deepseek`, `/gemini`).
 - Remove the settled backend experiments: the `benchmarks/experiments` crate
   and patch (with its ready-gate Loom harness and model-map entry), the
   reliability campaign runner, the `fede_*`/`collect_*`/`render_*` research
