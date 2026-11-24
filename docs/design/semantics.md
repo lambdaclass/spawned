@@ -617,8 +617,11 @@ Checked by: `Cohorts!StrategySelection`, `Cohorts!WholeCohortBarrier`,
 **V3. At most one live generation.** A slot never has two live generations: a
 replacement starts only after the previous actor, its registered helpers and
 its owned cleanup actually finished. When the supervisor stops a child
-(shutdown, a OneForAll/RestForOne round, a startup rollback), a child that has
-not reached its death point `shutdown_timeout` after its signal is killed
+(shutdown, a OneForAll/RestForOne round, a startup rollback, or a generation
+it gives up on before publishing it: a startup timeout, admission closing
+while it constructs, the gate closing between ready and publication), a child
+that has not reached its death point `shutdown_timeout` after its signal is
+killed
 (`Killed`, design E3); if it misses a second `shutdown_timeout` the slot is
 stuck. A child that exits on its own is stuck if its cleanup misses
 `shutdown_timeout` from its exit (no kill: it would relabel its reason). A
@@ -637,7 +640,13 @@ by [`supervision_trace`][supervision_trace]`::trace_shutdown_kills_child_at_shut
 and `trace_shutdown_deadline_with_slow_stop`, with two model faults and two
 recorded-trace controls in `negative_checks.py`) and
 [`collateral_kill`][collateral_kill]`::shutdown_kills_a_stopped_child_without_failing_the_tree`
-(the shutdown loop's backstop; planted bug 36); for a OneForAll/RestForOne round's stop,
+(the shutdown loop's backstop; planted bug 36); for a generation stopped
+before publication, the same `Supervision!StuckOnlyAfterKill` (`"abandoned"`
+and `"startkilled"`, trace-validated by
+[`supervision_trace`][supervision_trace]`::trace_unpublished_generation_killed_or_stuck`,
+with two model faults and a recorded-trace control) and
+[`collateral_kill`][collateral_kill]`::unpublished_generation_is_killed_at_shutdown_timeout`
+and `unpublished_generation_is_stuck_only_after_the_kill` (planted bug 40); for a OneForAll/RestForOne round's stop,
 `Cohorts!StuckOnlyAfterKill` (`CKill`/`CStuck`, trace-validated by
 [`cohort_trace`][cohort_trace]`::trace_collateral_child_killed_or_stuck`, with
 a model fault and two recorded-trace controls in `negative_checks.py`) and

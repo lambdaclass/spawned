@@ -27,6 +27,19 @@
   now a doctest, so it cannot drift again; the README roadmap, project tree,
   `semantics.md` status line and the `stack_budget` row in `TESTING.md` match
   the current state.
+- Fixed (V3, soundness): a generation the supervisor gave up on before
+  publishing it (a startup timeout, admission closing while it constructs,
+  the gate closing between ready and publication) was never killed. Its
+  cleanup waited one `shutdown_timeout` and then marked the slot stuck,
+  failing the tree. It now gets the same escalation as a published child:
+  the kill at `shutdown_timeout`, then stuck only if it also misses a second
+  interval after the kill. So `StuckOnlyAfterKill` holds on every supervisor
+  stop path. In `Supervision.tla`, unpublished generations are `"abandoned"`
+  (or `"startkilled"` when killed before the trace records `StartupFailed`).
+  `CleanupStuck` no longer follows them without a kill, and the shutdown
+  backstop never gives up on them. This is checked by two model faults, a
+  `supervision_trace` scenario with a recorded-trace control, `#[sim_test]`s
+  in `collateral_kill`, and planted bug 40.
 - Bump `url` to 2.5.9 in `Cargo.lock` (RUSTSEC-2026-0592, a stack overflow in
   `Url::origin()`); only the `updater` examples use it, through `reqwest`.
 - Fixed (V3, soundness): a OneForAll or RestForOne round never killed a

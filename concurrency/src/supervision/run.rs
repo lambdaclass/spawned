@@ -964,7 +964,24 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
         let remaining = cleanup_until
             .map(|started| spec.shutdown_timeout.saturating_sub(started.elapsed()))
             .unwrap_or(spec.shutdown_timeout);
-        if rt::timeout(remaining, scope.joined()).await.is_err() {
+        let mut joined = rt::timeout(remaining, scope.joined()).await.is_ok();
+        // E3/V3: a generation stopped before it was published (startup
+        // timeout, admission closing while it constructs, the gate closing
+        // between ready and publication) has had no death-point wait: it
+        // gets the same kill at shutdown_timeout, and is stuck only after a
+        // second interval from the kill.
+        let unpublished_killed = !joined && exit.is_none();
+        if unpublished_killed {
+            fail_point!("supervisor.before_unpublished_kill", async);
+            trace::atomic(|| {
+                scope.kill();
+                trace::emit(core.trace, || Event::new("CleanupKill", c, ""));
+            });
+            joined = rt::timeout(spec.shutdown_timeout, scope.joined())
+                .await
+                .is_ok();
+        }
+        if !joined {
             core.fail_cleanup_for(
                 view.snapshot(),
                 format!("owned cleanup stuck for {}", spec.name),
@@ -1008,6 +1025,9 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                     trace::emit(core.trace, || {
                         Event::new("StartupFailed", c, startup_reason(exit.as_ref()))
                     });
+                }
+                if unpublished_killed {
+                    trace::emit(core.trace, || Event::new("StopExited", c, ""));
                 }
                 trace::emit(core.trace, || Event::new("CleanupDone", c, ""));
             });
