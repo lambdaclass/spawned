@@ -9,6 +9,23 @@
   `blocking_genserver`, `busy_genserver_warning` and `exit_reason` are
   binaries of `spawned-capability-examples`. examples/README.md has the
   new commands.
+- Supervised `ignore` with OTP semantics (unified start, section 9): a
+  child whose `started()` returns `Init::ignore()`, or whose factory returns
+  the new `Ok(ChildStart::Ignore)` (`From<A> for ChildStart<A>` keeps
+  `Ok(actor)` factories compiling), is no longer a failed start. The spec
+  stays with no generation (`ChildState::Ignored`, OTP's `undefined` pid):
+  the ignore completes the child's first start, OneForOne never restarts it,
+  a OneForAll/RestForOne round that covers it starts it again with the
+  cohort (a replacement that ignores completes the round's readiness
+  barrier), an ignored Temporary child is removed, a replacement that
+  ignores keeps its restart grant (V5), `wait_ready()`/`current()` answer
+  `ChildUnavailable(Ignored)` at once and shutdown finishes it at once. It
+  is observed only once the instance's owned cleanup joined (until then the
+  slot is `Stopping`, stuck under V3). `Supervision.tla` and `Cohorts.tla`
+  gain the `Ignored` state (`Ignore`, `IgnoredNotRestarted`,
+  `RoundCoversRange`; inductive invariants updated), traces gain an
+  `Ignore(c, g)` event, with negative controls `IgnoreRetried` and
+  `IgnoreSkippedInCohort` and planted bugs 41-42.
 - CI: AI review runs Codex, Claude and Grok automatically; Kimi, DeepSeek and
   Gemini only on demand (`/review`, `/kimi`, `/deepseek`, `/gemini`).
 - Remove the settled backend experiments: the `benchmarks/experiments` crate

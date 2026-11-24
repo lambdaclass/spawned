@@ -33,7 +33,7 @@ Bool(x) == x = "true"
 
 ChildEvents == {"RetryReserve", "RetryRelease", "LoopTop", "BackoffDone", "Attempt", "BecomeReady",
                 "StartupFailed", "SelfExit", "StopObserved", "CleanupKill", "StopExited", "CleanupDone",
-                "CleanupStuck", "DeferExit", "Undefer", "Decide", "Finish"}
+                "CleanupStuck", "DeferExit", "Undefer", "Decide", "Finish", "Ignore"}
 
 \* The model action named by logged event e, constrained by its parameters.
 Step(e) ==
@@ -67,6 +67,7 @@ Step(e) ==
                   IF e.x = "unknown"
                   THEN (\E r \in SelfExits : SelfExit(c, r)) \/ StopObserved(c)
                   ELSE SelfExit(c, e.x)
+             [] e.a = "Ignore"       -> Ignore(c) /\ gen[c] = e.n
              [] e.a = "StopObserved" -> StopObserved(c)
              [] e.a = "CleanupKill"  -> CleanupKill(c)
              [] e.a = "StopExited"   -> StopExited(c)

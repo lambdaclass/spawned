@@ -68,6 +68,7 @@ fn write_trace(name: &str, id: u64, strategy: SupervisorStrategy, modes: &[&str]
                     | "CBegin"
                     | "CReady"
                     | "CJoined"
+                    | "Ignore"
                     | "CRetire"
                     | "CAck"
                     | "CEnd"
@@ -501,5 +502,91 @@ async fn trace_collateral_child_killed_or_stuck() {
             assert_eq!(reason, spawned_concurrency::ExitReason::Killed);
             let _ = system.shutdown(LIMIT).await;
         }
+    }
+}
+
+/// Returns `Init::ignore()` from `started()` when built with `true`.
+struct Optional(bool);
+impl Actor for Optional {
+    async fn started(&mut self, _: &Context<Self>) -> spawned_concurrency::tasks::Init<Self> {
+        if self.0 {
+            spawned_concurrency::tasks::Init::ignore()
+        } else {
+            spawned_concurrency::tasks::Init::ready()
+        }
+    }
+}
+
+/// Unified start section 9: an ignored child (generation 1) is started
+/// again by a round that covers it, with the cohort and in declaration
+/// order; a replacement that ignores inside a round (generation 3)
+/// completes the round's readiness barrier, so the later sibling starts.
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
+async fn trace_round_restarts_an_ignored_child() {
+    use spawned_concurrency::supervision::ChildState;
+    for strategy in [
+        SupervisorStrategy::OneForAll,
+        SupervisorStrategy::RestForOne,
+    ] {
+        let system = ActorSystem::new().unwrap();
+        let group = system.async_group("cohort-ignore-trace", 2).unwrap();
+        let mut tree = system
+            .supervisor(
+                SupervisorConfig::default()
+                    .strategy(strategy)
+                    .max_restarts(30)
+                    .backoff(
+                        Backoff::default()
+                            .initial(Duration::from_millis(1))
+                            .maximum(Duration::from_millis(2))
+                            .jitter(false),
+                    ),
+            )
+            .unwrap();
+        let id = tree.trace_id();
+        let first = tree
+            .add(ChildSpec::new("child-0", &group, |_| async {
+                Ok::<_, String>(Worker)
+            }))
+            .unwrap();
+        let optional = tree
+            .add(ChildSpec::new("child-1", &group, |ctx| async move {
+                Ok::<_, String>(Optional(ctx.generation() != 2))
+            }))
+            .unwrap();
+        let last = tree
+            .add(ChildSpec::new("child-2", &group, |_| async {
+                Ok::<_, String>(Worker)
+            }))
+            .unwrap();
+        let supervisor = within!(tree.start()).await.unwrap();
+        assert_eq!(optional.snapshot().state, ChildState::Ignored);
+        // Round 1 covers the ignored child: generation 2 is ready.
+        assert!(first.current().unwrap().request(Crash).await.is_err());
+        spawned_rt::tasks::timeout(LIMIT, last.wait_for_generation(1))
+            .await
+            .unwrap()
+            .unwrap();
+        round_completed(id).await;
+        assert_eq!(optional.snapshot().generation, 2);
+        assert!(optional.current().is_ok());
+        // Round 2: its generation 3 ignores; the barrier still lets the
+        // last child start.
+        assert!(first.current().unwrap().request(Crash).await.is_err());
+        spawned_rt::tasks::timeout(LIMIT, last.wait_for_generation(2))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(optional.snapshot().state, ChildState::Ignored);
+        assert_eq!(optional.snapshot().generation, 3);
+        assert!(supervisor.shutdown(LIMIT).await.complete);
+        assert_eq!(supervisor.failure(), None);
+        write_trace(
+            &format!("ignore-{strategy:?}"),
+            id,
+            strategy,
+            &["Permanent", "Permanent", "Permanent"],
+        );
+        assert!(system.shutdown(LIMIT).await.complete);
     }
 }

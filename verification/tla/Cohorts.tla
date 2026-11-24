@@ -11,6 +11,11 @@
 (* shutdown then kill); its slot is stuck (CStuck, failing the tree) only  *)
 (* after the kill. Fault "StuckWithoutKill" lets a slot be stuck without   *)
 (* it (the pre-fix round path: the round gave up after one interval).     *)
+(* A start that returns `ignore` (Ignore, unified-start section 9) keeps  *)
+(* the spec with no generation: it completes the child's first start and *)
+(* a round's readiness barrier, and a later round that covers it starts   *)
+(* it again with the cohort (RoundCoversRange). Fault                     *)
+(* "IgnoreSkippedInCohort" leaves an ignored child out of the round.      *)
 EXTENDS Naturals, FiniteSets, Sequences, TLC
 (* `@type:` comments are Apalache annotations (CohortsInd.tla); TLC       *)
 (* ignores them. Integer ranges with a state-dependent bound are written   *)
@@ -42,7 +47,7 @@ ASSUME Mode \in [Children -> {"Permanent", "Transient", "Temporary"}]
 \*   scanned: Set(Int), affected: Set(Int), stopped: Set(Int),
 \*   clean: Set(Int), resumed: Set(Int), ack: Set(Int), terminal: Set(Int),
 \*   gen: Int -> Int, live: Int -> Set(Int), published: Int -> Int,
-\*   begun: Set(Int), charged: Int, killed: Set(Int),
+\*   begun: Set(Int), charged: Int, killed: Set(Int), ignored: Set(Int),
 \*   badBarrier: Bool, badClosed: Bool, badTerminal: Bool, badRetry: Bool,
 \*   badStuck: Bool };
 CohortTypeAliases == TRUE
@@ -59,7 +64,7 @@ Init ==
       affected |-> {}, stopped |-> {}, clean |-> {}, resumed |-> {},
       ack |-> {}, terminal |-> {}, gen |-> [c \in Children |-> 0],
       live |-> [c \in Children |-> {}], published |-> [c \in Children |-> 0],
-      begun |-> {}, charged |-> 0, killed |-> {},
+      begun |-> {}, charged |-> 0, killed |-> {}, ignored |-> {},
       badBarrier |-> FALSE, badClosed |-> FALSE, badTerminal |-> FALSE,
       badRetry |-> FALSE, badStuck |-> FALSE]
 Range == {j \in 0..N : s.start <= j}   \* = s.start..N, since start \in 0..N
@@ -85,7 +90,9 @@ CSelect(c,r,n) ==
 CAssign(c,r,x) ==
  /\ s.phase = "Assign" /\ r = s.epoch
  /\ Range \ s.scanned # {} /\ c = Minimum(Range \ s.scanned)
- /\ x = IF c \in Active \/ Fault = "Retirement" THEN "true" ELSE "false"
+ /\ x = IF \/ c \in Active /\ ~(Fault = "IgnoreSkippedInCohort" /\ c \in s.ignored)
+          \/ Fault = "Retirement"
+        THEN "true" ELSE "false"
  /\ s' = [s EXCEPT !.scanned = @ \cup {c},
           !.affected = IF x = "true" THEN @ \cup {c} ELSE @,
           !.assigned[c] = IF x = "true" THEN r ELSE @,
@@ -138,6 +145,7 @@ CBegin(c,r,n) ==
  /\ Mode[c] # "Temporary" \/ s.gen[c] = 0
  /\ s' = [s EXCEPT !.gen[c] = n, !.live[c] = @ \cup {n},
           !.begun = IF r > 0 THEN @ \cup {c} ELSE @,
+          !.ignored = @ \ {c},
           !.charged = IF Fault = "PerChildCharge" /\ r > 0 THEN @ + 1 ELSE @,
           !.badBarrier = @ \/ (r > 0 /\ s.clean # s.affected),
           !.badClosed = @ \/ ~s.open,
@@ -147,6 +155,19 @@ CReady(c,r,n) ==
  /\ r = s.assigned[c] /\ s.open
  /\ r = 0 \/ c \in s.resumed
  /\ s' = [s EXCEPT !.initial = @ \cup {c}, !.published[c] = n]
+\* The start returned `ignore` (Init::ignore(), or a factory's
+\* ChildStart::Ignore): its generation ended before readiness and was
+\* joined (CJoined), under the open gate and the slot's current round. The
+\* spec stays with no generation (OTP's undefined pid). It completes the
+\* child's first start (initial) and acknowledges a round's readiness
+\* barrier (CAck); it is still active, so a later round covering it starts
+\* it again with the cohort. A Temporary child is then retired (CRetire).
+Ignore(c,r,n) ==
+ /\ c \in Active /\ n = s.gen[c] /\ n > 0 /\ s.live[c] = {}
+ /\ s.open /\ r = s.assigned[c]
+ /\ r = 0 => c \notin s.initial
+ /\ r > 0 => c \in s.begun /\ c \notin s.ack
+ /\ s' = [s EXCEPT !.ignored = @ \cup {c}, !.initial = @ \cup {c}]
 CJoined(c,n) ==
  /\ c \in Children /\ n \in s.live[c]
  /\ s' = [s EXCEPT !.live[c] = @ \ {n},
@@ -159,7 +180,8 @@ CAck(c,r) ==
  /\ c \in Children /\ 1 <= r /\ r <= s.epoch
  /\ IF r < s.epoch THEN s' = s
     ELSE /\ c \in s.resumed
-         /\ (s.published[c] = s.gen[c] /\ s.gen[c] > 0) \/ c \in s.terminal
+         /\ \/ s.published[c] = s.gen[c] /\ s.gen[c] > 0
+            \/ c \in s.terminal \/ c \in s.ignored
          /\ s' = [s EXCEPT !.ack = @ \cup {c}]
 CEnd(r,x) ==
  /\ r = s.epoch /\ s.phase \in {"Stopping","Starting"}
@@ -188,6 +210,7 @@ TypeOK ==
  /\ s.published \in [Children -> 0..MaxGen]
  /\ s.charged \in 0..(MaxRounds * N)
  /\ s.killed \subseteq Children
+ /\ s.ignored \subseteq Children
 AtMostOneGeneration == \A c \in Children : Cardinality(s.live[c]) <= 1
 PublishedIsLive == \A c \in Children : s.published[c] # 0 => s.published[c] \in s.live[c]
 StrategySelection == s.epoch = 0 \/ s.start = ExpectedStart(s.origin)
@@ -204,10 +227,17 @@ DoneMeansQuiescent == s.phase = "Done" => \A c \in Children : s.live[c] = {}
 RoundCharged == s.charged = s.epoch
 \* V3: a stopped child's slot is stuck only after its kill.
 StuckOnlyAfterKill == ~s.badStuck
+\* V2 with ignore: a round takes every child of its range that is not
+\* retired, an ignored one included (OTP's start_children after
+\* terminate_children restarts it with the cohort).
+RoundCoversRange ==
+ s.phase \in {"Stopping","Starting"} =>
+   \A c \in Range \cap Children : c \notin s.terminal => c \in s.affected
 Safety == TypeOK /\ AtMostOneGeneration /\ PublishedIsLive /\ StrategySelection
           /\ WholeCohortBarrier /\ NoStartAfterClose /\ NoRetiredParticipant
           /\ TemporaryStartsOnce /\ DoneMeansQuiescent /\ OneStartPerRound
           /\ FirstStartOnce /\ RoundCharged /\ StuckOnlyAfterKill
+          /\ RoundCoversRange
 Next ==
  \/ \E c \in Children, r \in Epochs, x \in {"true","false"} : CRequest(c,r,x)
  \/ \E c \in Children, r \in Epochs, n \in Children : CSelect(c,r,n)
@@ -216,6 +246,7 @@ Next ==
  \/ \E c \in Children, r \in Epochs : CKill(c,r) \/ CStuck(c,r)
  \/ \E c \in Children, r \in Epochs, n \in 1..MaxGen : CBegin(c,r,n) \/ CReady(c,r,n)
  \/ \E c \in Children, n \in 1..MaxGen : CJoined(c,n)
+ \/ \E c \in Children, r \in Epochs, n \in 1..MaxGen : Ignore(c,r,n)
  \/ \E r \in Epochs, x \in {"complete","superseded"} : CEnd(r,x)
  \/ CInitialReady \/ CClose \/ CDone
 Spec == Init /\ [][Next]_vars

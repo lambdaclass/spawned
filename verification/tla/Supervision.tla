@@ -20,6 +20,12 @@
 (*    shutdown_timeout the supervisor kills it (CleanupKill, OTP's        *)
 (*    shutdown escalation) and it is stuck only after a second interval   *)
 (*    (CleanupStuck from "killing"): StuckOnlyAfterKill (V3).             *)
+(*  - A start that returns `ignore` (Init::ignore(), a factory's           *)
+(*    ChildStart::Ignore) is observed once its instance is published and   *)
+(*    its owned cleanup joined (Ignore): st "Ignored", no generation, the   *)
+(*    first start complete. OneForOne never restarts it (pc "ignored"     *)
+(*    until close); a Temporary child is removed (finish). A stuck ignore *)
+(*    is a StartupFailed whose cleanup gets stuck (V3).                    *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets, Sequences
 
@@ -68,7 +74,8 @@ Retries(m, r, ready, init) ==
     init /\ (Restarts(m, r) \/ (~ready /\ m # "Temporary"))
 
 Pcs == {"idle", "top", "backoff", "attempt", "constructing", "running",
-        "stopping", "killing", "cleanup", "decide", "deferred", "finish", "finished"}
+        "stopping", "killing", "cleanup", "decide", "deferred", "ignored",
+        "finish", "finished"}
 
 VARIABLES
     \* @type: Bool;
@@ -128,7 +135,7 @@ TypeOK ==
     /\ timedOut \subseteq Children
     /\ pc \in [Children -> Pcs]
     /\ st \in [Children -> {"Waiting", "Starting", "Running", "Backoff",
-                             "Stopping", "Stopped", "Failed"}]
+                             "Stopping", "Stopped", "Failed", "Ignored"}]
     /\ gen \in [Children -> Nat]
     /\ alive \in [Children -> SUBSET Nat]
     /\ pub \in [Children -> Nat]
@@ -186,8 +193,10 @@ ShutdownDeadline ==
 -----------------------------------------------------------------------------
 (* Child controller: run_child *)
 
+\* An ignored child's controller is parked until the supervisor closes; it
+\* then leaves through the loop top's closed branch.
 LoopTop(c) ==
-    /\ pc[c] = "top"
+    /\ pc[c] = "top" \/ (pc[c] = "ignored" /\ ~open)
     /\ IF ~open THEN Goto(c, "finish") /\ UNCHANGED <<st, first>>
        ELSE IF first[c] THEN Goto(c, "attempt") /\ first' = [first EXCEPT ![c] = FALSE]
                               /\ UNCHANGED st
@@ -260,6 +269,23 @@ StartupFailed(c, r) ==
     /\ exitR' = [exitR EXCEPT ![c] = r]
     /\ Goto(c, "cleanup")
     /\ UNCHANGED <<sup, st, gen, alive, pub, initial, readyGen, first, stopTurn, cdone>>
+
+\* The start returned `ignore` (Init::ignore(), which ended the instance
+\* Normal, or a factory's ChildStart::Ignore), observed under the open gate
+\* once the instance is published and its owned cleanup joined: the spec
+\* stays with no generation (OTP's undefined pid). It completes the child's
+\* start (initial: the start barrier advances) and leaves the budget as it
+\* is (a replacement's grant was already stamped at BackoffDone). OneForOne
+\* never restarts it; a Temporary child is removed. Closed meanwhile, the
+\* code takes StartupFailed instead.
+Ignore(c) ==
+    /\ pc[c] = "constructing" /\ open
+    /\ alive' = [alive EXCEPT ![c] = alive[c] \ {gen[c]}]
+    /\ st' = [st EXCEPT ![c] = "Ignored"]
+    /\ initial' = [initial EXCEPT ![c] = TRUE]
+    /\ exitR' = [exitR EXCEPT ![c] = "Normal"]
+    /\ Goto(c, IF Mode[c] = "Temporary" THEN "finish" ELSE "ignored")
+    /\ UNCHANGED <<sup, gen, pub, readyGen, first, stopTurn, cdone>>
 
 \* The ready actor exits on its own (normal stop, external shutdown, panic,
 \* linked Kill).
@@ -425,6 +451,7 @@ SupJoin ==
 ChildStep(c) ==
     \/ LoopTop(c) \/ RetryReserve(c) \/ RetryRelease(c) \/ BackoffDone(c) \/ Attempt(c) \/ BecomeReady(c)
     \/ \E r \in StartupResults : StartupFailed(c, r)
+    \/ Ignore(c)
     \/ \E r \in SelfExits : SelfExit(c, r)
     \/ StopObserved(c) \/ CleanupKill(c) \/ StopExited(c)
     \/ CleanupDone(c) \/ CleanupStuck(c)
@@ -523,6 +550,13 @@ ReverseShutdown ==
             \A d \in Children : d > c => cdone[d] \/ d \in timedOut]_vars
 
 NeverReopens == [][open' => open]_vars
+
+\* OneForOne never restarts an ignored child (OTP: an ignored child has the
+\* undefined pid, so no exit can restart it): it leaves Ignored only by
+\* finishing at the supervisor's close.
+IgnoredNotRestarted ==
+    [][\A c \in Children :
+         st[c] = "Ignored" => st'[c] \in {"Ignored", "Stopped", "Failed"}]_vars
 
 \* V3 (E3, OTP's shutdown escalation): a generation the supervisor stopped
 \* leaves "stopping" only through its actor's death point or its kill; it

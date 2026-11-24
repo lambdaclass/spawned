@@ -91,11 +91,21 @@ Behaviour changes to check at call sites:
   `Init::ignore()` see `StartError::Ignored`; a caller that propagates it
   with `?` treats an opt-out as an error. Match `Err(e) if e.is_ignored()`,
   or use `StartOutcome::from_result`, where an ignore is expected.
+- **A supervised `ignore` is OTP's `ignore`, not a failed start.** A
+  supervised child whose `started()` returns `Init::ignore()` no longer fails
+  `start()` (`FailedToStartChild`) or counts as a failed restart: the spec
+  stays as `ChildState::Ignored` with no generation, OneForOne never restarts
+  it, a OneForAll/RestForOne round covering it starts it again, and a
+  Temporary one is removed. A factory may also return
+  `Ok(ChildStart::Ignore)`; existing factories returning `Ok(actor)` compile
+  unchanged (`From<A> for ChildStart<A>`). Code that matched `ChildState`
+  exhaustively already needed a wildcard (`#[non_exhaustive]`); code that
+  waited on an ignoring child (`wait_ready`) now gets
+  `ChildUnavailable(ChildState::Ignored)` at once.
 - **Not in this release** (still 0.8 behaviour): scope ownership of linked
   children (S8: a linked child of a managed parent is admitted to the
-  parent's group but not owned by its scope), `ChildStart::Ignore` and
-  `ChildState::Ignored` for supervisors (a supervised child's
-  `Init::ignore()` is a failed start), `ChildSpec::options`.
+  parent's group but not owned by its scope), `ChildSpec::options`,
+  `ChildStartError`.
 
 - `ExitReason::Shutdown` carries an optional payload, OTP's
   `{shutdown, Term}`: it is now `Shutdown(Option<Arc<str>>)`. Every policy

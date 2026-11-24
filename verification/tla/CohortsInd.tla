@@ -21,7 +21,7 @@ TypeInd ==
         gen: [Children -> 0..MaxGen], live: [Children -> SUBSET (1..MaxGen)],
         published: [Children -> 0..MaxGen],
         begun: SUBSET Children, charged: 0..(MaxRounds * N),
-        killed: SUBSET Children,
+        killed: SUBSET Children, ignored: SUBSET Children,
         badBarrier: BOOLEAN, badClosed: BOOLEAN, badTerminal: BOOLEAN,
         badRetry: BOOLEAN, badStuck: BOOLEAN]
 
@@ -57,7 +57,15 @@ H_first ==
  /\ s.epoch > 0 => s.committed
  /\ \A c \in Children : s.assigned[c] > 0 => s.committed
 
-IndInv == TypeInd /\ H_barrier /\ H_done /\ H_first /\ Safety
+\* RoundCoversRange: while a round assigns, every scanned child that is not
+\* retired was taken (CAssign takes every active child); the last CAssign
+\* moves to Stopping with the whole range scanned. CRetire only grows
+\* terminal, and CSelect clears scanned and affected together.
+H_cover ==
+ s.phase = "Assign" =>
+   \A c \in s.scanned : c \notin s.terminal => c \in s.affected
+
+IndInv == TypeInd /\ H_barrier /\ H_done /\ H_first /\ H_cover /\ Safety
 
 \* Probe (apalache.sh requires it violated): IndInv admits a mid-round state
 \* with live generations, i.e. the step check is not over an empty set.

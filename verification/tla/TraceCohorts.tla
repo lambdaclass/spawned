@@ -15,6 +15,7 @@ TraceAction(e) ==
  [] e.a = "CBegin" -> CBegin(e.c,e.r,e.n)
  [] e.a = "CReady" -> CReady(e.c,e.r,e.n)
  [] e.a = "CJoined" -> CJoined(e.c,e.n)
+ [] e.a = "Ignore" -> Ignore(e.c,e.r,e.n)
  [] e.a = "CRetire" -> CRetire(e.c,e.r)
  [] e.a = "CAck" -> CAck(e.c,e.r)
  [] e.a = "CEnd" -> CEnd(e.r,e.x)

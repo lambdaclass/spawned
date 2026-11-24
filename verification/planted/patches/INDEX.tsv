@@ -28,3 +28,5 @@ id	name	file	bug
 37	cleanup-drop-uncontained	mailbox.rs	A payload destroyed after the death point (queued message, discarded job result or callback) is dropped without containment
 38	fenced-job-drop-in-turn	tasks/jobs.rs	A fenced job terminal drops its done callback and result in the owner's turn, so their destructor panic kills the owner
 39	handler-panic-log-unguarded	tasks/actor/lifecycle.rs	The handler-panic diagnostic calls the tracing subscriber unguarded, so a panicking subscriber unwinds the lifecycle and skips stopped()
+41	sup-ignore-restarted	supervision/run.rs	OneForOne restarts an ignored child: its controller does not park, so an `ignore` is retried until the budget is exhausted
+42	sup-ignore-skipped-in-round	supervision/child.rs	A OneForAll/RestForOne round skips an ignored child as if retired, so it stays stopped instead of starting again with the cohort

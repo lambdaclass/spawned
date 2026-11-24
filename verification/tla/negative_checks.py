@@ -1026,6 +1026,29 @@ def main():
         events.insert(kill, dict(events[kill], a="CStuck"))
     require_rejected(killed, stuck_before_its_kill,
                      "a collateral child's slot stuck before its kill", args.tlc)
+    # Unified start section 9: OneForOne restarts an ignored child (OTP's
+    # undefined pid has no exit to restart it from).
+    spec_mutation("MCSupervision", "Supervision.tla", "IgnoreRetried",
+                  r'Goto\(c, IF Mode\[c\] = "Temporary" THEN "finish" ELSE "ignored"\)',
+                  r'Goto(c, IF Mode[c] = "Temporary" THEN "finish" ELSE "top")',
+                  "IgnoredNotRestarted", args.tlc)
+    # A OneForAll/RestForOne round leaves an ignored Permanent child stopped
+    # instead of starting it again with the cohort.
+    named_fault("MCCohortsAll", "IgnoreSkippedInCohort", "RoundCoversRange", args.tlc)
+    named_fault("MCCohortsRest", "IgnoreSkippedInCohort", "RoundCoversRange", args.tlc)
+    ignored = next(t for t in traces if t.get("name") == "ignored_children")
+    def restart_ignored(events):
+        at = next(i for i, e in enumerate(events) if e["a"] == "Ignore")
+        events.insert(at + 1, dict(events[at], a="LoopTop", x="backoff", n=0))
+    require_rejected(ignored, restart_ignored,
+                     "OneForOne restarting an ignored child", args.tlc)
+    skipped = next(t for t in traces if t.get("name") == "ignore-OneForAll")
+    def skip_ignored(events):
+        at = next(i for i, e in enumerate(events) if e["a"] == "Ignore")
+        child = events[at]["c"]
+        next(e for e in events[at:] if e["a"] == "CAssign" and e["c"] == child)["x"] = "false"
+    require_rejected(skipped, skip_ignored,
+                     "a round leaving an ignored child out of its cohort", args.tlc)
     for label, pattern, replacement in SUPERVISION_S1_CONTROLS:
         spec_mutation("MCSupervision", "Supervision.tla", label, pattern, replacement,
                       "RestartFollowsPolicy", args.tlc)

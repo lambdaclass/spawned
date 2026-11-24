@@ -17,7 +17,8 @@
 (***************************************************************************)
 EXTENDS Supervision
 
-Sts == {"Waiting", "Starting", "Running", "Backoff", "Stopping", "Stopped", "Failed"}
+Sts == {"Waiting", "Starting", "Running", "Backoff", "Stopping", "Stopped", "Failed",
+        "Ignored"}
 SPhases == {"starting", "await", "shutdown", "waitchild", "join", "done"}
 \* pcs owning a generation
 Live == {"constructing", "running", "stopping", "killing", "cleanup"}
@@ -89,12 +90,13 @@ H_retry == \A c \in Children :
 
 \* S1: nothing restarts before the tree commits ready. Decide sends a
 \* controller back to "top" only with initial[c] (Retries); before sready a
-\* child has at most its first generation, whose readiness is initial[c],
-\* so Decide's deferral guard (open, ~sready, readyGen) leaves no restart.
+\* child has at most its first generation, whose readiness is initial[c]
+\* (or which ignored: then it never decides, H_ignored), so Decide's
+\* deferral guard (open, ~sready, readyGen) leaves no restart.
 \* A deferred controller holds a ready generation's exit.
 H_first == \A c \in Children :
     /\ initial[c] => gen[c] > 0
-    /\ gen[c] <= 1 /\ initial[c] => readyGen[c]
+    /\ gen[c] <= 1 /\ initial[c] => readyGen[c] \/ pc[c] \in {"ignored", "finish", "finished"}
     /\ gen[c] > 1 => sready
     /\ pc[c] \in {"top", "backoff", "attempt"} /\ gen[c] > 0 => sready
     /\ pc[c] = "deferred" => readyGen[c]
@@ -123,6 +125,14 @@ H_done ==
     /\ sdone <=> sphase = "done"
     /\ sphase = "done" => \A c \in Children : pc[c] \in {"idle", "finished"}
 
+\* Only Ignore sets st to "Ignored" (pc "ignored", or "finish" for a
+\* Temporary child), after an Attempt, and initial with it; a parked
+\* controller leaves only through LoopTop's closed branch to "finish",
+\* whose Finish rewrites st. Gives IgnoredNotRestarted.
+H_ignored == \A c \in Children :
+    /\ st[c] = "Ignored" => pc[c] \in {"ignored", "finish"} /\ gen[c] >= 1 /\ initial[c]
+    /\ pc[c] = "ignored" => st[c] = "Ignored" /\ Mode[c] # "Temporary"
+
 \* Pending reservations never exceed the capacity they are counted in
 \* (a TypeOK conjunct; needed for WindowExpire/RetryRelease to keep
 \* budget >= 0, hence BudgetBounded).
@@ -139,6 +149,7 @@ SafetyInd ==
 Helpers ==
     /\ H_gen /\ H_launch /\ H_initial
     /\ H_retry /\ H_first /\ H_exit /\ H_shutdown /\ H_done /\ H_budget
+    /\ H_ignored
 
 IndInv == TypeInd /\ H_alive /\ H_pub /\ Helpers /\ SafetyInd
 
@@ -165,9 +176,14 @@ StuckOnlyAfterKillStep ==
             /\ pc'[c] \in {"stopping", "killing", "cleanup"}
             /\ (c \in timedOut' => c \in timedOut)
 
+IgnoredNotRestartedStep ==
+    \A c \in Children :
+        st[c] = "Ignored" => st'[c] \in {"Ignored", "Stopped", "Failed"}
+
 ActionProps ==
     /\ NoStartAfterCloseStep /\ RestartFollowsPolicyStep
     /\ ReverseShutdownStep /\ NeverReopensStep /\ StuckOnlyAfterKillStep
+    /\ IgnoredNotRestartedStep
 
 -----------------------------------------------------------------------------
 (* Non-vacuity probes: apalache.sh requires each of these to be VIOLATED, *)

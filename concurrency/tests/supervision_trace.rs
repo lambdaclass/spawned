@@ -296,7 +296,7 @@ async fn crash(child: &SupervisedChild<Worker>) {
     assert!(actor.request(Crash).await.is_err());
 }
 
-async fn wait_state(child: &SupervisedChild<Worker>, state: ChildState) {
+async fn wait_state<A: Actor>(child: &SupervisedChild<A>, state: ChildState) {
     spawned_rt::tasks::timeout(LIMIT, async {
         while child.snapshot().state != state {
             spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
@@ -968,4 +968,106 @@ async fn trace_randomized_lifecycles() {
         );
         assert!(system.shutdown(LIMIT).await.complete);
     }
+}
+
+/// Returns `Init::ignore()` from `started()` when built with `true`.
+struct Optional(bool);
+impl Actor for Optional {
+    async fn started(&mut self, _: &Context<Self>) -> spawned_concurrency::tasks::Init<Self> {
+        if self.0 {
+            spawned_concurrency::tasks::Init::ignore()
+        } else {
+            spawned_concurrency::tasks::Init::ready()
+        }
+    }
+}
+impl Handler<Crash> for Optional {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        panic!("injected child failure");
+    }
+}
+
+/// Unified start section 9 (OTP `ignore`): `Init::ignore()` and a factory's
+/// `ChildStart::Ignore` complete the first start (`Ignore`), the spec stays
+/// with no generation, OneForOne never restarts it (a sibling's restart
+/// leaves it alone), a Temporary one is removed, and shutdown finishes the
+/// parked controllers at once.
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
+async fn trace_ignored_children_are_kept_and_never_restarted() {
+    use spawned_concurrency::supervision::ChildStart;
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("trace-ignore", 2).unwrap();
+    let modes = [
+        RestartMode::Permanent,
+        RestartMode::Transient,
+        RestartMode::Temporary,
+        RestartMode::Permanent,
+    ];
+    let mut tree = system.supervisor(config(5)).unwrap();
+    let a = tree
+        .add(
+            ChildSpec::new("a", &group, |_| async { Ok::<_, String>(Optional(true)) })
+                .restart(modes[0]),
+        )
+        .unwrap();
+    let b = tree
+        .add(
+            ChildSpec::new("b", &group, |_| async {
+                Ok::<_, String>(ChildStart::<Worker>::Ignore)
+            })
+            .restart(modes[1]),
+        )
+        .unwrap();
+    let c = tree
+        .add(
+            ChildSpec::new("c", &group, |_| async { Ok::<_, String>(Optional(true)) })
+                .restart(modes[2]),
+        )
+        .unwrap();
+    let d = tree.add(worker("d", &group).restart(modes[3])).unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
+    assert_eq!(a.snapshot().state, ChildState::Ignored);
+    assert_eq!(b.snapshot().state, ChildState::Ignored);
+    wait_state(&c, ChildState::Stopped).await;
+    crash(&d).await;
+    spawned_rt::tasks::timeout(LIMIT, d.wait_for_generation(1))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(a.snapshot().generation, 1);
+    assert_eq!(b.snapshot().generation, 1);
+    assert!(supervisor.shutdown(LIMIT).await.complete);
+    assert_eq!(supervisor.failure(), None);
+    write_trace("ignored_children", supervisor.trace_id(), &modes, 5);
+    assert!(system.shutdown(LIMIT).await.complete);
+}
+
+/// A OneForOne replacement that ignores keeps the restart grant stamped at
+/// its admission (V5) and parks the spec as Ignored.
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
+async fn trace_replacement_ignore_keeps_its_grant() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("trace-replacement-ignore", 1).unwrap();
+    let modes = [RestartMode::Permanent];
+    let mut tree = system.supervisor(config(5)).unwrap();
+    let a = tree
+        .add(
+            ChildSpec::new("a", &group, |ctx| async move {
+                Ok::<_, String>(Optional(ctx.generation() > 1))
+            })
+            .restart(modes[0]),
+        )
+        .unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
+    assert!(a.current().unwrap().request(Crash).await.is_err());
+    wait_state(&a, ChildState::Ignored).await;
+    assert_eq!(a.snapshot().generation, 2);
+    assert!(supervisor.shutdown(LIMIT).await.complete);
+    write_trace("replacement_ignore", supervisor.trace_id(), &modes, 5);
+    assert!(system.shutdown(LIMIT).await.complete);
 }
