@@ -69,6 +69,12 @@ pub(crate) struct ActorCleanup<C: Fn()> {
     startup: Option<(std::sync::Arc<crate::start::StartupCell>, Option<ActorId>)>,
     /// The start-time name, released at publication before any notice.
     name: Option<crate::registry::RegistrationGuard>,
+    /// The instance, for its `spawned::crash` report.
+    report: Option<std::sync::Arc<crate::link::SignalTarget>>,
+    /// The final reason was not imposed by a signal, a kill or a runtime
+    /// drop: if it is abnormal, it is reported once every obligation is
+    /// answered (a subscriber is user code).
+    own_reason: bool,
 }
 impl<C: Fn()> ActorCleanup<C> {
     pub(crate) fn new(
@@ -96,6 +102,8 @@ impl<C: Fn()> ActorCleanup<C> {
             discharged: false,
             startup: None,
             name: None,
+            report: None,
+            own_reason: false,
         }
     }
     /// The instance's startup cell and its start edge's parent.
@@ -110,6 +118,11 @@ impl<C: Fn()> ActorCleanup<C> {
     /// The start-time name, held until publication.
     pub(crate) fn with_name(mut self, name: Option<crate::registry::RegistrationGuard>) -> Self {
         self.name = name;
+        self
+    }
+    /// Emit the `spawned::crash` report for this instance (introspection).
+    pub(crate) fn with_report(mut self, signal: std::sync::Arc<crate::link::SignalTarget>) -> Self {
+        self.report = Some(signal);
         self
     }
     /// Seal `replies` with the final reason at D, inside the exit-table
@@ -175,6 +188,7 @@ impl<C: Fn()> ActorCleanup<C> {
         }
         let id = self.id.raw();
         let mut skipped = false;
+        let mut own_reason = false;
         let reason = trace::life_section(id, || {
             let mut request = crate::link::lock_request(&self.cause);
             let reason = if dropped {
@@ -183,6 +197,9 @@ impl<C: Fn()> ActorCleanup<C> {
             } else {
                 request.die()
             };
+            // OTP's proc_lib crash report: for a reason the actor produced
+            // itself, not one a signal, kill or drop imposed.
+            own_reason = !dropped && !request.is_signalled();
             drop(request);
             trace::life_emit(id, || {
                 trace::LifeEvent::new(if dropped { "Drop" } else { "Die" }, id)
@@ -198,6 +215,7 @@ impl<C: Fn()> ActorCleanup<C> {
         if let Some((cell, _)) = &self.startup {
             cell.fail_at_death(&reason);
         }
+        self.own_reason = own_reason;
         fail_point!("actor.at_death");
         // Every open deferred reply (and every exit-pending one) is answered
         // with the final reason, before any destructor runs. Their wake-ups
@@ -244,6 +262,9 @@ impl<C: Fn()> ActorCleanup<C> {
         if let Some(reason) = self.skip_log.take() {
             log_stopped_skipped(self.id, "", "runtime_drop", Some(&reason));
         }
+        if self.own_reason {
+            self.crash_report();
+        }
         // Payloads the exit's job cancellation released: destroyed only now.
         if let Some(jobs) = &self.jobs {
             jobs.dispose_cancelled();
@@ -251,6 +272,25 @@ impl<C: Fn()> ActorCleanup<C> {
         if let Some(failures) = &self.failures {
             failures.release();
         }
+    }
+    /// The `spawned::crash` report, if the final reason is abnormal. Out of
+    /// line and cold: the death path's code stays as small as it was.
+    #[cold]
+    #[inline(never)]
+    fn crash_report(&mut self) {
+        self.own_reason = false;
+        let (Some(signal), Some(reason)) = (&self.report, &self.reason) else {
+            return;
+        };
+        if !reason.is_abnormal() {
+            return;
+        }
+        let links = self
+            .notices
+            .as_ref()
+            .map(crate::link::LinkNotices::peers)
+            .unwrap_or_default();
+        crate::introspection::crash_report(signal, reason, &links);
     }
     fn close(&mut self, reason: ExitReason) -> ExitReason {
         let replies = self.replies.as_deref();

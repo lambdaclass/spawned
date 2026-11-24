@@ -90,6 +90,7 @@ pub mod failpoints;
 
 pub mod child_handle;
 pub mod error;
+pub mod introspection;
 // Test-only: public (and unstable) with the `lifecycle-trace` feature.
 #[cfg(feature = "lifecycle-trace")]
 pub mod lifecycle_trace;

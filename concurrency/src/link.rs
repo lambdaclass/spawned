@@ -91,6 +91,10 @@ pub(crate) struct ExitRequest {
     /// The start-trace role of this instance (0: not recorded).
     #[cfg(feature = "lifecycle-trace")]
     pub(crate) trace: crate::lifecycle_trace::StartRole,
+    /// The current reason was imposed by a kill or an untrapped exit signal
+    /// (not produced by the actor itself): no crash report (OTP: a process
+    /// killed by a signal runs no code).
+    signalled: bool,
 }
 
 impl ExitRequest {
@@ -100,6 +104,14 @@ impl ExitRequest {
     }
     pub(crate) fn is_dead(&self) -> bool {
         self.dead
+    }
+    /// Phase 0: `started()` has not returned.
+    pub(crate) fn is_starting(&self) -> bool {
+        self.starting
+    }
+    /// The reason was imposed by a kill or an untrapped exit signal.
+    pub(crate) fn is_signalled(&self) -> bool {
+        self.signalled
     }
     /// `Context::exit_pending`: exit has begun (a reason is requested, which
     /// includes a kill and the dispatch of a parent exit) or a parent exit
@@ -196,6 +208,7 @@ impl ExitRequest {
             self.note_exit(&reason);
         }
         self.reason = Some(reason);
+        self.signalled = true;
         true
     }
     /// An untrappable kill: `Killed` supersedes any reason until D and
@@ -211,6 +224,7 @@ impl ExitRequest {
         }
         self.reason = Some(ExitReason::Killed);
         self.killed = true;
+        self.signalled = true;
         if !self.hook_begun {
             self.skip_hook = true;
         }
@@ -224,6 +238,7 @@ impl ExitRequest {
                 self.note_exit(&reason);
             }
             self.reason = Some(reason);
+            self.signalled = false;
         }
     }
     /// A ready instance's exit begins (or a start-trace parent's).
@@ -318,19 +333,25 @@ impl ExitRequest {
             held.iter().find(|r| **r != ExitReason::Normal).cloned()
         };
         let admin = self.admin.take();
+        // `signalled`: a reason imposed from outside (the init timer's kill,
+        // a kill, a held untrapped signal) gets no crash report (I10).
         let row = if timed_out {
             self.reason = Some(ExitReason::Killed);
+            self.signalled = true;
             Row::Timer
         } else if self.killed {
             self.reason = Some(ExitReason::Killed);
+            self.signalled = true;
             Row::Kill
         } else if let Some(reason) = row3 {
             self.reason = Some(reason);
+            self.signalled = true;
             Row::Signal
         } else {
             match returned {
                 Returned::Panic(message) => {
                     self.reason = Some(ExitReason::Panic(format!("panic in started(): {message}")));
+                    self.signalled = false;
                     Row::Panic
                 }
                 _ if self.reason.is_some() => Row::Stop,
@@ -406,6 +427,8 @@ pub(crate) struct SignalTarget {
     pub(crate) send_held: SendHeldFn,
     /// The instance's startup result (unified start, design 5.1).
     pub(crate) startup: Arc<crate::start::StartupCell>,
+    /// Introspection metadata: type, placement, label, the instance probe.
+    pub(crate) meta: crate::introspection::Meta,
 }
 
 /// Where an exit signal comes from.
@@ -811,6 +834,12 @@ pub(crate) fn request_stop(reason: &LinkedExitReason, cause: ExitReason, cancel:
     }
 }
 
+/// The peers of this actor's live links (not pending late `NoProc`
+/// records), sorted by id (introspection, out of band).
+pub(crate) fn live_links(table: &LinkTable) -> Vec<ActorId> {
+    table::live_peers(table)
+}
+
 #[cfg(test)]
 pub(crate) fn has_link(table: &LinkTable, peer: ActorId) -> bool {
     table
@@ -1032,6 +1061,7 @@ mod tests {
             }),
             send_held: Arc::new(|_, _| Ok(())),
             startup: crate::start::StartupCell::new(),
+            meta: Default::default(),
         }
     }
     fn pair(

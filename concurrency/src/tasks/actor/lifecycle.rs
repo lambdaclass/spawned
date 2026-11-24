@@ -157,6 +157,12 @@ impl<A: Actor> ActorRef<A> {
             start::Verb::Link(p) => Some(p.id),
             _ => None,
         };
+        let host = match (&reserved, &group, backend) {
+            (Some(_), _, _) | (_, Some(_), _) => crate::introspection::Host::Managed,
+            (None, None, Backend::Async) => crate::introspection::Host::Async,
+            (None, None, Backend::Blocking) => crate::introspection::Host::Blocking,
+            (None, None, Backend::Thread) => crate::introspection::Host::Thread,
+        };
         let signal = signal_target::<A>(
             id,
             link_parent,
@@ -165,6 +171,7 @@ impl<A: Actor> ActorRef<A> {
             linked_reason.clone(),
             cancellation_token.clone(),
             cell.clone(),
+            crate::introspection::Meta::new(std::any::type_name::<A>(), host),
         );
         let (cleaned_tx, cleaned_rx) = watch::channel(false);
         // A supervised child's `ChildSpec` may override the actor's bounds;
@@ -199,6 +206,11 @@ impl<A: Actor> ActorRef<A> {
             }),
         };
         let child_handle = actor_ref.child_handle();
+        actor_ref
+            .shared
+            .signal
+            .meta
+            .set_probe(probe_of(&actor_ref.shared));
 
         // Commit (design section 3): the group's admission, the parent's
         // edge, the name, all or nothing, each check and its trace event
@@ -267,7 +279,7 @@ impl<A: Actor> ActorRef<A> {
                     let registered = crate::monitor::fence::register(
                         &p.monitors,
                         monitor_ref,
-                        active.clone(),
+                        (id, active.clone()),
                         || {
                             let request = link::lock_request(&p.request);
                             if request.reason().is_some()
@@ -365,7 +377,8 @@ impl<A: Actor> ActorRef<A> {
         .with_replies(actor_ref.shared.replies.clone())
         .with_jobs(actor_ref.shared.jobs.clone())
         .with_startup(cell, link_parent)
-        .with_name(committed.name.take());
+        .with_name(committed.name.take())
+        .with_report(actor_ref.shared.signal.clone());
         let startup = crate::actor_cleanup::ActorStartup::new(
             (actor, ctx, rx, cancellation_token),
             cleanup,

@@ -287,6 +287,7 @@ struct SystemState {
     coordinator_failures: Vec<String>,
 }
 pub(crate) struct SystemInner {
+    id: crate::introspection::SystemId,
     state: Mutex<SystemState>,
     pub(crate) control: Control,
     /// Coordinator trace id (`lifecycle-trace`; zero-sized otherwise).
@@ -302,6 +303,7 @@ impl ActorSystem {
     pub fn new() -> Result<Self, SystemError> {
         Ok(Self {
             inner: Arc::new(SystemInner {
+                id: crate::introspection::SystemId::next(),
                 state: Mutex::new(SystemState {
                     closing: false,
                     groups: Vec::new(),
@@ -313,6 +315,12 @@ impl ActorSystem {
                 trace: crate::lifecycle_trace::TraceId::next(),
             }),
         })
+    }
+
+    /// This system's identity, unique in the process
+    /// ([`ActorInfo::system`](crate::introspection::ActorInfo::system)).
+    pub fn id(&self) -> crate::introspection::SystemId {
+        self.inner.id
     }
 
     /// Lifecycle trace id of this system's shutdown coordinator
@@ -409,7 +417,7 @@ impl ActorSystem {
         if system.groups.iter().any(|g| g.name == name) {
             return Err(SystemError::DuplicateName(name));
         }
-        let group = GroupInner::new(name, profile, runtime)?;
+        let group = GroupInner::new(self.inner.id, name, profile, runtime)?;
         let result = ExecutionGroup {
             inner: Arc::downgrade(&group),
             selection: None,
@@ -946,6 +954,7 @@ impl ExecutionGroup {
                 registrations: Vec::new(),
                 ready_at: None,
                 ended_at: None,
+                position: None,
             }),
             #[cfg(feature = "diagnostics")]
             active_turn: Mutex::new(None),
@@ -1005,6 +1014,9 @@ struct ScopeState {
     registrations: Vec<crate::registry::RegistrationGuard>,
     ready_at: Option<Instant>,
     ended_at: Option<Instant>,
+    /// The supervisor child this scope is (`ChildSpec` name, generation),
+    /// set at admission.
+    position: Option<(String, u64)>,
 }
 pub(crate) struct Scope {
     id: u64,
@@ -1180,8 +1192,27 @@ impl Scope {
         }
         Ok(())
     }
-    pub(crate) fn set_name(&self, name: &str) {
-        lock(&self.state).name = Some(name.to_owned());
+    /// A supervisor admitted this scope as generation `generation` of
+    /// `child` (introspection: `ActorInfo::supervisor`).
+    pub(crate) fn set_position(&self, child: &str, generation: u64) {
+        let mut state = lock(&self.state);
+        state.name = Some(child.to_owned());
+        state.position = Some((child.to_owned(), generation));
+    }
+    pub(crate) fn position(&self) -> Option<crate::introspection::SupervisorPosition> {
+        lock(&self.state)
+            .position
+            .as_ref()
+            .map(
+                |(child, generation)| crate::introspection::SupervisorPosition {
+                    child: child.clone(),
+                    generation: *generation,
+                    restarts: generation.saturating_sub(1),
+                },
+            )
+    }
+    pub(crate) fn system_id(&self) -> Option<crate::introspection::SystemId> {
+        self.group.upgrade().map(|group| group.system)
     }
     pub(crate) fn attach<A>(&self, child: ChildHandle) {
         let mut state = lock(&self.state);
