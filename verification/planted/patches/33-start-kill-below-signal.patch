@@ -1,0 +1,13 @@
+diff --git a/concurrency/src/link.rs b/concurrency/src/link.rs
+index 942de07e..91743d13 100644
+--- a/concurrency/src/link.rs
++++ b/concurrency/src/link.rs
+@@ -339,7 +339,7 @@ impl ExitRequest {
+             self.reason = Some(ExitReason::Killed);
+             self.signalled = true;
+             Row::Timer
+-        } else if self.killed {
++        } else if self.killed && row3.is_none() {
+             self.reason = Some(ExitReason::Killed);
+             self.signalled = true;
+             Row::Kill
