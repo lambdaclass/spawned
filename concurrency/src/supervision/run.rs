@@ -639,7 +639,7 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                 break;
             }
         };
-        scope.set_name(&spec.name);
+        scope.set_position(&spec.name, generation);
         if generation > 1 {
             let previous = view.snapshot();
             crate::actor_cleanup::log_safely(|| {

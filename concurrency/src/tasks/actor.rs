@@ -39,6 +39,8 @@ mod envelope;
 use envelope::*;
 mod actor_ref;
 mod context;
+mod introspect;
+use introspect::probe_of;
 mod lifecycle;
 #[cfg(test)]
 use lifecycle::run_actor;
@@ -313,7 +315,18 @@ fn test_context<A: Actor>(
     let links = new_link_table();
     let request = new_linked_exit_reason();
     let monitors: MonitorTable = Arc::new(crate::monitor::fence::open());
-    let signal = signal_target::<A>(id, None, tx, trap.clone(), request.clone(), token.clone());
+    let signal = signal_target::<A>(
+        id,
+        None,
+        tx,
+        trap.clone(),
+        request.clone(),
+        token.clone(),
+        crate::introspection::Meta::new(
+            std::any::type_name::<A>(),
+            crate::introspection::Host::Async,
+        ),
+    );
     let ctx = Context {
         shared: Arc::new(ActorShared {
             id,

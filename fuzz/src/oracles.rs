@@ -107,7 +107,15 @@ fn abnormal(reason: &Option<ExitReason>) -> bool {
 // Cleanup failure preserves the published reason, but independently restarts
 // a Transient child (MIGRATION, destructor panics; RestartMode::restarts).
 fn abnormal_or_cleanup_failure(instance: &Inst) -> bool {
-    abnormal(&instance.reason) || instance.drop_panicked
+    abnormal(&instance.reason) || cleanup_failed(instance)
+}
+
+/// The instance's cleanup failed: its state destructor panicked, or the
+/// framework recorded a failure (`ChildHandle::cleanup_failure()`), which an
+/// injected payload destructor can cause on any task (a job's result on the
+/// deadline service, say), not only on the actor's own.
+fn cleanup_failed(x: &Inst) -> bool {
+    x.drop_panicked || x.cleanup_failure.is_some()
 }
 
 /// V1/V2: every replacement is one the restart table or the strategy asks

@@ -896,13 +896,76 @@ remaining differences of the exit-signal design are listed in
 - Rank 18, byte credits, and rank 18a, per-actor memory limits.
 - Rank 19, propagated deadlines: queued work can expire before dispatch (R4).
 
-- 0.9, introspection (design in review, [introspection.md](introspection.md)):
-  a new section 13 (I1-I13: out-of-band reads, the status turn, the fenced
-  watchdog kill, listings, the console). L3 and L5 are unchanged (nothing
-  preempts a turn); R4 gains one exception: a status request whose caller
+- 0.9, introspection ([introspection.md](introspection.md)): section 13
+  holds I1, I3 (tier 0 part), I10 (crash reports) and I11 so far; the rest
+  (the status turn, trees, listings, the fenced watchdog kill, the console)
+  join it step by step. L3 and L5 are unchanged (nothing preempts a turn); R4
+  gains one exception with the status turn: a status request whose caller
   gave up before dispatch is not run.
 
 See the [ranked backlog](../../ROADMAP.md#ranked-backlog).
+
+## 13. Introspection
+
+Design: [introspection.md](introspection.md). Tier 0 is implemented (0.9
+step 1, in progress): `info()`, labels and crash reports. The status turn,
+supervision trees, listings, the `introspection` feature (turn ids, ages,
+mailbox counters), the watchdog and the console are later steps; their
+guarantees (I2, I4 to I9, I12, I13) are listed in the design and enter this
+section with their code. L3, L5, M1, M2, R1 and R3 are unchanged.
+
+**I1. Out of band.** `info()` (on `ActorRef`, `Context` and `ChildHandle`),
+`ChildHandle::links()` and `ChildHandle::monitors()` never enqueue, wake, run
+user code on the observed actor or wait for a turn. They take short metadata
+locks the actor also takes (its exit request, link and monitor tables,
+label), so they can contend briefly, never for the length of a turn. A read
+during a wedged turn returns and reports `InTurn`. Fields of one `ActorInfo`
+are not from one instant.
+Checked by: [`introspection`][introspection]`::tasks_mode::info_returns_during_a_wedged_turn`
+(every tasks placement: `Async`, `Blocking`, `Thread`, `async_group`,
+`thread_group`), `::threads_mode::info_returns_during_a_wedged_turn`.
+
+**I3. Lifecycle and death (tier 0 part).** `lifecycle` reads 0.8 state only:
+`Dead` from the death point D (the exit request's `dead`, set in D's critical
+section) with the final reason `wait_exit()` returns; `InTurn` while the turn
+phase is in a turn; `Exiting` once a reason is requested or the run loop
+left; `Starting` until `started()` returns; otherwise `Idle`. `Dead` is
+final. Its `published` flag is `false` between D and publication (callers are
+answered and sends get `NoProc`, state and payload destructors may still run)
+and `true` exactly when `wait_exit()` is ready. A `ChildHandle` that outlives
+every `ActorRef` still reads the dead instance. The tier 1 counters of I3
+(monotonic turn ids and mailbox counters) come with the `introspection`
+feature.
+Checked by: [`introspection`][introspection]`::tasks_mode::lifecycle_walks_starting_idle_in_turn_exiting_dead`
+(every tasks placement; a state destructor held between D and publication),
+`::threads_mode::lifecycle_walks_starting_idle_exiting_dead`,
+`::tasks_mode::child_handle_info_after_every_ref_is_dropped`.
+
+**I10. Crash reports.** An actor whose final reason is abnormal and was
+produced by the actor itself (a panic in `started()`, a handler or
+`stopped()`; a self-exit or parent exit with an abnormal reason) emits
+exactly one `spawned::crash` event at `ERROR`, after every caller is answered
+and before its state is destroyed, with the fields `actor_id`, `system`,
+`actor_type`, `label`, `name`, `reason`, `ancestors`, `generation`, `group`,
+`links`. A clean exit and a reason imposed by a kill, an untrapped exit
+signal or a runtime drop produce none (OTP: a process killed by a signal runs
+no code). A panicking subscriber cannot change the reason. Supervisor
+reports and sessions come with later steps.
+Checked by: [`crash_reports`][crash_reports] (both modes:
+`handler_panic_is_reported_with_the_contract_fields`,
+`panics_in_started_and_stopped_are_reported`,
+`clean_exits_kills_and_signals_are_not_reported`,
+`self_exit_with_an_abnormal_reason_is_reported`,
+`supervised_report_names_system_group_generation_and_ancestors`,
+`threads_mode::handler_panic_is_reported_and_clean_exits_are_not`).
+
+**I11. No cost on the default path.** Tier 0 adds nothing to send, dispatch
+or a turn: its fields are kept by state that already exists or is written at
+spawn (type, placement, the instance probe) and by explicit calls
+(`set_label`, `monitor` stores its target's id). The crash report runs only
+on the exit path.
+Checked by: the perf gate (`benchmarks/hotpath.py gate`: instructions per
+operation within 3% of the merge base and of the last release).
 
 [deferred_replies]: ../../concurrency/tests/deferred_replies.rs
 [deadline_service]: ../../concurrency/tests/deadline_service.rs
@@ -913,6 +976,8 @@ See the [ranked backlog](../../ROADMAP.md#ranked-backlog).
 [collateral_kill]: ../../concurrency/tests/collateral_kill.rs
 [context_exit]: ../../concurrency/tests/context_exit.rs
 [cross_backend]: ../../concurrency/tests/cross_backend.rs
+[introspection]: ../../concurrency/tests/introspection.rs
+[crash_reports]: ../../concurrency/tests/crash_reports.rs
 [otp_exit_signals]: ../../concurrency/tests/otp_exit_signals.rs
 [shutdown_payload]: ../../concurrency/tests/shutdown_payload.rs
 [exit_signals_sim]: ../../concurrency/tests/exit_signals_sim.rs
