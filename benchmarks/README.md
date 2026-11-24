@@ -22,10 +22,8 @@ the campaign and partial raw data and logs remain. Do not compare incomplete
 campaigns. The bench's raw requests are unbounded to match 0.7, so invoke the
 binary through this runner or an external process timeout. Per-request timers
 would change the operation being compared. `--cases` and `--backends` select
-smaller runs. The 0.8 runtime-isolation, workload and design drivers now also
-use unbounded raw requests, matching 0.7; rerun them rather than comparing with
-intermediate 0.8 campaigns that armed deadlines on these requests. Run a small smoke
-campaign across every backend and scenario before a full one.
+smaller runs. Run a small smoke campaign across every backend and scenario
+before a full one.
 
 Cases: `rpc_single`, `rpc_parallel`, `mostly_idle`, `burst`,
 `large_shared_payload`, `cpu_paced`/`cpu_overload`, plus timing-off and
@@ -90,61 +88,15 @@ python3 benchmarks/qualification/qualify.py check-binary <binary> --lock Cargo.l
 The plan, the settings, the thresholds and how to read the summary are in
 [client qualification](../docs/TESTING.md#client-qualification).
 
-## Reliability campaign
+## Removed experiments
 
-`run_reliability.py` drives isolated, resource-budgeted Linux campaigns
-(closed-loop requests, actor graphs, offered load and churn); see
-[testing](../docs/TESTING.md) for the command and its limits.
-
-## Experiments
-
-The backend, I/O and profiling experiments (alternative schedulers, sharded
-and native dispatchers, message batching and time slicing, monoio, pprof) are
-not part of the published crates. Their benches (`designs`, `io_designs`,
-`workload_research`, `lifecycle_soak`, `pinned_pipeline`,
-`runtime_isolation`), tests and dependencies live in the standalone,
-unpublished crate `benchmarks/experiments/`. The scheduler hooks they need sit
-on the actor hot path, so `backend-experiments.patch` keeps them out of the
-tree and `prepare.sh` puts them back in a scratch worktree:
-
-```sh
-dir=$(benchmarks/experiments/prepare.sh)        # target/experiments-tree
-cd "$dir"
-cargo test --manifest-path benchmarks/experiments/Cargo.toml
-cargo bench --manifest-path benchmarks/experiments/Cargo.toml --bench designs -- --help
-RUSTFLAGS="--cfg spawned_scheduler_loom" \
-  cargo test --manifest-path benchmarks/experiments/Cargo.toml --test ready_gate_loom
-```
-
-Never commit a prepared tree. When the patch stops applying, rebase it (see
-the header of `prepare.sh`), or run the in-tree originals at `d082d0d8`, the
-last commit before they moved. `run_reliability.py` builds `baseline` from
-`spawned-concurrency` and its other drivers from this crate, so run it in a
-prepared tree too.
-
-## Research drivers and report renderers
-
-The other scripts here (`design_experiments.py`, `fede_*.py`,
-`render_*.py`, `collect_*.py`, `verify_fede_overnight.py`) reproduce archived
-backend studies. They build from `benchmarks/experiments`, so run them from a
-prepared tree (above); most campaigns need Linux, and the renderers need the
-plotting environment:
-
-```sh
-python3 -m venv /tmp/spawned-plots
-/tmp/spawned-plots/bin/pip install -r benchmarks/requirements-plots.txt
-/tmp/spawned-plots/bin/python benchmarks/render_experiments.py \
-  --data <designs-results-dir> \
-  --output /tmp/designs-report
-/tmp/spawned-plots/bin/python benchmarks/render_full_actors.py \
-  --data <full-actors-results-dir> \
-  --output /tmp/full-actors-report
-```
-
-The archived campaign data these renderers were last run on is at
+The backend, I/O and profiling experiments (the `benchmarks/experiments`
+crate and its patch, the reliability campaign runner, the `fede_*` research
+drivers and the report renderers) settled their questions and were removed.
+They are at commit `bf59ace0`, the last commit that has them; the campaign data
+they were last run on is at
 [`legacy/benchmarks/results`](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/results)
-(git history, `efba2434`); check it out at that commit to re-render it.
-The renderers no longer embed the archived findings text.
+(`efba2434`).
 
 ## Conclusions
 

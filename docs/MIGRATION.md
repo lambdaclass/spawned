@@ -12,7 +12,7 @@ account for when upgrading.
   features are removed from `spawned-rt` and `spawned-concurrency`. Since
   0.8.0 they only enabled `async`; drop them from your `features` list (use
   `async`, the default, if you need it explicitly). The research experiments
-  live in the unpublished `benchmarks/experiments` crate.
+  were removed (last at `bf59ace0`).
 
 - `ExitReason::Shutdown` carries an optional payload, OTP's
   `{shutdown, Term}`: it is now `Shutdown(Option<Arc<str>>)`. Every policy
