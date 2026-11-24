@@ -189,6 +189,19 @@ pub(crate) fn take_record(
     Some(record)
 }
 
+/// The peers of the live records (pending late ones excluded), sorted by id.
+#[allow(dead_code)] // the Loom model includes this file
+pub(crate) fn live_peers(table: &Mutex<LinkState>) -> Vec<ActorId> {
+    let mut peers: Vec<ActorId> = lock(table)
+        .entries
+        .iter()
+        .filter(|e| !e.late)
+        .map(|e| e.peer_id)
+        .collect();
+    peers.sort_unstable_by_key(|id| id.raw());
+    peers
+}
+
 /// Death notices taken at D, delivered at publication.
 #[derive(Default)]
 pub(crate) struct LinkNotices {
@@ -198,6 +211,19 @@ pub(crate) struct LinkNotices {
 }
 
 impl LinkNotices {
+    /// The peers that get a notice, sorted by id (the crash report's links).
+    #[allow(dead_code)] // the Loom model includes this file
+    pub(crate) fn peers(&self) -> Vec<ActorId> {
+        let mut peers: Vec<ActorId> = self
+            .entries
+            .iter()
+            .filter(|e| !e.late)
+            .map(|e| e.peer_id)
+            .collect();
+        peers.sort_unstable_by_key(|id| id.raw());
+        peers
+    }
+
     /// Deliver every notice (publication) through `notice(receiver table,
     /// receiver, from, gen, reason)`, which applies it only if the receiver
     /// still holds the record (E6 fence). Late records carry no notice of

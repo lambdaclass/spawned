@@ -5,13 +5,14 @@
 //! cd fuzz && RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" cargo test --test corpus
 //! ```
 //!
-//! `SPAWNED_FUZZ_RANDOM=n` sets the number of generated inputs (default 64).
+//! `SPAWNED_FUZZ_RANDOM=n` sets the number of generated inputs (default 64),
+//! decoded as the fuzz target does (with fault-injection steps).
 #![cfg(spawned_sim)]
 
-use spawned_fuzz::{decode, execute, last_details};
+use spawned_fuzz::{decode_as, execute, Format};
 
-fn check(name: &str, bytes: &[u8]) -> bool {
-    let Some(scenario) = decode(bytes) else {
+fn check(name: &str, bytes: &[u8], format: Format) -> bool {
+    let Some(scenario) = decode_as(bytes, format) else {
         return true;
     };
     let run = execute(&scenario, None);
@@ -30,7 +31,7 @@ fn check(name: &str, bytes: &[u8]) -> bool {
             let _ = std::fs::create_dir_all(&dir);
             let _ = std::fs::write(std::path::Path::new(&dir).join(file), bytes);
         }
-        for d in last_details() {
+        for d in &run.details {
             eprintln!("  {d}");
         }
         return false;
@@ -48,12 +49,38 @@ fn seed_corpus_passes() {
     let mut failed = 0;
     for path in &entries {
         let bytes = std::fs::read(path).unwrap();
-        if !check(&path.display().to_string(), &bytes) {
+        // Seeds are base-format inputs; the fuzz target reads them with
+        // fault steps, so run both decodings.
+        if !check(&path.display().to_string(), &bytes, Format::Base)
+            || !check(
+                &format!("{} (faults)", path.display()),
+                &bytes,
+                Format::Faults,
+            )
+        {
             failed += 1;
         }
     }
     println!("{} seed inputs, {failed} failed", entries.len());
     assert_eq!(failed, 0);
+}
+
+/// `n` generated inputs (deterministic).
+fn generated(n: u64) -> Vec<Vec<u8>> {
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    (0..n)
+        .map(|i| {
+            let len = 64 + (i as usize * 37) % 960;
+            (0..len)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    state as u8
+                })
+                .collect()
+        })
+        .collect()
 }
 
 #[test]
@@ -62,21 +89,37 @@ fn generated_inputs_pass() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(64);
-    let mut state = 0x9e37_79b9_7f4a_7c15u64;
     let mut failed = 0;
-    for i in 0..n {
-        let len = 64 + (i as usize * 37) % 960;
-        let bytes: Vec<u8> = (0..len)
-            .map(|_| {
-                state ^= state << 13;
-                state ^= state >> 7;
-                state ^= state << 17;
-                state as u8
-            })
-            .collect();
-        if !check(&format!("generated input {i}"), &bytes) {
+    for (i, bytes) in generated(n).iter().enumerate() {
+        if !check(&format!("generated input {i}"), bytes, Format::Faults) {
             failed += 1;
         }
     }
     assert_eq!(failed, 0, "{failed} of {n} generated inputs failed");
+}
+
+/// A run's report (violation details, site statistics) is its own: the same
+/// inputs give the same statistics run alone and on parallel threads.
+#[test]
+fn reports_are_per_run() {
+    let inputs: Vec<_> = generated(64)
+        .iter()
+        .filter_map(|b| decode_as(b, Format::Faults))
+        .collect();
+    let alone: Vec<_> = inputs.iter().map(|s| execute(s, None).sites).collect();
+    assert!(
+        alone.iter().any(|s| s.fired.iter().any(|&n| n > 0)),
+        "no generated input made a site go off"
+    );
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| {
+                for (s, expected) in inputs.iter().zip(&alone) {
+                    let run = execute(s, None);
+                    assert_eq!(&run.sites, expected);
+                    assert!(run.details.is_empty());
+                }
+            });
+        }
+    });
 }

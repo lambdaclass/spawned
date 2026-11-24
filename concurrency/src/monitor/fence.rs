@@ -166,6 +166,20 @@ pub(crate) fn demonitor<K: Hash + Eq, V>(
     }
 }
 
+/// The values of the active entries (introspection, out of band).
+#[allow(dead_code)] // the Loom model includes this file
+pub(crate) fn active_values<K, V, T>(table: &Entries<K, V>, mut f: impl FnMut(&V) -> T) -> Vec<T> {
+    lock(table).as_ref().map_or_else(Vec::new, |entries| {
+        entries
+            .values()
+            .filter_map(|entry| match entry {
+                Entry::Active(value) => Some(f(value)),
+                Entry::Queued => None,
+            })
+            .collect()
+    })
+}
+
 /// The observer's exit: close the table and take every active entry, whose
 /// waiters the caller wakes after the lock is released.
 pub(crate) fn close<K, V>(table: &Entries<K, V>) -> Option<Vec<(K, V)>> {

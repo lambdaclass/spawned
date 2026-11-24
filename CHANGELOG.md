@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- CI: AI review runs Codex, Claude and Grok automatically; Kimi, DeepSeek and
+  Gemini only on demand (`/review`, `/kimi`, `/deepseek`, `/gemini`).
 - Remove the settled backend experiments: the `benchmarks/experiments` crate
   and patch (with its ready-gate Loom harness and model-map entry), the
   reliability campaign runner, the `fede_*`/`collect_*`/`render_*` research
@@ -62,6 +64,23 @@
   codegen unit, so instruction counts follow the code rather than how generic
   code is partitioned across units (which moved `async_ct_burst` by about
   +2.6% between v0.8.0 and main with no change on its path).
+- Introspection, step 1a (0.9, docs/design/introspection.md tier 0):
+  `info()` on `ActorRef`, `Context` and `ChildHandle` returns an
+  `introspection::ActorInfo` (OTP `process_info`): id, type, label, registered
+  name, lifecycle (`Starting`, `Idle`, `InTurn`, `Exiting`,
+  `Dead { reason, published }`), `trap_exit`, links, monitors, parent,
+  supervisor position (child, generation, restarts), system, placement,
+  deferred tokens and running jobs. It is out of band: it never waits for a
+  turn, so it answers while a handler is wedged. `ChildHandle::links()` and
+  `monitors()` list the ids; `Context::set_label` (OTP 27
+  `proc_lib:set_label`); `ActorSystem::id()`. An actor that ends with an
+  abnormal reason it produced itself (a panic, an abnormal self-exit) emits a
+  `spawned::crash` report with a fixed field set; kills, untrapped signals
+  and clean exits are not reported, as in OTP. Free on the default path:
+  nothing is added to send, dispatch or a turn (perf gate). Tier 1 fields
+  (`activity`, `mailbox`) read `Unavailable(Feature)` until the
+  `introspection` feature lands. Semantics section 13 (I1, I3, I10, I11).
+
 - Release fuzz campaign: `fuzz/release-campaign.sh` fuzzes for hours (default
   4 h, 8 workers), replays and groups every failure, minimizes each distinct
   one and writes it as a regression test (`fuzz/tests/campaign_*.rs`, its
@@ -81,6 +100,16 @@
   through `dispose_panic` (L6), and the two remaining unguarded `tracing`
   calls on cleanup paths (`unfinished_at_stop`, a native root unwinding) are
   contained. Found by the scenario fuzzer's panic injection.
+- Scenario fuzzer: panic injection at every user-code entry point the
+  simulator reaches. Fault steps (decoded only by the fuzz target, so committed
+  inputs keep their meaning) arm panics in message, reply, job-result, `done`,
+  emit, helper and panic-payload destructors, in `send_interval` clones, in
+  `Down`, `exit_received`, `Note`, job and `configure` callbacks, and in the
+  `tracing` subscriber, and they exercise deferred replies and pipe jobs. New
+  oracles: every injected payload is destroyed exactly once (M6), a
+  destructor panic on the owner's task is its recorded cleanup failure and
+  never changes the exit reason (L6), and every request is answered exactly
+  once, deferred ones included. Harness only; the default build is unchanged.
 - CI reliability: drop `magic-nix-cache-action` (its GitHub Actions cache
   backend failed runs with FlakeHub authentication, cache-service and SSL
   errors); give TLC 75% of RAM (`TLC_HEAP`) so liveness checking no longer runs
