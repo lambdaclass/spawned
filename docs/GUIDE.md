@@ -186,6 +186,20 @@ async fn handle_work(&mut self, msg: Work, ctx: &Context<Self>) -> Result<(), Re
 }
 ```
 
+A long-running handler (or a helper or piped job) that should wind down when the actor is asked to stop can await `ctx.stopping()` (tasks mode). It resolves once `exit_pending()` is `true`, for the same events, and is ready at once if it already is (including in `stopped()`). The future is `Send + 'static`, so it can go into `tokio::select!`, `ctx.pipe` or `ctx.spawn_helper`. It does not preempt anything: the handler chooses what to do, and the actor exits after the handler returns. A kill wakes it too, but a killed actor still waits for the handler to return. An actor that never calls it pays nothing.
+
+```rust
+#[request_handler]
+async fn handle_fetch(&mut self, msg: Fetch, ctx: &Context<Self>) -> Result<Page, Refused> {
+    tokio::select! {
+        page = self.fetch(msg) => Ok(page),
+        () = ctx.stopping() => Err(Refused::ShuttingDown),
+    }
+}
+```
+
+Threads mode has no `stopping()`: a blocking handler cannot wait for its work and a stop at the same time, so it checks `ctx.exit_pending()` between chunks of work.
+
 State that must be released on every exit, including kills and runtime drops, belongs in `Drop`.
 
 ---
@@ -211,6 +225,7 @@ State that must be released on every exit, including kills and runtime drops, be
 | `ctx.exit(&child_handle, reason)` | Send an exit signal from this actor (OTP `exit/2`) |
 | `ctx.trap_exit(bool)` | Receive exit signals and link notices as `Exit` messages instead of exiting |
 | `ctx.exit_pending()` | Whether this actor's exit has begun or a parent exit is queued |
+| `ctx.stopping()` | Future resolved once `exit_pending()` is `true` (tasks mode; `Send + 'static`, for `select!`) |
 | `ctx.spawn_helper(future)` / `ctx.spawn_blocking_helper(f)` | Actor-owned helper tasks, cancelled and joined before cleanup completes (v0.7) |
 | `ctx.register_name(name)` | Register this actor under a name, released with its generation (v0.7) |
 | `ctx.execution_group()` | The `ExecutionGroup` a managed actor runs on (v0.7) |

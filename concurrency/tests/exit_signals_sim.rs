@@ -136,6 +136,22 @@ impl Handler<Probe> for Node {
     }
 }
 
+/// Waits for `ctx.stopping()`, at most 50 virtual ms.
+struct WaitStop;
+impl Message for WaitStop {
+    type Result = ();
+}
+impl Handler<WaitStop> for Node {
+    async fn handle(&mut self, _: WaitStop, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
+        let woke = tokio::select! {
+            () = ctx.stopping() => "woke",
+            () = sleep(ms(50)) => "timeout",
+        };
+        push(&self.log, format!("wait:{woke}:{}", ctx.exit_pending()));
+        reply.reply(());
+    }
+}
+
 async fn on(actor: &ActorRef<Node>, f: impl FnOnce(&Context<Node>) + Send + 'static) {
     actor.request(Do(Box::new(f))).await.unwrap();
 }
@@ -286,6 +302,41 @@ async fn late_signal_vs_death(seed: u64) {
     );
     assert_eq!(downs, vec![format!("down:{reason:?}")]);
     stop(&observer).await;
+}
+
+/// `ctx.stopping()` racing its trigger (an administrative stop, a kill or
+/// an untrapped exit signal): a handler waiting on it wakes whether the
+/// trigger comes before or during the turn (never the 50 ms timeout), sees
+/// `exit_pending()`, and a waiter outside the actor wakes too.
+async fn stopping_vs_trigger(seed: u64) {
+    let log = Log::default();
+    let target = Node::new(&log, false).start();
+    let handle = target.child_handle();
+    let outside = spawn(target.context().stopping());
+    let (trigger, at) = (seed % 3, (seed / 3) % 4);
+    let h = handle.clone();
+    let triggering = spawn(async move {
+        sleep(ms(at)).await;
+        match trigger {
+            0 => h.stop(),
+            1 => h.kill(),
+            _ => h.exit(ExitReason::Shutdown(None)),
+        }
+    });
+    let _ = target.send(WaitStop);
+    let reason = handle.wait_exit_async().await;
+    triggering.await.unwrap();
+    outside.await.unwrap();
+    let expected = match trigger {
+        0 => ExitReason::Normal,
+        1 => ExitReason::Killed,
+        _ => ExitReason::Shutdown(None),
+    };
+    assert_eq!(reason, expected);
+    let log = entries(&log);
+    let waits = notices(&log, "wait:");
+    assert!(waits.is_empty() || waits == ["wait:woke:true"], "{log:?}");
+    outcome(format!("stopping {expected:?}: handled={}", waits.len()));
 }
 
 /// E4/E5: `link` + `monitor` (even seeds) or `try_link` (odd seeds) racing
@@ -613,4 +664,9 @@ fn supervisor_shutdown_races_a_trapping_childs_queue() {
 #[test]
 fn ready_child_exit_races_the_tree_commit() {
     check("deferred exit vs commit", deferred_exit_vs_commit);
+}
+
+#[test]
+fn stopping_wakes_for_a_racing_trigger() {
+    check("stopping vs trigger", stopping_vs_trigger);
 }

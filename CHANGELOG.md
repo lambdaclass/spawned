@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `Context::stopping()` (tasks mode): a `Send + 'static` future that
+  resolves once `ctx.exit_pending()` is `true` (a stop, a kill, an untrapped
+  exit signal, a panic, or a parent exit queued for a trapping actor), so a
+  long-running handler, helper or piped job can `select!` on it and wind
+  down. Ready at once when an exit is already pending. Zero cost unless
+  called: no waiter and nothing per message. Threads mode keeps the polled
+  `exit_pending()` (a blocking handler cannot wait on two things).
+  semantics.md L8.
 - Remove the settled backend experiments: the `benchmarks/experiments` crate
   and patch (with its ready-gate Loom harness and model-map entry), the
   reliability campaign runner, the `fede_*`/`collect_*`/`render_*` research

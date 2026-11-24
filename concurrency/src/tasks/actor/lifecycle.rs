@@ -415,8 +415,17 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
     }
     // Phase 0 ends: resolve signals held during started() with the trap
     // flag read now.
-    if link::lock_request(&request).end_starting(ctx.shared.trap_exit.load(Ordering::Acquire)) {
+    let (stop, stopping) = {
+        let mut request = link::lock_request(&request);
+        let stop = request.end_starting(ctx.shared.trap_exit.load(Ordering::Acquire));
+        (stop, request.take_stopping_wake())
+    };
+    if stop {
         cancellation_token.cancel();
+    }
+    if let Some(waiter) = stopping {
+        // A held parent exit is now queued: wake `ctx.stopping()`.
+        waiter.cancel();
     }
 
     fail_point!("actor.after_started_before_ready", async);

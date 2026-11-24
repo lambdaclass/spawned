@@ -357,6 +357,20 @@ outgoing monitors cancelled before publication:
 (the cleanup is shared with threads mode); the fuzz L7 probe also checks that an
 exited observer's waiters are released while the target lives on.
 
+**L8. A pending exit is observable.** `ctx.exit_pending()` is `true` once
+the actor's exit has begun (`ctx.stop()`, an administrative stop, a kill, an
+untrapped exit signal or link notice, a panic) or a parent exit is queued
+for a trapping actor (V9); a trapped `Exit` does not make it `true`. Once
+`true` it stays `true`. In tasks mode `ctx.stopping()` is its awaitable form:
+it resolves exactly when `exit_pending()` becomes `true` (never before), is
+ready at once when it already is, and stays ready after the death point.
+Neither preempts the running handler (L3). An actor that never calls
+`stopping()` has no waiter and nothing per message.
+Checked by: `src/link.rs::tests::{exit_pending_counts_begun_exits_and_queued_parent_exits, stopping_waiter_wakes_on_a_queued_parent_exit}`,
+[`otp_exit_signals`][otp_exit_signals]`::tasks_mode::{exit_pending::queued_work_sees_the_supervisors_pending_shutdown, stopping::wakes_a_waiting_handler_for_every_begun_exit, stopping::a_trapped_exit_does_not_wake_it_a_parent_exit_does, stopping::ready_once_pending_and_after_death, stopping::a_spawned_waiter_wakes_on_stop}`;
+[`exit_signals_sim::stopping_wakes_for_a_racing_trigger`][exit_signals_sim]
+(a stop, a kill or an untrapped signal racing the waiting turn).
+
 ## 5. Links, monitors and trapped exits
 
 **X1. Down exactly once.** `ctx.monitor(&handle)` (requires `Handler<Down>`)

@@ -403,6 +403,10 @@ impl<A: Actor> Context<A> {
     ///
     /// Advisory: a signal can arrive right after it returns `false`. It
     /// takes the actor's exit-request lock; nothing is added per message.
+    ///
+    /// Threads mode has no `stopping()` future (tasks mode's awaitable form):
+    /// a blocking handler cannot wait on its work and a stop at once, so a
+    /// long-running one checks this between chunks of work.
     pub fn exit_pending(&self) -> bool {
         link::lock_request(&self.shared.linked_reason).exit_pending()
     }
