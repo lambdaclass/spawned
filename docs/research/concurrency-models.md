@@ -364,7 +364,7 @@ preemption since 1.14; every Tokio application on coop budgets. In Spawned
 itself, the async mailbox is a Tokio unbounded channel, so a long burst of
 messages already yields after Tokio's budget, and a private time-slice
 experiment (yield after N messages or T µs) exists out of tree
-(`MessageTurn` in `benchmarks/experiments/backend-experiments.patch`).
+(`MessageTurn` in `benchmarks/experiments/backend-experiments.patch` at `bf59ace0`).
 
 ### What it means for Spawned
 

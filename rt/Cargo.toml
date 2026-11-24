@@ -7,12 +7,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-tokio = { version = "1", optional = true, features = ["full"] }
+# Only what spawned uses: no fs, net, process or io-util for downstream users.
+tokio = { version = "1", optional = true, features = ["rt", "rt-multi-thread", "sync", "time", "signal", "macros"] }
 tokio-util = { version = "0.7.15", optional = true }
 tokio-stream = { version = "0.1.17", optional = true, features = ["sync"] }
 ctrlc = "3.4"
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, optional = true }
 
 [lib]
 path = "./src/lib.rs"
@@ -34,6 +35,10 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_loom)', 'cfg(spawn
 [features]
 default = ["async"]
 async = ["dep:tokio", "dep:tokio-util", "dep:tokio-stream", "dep:nix"]
+# `run()` installs a default `fmt` subscriber (`RUST_LOG`, default `info`).
+# Off by default: a library must not set the global subscriber; binaries
+# that want this convenience opt in (the examples do).
+fmt-subscriber = ["dep:tracing-subscriber"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { version = "0.30.1", features = ["sched"], optional = true }

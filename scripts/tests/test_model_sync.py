@@ -36,11 +36,6 @@ class RepoCopy(unittest.TestCase):
         shutil.copy(ROOT / "concurrency" / "tests" / "cohort_trace.rs", tmp / "concurrency" / "tests")
         for harness in (ROOT / "concurrency" / "tests").glob("*_loom.rs"):
             shutil.copy(harness, tmp / "concurrency" / "tests")
-        # The benchmark scheduler's Loom harness (benchmarks/experiments).
-        experiments = ROOT / "benchmarks" / "experiments"
-        for rel in ("tests/ready_gate_loom.rs", "benches/support/ready_gate.rs"):
-            (tmp / "benchmarks" / "experiments" / rel).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(experiments / rel, tmp / "benchmarks" / "experiments" / rel)
         shutil.copytree(ROOT / "verification", tmp / "verification")
         return tmp
 
