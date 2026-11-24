@@ -257,7 +257,7 @@ Checked by: [`startup_admission`][startup_admission],
 [`cross_backend::stop_before_first_poll_follows_managed_and_legacy_contract`][cross_backend],
 [`execution_groups::failed_startup_discards_queued_payloads_and_reply_channels_without_dispatch`][execution_groups],
 [`semantics_gaps`][semantics_gaps]`::tasks_contract::managed_readiness_gates_handlers_and_stays_historical`
-(both group kinds). (`ready_gate_loom` checks the benchmark scheduler's gate, not this barrier.)
+(both group kinds).
 
 **L3. Stop is cooperative.** `ctx.stop()`, `ctx.stop_with_reason(r)`,
 `ChildHandle::stop()` and `stop_with_reason(r)` are self-exits

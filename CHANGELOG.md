@@ -4,6 +4,11 @@
 
 - CI: AI review runs Codex, Claude and Grok automatically; Kimi, DeepSeek and
   Gemini only on demand (`/review`, `/kimi`, `/deepseek`, `/gemini`).
+- Remove the settled backend experiments: the `benchmarks/experiments` crate
+  and patch (with its ready-gate Loom harness and model-map entry), the
+  reliability campaign runner, the `fede_*`/`collect_*`/`render_*` research
+  scripts, their requirements files and an unused Dockerfile. They are at
+  `bf59ace0`; the conclusions stay in `benchmarks/README.md`.
 - **Breaking:** `spawned-rt` no longer sets a global `tracing` subscriber in
   `run()` unless the new opt-in `fmt-subscriber` feature is enabled (the
   examples enable it), and depends on Tokio with only the features it uses
