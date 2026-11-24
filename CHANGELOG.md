@@ -52,6 +52,23 @@
   codegen unit, so instruction counts follow the code rather than how generic
   code is partitioned across units (which moved `async_ct_burst` by about
   +2.6% between v0.8.0 and main with no change on its path).
+- Introspection, step 1a (0.9, docs/design/introspection.md tier 0):
+  `info()` on `ActorRef`, `Context` and `ChildHandle` returns an
+  `introspection::ActorInfo` (OTP `process_info`): id, type, label, registered
+  name, lifecycle (`Starting`, `Idle`, `InTurn`, `Exiting`,
+  `Dead { reason, published }`), `trap_exit`, links, monitors, parent,
+  supervisor position (child, generation, restarts), system, placement,
+  deferred tokens and running jobs. It is out of band: it never waits for a
+  turn, so it answers while a handler is wedged. `ChildHandle::links()` and
+  `monitors()` list the ids; `Context::set_label` (OTP 27
+  `proc_lib:set_label`); `ActorSystem::id()`. An actor that ends with an
+  abnormal reason it produced itself (a panic, an abnormal self-exit) emits a
+  `spawned::crash` report with a fixed field set; kills, untrapped signals
+  and clean exits are not reported, as in OTP. Free on the default path:
+  nothing is added to send, dispatch or a turn (perf gate). Tier 1 fields
+  (`activity`, `mailbox`) read `Unavailable(Feature)` until the
+  `introspection` feature lands. Semantics section 13 (I1, I3, I10, I11).
+
 - Release fuzz campaign: `fuzz/release-campaign.sh` fuzzes for hours (default
   4 h, 8 workers), replays and groups every failure, minimizes each distinct
   one and writes it as a regression test (`fuzz/tests/campaign_*.rs`, its

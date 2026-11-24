@@ -87,9 +87,20 @@ mod sync {
 }
 pub(crate) mod fence;
 
-/// Each monitor owns a cancellation token that wakes its waiter immediately.
-pub(crate) type MonitorTable =
-    std::sync::Arc<fence::Entries<MonitorRef, spawned_rt::sync::CancellationToken>>;
+/// Each monitor owns a cancellation token that wakes its waiter immediately,
+/// and names its target (`ChildHandle::monitors`, OTP `monitors`).
+pub(crate) type MonitorTable = std::sync::Arc<fence::Entries<MonitorRef, Waiter>>;
+
+/// An active monitor's target and the token that wakes its waiter.
+pub(crate) type Waiter = (crate::ActorId, spawned_rt::sync::CancellationToken);
+
+/// The targets of an observer's active monitors, sorted by id (one entry per
+/// monitor; a monitor whose `Down` is queued is no longer listed).
+pub(crate) fn targets(table: &MonitorTable) -> Vec<crate::ActorId> {
+    let mut targets = fence::active_values(table, |(target, _)| *target);
+    targets.sort_unstable_by_key(|id| id.raw());
+    targets
+}
 
 /// Release outgoing monitors on every actor exit path, including unwinding.
 pub(crate) struct MonitorCleanup(pub MonitorTable);
@@ -104,7 +115,7 @@ impl Drop for MonitorCleanup {
                 monitors.sort_unstable_by_key(|(r, _)| r.0);
                 monitors
             };
-            for (_, token) in monitors {
+            for (_, (_, token)) in monitors {
                 token.cancel();
             }
         }
@@ -136,7 +147,12 @@ mod tests {
         // leave its entry behind for the rest of the observer's lifetime.
         let table: MonitorTable = std::sync::Arc::new(fence::open());
         let (mine, other) = (MonitorRef::next(), MonitorRef::next());
-        let token = spawned_rt::sync::CancellationToken::new;
+        let token = || {
+            (
+                crate::ActorId::next(),
+                spawned_rt::sync::CancellationToken::new(),
+            )
+        };
         for key in [mine, other] {
             let registered =
                 fence::register(&table, key, token(), || false, || false, || {}, || {});
@@ -156,7 +172,10 @@ mod tests {
         let table: MonitorTable = std::sync::Arc::new(fence::open());
         for flush in [false, true] {
             let monitor = MonitorRef::next();
-            let token = spawned_rt::sync::CancellationToken::new();
+            let token = (
+                crate::ActorId::next(),
+                spawned_rt::sync::CancellationToken::new(),
+            );
             assert_eq!(
                 fence::register(&table, monitor, token, || false, || false, || {}, || {}),
                 fence::Registration::Active

@@ -21,7 +21,7 @@ fn start_linked_registers_before_threads_started() {
                 fn started(&mut self, ctx: &ThreadContext<Self>) {
                     let h = ctx.actor_ref().child_handle();
                     self.seen
-                        .send(link::has_link(h.links(), self.parent))
+                        .send(link::has_link(h.link_table(), self.parent))
                         .unwrap();
                     ctx.stop();
                 }
