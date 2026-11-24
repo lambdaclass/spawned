@@ -71,6 +71,16 @@
   through `dispose_panic` (L6), and the two remaining unguarded `tracing`
   calls on cleanup paths (`unfinished_at_stop`, a native root unwinding) are
   contained. Found by the scenario fuzzer's panic injection.
+- Scenario fuzzer: panic injection at every user-code entry point the
+  simulator reaches. Fault steps (decoded only by the fuzz target, so committed
+  inputs keep their meaning) arm panics in message, reply, job-result, `done`,
+  emit, helper and panic-payload destructors, in `send_interval` clones, in
+  `Down`, `exit_received`, `Note`, job and `configure` callbacks, and in the
+  `tracing` subscriber, and they exercise deferred replies and pipe jobs. New
+  oracles: every injected payload is destroyed exactly once (M6), a
+  destructor panic on the owner's task is its recorded cleanup failure and
+  never changes the exit reason (L6), and every request is answered exactly
+  once, deferred ones included. Harness only; the default build is unchanged.
 - CI reliability: drop `magic-nix-cache-action` (its GitHub Actions cache
   backend failed runs with FlakeHub authentication, cache-service and SSL
   errors); give TLC 75% of RAM (`TLC_HEAP`) so liveness checking no longer runs
