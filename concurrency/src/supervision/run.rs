@@ -187,7 +187,11 @@ pub(super) async fn run_supervisor_body(
         trace::emit(core.trace, || Event::new("SupStopTurn", c, ""));
         fail_point!("shutdown.before_stop_child", async);
         child.stop();
-        let finished = rt::timeout(child.shutdown_timeout(), system::wait_true(child.done()))
+        // V3: the controller kills at shutdown_timeout and is stuck only
+        // after a second interval; this wait is a backstop beyond both (the
+        // round coordinator's too), so the tree is not failed before the kill.
+        let backstop = child.shutdown_timeout().saturating_mul(3);
+        let finished = rt::timeout(backstop, system::wait_true(child.done()))
             .await
             .is_ok();
         // The child may finish between the deadline firing and this check;
@@ -841,7 +845,9 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                     exit = Some(
                         match rt::timeout(spec.shutdown_timeout, child.wait_exit_async()).await {
                             Ok(reason) => {
-                                if !stop_turn {
+                                if stop_turn {
+                                    trace::emit(core.trace, || Event::new("StopExited", c, ""));
+                                } else {
                                     let failed = child.cleanup_failure().is_some();
                                     trace::emit(core.trace, || {
                                         Event::new("SelfExit", c, exit_class(&reason, failed))
@@ -857,6 +863,11 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                                 fail_point!("supervisor.before_stop_kill", async);
                                 trace::atomic(|| {
                                     scope.kill();
+                                    if stop_turn {
+                                        trace::emit(core.trace, || {
+                                            Event::new("CleanupKill", c, "")
+                                        });
+                                    }
                                     if let Some(round) = round_stop {
                                         core.cohort(|| Event::new("CKill", c, "").round(round));
                                     }
@@ -866,7 +877,14 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                                 match rt::timeout(spec.shutdown_timeout, child.wait_exit_async())
                                     .await
                                 {
-                                    Ok(reason) => reason,
+                                    Ok(reason) => {
+                                        if stop_turn {
+                                            trace::emit(core.trace, || {
+                                                Event::new("StopExited", c, "")
+                                            });
+                                        }
+                                        reason
+                                    }
                                     Err(_) => {
                                         stuck = true;
                                         // Reply traces: the cleanup deadline

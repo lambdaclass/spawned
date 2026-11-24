@@ -24,6 +24,7 @@ id	name	file	bug
 23	sys-shutdown-forward-order	system.rs	ActorSystem shutdown stops targets in admission order instead of reverse
 24	sys-targets-unsorted	system.rs	System shutdown stops all standalone actors before all trees, ignoring admission order
 35	sup-round-stop-skips-kill	supervision/run.rs	A round's collateral stop takes the self-exit path: no kill at shutdown_timeout, stuck after one interval (V3)
+36	sup-shutdown-wait-races-kill	supervision/run.rs	The shutdown loop waits one shutdown_timeout for a stopped child, racing its kill, and fails the tree (V3)
 37	cleanup-drop-uncontained	mailbox.rs	A payload destroyed after the death point (queued message, discarded job result or callback) is dropped without containment
 38	fenced-job-drop-in-turn	tasks/jobs.rs	A fenced job terminal drops its done callback and result in the owner's turn, so their destructor panic kills the owner
 39	handler-panic-log-unguarded	tasks/actor/lifecycle.rs	The handler-panic diagnostic calls the tracing subscriber unguarded, so a panicking subscriber unwinds the lifecycle and skips stopped()

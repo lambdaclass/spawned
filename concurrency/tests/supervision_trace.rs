@@ -838,7 +838,8 @@ async fn trace_shutdown_deadline_with_slow_stop() {
     let supervisor = within!(tree.start()).await.unwrap();
     let report = supervisor.shutdown(Duration::from_millis(20)).await;
     assert!(!report.complete);
-    spawned_rt::tasks::sleep(Duration::from_millis(300)).await;
+    // Past the supervisor's backstop (3 x shutdown_timeout).
+    spawned_rt::tasks::sleep(Duration::from_millis(500)).await;
     release.send(()).unwrap();
     spawned_rt::tasks::timeout(LIMIT, supervisor.join())
         .await
@@ -850,6 +851,49 @@ async fn trace_shutdown_deadline_with_slow_stop() {
         &modes,
         5,
     );
+    assert!(system.shutdown(LIMIT).await.complete);
+}
+
+/// V3 under OneForOne: a stopped child that misses its shutdown_timeout is
+/// killed (CleanupKill) and, dying within the second interval, is not stuck
+/// (StopExited, CleanupDone). trace_shutdown_deadline_with_slow_stop records
+/// the other side: a kill that cannot end a running stopped(), then
+/// CleanupStuck after the second interval.
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
+async fn trace_shutdown_kills_child_at_shutdown_timeout() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("trace-shutdown-kill", 2).unwrap();
+    let modes = [RestartMode::Permanent];
+    let mut tree = system.supervisor(config(5)).unwrap();
+    let child = tree
+        .add(worker("held", &group).shutdown_timeout(Duration::from_millis(100)))
+        .unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
+    let trace_id = supervisor.trace_id();
+    let actor = child.current().unwrap();
+    let (began, began_rx) = tokio::sync::oneshot::channel();
+    let (release, release_rx) = tokio::sync::oneshot::channel();
+    actor.send(HoldForDrain(began, release_rx)).unwrap();
+    began_rx.await.unwrap();
+    let (report, ()) = tokio::join!(supervisor.shutdown(LIMIT), async {
+        // After the kill, before the second interval ends.
+        spawned_rt::tasks::timeout(LIMIT, async {
+            while !lifecycle_trace::recorded(trace_id, "CleanupKill") {
+                spawned_rt::tasks::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the stopped child was not killed");
+        release.send(()).unwrap();
+    });
+    assert!(report.complete);
+    assert!(supervisor.failure().is_none(), "{:?}", supervisor.failure());
+    assert_eq!(
+        actor.wait_exit().await,
+        spawned_concurrency::ExitReason::Killed
+    );
+    assert!(!lifecycle_trace::recorded(trace_id, "CleanupStuck"));
+    write_trace("shutdown_kill", trace_id, &modes, 5);
     assert!(system.shutdown(LIMIT).await.complete);
 }
 

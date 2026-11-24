@@ -192,7 +192,7 @@ class ModelInventory(RepoCopy):
         path.write_text(json.dumps(data))
         code, out = run("--root", str(tmp), "models")
         self.assertEqual(code, 1, out)
-        self.assertIn("below the floor 36", out)
+        self.assertRegex(out, r"Supervision: .* below the floor \d+")
 
     def test_unmapped_loom_harness_fails(self):
         tmp = self.copy()

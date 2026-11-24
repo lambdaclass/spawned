@@ -19,7 +19,8 @@ EXTENDS Supervision
 
 Sts == {"Waiting", "Starting", "Running", "Backoff", "Stopping", "Stopped", "Failed"}
 SPhases == {"starting", "await", "shutdown", "waitchild", "join", "done"}
-Live == {"constructing", "running", "cleanup"}   \* pcs owning a generation
+\* pcs owning a generation
+Live == {"constructing", "running", "stopping", "killing", "cleanup"}
 
 \* Shape of a state, written so Apalache can also use it as an initial
 \* predicate. gen ranges over all naturals; alive and pub are determined by
@@ -105,7 +106,7 @@ H_first == \A c \in Children :
 \* Transient restart table, so RestartFollowsPolicy needs this).
 H_exit == \A c \in Children :
     /\ pc[c] = "constructing" => ~readyGen[c]   \* Attempt cleared it
-    /\ pc[c] \in {"cleanup", "decide", "deferred", "top", "backoff", "attempt"}
+    /\ pc[c] \in {"stopping", "killing", "cleanup", "decide", "deferred", "top", "backoff", "attempt"}
            /\ gen[c] > 0 /\ readyGen[c] => exitR[c] \in SelfExits
 
 \* Reverse-order shutdown: while stopping, every child after sidx has
@@ -158,10 +159,15 @@ ReverseShutdownStep ==
         (stopTurn'[c] /\ ~stopTurn[c] /\ ~deadline') =>
             \A d \in Children : d > c => cdone[d] \/ d \in timedOut
 NeverReopensStep == open' => open
+StuckOnlyAfterKillStep ==
+    \A c \in Children :
+        pc[c] = "stopping" =>
+            /\ pc'[c] \in {"stopping", "killing", "cleanup"}
+            /\ (c \in timedOut' => c \in timedOut)
 
 ActionProps ==
     /\ NoStartAfterCloseStep /\ RestartFollowsPolicyStep
-    /\ ReverseShutdownStep /\ NeverReopensStep
+    /\ ReverseShutdownStep /\ NeverReopensStep /\ StuckOnlyAfterKillStep
 
 -----------------------------------------------------------------------------
 (* Non-vacuity probes: apalache.sh requires each of these to be VIOLATED, *)
