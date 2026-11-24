@@ -268,6 +268,53 @@ mod tasks_mode {
     const LIMIT: Duration = Duration::from_secs(5);
 }
 
+/// A status callback's panic: the caller gets `CallbackFailed`, and a
+/// `spawned::status` WARN event carries the message with the actor's id,
+/// type and label so it can be found.
+#[cfg(feature = "async")]
+mod status_log {
+    use super::*;
+    use spawned_concurrency::tasks::{Actor, ActorStart, Context};
+    use spawned_concurrency::ActorError;
+
+    struct Labelled;
+    impl Actor for Labelled {
+        async fn started(&mut self, ctx: &Context<Self>) {
+            ctx.set_label("peer 0x77");
+        }
+    }
+
+    #[tokio::test]
+    async fn callback_failure_is_logged_with_the_actor() {
+        capture();
+        let actor = Labelled.start().await.unwrap();
+        let failed = actor.get_state(|_| panic!("status callback boom")).await;
+        assert!(
+            matches!(failed, Err(ActorError::CallbackFailed)),
+            "{failed:?}"
+        );
+        let id = actor.id().to_string();
+        let logged: Vec<Fields> = capture()
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(target, level, f)| {
+                target == "spawned::status"
+                    && *level == tracing::Level::WARN
+                    && f.get("actor_id") == Some(&id)
+            })
+            .map(|(_, _, f)| f.clone())
+            .collect();
+        assert_eq!(logged.len(), 1, "{logged:?}");
+        assert_eq!(logged[0]["label"], "peer 0x77");
+        assert!(logged[0]["actor_type"].ends_with("Labelled"));
+        assert!(logged[0]["error"].contains("status callback boom"));
+        actor.child_handle().stop();
+        actor.join().await;
+    }
+}
+
 mod threads_mode {
     use super::*;
     use spawned_concurrency::threads::{Actor, ActorStart, Context, Handler};

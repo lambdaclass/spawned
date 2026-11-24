@@ -12,7 +12,7 @@ this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 | `MCSupervisionDeep.tla/.cfg` | Deep instance (weekly, `--deep`): three children, one per restart mode, safety and action properties. |
 | `TraceSupervision.tla` | Trace validation: replays a lifecycle trace recorded from real Rust runs as a behavior of `Supervision.tla`. |
 | `Cohorts.tla`, `MCCohorts*.tla/.cfg` | OneForAll/RestForOne range selection, reverse cleanup, whole-cohort join barrier, ordered resume, stale notifications, superseding rounds and retired slots. Three-child mixed-mode and two-round configurations. |
-| `Introspection.tla`, `MCIntrospection.tla/.cfg` | Introspection v1 design model, revision 4 (not implemented, [design](../../docs/design/introspection.md)): one actor whose every activity (`started()`, messages, the status turn, `stopped()`) opens a turn id on an activity word; activities that may suspend forever; panics in `started()`, handlers and `stopped()`, and a caught status-callback panic; the status request with a deadline, callback admission, answer and turn end as separate steps, and the skip of abandoned callbacks; stop, unfenced kill, the runtime drop's swap and D as separate steps, publication; the watchdog's observe, CAS (successful and failed) and record. Each action is one implementation linearization point; ghosts are derived from state changes, never from the fault selector. Twenty named negative controls. 47,968 states (4 messages: 80,482). |
+| `Introspection.tla`, `MCIntrospection.tla/.cfg`, `TraceIntrospection.tla` | Introspection v1 model, revision 4 ([design](../../docs/design/introspection.md); the status turn is implemented and trace-validated, the activity word, watchdog and console are not): one actor whose every activity (`started()`, messages, the status turn, `stopped()`) opens a turn id on an activity word; activities that may suspend forever; panics in `started()`, handlers and `stopped()`, and a caught status-callback panic; the status request with a deadline, callback admission, answer and turn end as separate steps, and the skip of abandoned callbacks; stop, unfenced kill, the runtime drop's swap and D as separate steps, publication; the watchdog's observe, CAS (successful and failed) and record. Each action is one implementation linearization point; ghosts are derived from state changes, never from the fault selector. Twenty named negative controls. 47,968 states (4 messages: 80,482). Trace-validated (schema `introspection-v1`, `tests/introspection_trace.rs`: activities, the status turn, exit decision, stops, kills, the drop, D, publication), with seven recorded-trace controls (`negative_checks.py`). |
 | `Coordinator.tla`, `MCCoordinator.tla/.cfg` | System shutdown coordinator: ordered stop of admitted roots, grace expiry with the kill of the remaining roots, panic fallback that signals all remaining roots, records failure and retains runtime ownership until joins; ordered-shutdown invariants, cooperative cleanup liveness and six negative mutations (`ReleaseEarly`, `ForgetFailure`, `ForgetSignal`, `RollbackReady`, `NoKillAtGrace`, `KillEarly`). |
 | `TraceCoordinator.tla` | Trace validation of `Coordinator.tla`: replays the shutdown coordinator events recorded from real `ActorSystem::shutdown` runs (`coordinator_trace`). |
 | `NestedSupervision.tla`, `MCNested.tla/.cfg` | Dynamic subtree ownership and shutdown delivery; parent scope completion waits for descendant completion. Bounded three-node/two-generation model with fair cleanup. |
@@ -179,9 +179,10 @@ action keys only `Lifecycle`, `DeferredJobs`, `DeferredReplies`,
 `Coordinator`, `Disposal`).
 
 **Action-only models.** For `Lifecycle.tla`, `DeferredJobs.tla`,
-`DeferredReplies.tla`, `Coordinator.tla` and `Disposal.tla` the keys are the
-log-event arms of their trace spec (`TraceLifecycle.tla`, `TraceJobs.tla`,
-`TraceReplies.tla`, `TraceCoordinator.tla`, `TraceDisposal.tla`; each arm is one
+`DeferredReplies.tla`, `Coordinator.tla`, `Disposal.tla` and `Introspection.tla`
+the keys are the log-event arms of their trace spec (`TraceLifecycle.tla`,
+`TraceJobs.tla`, `TraceReplies.tla`, `TraceCoordinator.tla`, `TraceDisposal.tla`,
+`TraceIntrospection.tla`; each arm is one
 model action or a named group of them, `A|Send`, `A|Fire`, ...): the model
 side is the set of arms, a trace covers the arms its accepted replay takes,
 and no state space is explored for them. `coverage-baseline.json` and the
@@ -190,7 +191,7 @@ Model actions without an arm are listed in the map's `[trace.unlogged]` with
 the reason.
 
 ```bash
-cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace --test job_trace --test reply_trace --test disposal_trace --test lifecycle_trace --test start_trace
+cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace --test job_trace --test reply_trace --test disposal_trace --test lifecycle_trace --test start_trace --test introspection_trace
 nix develop -c python3 verification/tla/trace_coverage.py --traces dedicated=target/lifecycle-traces \
     --model-keys verification/tla/coverage-model.json.gz --baseline verification/tla/coverage-baseline.json
 # every test binary: each finished supervisor dumps its traces

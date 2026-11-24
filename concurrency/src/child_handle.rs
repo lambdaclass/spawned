@@ -240,6 +240,24 @@ impl ChildHandle {
             .unwrap_or_default()
     }
 
+    /// The actor's status report (OTP `sys:get_status`), in a status turn
+    /// with the default 5 s timeout; see `ActorRef::get_status`. `NoProc`
+    /// once every `ActorRef` of a dead actor is gone.
+    pub fn get_status(&self) -> crate::response::Response<crate::introspection::StatusReport> {
+        self.get_status_with_timeout(crate::response::DEFAULT_REQUEST_TIMEOUT)
+    }
+
+    /// [`get_status`](Self::get_status) with another timeout.
+    pub fn get_status_with_timeout(
+        &self,
+        timeout: std::time::Duration,
+    ) -> crate::response::Response<crate::introspection::StatusReport> {
+        match self.target.meta.probe() {
+            Some(probe) => probe.get_status(timeout),
+            None => crate::response::Response::ready(Err(crate::error::ActorError::NoProc)),
+        }
+    }
+
     /// Returns `true` if the actor is still running.
     pub fn is_alive(&self) -> bool {
         self.exit_reason().is_none()

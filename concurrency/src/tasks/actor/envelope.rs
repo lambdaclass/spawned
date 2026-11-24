@@ -11,6 +11,12 @@ pub(super) trait Envelope<A: Actor>: Send {
     fn trace_kind(&self) -> &'static str {
         "other"
     }
+    /// `Introspection.tla`'s mailbox item kind: every envelope is a message
+    /// turn except a status request.
+    #[cfg(feature = "lifecycle-trace")]
+    fn intro_kind(&self) -> &'static str {
+        "msg"
+    }
     #[cfg(any(feature = "diagnostics", spawned_sim))]
     fn message_type(&self) -> &'static str {
         std::any::type_name::<Self>()
@@ -342,6 +348,7 @@ pub(super) fn admit<A: Actor, M: 'static>(
             #[cfg(feature = "metrics")]
             envelope.reject();
             crate::lifecycle_trace::life_send::<M>(owner, false, _from);
+            crate::lifecycle_trace::intro(owner, "Send", "noproc");
             return Err(ActorError::NoProc);
         }
         match sender.send(envelope) {
@@ -349,6 +356,7 @@ pub(super) fn admit<A: Actor, M: 'static>(
                 #[cfg(feature = "metrics")]
                 crate::instrumentation::accepted();
                 crate::lifecycle_trace::life_send::<M>(owner, true, _from);
+                crate::lifecycle_trace::intro(owner, "Send", "queued");
                 Ok(())
             }
             Err(_error) => {
@@ -357,6 +365,7 @@ pub(super) fn admit<A: Actor, M: 'static>(
                     _error.0.reject();
                 }
                 crate::lifecycle_trace::life_send::<M>(owner, false, _from);
+                crate::lifecycle_trace::intro(owner, "Send", "noproc");
                 Err(ActorError::NoProc)
             }
         }
@@ -392,6 +401,41 @@ impl<A: Actor, R: Send + 'static> Envelope<A> for InTurnEnvelope<A, R> {
             let _ = reply.reply(value);
         });
         (Some(turn), lent.as_ref().map(|slot| slot as &dyn Caller))
+    }
+}
+
+/// The callback of a status turn (`get_state` / `get_status`).
+pub(super) type StatusFn<A, R> = Box<dyn FnOnce(&A, &Context<A>) -> R + Send>;
+
+/// A status request (introspection I4): a turn of its own, between handler
+/// turns, in mailbox order. Unlike `InTurnEnvelope` its callback's panic is
+/// caught and answered `CallbackFailed`; the turn returns normally. It
+/// completes in dispatch (no future), and bypasses `metrics` accounting (no
+/// observation).
+pub(super) struct StatusEnvelope<A: Actor, R: Send + 'static> {
+    pub(super) slot: SlotHandle<crate::response::StatusAnswer<R>>,
+    pub(super) f: Option<StatusFn<A, R>>,
+}
+
+impl<A: Actor, R: Send + 'static> Envelope<A> for StatusEnvelope<A, R> {
+    #[cfg(feature = "lifecycle-trace")]
+    fn intro_kind(&self) -> &'static str {
+        "status"
+    }
+    #[cfg(feature = "diagnostics")]
+    fn message_type(&self) -> &'static str {
+        "Status"
+    }
+    fn discharge(&mut self, replies: Option<&Registry>) {
+        self.slot.dispose(replies);
+        drop(std::mem::replace(&mut self.slot, SlotHandle::detached()));
+    }
+    fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
+        let f = dispatched(&mut self.f);
+        let reply = PendingReply::new(self.slot.take(), &ctx.shared.replies);
+        let actor: &A = actor;
+        crate::introspection::run_status(&ctx.shared.signal, reply, || f(actor, ctx));
+        (None, None)
     }
 }
 

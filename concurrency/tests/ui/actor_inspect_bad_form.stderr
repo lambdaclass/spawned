@@ -1,0 +1,5 @@
+error: expected `inspect` or `inspect = debug`
+ --> tests/ui/actor_inspect_bad_form.rs:6:19
+  |
+6 | #[actor(inspect = display)]
+  |                   ^^^^^^^

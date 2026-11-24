@@ -135,6 +135,11 @@ pub fn protocol(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// impl P2PServer { /* ... */ }
 /// ```
 ///
+/// `inspect` shows the actor's state in `get_status` through its
+/// `spawned_concurrency::introspection::Inspect` impl (OTP `format_status`);
+/// `inspect = debug` uses its `Debug` form. Without either the state is
+/// redacted. Both set `Actor::FORMAT_STATUS`.
+///
 /// # Lints
 ///
 /// `#[actor]` warns (compile time only) when the impl block builds or accepts
