@@ -284,10 +284,18 @@ pub(super) async fn run_recoveries(core: Arc<Core>) {
                 child.stop_generation(slot);
                 core.cohort(|| Event::new("CStop", *index, "").round(meta.id));
             });
+            // The child's controller kills it at shutdown_timeout and
+            // declares its slot stuck (failing the tree, which closes
+            // admission) a second interval later (V3); this wait outlasts
+            // both, as a backstop. Both start at the stop above (the
+            // controller observes the slot's stop token, not the actor), so
+            // it loses only to a controller starved for a whole interval. It
+            // stays bounded because a child still constructing when its
+            // round stops it is bounded by startup_timeout, not this.
             match select(
                 Box::pin(core.admission_closed.cancelled()),
                 Box::pin(rt::timeout(
-                    child.shutdown_timeout(),
+                    child.shutdown_timeout().saturating_mul(3),
                     system::wait_true(slot.cleaned.subscribe()),
                 )),
             )
@@ -672,10 +680,10 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                 Either::Left(_) => return Err("construction cancelled".into()),
                 Either::Right((Ok(result), _)) => result,
                 Either::Right((Err(payload), _)) => {
-                    return Err(format!(
-                        "factory panicked: {}",
-                        crate::error::panic_message(&*payload)
-                    ))
+                    let message = crate::error::panic_message(&*payload);
+                    // The payload's destructor is user code (L6).
+                    crate::mailbox::dispose_panic(payload);
+                    return Err(format!("factory panicked: {message}"));
                 }
             };
             let actor = result?;
@@ -774,12 +782,48 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                     // Cancellation precedes terminal publication when stopped()
                     // hangs. Start its cleanup deadline at stop observation,
                     // rather than waiting forever for the completion channel.
+                    //
+                    // V3: a OneForAll/RestForOne round's stop is the
+                    // supervisor's too: the same kill at shutdown_timeout,
+                    // and stuck only after a second interval. It is observed
+                    // on the round's own token, which `stop_generation`
+                    // cancels before its parent exit signal: a trapping
+                    // child queues that signal behind its current turn, so
+                    // its scope token ends only at its death point and the
+                    // deadline must not wait for it. A child that exited on
+                    // its own is not killed (that would relabel its reason).
+                    let round_stopping = async {
+                        if core.config.strategy == SupervisorStrategy::OneForOne {
+                            futures::future::pending().await
+                        } else {
+                            view.recovery_stopping(last_recovery).await
+                        }
+                    };
                     let ended = select(
                         Box::pin(core.cancel.cancelled()),
-                        Box::pin(scope.token.cancelled()),
+                        Box::pin(select(
+                            Box::pin(round_stopping),
+                            Box::pin(scope.token.cancelled()),
+                        )),
                     )
                     .await;
-                    let stop_turn = matches!(ended, Either::Left(_));
+                    let (stop_turn, round_stop) = match ended {
+                        Either::Left(_) => (true, None),
+                        Either::Right((Either::Left((round, _)), _)) => {
+                            (false, Some(round.meta.id))
+                        }
+                        // The round arm is polled first, so this is a self
+                        // exit unless the round's signal ended a
+                        // non-trapping child between the two polls: its stop
+                        // was cancelled before that signal, so it shows.
+                        Either::Right((Either::Right(_), _)) => (
+                            false,
+                            view.recovery(last_recovery)
+                                .filter(|round| round.stop.is_cancelled())
+                                .map(|round| round.meta.id),
+                        ),
+                    };
+                    let supervisor_stop = stop_turn || round_stop.is_some();
                     if stop_turn {
                         view.stop_turn.cancelled().await;
                         trace::emit(core.trace, || Event::new("StopObserved", c, ""));
@@ -808,8 +852,14 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                             // did not reach its death point within
                             // shutdown_timeout: the parent's kill, then a
                             // second interval before cleanup is stuck.
-                            Err(_) if stop_turn => {
-                                scope.kill();
+                            Err(_) if supervisor_stop => {
+                                fail_point!("supervisor.before_stop_kill", async);
+                                trace::atomic(|| {
+                                    scope.kill();
+                                    if let Some(round) = round_stop {
+                                        core.cohort(|| Event::new("CKill", c, "").round(round));
+                                    }
+                                });
                                 // The second interval runs from the kill.
                                 cleanup_until = Some(Instant::now());
                                 match rt::timeout(spec.shutdown_timeout, child.wait_exit_async())
@@ -827,6 +877,13 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                                             0,
                                             "",
                                         );
+                                        if let Some(round) = round_stop {
+                                            trace::atomic(|| {
+                                                core.cohort(|| {
+                                                    Event::new("CStuck", c, "").round(round)
+                                                })
+                                            });
+                                        }
                                         core.fail_cleanup_for(
                                             view.snapshot(),
                                             format!("actor cleanup stuck for {}", spec.name),
@@ -845,6 +902,15 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                                 }
                                 stuck = true;
                                 crate::lifecycle_trace::reply(child.id().raw(), "Stuck", 0, "");
+                                // Unreachable for a round's stop (it takes
+                                // the kill above); recorded so a regression
+                                // that skips the kill is a CStuck without a
+                                // CKill, which Cohorts.tla rejects.
+                                if let Some(round) = round_stop {
+                                    trace::atomic(|| {
+                                        core.cohort(|| Event::new("CStuck", c, "").round(round))
+                                    });
+                                }
                                 core.fail_cleanup_for(
                                     view.snapshot(),
                                     format!("actor cleanup stuck for {}", spec.name),

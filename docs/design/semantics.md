@@ -1,6 +1,6 @@
 # Spawned semantics
 
-Status: describes `main` (v0.7.1 plus merged work), 2026-11-10. This is the
+Status: describes `main` (v0.8.0 plus merged 0.9 work), 2026-11-23. This is the
 contract: every guarantee Spawned gives, what checks it, and what it does not
 promise. New designs are reviewed against it ([roadmap](../../ROADMAP.md) rank 5d).
 Usage lives in the [guide](../GUIDE.md); the supervision design rationale in
@@ -257,7 +257,7 @@ Checked by: [`startup_admission`][startup_admission],
 [`cross_backend::stop_before_first_poll_follows_managed_and_legacy_contract`][cross_backend],
 [`execution_groups::failed_startup_discards_queued_payloads_and_reply_channels_without_dispatch`][execution_groups],
 [`semantics_gaps`][semantics_gaps]`::tasks_contract::managed_readiness_gates_handlers_and_stays_historical`
-(both group kinds). (`ready_gate_loom` checks the benchmark scheduler's gate, not this barrier.)
+(both group kinds).
 
 **L3. Stop is cooperative.** `ctx.stop()`, `ctx.stop_with_reason(r)`,
 `ChildHandle::stop()` and `stop_with_reason(r)` are self-exits
@@ -334,9 +334,12 @@ messages are dropped after the death point, so a panicking `Drop` does not
 change the exit reason; it is recorded in `ChildHandle::cleanup_failure()`
 (`mailbox_cleanup_failure()` is a deprecated alias), and a Transient child
 restarts on it. A panic payload whose own destructor panics is forgotten
-(`dispose_panic`) to stop the cascade.
+(`dispose_panic`) to stop the cascade; this holds for every caught panic
+(`started()`, handlers, `stopped()`, helpers, factories, native group roots),
+so such a payload never skips `stopped()` or changes the reason.
 Checked by: [`mailbox_drop_panic`][mailbox_drop_panic] (5 placements x 1/2/256
-destructors), [`panic_safety`][panic_safety], [`native_mailbox_drop`][native_mailbox_drop],
+destructors), [`panic_payload_drop`][panic_payload_drop] (each hook, both
+modes, a managed actor), [`panic_safety`][panic_safety], [`native_mailbox_drop`][native_mailbox_drop],
 `queued_drop_panic`/`queued_drop_shutdown_restarts` lifecycle traces.
 
 **L7. Exit publication is last.** The exit reason is published after
@@ -539,7 +542,12 @@ Checked by: `Supervision!AtMostOneGeneration`, `Cohorts!AtMostOneGeneration`,
 `repeated_crash_producer_and_shutdown_races_never_overlap_generations`,
 `stuck_stopped_hook_triggers_cleanup_deadline_before_terminal_publication`;
 [`otp_exit_signals::tasks_mode::supervisor_shutdown_is_the_parents_exit_signal`][otp_exit_signals]
-(the kill at `shutdown_timeout`).
+(the kill at `shutdown_timeout`); for a OneForAll/RestForOne round's stop,
+`Cohorts!StuckOnlyAfterKill` (`CKill`/`CStuck`, trace-validated by
+[`cohort_trace`][cohort_trace]`::trace_collateral_child_killed_or_stuck`, with
+a model fault and two recorded-trace controls in `negative_checks.py`) and
+[`collateral_kill`][collateral_kill] (`#[sim_test]`: killed at
+`shutdown_timeout`, stuck only after a second interval; planted bug 35).
 
 **V4. Generations and publication.** Each construction attempt increments the
 slot's generation. `SupervisedChild::current()` returns only the latest live,
@@ -947,6 +955,7 @@ operation within 3% of the merge base and of the last release).
 [actor_scenarios]: ../../concurrency/tests/actor_scenarios.rs
 [cancellation_safety]: ../../concurrency/tests/cancellation_safety.rs
 [cohort_trace]: ../../concurrency/tests/cohort_trace.rs
+[collateral_kill]: ../../concurrency/tests/collateral_kill.rs
 [context_exit]: ../../concurrency/tests/context_exit.rs
 [cross_backend]: ../../concurrency/tests/cross_backend.rs
 [introspection]: ../../concurrency/tests/introspection.rs
@@ -969,6 +978,7 @@ operation within 3% of the merge base and of the last release).
 [native_mailbox_drop]: ../../concurrency/tests/native_mailbox_drop.rs
 [nested_supervision]: ../../concurrency/tests/nested_supervision.rs
 [panic_safety]: ../../concurrency/tests/panic_safety.rs
+[panic_payload_drop]: ../../concurrency/tests/panic_payload_drop.rs
 [payload_stress]: ../../concurrency/tests/payload_stress.rs
 [protocol_timeouts]: ../../concurrency/tests/protocol_timeouts.rs
 [request_histories]: ../../concurrency/tests/request_histories.rs

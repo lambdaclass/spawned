@@ -226,8 +226,12 @@ spawned/
 ├── rt/            # Runtime abstraction (wraps tokio, provides CancellationToken)
 ├── examples/      # Usage examples and capability guides
 ├── docs/          # Guide, migration, testing, design contracts
-├── benchmarks/    # Benchmark harness
-└── verification/  # TLA+ model
+├── testing/       # spawned-test: mocks, probes, harness helpers, fault injection
+├── sim-libc/      # libc interposers used only under --cfg spawned_sim
+├── fuzz/          # Scenario fuzzer, oracles and regression inputs
+├── benchmarks/    # Benchmark harness and perf gate
+├── scripts/       # CI and verification helper scripts
+└── verification/  # TLA+ models, trace validation, planted bugs, API policy
 ```
 
 Users depend only on `spawned-concurrency` (which re-exports the macros) and `spawned-rt`.
@@ -248,10 +252,12 @@ owned async/native/pinned execution groups are available in v0.7.0
 ## Roadmap
 
 Preserve typed protocols, dynamic actors, and both async and synchronous thread
-execution while improving production visibility and recovery. Next: verify the
-base lifecycle and validate v0.7 in client workloads, then add deferred replies,
-bounded admission and deadlines as client workloads require. See the
-[roadmap](ROADMAP.md) for the phases and the full ranked backlog.
+execution while improving production visibility and recovery. 0.8 shipped
+deferred replies and actor-owned jobs. Next, 0.9: soundness and introspection
+(the unified start API, `{shutdown, Term}` exits, `info()`, supervision-tree
+snapshots and an attachable console); bounded admission and deadlines are
+designed during 0.9. See the [roadmap](ROADMAP.md) for the phases and the full
+ranked backlog.
 
 ## Optional framework metrics
 

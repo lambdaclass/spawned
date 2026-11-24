@@ -811,6 +811,20 @@ def main():
     model_fault("MCCohortsAll", "FirstStartRetry", args.tlc, invariant="Safety")
     # Rank 5f: v0.7 charged every rebuilt child of a round.
     named_fault("MCCohortsAll", "PerChildCharge", "RoundCharged", args.tlc)
+    # V3: a round gave up on a stopped child after one interval, without
+    # the kill (the bug fixed with CKill/CStuck).
+    named_fault("MCCohortsAll", "StuckWithoutKill", "StuckOnlyAfterKill", args.tlc)
+    stuck = next(t for t in traces if t["name"] == "collateral-stuck-OneForAll")
+    def stuck_without_kill(events):
+        events.remove(next(e for e in events if e["a"] == "CKill"))
+    require_rejected(stuck, stuck_without_kill,
+                     "a collateral child's slot stuck without its kill", args.tlc)
+    killed = next(t for t in traces if t["name"] == "collateral-killed-RestForOne")
+    def stuck_before_its_kill(events):
+        kill = next(i for i, e in enumerate(events) if e["a"] == "CKill")
+        events.insert(kill, dict(events[kill], a="CStuck"))
+    require_rejected(killed, stuck_before_its_kill,
+                     "a collateral child's slot stuck before its kill", args.tlc)
     for label, pattern, replacement in SUPERVISION_S1_CONTROLS:
         spec_mutation("MCSupervision", "Supervision.tla", label, pattern, replacement,
                       "RestartFollowsPolicy", args.tlc)

@@ -12,7 +12,7 @@ account for when upgrading.
   features are removed from `spawned-rt` and `spawned-concurrency`. Since
   0.8.0 they only enabled `async`; drop them from your `features` list (use
   `async`, the default, if you need it explicitly). The research experiments
-  live in the unpublished `benchmarks/experiments` crate.
+  were removed (last at `bf59ace0`).
 
 - `ExitReason::Shutdown` carries an optional payload, OTP's
   `{shutdown, Term}`: it is now `Shutdown(Option<Arc<str>>)`. Every policy
@@ -32,6 +32,23 @@ account for when upgrading.
   shutdown means; `Shutdown(None)` in a pattern silently sends payload exits
   to the wildcard arm. `Display` prints `shutdown: <why>` for the payload
   form. `size_of::<ExitReason>()` is unchanged (24 bytes on 64-bit).
+
+- `spawned_rt::tasks::run` and `spawned_rt::threads::run` no longer install a
+  global `tracing` subscriber by default: a library must not set it. Enable
+  the new `fmt-subscriber` feature of `spawned-rt` to keep the old behaviour
+  (an `fmt` subscriber with `RUST_LOG`, default level `info`), or install your
+  own subscriber before `run` as any binary would. Code that never called
+  `run`, or already installs its own subscriber (Ethrex, Ethlambda), needs no
+  change. `tracing-subscriber` is no longer a dependency without the feature.
+
+  ```toml
+  spawned-rt = { version = "0.9", features = ["fmt-subscriber"] }
+  ```
+
+- `spawned-rt` enables only the Tokio features it uses (`rt`,
+  `rt-multi-thread`, `sync`, `time`, `signal`, `macros`) instead of `full`.
+  If your crate used Tokio's `fs`, `net`, `process` or `io-util` only through
+  spawned's dependency, enable them on your own `tokio` dependency.
 
 ## 0.8.0
 

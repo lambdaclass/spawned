@@ -4,8 +4,7 @@
 # names the dependency path and why it is accepted; see docs/TESTING.md.
 
 [graph]
-# Check every optional dependency (the experiments live outside the workspace,
-# in benchmarks/experiments, and are not checked).
+# Check every optional dependency.
 all-features = true
 
 [advisories]

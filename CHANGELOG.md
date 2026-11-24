@@ -2,8 +2,39 @@
 
 ## Unreleased
 
+- Remove the settled backend experiments: the `benchmarks/experiments` crate
+  and patch (with its ready-gate Loom harness and model-map entry), the
+  reliability campaign runner, the `fede_*`/`collect_*`/`render_*` research
+  scripts, their requirements files and an unused Dockerfile. They are at
+  `bf59ace0`; the conclusions stay in `benchmarks/README.md`.
+- **Breaking:** `spawned-rt` no longer sets a global `tracing` subscriber in
+  `run()` unless the new opt-in `fmt-subscriber` feature is enabled (the
+  examples enable it), and depends on Tokio with only the features it uses
+  instead of `full`. Downstream crates stop compiling `tracing-subscriber`
+  and Tokio's `fs`/`net`/`process`. See docs/MIGRATION.md.
+- Hygiene from an external review: stop tracking 1,644 build artifacts under
+  `examples/thread_only/target/` (`.gitignore` now ignores every `target/`);
+  the crates.io README example uses the 0.8 API (it did not compile) and is
+  now a doctest, so it cannot drift again; the README roadmap, project tree,
+  `semantics.md` status line and the `stack_budget` row in `TESTING.md` match
+  the current state.
 - Bump `url` to 2.5.9 in `Cargo.lock` (RUSTSEC-2026-0592, a stack overflow in
   `Url::origin()`); only the `updater` examples use it, through `reqwest`.
+- Fixed (V3, soundness): a OneForAll or RestForOne round never killed a
+  collateral child that missed its `shutdown_timeout`. The round's parent
+  exit signal ended the child controller's wait as if the child had exited
+  on its own, so it took the no-kill path, and the round coordinator gave
+  up after one interval and failed the tree. Now a round's stop is the
+  supervisor's: the child is killed at `shutdown_timeout` (OTP's shutdown,
+  then kill) and its slot is stuck, failing the tree, only if it also
+  misses a second interval after the kill; the coordinator's own wait is a
+  backstop beyond both. The child's controller observes the round's stop
+  directly, so the deadline also starts at the stop for a child that traps
+  exits (its parent exit signal waits behind its current handler).
+  `Cohorts.tla` gains `CKill` and `CStuck` with
+  `StuckOnlyAfterKill` (it had no kill or stuck step, so it permitted the
+  bug), trace-validated by a new `cohort_trace` scenario; a `#[sim_test]`
+  (`collateral_kill`) and planted bug 35 cover it.
 - Release qualification harness, `benchmarks/qualification/`: the client
   canaries and the ethrex memory run, consolidated from the hand-built 0.7.x
   and 0.8.0 runs into one parameterised, manual-only harness. It builds a
@@ -36,6 +67,25 @@
   (`activity`, `mailbox`) read `Unavailable(Feature)` until the
   `introspection` feature lands. Semantics section 13 (I1, I3, I10, I11).
 
+- Release fuzz campaign: `fuzz/release-campaign.sh` fuzzes for hours (default
+  4 h, 8 workers), replays and groups every failure, minimizes each distinct
+  one and writes it as a regression test (`fuzz/tests/campaign_*.rs`, its
+  input and shrunk tape), and keeps a `cmin`-reduced corpus for the next
+  campaign. A manual item of the release checklist (docs/TESTING.md); never
+  scheduled. Its first run (2.5 h, 40 million executions) found no framework
+  bug and one wrong oracle (L4 trusted a `trap_exit` made on an exited
+  actor), fixed with the regression `untrapped_shutdown_after_late_trap`.
+- Fixed: a panic whose payload's destructor also panics no longer unwinds the
+  actor's lifecycle. The run loop (both modes), helpers, `ChildSpec`
+  factories and native group workers dropped a caught panic payload in place,
+  so a panic in `started()`, a handler or `stopped()` with such a payload
+  skipped `stopped()`, published "actor lifecycle unwound" instead of the
+  hook's reason, and left a managed actor in its group's running set (a
+  native group worker whose actor root unwound with such a payload would also
+  have ended). Every caught payload now goes
+  through `dispose_panic` (L6), and the two remaining unguarded `tracing`
+  calls on cleanup paths (`unfinished_at_stop`, a native root unwinding) are
+  contained. Found by the scenario fuzzer's panic injection.
 - CI reliability: drop `magic-nix-cache-action` (its GitHub Actions cache
   backend failed runs with FlakeHub authentication, cache-service and SSL
   errors); give TLC 75% of RAM (`TLC_HEAP`) so liveness checking no longer runs
