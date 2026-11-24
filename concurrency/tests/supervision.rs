@@ -734,7 +734,8 @@ async fn system_shutdown_orders_standalone_actors_and_supervisor_trees_together(
         name: "a",
         log: log.clone(),
     }
-    .start_on(&group)
+    .with_options(&group)
+    .spawn()
     .unwrap();
     within!(a.ready()).await.unwrap();
     let mut trees = Vec::new();
@@ -752,7 +753,8 @@ async fn system_shutdown_orders_standalone_actors_and_supervisor_trees_together(
                 name: "c",
                 log: log.clone(),
             }
-            .start_on(&group)
+            .with_options(&group)
+            .spawn()
             .unwrap()
             .ready()
             .await
@@ -813,7 +815,7 @@ async fn stuck_supervisor_does_not_prevent_earlier_standalone_shutdown_after_sys
     use spawned_concurrency::tasks::ActorStart;
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("stuck-tree-order", 1).unwrap();
-    let earlier = Counter(0).start_on(&group).unwrap();
+    let earlier = Counter(0).with_options(&group).spawn().unwrap();
     within!(earlier.ready()).await.unwrap();
     let (entered_tx, entered) = tokio::sync::oneshot::channel();
     let (release, release_rx) = tokio::sync::oneshot::channel();

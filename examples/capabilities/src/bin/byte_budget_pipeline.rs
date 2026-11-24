@@ -65,8 +65,8 @@ impl Handler<Packet> for Forwarder {
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
     let budget = Arc::new(Semaphore::new(BUDGET));
-    let sink = Sink(0).start();
-    let forwarder = Forwarder(sink.clone()).start();
+    let sink = Sink(0).spawn();
+    let forwarder = Forwarder(sink.clone()).spawn();
     let mut producers = Vec::new();
     for _ in 0..8 {
         let budget = budget.clone();

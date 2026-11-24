@@ -109,7 +109,7 @@ pub fn backend_async_handles_send_and_request() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let counter = Counter { count: 0 }.start();
+                let counter = Counter { count: 0 }.spawn();
 
                 let result = counter.request(GetCount).await.unwrap();
                 assert_eq!(result, 0);
@@ -141,7 +141,10 @@ pub fn backend_blocking_handles_send_and_request() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let counter = Counter { count: 0 }.start_with_backend(Backend::Blocking);
+                let counter = Counter { count: 0 }
+                    .with_options(Backend::Blocking)
+                    .spawn()
+                    .unwrap();
 
                 let result = counter.request(GetCount).await.unwrap();
                 assert_eq!(result, 0);
@@ -168,7 +171,10 @@ pub fn backend_thread_handles_send_and_request() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let counter = Counter { count: 0 }.start_with_backend(Backend::Thread);
+                let counter = Counter { count: 0 }
+                    .with_options(Backend::Thread)
+                    .spawn()
+                    .unwrap();
 
                 let result = counter.request(GetCount).await.unwrap();
                 assert_eq!(result, 0);
@@ -195,9 +201,15 @@ pub fn multiple_backends_concurrent() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let async_counter = Counter { count: 0 }.start();
-                let blocking_counter = Counter { count: 100 }.start_with_backend(Backend::Blocking);
-                let thread_counter = Counter { count: 200 }.start_with_backend(Backend::Thread);
+                let async_counter = Counter { count: 0 }.spawn();
+                let blocking_counter = Counter { count: 100 }
+                    .with_options(Backend::Blocking)
+                    .spawn()
+                    .unwrap();
+                let thread_counter = Counter { count: 200 }
+                    .with_options(Backend::Thread)
+                    .spawn()
+                    .unwrap();
 
                 async_counter.request(Increment).await.unwrap();
                 blocking_counter.request(Increment).await.unwrap();
@@ -244,7 +256,7 @@ pub fn request_timeout() {
                 }
             }
 
-            let actor = SlowActor.start();
+            let actor = SlowActor.spawn();
             let result = actor
                 .request_with_timeout(SlowOp, Duration::from_millis(50))
                 .await;
@@ -260,7 +272,7 @@ pub fn recipient_type_erasure() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let counter = Counter { count: 42 }.start();
+                let counter = Counter { count: 42 }.spawn();
                 let recipient: Recipient<GetCount> = counter.recipient();
 
                 let rx = recipient
@@ -384,7 +396,7 @@ pub fn thread_backend_join_does_not_block_runtime() {
             runtime.block_on(async move {
                 let (held, release) = HeldThread::new();
                 let released = held.released.clone();
-                let actor = held.start_with_backend(Backend::Thread);
+                let actor = held.with_options(Backend::Thread).spawn().unwrap();
                 actor.send(StopSlow).unwrap();
                 let _releaser = rt::spawn(async move {
                     let _ = release.send(());
@@ -408,7 +420,7 @@ pub fn multiple_join_callers_all_notified() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let actor = SlowShutdownActor.start();
+                let actor = SlowShutdownActor.spawn();
                 let actor_clone1 = actor.clone();
                 let actor_clone2 = actor.clone();
 
@@ -524,9 +536,9 @@ pub fn badly_behaved_thread_non_blocking() {
                 .build()
                 .unwrap();
             runtime.block_on(async move {
-                let badboy = BadlyBehavedTask.start();
+                let badboy = BadlyBehavedTask.spawn();
                 badboy.send(DoBlock).unwrap();
-                let goodboy = WellBehavedTask { count: 0 }.start();
+                let goodboy = WellBehavedTask { count: 0 }.spawn();
                 goodboy.send(IncrementWell).unwrap();
                 rt::sleep(Duration::from_secs(1)).await;
                 let count = goodboy.request(GetCount).await.unwrap();
@@ -550,7 +562,7 @@ fn blocked_handler_does_not_stall_runtime(backend: Backend) {
     runtime.block_on(async move {
         let (held, release) = HeldThread::new();
         let entered = held.entered.clone();
-        let badboy = held.start_with_backend(backend);
+        let badboy = held.with_options(backend).spawn().unwrap();
         badboy.send(DoBlock).unwrap();
         let entered = crate::test_wait::wait_for_async(
             || async { entered.load(atomic::Ordering::SeqCst) },
@@ -559,7 +571,7 @@ fn blocked_handler_does_not_stall_runtime(backend: Backend) {
         .await;
         assert!(entered, "blocking handler never started");
 
-        let goodboy = WellBehavedTask { count: 0 }.start();
+        let goodboy = WellBehavedTask { count: 0 }.spawn();
         goodboy.send(IncrementWell).unwrap();
         let count = crate::test_wait::wait_for_async(
             || goodboy.request(GetCount),
@@ -615,7 +627,7 @@ pub fn panic_in_started_stops_actor() {
                     }
                 }
 
-                let actor = PanicOnStart.start();
+                let actor = PanicOnStart.spawn();
                 actor.join().await;
                 let result = actor.send(Ping);
                 assert!(result.is_err());
@@ -664,7 +676,7 @@ pub fn panic_in_handler_stops_actor() {
                     }
                 }
 
-                let actor = PanicOnMsg.start();
+                let actor = PanicOnMsg.spawn();
                 actor.send(Explode).unwrap();
                 actor.join().await;
                 let result = actor.request(Check).await;
@@ -714,7 +726,7 @@ pub fn panic_building_the_handler_future_is_a_handler_panic() {
                 }
 
                 let stopped = Arc::new(atomic::AtomicBool::new(false));
-                let actor = Eager(stopped.clone()).start();
+                let actor = Eager(stopped.clone()).spawn();
                 let reply = actor.request(Explode).await;
                 let reason = actor.wait_exit().await;
                 let ExitReason::Panic(message) = &reason else {
@@ -763,7 +775,7 @@ pub fn panic_in_stopped_still_completes() {
                     }
                 }
 
-                let actor = PanicOnStop.start();
+                let actor = PanicOnStop.spawn();
                 actor.send(StopMe).unwrap();
                 actor.join().await;
             });
@@ -778,7 +790,7 @@ pub fn send_message_on_delivers() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let counter = Counter { count: 0 }.start();
+                let counter = Counter { count: 0 }.spawn();
                 let ctx = counter.context();
                 send_message_on(ctx, rt::sleep(Duration::from_millis(10)), Increment);
                 let count = crate::test_wait::wait_for_async(
@@ -800,7 +812,7 @@ pub fn send_message_on_cancelled() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let counter = Counter { count: 0 }.start();
+                let counter = Counter { count: 0 }.spawn();
                 let ctx = counter.context();
                 send_message_on(ctx, rt::sleep(Duration::from_millis(200)), Increment);
                 // Stop actor before the future resolves
@@ -821,7 +833,7 @@ pub fn exit_reason_normal_on_clean_stop() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let actor = Counter { count: 0 }.start();
+                let actor = Counter { count: 0 }.spawn();
                 actor.request(StopCounter).await.unwrap();
                 let reason = actor.wait_exit().await;
                 assert!(matches!(reason, ExitReason::Normal));
@@ -858,7 +870,7 @@ pub fn exit_reason_panic_in_started() {
 
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let actor = PanicStart.start();
+                let actor = PanicStart.spawn();
                 let reason = actor.wait_exit().await;
                 assert!(
                     matches!(reason, ExitReason::Panic(ref msg) if msg.contains("boom in started"))
@@ -894,7 +906,7 @@ pub fn exit_reason_panic_in_handler() {
 
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let actor = PanicHandler.start();
+                let actor = PanicHandler.spawn();
                 let _ = actor.send(Explode);
                 let reason = actor.wait_exit().await;
                 assert!(
@@ -915,7 +927,7 @@ pub fn exit_reason_poll_returns_none_while_running() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let actor = Counter { count: 0 }.start();
+                let actor = Counter { count: 0 }.spawn();
                 assert!(actor.exit_reason().is_none());
                 actor.request(StopCounter).await.unwrap();
                 actor.join().await;
@@ -1023,13 +1035,13 @@ pub fn monitor_running_actor_delivers_down_on_exit() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let target = Counter { count: 0 }.start();
+                let target = Counter { count: 0 }.spawn();
                 let target_handle = target.child_handle();
 
                 let watcher = Watcher {
                     downs: Arc::new(Mutex::new(Vec::new())),
                 }
-                .start();
+                .spawn();
 
                 let monitor_ref = watcher.request(StartMonitor(target_handle)).await.unwrap();
 
@@ -1061,13 +1073,13 @@ pub fn demonitor_flushes_a_queued_down() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let target = Counter { count: 0 }.start();
+                let target = Counter { count: 0 }.spawn();
                 target.request(StopCounter).await.unwrap();
                 target.join().await;
                 let watcher = Watcher {
                     downs: Arc::new(Mutex::new(Vec::new())),
                 }
-                .start();
+                .spawn();
                 watcher
                     .request(MonitorThenDemonitor(target.child_handle()))
                     .await
@@ -1090,7 +1102,7 @@ pub fn monitor_already_dead_actor_delivers_down_immediately() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let target = Counter { count: 0 }.start();
+                let target = Counter { count: 0 }.spawn();
                 target.request(StopCounter).await.unwrap();
                 target.join().await;
                 let target_handle = target.child_handle();
@@ -1098,7 +1110,7 @@ pub fn monitor_already_dead_actor_delivers_down_immediately() {
                 let watcher = Watcher {
                     downs: Arc::new(Mutex::new(Vec::new())),
                 }
-                .start();
+                .spawn();
 
                 let _ = watcher.request(StartMonitor(target_handle)).await.unwrap();
 
@@ -1124,13 +1136,13 @@ pub fn demonitor_before_target_dies_suppresses_down() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let target = Counter { count: 0 }.start();
+                let target = Counter { count: 0 }.spawn();
                 let target_handle = target.child_handle();
 
                 let watcher = Watcher {
                     downs: Arc::new(Mutex::new(Vec::new())),
                 }
-                .start();
+                .spawn();
 
                 let monitor_ref = watcher.request(StartMonitor(target_handle)).await.unwrap();
                 watcher.request(CallDemonitor(monitor_ref)).await.unwrap();
@@ -1157,13 +1169,13 @@ pub fn multiple_monitors_each_get_own_ref_and_down() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let target = Counter { count: 0 }.start();
+                let target = Counter { count: 0 }.spawn();
                 let target_handle = target.child_handle();
 
                 let watcher = Watcher {
                     downs: Arc::new(Mutex::new(Vec::new())),
                 }
-                .start();
+                .spawn();
 
                 let r1 = watcher
                     .request(StartMonitor(target_handle.clone()))
@@ -1223,11 +1235,11 @@ pub fn monitor_table_is_cleaned_up_after_target_dies() {
 
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let target = Counter { count: 0 }.start();
+                let target = Counter { count: 0 }.spawn();
                 let watcher = Watcher {
                     downs: Arc::new(Mutex::new(Vec::new())),
                 }
-                .start();
+                .spawn();
 
                 let _ = watcher
                     .request(StartMonitor(target.child_handle()))
@@ -1278,13 +1290,13 @@ pub fn monitor_observes_panic_reason() {
 
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let target = PanicMe.start();
+                let target = PanicMe.spawn();
                 let target_handle = target.child_handle();
 
                 let watcher = Watcher {
                     downs: Arc::new(Mutex::new(Vec::new())),
                 }
-                .start();
+                .spawn();
 
                 let _ = watcher.request(StartMonitor(target_handle)).await.unwrap();
                 let _ = target.send(PanicMsg);
@@ -1316,13 +1328,13 @@ pub fn monitoring_actor_stops_before_target_does_not_panic() {
             // watcher exits cleanly.
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let target = Counter { count: 0 }.start();
+                let target = Counter { count: 0 }.spawn();
                 let target_handle = target.child_handle();
 
                 let watcher = Watcher {
                     downs: Arc::new(Mutex::new(Vec::new())),
                 }
-                .start();
+                .spawn();
 
                 let _ = watcher.request(StartMonitor(target_handle)).await.unwrap();
 
@@ -1396,7 +1408,7 @@ fn make_trapper(trap: bool) -> ActorRef<TrapActor> {
         exits: Arc::new(Mutex::new(Vec::new())),
         trap,
     }
-    .start()
+    .spawn()
 }
 
 #[test]
@@ -1507,7 +1519,7 @@ pub fn link_normal_exit_not_propagated_to_non_trapping_peer() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let a = Counter { count: 0 }.start();
+                let a = Counter { count: 0 }.spawn();
                 let b = make_trapper(false);
                 b.request(LinkTo(a.child_handle())).await.unwrap();
 
@@ -1591,7 +1603,7 @@ pub fn unlink_prevents_signal_delivery() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let a = Counter { count: 0 }.start();
+                let a = Counter { count: 0 }.spawn();
                 let b = make_trapper(true);
                 b.request(LinkTo(a.child_handle())).await.unwrap();
 
@@ -1652,7 +1664,7 @@ pub fn duplicate_link_is_idempotent() {
         move || {
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let a = Counter { count: 0 }.start();
+                let a = Counter { count: 0 }.spawn();
                 let b = make_trapper(true);
                 b.request(LinkTo(a.child_handle())).await.unwrap();
                 b.request(LinkTo(a.child_handle())).await.unwrap(); // duplicate
@@ -1843,8 +1855,8 @@ pub fn start_linked_links_atomically() {
 
             let runtime = rt::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let parent = Parent.start();
-                let child = Child.start_linked(&parent.context());
+                let parent = Parent.spawn();
+                let child = Child.start_link(&parent.context()).actor_ref().unwrap();
 
                 // Parent panics — child should die too
                 let _ = parent.send(PanicParent);

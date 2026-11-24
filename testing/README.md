@@ -29,7 +29,7 @@ use std::time::Duration;
 struct Lookup { key: u64 }
 impl Message for Lookup { type Result = u64; }
 
-let server = Mock::new().on::<Lookup>(|msg| msg.key + 1).start();
+let server = Mock::new().on::<Lookup>(|msg| msg.key + 1).spawn();
 assert_eq!(server.request(Lookup { key: 41 }).unwrap(), 42);
 let received: Lookup = server.expect(Duration::from_secs(1));
 assert_eq!(received.key, 41);

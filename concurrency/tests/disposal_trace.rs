@@ -169,7 +169,7 @@ async fn stop(owner: ActorRef<Owner>) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn expired_callers_are_woken_by_workers() {
     let _serial = SERIAL.lock().await;
-    let owner = Owner::default().start();
+    let owner = Owner::default().spawn();
     record().await;
     expire_callers(&owner).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -186,7 +186,7 @@ async fn expired_callers_are_woken_by_workers() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn released_payloads_are_dropped_by_workers() {
     let _serial = SERIAL.lock().await;
-    let owner = Owner::default().start();
+    let owner = Owner::default().spawn();
     let drops = Arc::new(AtomicUsize::new(0));
     record().await;
     discard_an_emit(&owner, &drops).await;
@@ -225,7 +225,7 @@ mod with_failpoints {
             gate: Some((gate, stopping_tx)),
             ..Owner::default()
         }
-        .start();
+        .spawn();
         let drops = Arc::new(AtomicUsize::new(0));
         record().await;
         failpoints::configure(
@@ -272,7 +272,7 @@ mod with_failpoints {
         failpoints::configure("disposal.keep_alive", FailPoint::new(Action::Error)).unwrap();
         // Let the workers left by earlier scenarios retire first.
         tokio::time::sleep(Duration::from_millis(100)).await;
-        let owner = Owner::default().start();
+        let owner = Owner::default().spawn();
         record().await;
         expire_callers(&owner).await;
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -293,7 +293,7 @@ mod with_failpoints {
     async fn batch_serial_control() {
         let _serial = SERIAL.lock().await;
         let _scenario = FailScenario::setup();
-        let owner = Owner::default().start();
+        let owner = Owner::default().spawn();
         record().await;
         failpoints::configure("disposal.batch_serial", FailPoint::new(Action::Error)).unwrap();
         expire_callers(&owner).await;

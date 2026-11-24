@@ -35,7 +35,7 @@ fn linking_between_death_point_and_publication_delivers_noproc() {
             let events = Arc::new(Mutex::new(Vec::new()));
             let observer = {
                 let _entered = rt.enter();
-                Observer(events.clone()).start()
+                Observer(events.clone()).spawn()
             };
             observer.context().trap_exit(true);
             let peer_id = ActorId::next();
@@ -98,11 +98,11 @@ fn never_polled_actor_propagates_runtime_shutdown_to_peer() {
             let survivor = runtime();
             let target = {
                 let _entered = owner.enter();
-                Idler.start()
+                Idler.spawn()
             };
             let peer = {
                 let _entered = survivor.enter();
-                Idler.start()
+                Idler.spawn()
             };
             peer.context().link(&target.child_handle());
             // The owner runtime never polls its actor. Dropping it must still close links.
@@ -148,12 +148,12 @@ fn polled_actor_propagates_runtime_shutdown_to_peer() {
             let survivor = runtime();
             let target = {
                 let _entered = owner.enter();
-                Idler.start()
+                Idler.spawn()
             };
             owner.block_on(target.request(Ping)).unwrap();
             let peer = {
                 let _entered = survivor.enter();
-                Idler.start()
+                Idler.spawn()
             };
             peer.context().link(&target.child_handle());
             drop(owner);
@@ -192,12 +192,12 @@ fn never_polled_actor_notifies_monitor_on_runtime_shutdown() {
             let survivor = runtime();
             let target = {
                 let _entered = owner.enter();
-                Idler.start()
+                Idler.spawn()
             };
             let (tx, rx) = spawned_rt::tasks::oneshot::channel();
             let observer = {
                 let _entered = survivor.enter();
-                MonitorObserver(Some(tx)).start()
+                MonitorObserver(Some(tx)).spawn()
             };
             {
                 let _entered = survivor.enter();
@@ -276,9 +276,9 @@ fn late_link_failure_relabels_an_already_requested_normal_stop() {
                         entered: Some(entered_tx),
                         release: Some(release_rx),
                     }
-                    .start(),
-                    Idler.start(),
-                    Idler.start(),
+                    .spawn(),
+                    Idler.spawn(),
+                    Idler.spawn(),
                 )
             };
             stopping.context().link(&failing.child_handle());
@@ -331,7 +331,7 @@ fn start_linked_registers_before_async_started() {
                 .unwrap();
             let parent = {
                 let _entered = rt.enter();
-                Idler.start()
+                Idler.spawn()
             };
             for _ in 0..32 {
                 let (tx, rx) = spawned_rt::tasks::oneshot::channel();
@@ -341,7 +341,9 @@ fn start_linked_registers_before_async_started() {
                         parent: parent.id(),
                         seen: Some(tx),
                     }
-                    .start_linked(&parent.context())
+                    .start_link(&parent.context())
+                    .actor_ref()
+                    .unwrap()
                 };
                 assert!(rt.block_on(rx).unwrap());
                 assert_eq!(rt.block_on(child.wait_exit()), ExitReason::Normal);
@@ -365,11 +367,11 @@ fn never_polled_monitor_owner_releases_waiter_and_refuses_late_registration() {
             let (tx, _rx) = spawned_rt::tasks::oneshot::channel();
             let owner = {
                 let _entered = owner_rt.enter();
-                MonitorObserver(Some(tx)).start()
+                MonitorObserver(Some(tx)).spawn()
             };
             let target = {
                 let _entered = survivor.enter();
-                Idler.start()
+                Idler.spawn()
             };
             let handle = target.child_handle();
             let probe = handle.lifetime_probe();
@@ -416,11 +418,11 @@ fn linked_runtime_abort_is_trappable() {
             let events = Arc::new(Mutex::new(Vec::new()));
             let target = {
                 let _entered = owner.enter();
-                Idler.start()
+                Idler.spawn()
             };
             let peer = {
                 let _entered = survivor.enter();
-                Observer(events.clone()).start()
+                Observer(events.clone()).spawn()
             };
             peer.context().trap_exit(true);
             peer.context().link(&target.child_handle());
@@ -476,7 +478,7 @@ fn never_polled_completion_waits_for_actor_payload_destruction() {
                     entered: entered_tx,
                     release: release_rx,
                 }
-                .start()
+                .spawn()
             };
             let shutdown = std::thread::spawn(move || drop(owner));
             let entered = entered_rx.recv_timeout(Duration::from_secs(2));
@@ -518,9 +520,9 @@ fn linked_runtime_abort_cancels_an_idle_threads_actor() {
             let waiter = runtime();
             let target = {
                 let _entered = owner.enter();
-                Idler.start()
+                Idler.spawn()
             };
-            let peer = ThreadPeer.start();
+            let peer = ThreadPeer.spawn();
             peer.context().link(&target.child_handle());
             drop(owner);
             let result = waiter.block_on(async {
@@ -570,7 +572,7 @@ fn dropping_runtime_with_large_polled_link_cycle_reclaims_every_actor() {
             let dropped = Arc::new(AtomicUsize::new(0));
             let actors: Vec<_> = {
                 let _entered = owner.enter();
-                (0..4096).map(|_| Node(dropped.clone()).start()).collect()
+                (0..4096).map(|_| Node(dropped.clone()).spawn()).collect()
             };
             for i in 0..actors.len() {
                 actors[i]

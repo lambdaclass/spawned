@@ -33,7 +33,7 @@ fn native_explicit_exit_is_cooperative_and_first_reason_wins() {
     }
     for reason in [ExitReason::Shutdown(None), ExitReason::Kill] {
         let cleaned = Arc::new(AtomicBool::new(false));
-        let actor = Worker(cleaned.clone()).start();
+        let actor = Worker(cleaned.clone()).spawn();
         actor.request(Exit(reason.clone())).unwrap();
         actor.join();
         assert_eq!(actor.child_handle().exit_reason(), Some(reason));
@@ -69,7 +69,7 @@ async fn async_explicit_exit_is_cooperative_and_first_reason_wins() {
     }
     for reason in [ExitReason::Shutdown(None), ExitReason::Kill] {
         let cleaned = Arc::new(AtomicBool::new(false));
-        let actor = Worker(cleaned.clone()).start();
+        let actor = Worker(cleaned.clone()).spawn();
         actor.request(Exit(reason.clone())).await.unwrap();
         spawned_rt::tasks::timeout(std::time::Duration::from_secs(5), actor.join())
             .await

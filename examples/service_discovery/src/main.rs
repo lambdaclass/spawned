@@ -10,7 +10,7 @@ use spawned_rt::tasks as rt;
 fn main() {
     rt::run(async {
         // Start the service registry actor
-        let svc = ServiceRegistry::new().start();
+        let svc = ServiceRegistry::new().spawn();
 
         // Register the protocol ref by name — other actors can discover it
         registry::register("service_registry", svc.to_service_registry_ref()).unwrap();

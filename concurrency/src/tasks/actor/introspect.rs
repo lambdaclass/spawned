@@ -13,7 +13,7 @@ impl<A: Actor> Probe for ActorShared<A> {
             published: crate::child_handle::poll_exit_reason(&self.completion_rx).is_some(),
             monitors: crate::monitor::targets(&self.monitors).len(),
             jobs_running: self.jobs.running(),
-            scope: self.managed.as_deref(),
+            scope: self.managed.get().map(|scope| &**scope),
         })
     }
     fn monitors(&self) -> Vec<ActorId> {

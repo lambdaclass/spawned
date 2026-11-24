@@ -256,14 +256,29 @@ impl<A: Actor> Context<A> {
         if !registered {
             return monitor_ref;
         }
+        self.spawn_monitor_waiter(target.clone(), monitor_ref, active, None);
+        monitor_ref
+    }
 
-        let target = target.clone();
+    /// The monitor's waiter thread (see the tasks-mode `Context`): a
+    /// `start_monitor`'s `Down` is disposed of through the child's startup
+    /// cell.
+    fn spawn_monitor_waiter(
+        &self,
+        target: ChildHandle,
+        monitor_ref: MonitorRef,
+        active: spawned_rt::sync::CancellationToken,
+        cell: Option<Arc<crate::start::StartupCell>>,
+    ) where
+        A: Handler<Down>,
+    {
+        let observer = self.shared.id.raw();
         let actor_ref = self.actor_ref();
         let monitors = self.shared.monitors.clone();
         let registration = crate::monitor::MonitorRegistration(monitors.clone(), monitor_ref);
 
+        let mut watch = crate::start::DownWatch(cell);
         rt::spawn(move || {
-            let _registration = registration;
             let reason = futures::executor::block_on(async {
                 match futures::future::select(
                     Box::pin(active.cancelled()),
@@ -279,31 +294,76 @@ impl<A: Actor> Context<A> {
             // Receiver-side fence (E6): the entry is removed and the Down
             // enqueued in one critical section, so once `demonitor` returns
             // no Down of this monitor is enqueued.
-            crate::lifecycle_trace::life_section(observer, || {
-                crate::monitor::fence::deliver(&monitors, &monitor_ref, || {
-                    crate::lifecycle_trace::life_emit(observer, || {
-                        crate::lifecycle_trace::LifeEvent::new("Deliver", observer)
-                            .s(target.id().raw())
-                            .m(monitor_ref.raw())
-                            .x(crate::lifecycle_trace::life_reason(&reason))
-                            .k("down")
-                            .o("death")
+            let deliver = move |deliver: bool| {
+                let _registration = registration;
+                if !deliver {
+                    return;
+                }
+                crate::lifecycle_trace::life_section(observer, || {
+                    crate::monitor::fence::deliver(&monitors, &monitor_ref, || {
+                        crate::lifecycle_trace::life_emit(observer, || {
+                            crate::lifecycle_trace::LifeEvent::new("Deliver", observer)
+                                .s(target.id().raw())
+                                .m(monitor_ref.raw())
+                                .x(crate::lifecycle_trace::life_reason(&reason))
+                                .k("down")
+                                .o("death")
+                        });
+                        crate::lifecycle_trace::start_notice(
+                            observer,
+                            target.id().raw(),
+                            "monitor",
+                            &reason,
+                            || {
+                                let _ = enqueue_down(
+                                    &actor_ref.shared.sender,
+                                    &actor_ref.shared.mailbox,
+                                    &actor_ref.shared.replies,
+                                    Down {
+                                        monitor_ref,
+                                        actor: target.id(),
+                                        reason: reason.clone(),
+                                    },
+                                );
+                            },
+                        );
                     });
-                    let _ = enqueue_down(
-                        &actor_ref.shared.sender,
-                        &actor_ref.shared.mailbox,
-                        &actor_ref.shared.replies,
-                        Down {
-                            monitor_ref,
-                            actor: target.id(),
-                            reason,
-                        },
-                    );
                 });
-            });
+            };
+            match watch.take() {
+                None => deliver(true),
+                Some(cell) => {
+                    if let Some(deliver) = cell.dispose_down(Box::new(deliver)) {
+                        deliver(true);
+                    }
+                }
+            }
         });
+    }
 
-        monitor_ref
+    /// The start edge of a `start_monitor`: arm the waiter before dispatch.
+    pub(super) fn arm_start_monitor(
+        &self,
+        child: ChildHandle,
+        monitor_ref: MonitorRef,
+        active: spawned_rt::sync::CancellationToken,
+        cell: Arc<crate::start::StartupCell>,
+    ) where
+        A: Handler<Down>,
+    {
+        self.spawn_monitor_waiter(child, monitor_ref, active, Some(cell));
+    }
+
+    /// This actor as the parent of a `start_link`/`start_monitor`.
+    pub(super) fn parent_parts(&self) -> ParentParts {
+        ParentParts {
+            id: self.shared.id,
+            signal: self.shared.signal.clone(),
+            links: self.shared.links.clone(),
+            request: self.shared.linked_reason.clone(),
+            monitors: self.shared.monitors.clone(),
+            token: self.shared.cancellation_token.clone(),
+        }
     }
 
     /// Cancel a previously-set monitor.

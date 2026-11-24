@@ -511,7 +511,10 @@ async fn aborted_initial_startup_rolls_back_before_a_later_stuck_shutdown_target
         .unwrap();
     let release = Arc::new(tokio::sync::Notify::new());
     use spawned_concurrency::tasks::ActorStart;
-    let later = HeldStop(release.clone()).start_on(&group).unwrap();
+    let later = HeldStop(release.clone())
+        .with_options(&group)
+        .spawn()
+        .unwrap();
     within!(later.ready()).await.unwrap();
     let owner = system.clone();
     let shutdown =

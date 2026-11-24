@@ -87,7 +87,7 @@ mod tasks_mode {
 
     fn start() -> (ActorRef<Owner>, Arc<Log>) {
         let log = Arc::new(Log::default());
-        (Owner { log: log.clone() }.start(), log)
+        (Owner { log: log.clone() }.spawn(), log)
     }
 
     async fn wait_for(log: &Log, n: usize) -> Vec<String> {
@@ -495,7 +495,7 @@ mod threads_mode {
     #[test]
     fn in_actor_permits_and_emit_at() {
         let log = Arc::new(Log::default());
-        let actor = Owner { log: log.clone() }.start();
+        let actor = Owner { log: log.clone() }.spawn();
         let refused = in_actor(&actor, |_, ctx| {
             let permit = ctx
                 .reserve_blocking_job(JobOptions::new())
@@ -523,7 +523,7 @@ mod threads_mode {
     #[test]
     fn a_deadline_overtakes_a_result_held_for_scheduled_emits() {
         let log = Arc::new(Log::default());
-        let actor = Owner { log: log.clone() }.start();
+        let actor = Owner { log: log.clone() }.spawn();
         in_actor(&actor, |_, ctx| {
             let opts = JobOptions::new().deadline(Duration::from_millis(40));
             ctx.pipe_blocking(
@@ -549,7 +549,7 @@ mod threads_mode {
     #[test]
     fn a_held_result_keeps_its_credit_until_the_terminal_message() {
         let log = Arc::new(Log::default());
-        let actor = Owner { log: log.clone() }.start();
+        let actor = Owner { log: log.clone() }.spawn();
         let job = in_actor(&actor, |_, ctx| {
             ctx.pipe_blocking(
                 JobOptions::new(),
@@ -581,7 +581,7 @@ mod threads_mode {
     #[test]
     fn emit_at_a_past_instant_is_delivered_immediately() {
         let log = Arc::new(Log::default());
-        let actor = Owner { log: log.clone() }.start();
+        let actor = Owner { log: log.clone() }.spawn();
         in_actor(&actor, |_, ctx| {
             ctx.pipe_blocking(
                 JobOptions::new(),
@@ -603,7 +603,7 @@ mod threads_mode {
     #[test]
     fn send_handler_impls_answer_requests_with_unit() {
         let log = Arc::new(Log::default());
-        let actor = Owner { log: log.clone() }.start();
+        let actor = Owner { log: log.clone() }.spawn();
         assert!(matches!(actor.request(Poke(false)), Ok(())));
         assert!(matches!(actor.request(Poke(true)), Ok(())));
         assert_eq!(log.snapshot(), ["poked"]);
@@ -717,7 +717,7 @@ mod caller_gone_vs_shortening_tasks {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shortening_the_deadline_does_not_cancel_a_caller_gone_job() {
-        let actor = Delegator::default().start();
+        let actor = Delegator::default().spawn();
         let (deadline, cancelled) = actor
             .request_with_timeout(Ask, Duration::from_secs(60))
             .await
@@ -842,7 +842,7 @@ mod caller_gone_vs_shortening_threads {
 
     #[test]
     fn shortening_the_deadline_does_not_cancel_a_caller_gone_job() {
-        let actor = Delegator::default().start();
+        let actor = Delegator::default().spawn();
         let (deadline, cancelled) = actor
             .request_with_timeout(Ask, Duration::from_secs(60))
             .unwrap();

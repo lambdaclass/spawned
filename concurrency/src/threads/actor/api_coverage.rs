@@ -69,7 +69,7 @@ fn context_recipient_and_identity_reach_their_actor() {
             "::context_recipient_and_identity_reach_their_actor"
         ),
         move || {
-            let actor = Echo.start();
+            let actor = Echo.spawn();
             let (recipient, id) = actor.request(OwnRecipient).unwrap();
             assert_eq!(id, actor.id());
             assert!(matches!(request(&*recipient, Ask(7), WAIT), Ok(7)));
@@ -90,7 +90,7 @@ fn requests_to_a_stopped_actor_fail_without_waiting() {
             "::requests_to_a_stopped_actor_fail_without_waiting"
         ),
         move || {
-            let actor = Echo.start();
+            let actor = Echo.spawn();
             let recipient = actor.recipient::<Ask>();
             actor.child_handle().stop();
             actor.join();
@@ -115,12 +115,12 @@ fn admitted_requests_fail_when_the_handler_unwinds_before_replying() {
             "::admitted_requests_fail_when_the_handler_unwinds_before_replying"
         ),
         move || {
-            let actor = Echo.start();
+            let actor = Echo.spawn();
             assert!(matches!(
                 actor.request_with_timeout(Boom, WAIT),
                 Err(ActorError::ActorStopped(ExitReason::Panic(_)))
             ));
-            let other = Echo.start();
+            let other = Echo.spawn();
             let recipient = other.recipient::<Boom>();
             assert!(matches!(
                 request(&*recipient, Boom, WAIT),
@@ -138,7 +138,7 @@ fn requests_time_out_while_the_actor_is_busy() {
             "::requests_time_out_while_the_actor_is_busy"
         ),
         move || {
-            let actor = Echo.start();
+            let actor = Echo.spawn();
             let recipient = actor.recipient::<Ask>();
             let (release, held) = std_mpsc::channel();
             actor.send(StopAfter(held)).unwrap();
@@ -190,9 +190,9 @@ fn default_exit_received_keeps_a_trapping_actor_alive() {
             "::default_exit_received_keeps_a_trapping_actor_alive"
         ),
         move || {
-            let trapper = Trapper { trap: true }.start();
+            let trapper = Trapper { trap: true }.spawn();
             assert!(matches!(trapper.request(Ask(0)), Ok(0)));
-            let peer = Echo.start();
+            let peer = Echo.spawn();
             trapper.context().link(&peer.child_handle());
             peer.send(Boom).unwrap();
             assert!(matches!(peer.wait_exit(), ExitReason::Panic(_)));
@@ -213,8 +213,8 @@ fn unlink_prevents_signal_delivery() {
         concat!(module_path!(), "::unlink_prevents_signal_delivery"),
         move || {
             // Not trapping: a linked peer's panic would take this actor down.
-            let trapper = Trapper { trap: false }.start();
-            let peer = Echo.start();
+            let trapper = Trapper { trap: false }.spawn();
+            let peer = Echo.spawn();
             let peer_handle = peer.child_handle();
             trapper.context().link(&peer_handle);
             trapper.request(Unlink(peer_handle.clone())).unwrap();
@@ -243,8 +243,8 @@ fn opposite_links_between_the_same_pair_do_not_deadlock() {
         move || {
             // Each link/unlink locks both link tables. Both directions must take
             // the locks in the same global order, or these two loops deadlock.
-            let a = Trapper { trap: true }.start();
-            let b = Trapper { trap: true }.start();
+            let a = Trapper { trap: true }.spawn();
+            let b = Trapper { trap: true }.spawn();
             let (done, finished) = std_mpsc::channel();
             let workers: Vec<_> = [
                 (a.context(), b.child_handle()),
@@ -285,7 +285,7 @@ fn debug_output_names_the_handle() {
     crate::test_wait::bounded(
         concat!(module_path!(), "::debug_output_names_the_handle"),
         move || {
-            let actor = Echo.start();
+            let actor = Echo.spawn();
             assert!(format!("{actor:?}").starts_with("ActorRef"));
             assert!(format!("{:?}", actor.context()).starts_with("Context"));
             actor.child_handle().stop();

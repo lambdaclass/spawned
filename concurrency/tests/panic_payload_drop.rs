@@ -95,7 +95,7 @@ mod tasks_mode {
                 hook,
                 stopped: stopped.clone(),
             }
-            .start();
+            .spawn();
             let _ = actor.send(Go);
             let reason = tokio::time::timeout(Duration::from_secs(10), actor.wait_exit())
                 .await
@@ -114,7 +114,8 @@ mod tasks_mode {
             hook: Hook::Handler,
             stopped: stopped.clone(),
         }
-        .start_on(&group)
+        .with_options(&group)
+        .spawn()
         .unwrap();
         actor.send(Go).unwrap();
         let reason = tokio::time::timeout(Duration::from_secs(10), actor.wait_exit())
@@ -164,7 +165,7 @@ mod threads_mode {
                 hook,
                 stopped: stopped.clone(),
             }
-            .start();
+            .spawn();
             let _ = actor.send(Go);
             let (tx, rx) = std::sync::mpsc::channel();
             let waiter = actor.clone();

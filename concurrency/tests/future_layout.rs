@@ -87,7 +87,7 @@ async fn configured_protocol(actor: ActorRef<Worker>) -> Result<u64, ActorError>
 }
 #[spawned_macros::sim_test]
 async fn owned_send_request_and_protocol_futures_fit_the_pre_guard_layout() {
-    let actor = Worker.start();
+    let actor = Worker.spawn();
     let baseline = Baseline([0; BASELINE_WORDS]);
     assert_eq!(
         size_of_val(&actor),

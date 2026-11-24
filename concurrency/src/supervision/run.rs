@@ -699,11 +699,12 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
             future: construction,
             lease,
         });
+        let ready_scope = scope.clone();
         let startup = async {
             let actor = task
                 .await
                 .map_err(|e| format!("construction task failed: {e}"))??;
-            actor.ready().await.map_err(|e| e.to_string())?;
+            ready_scope.wait_ready().await?;
             Ok::<_, String>(actor)
         };
         let mut startup_timed_out = false;

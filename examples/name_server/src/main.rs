@@ -8,7 +8,7 @@ use spawned_rt::tasks as rt;
 
 fn main() {
     rt::run(async {
-        let ns = NameServer::new().start();
+        let ns = NameServer::new().spawn();
 
         ns.add("Joe".into(), "At Home".into()).await.unwrap();
 

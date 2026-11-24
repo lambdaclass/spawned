@@ -229,8 +229,8 @@ impl tasks::Handler<Down> for AsyncWorker {
 
 async fn async_pair(round: usize, i: usize) {
     use tasks::ActorStart;
-    let peer = AsyncWorker::new(format!("retained-a-{round}-{i}-peer")).start();
-    let worker = AsyncWorker::new(format!("retained-a-{round}-{i}")).start();
+    let peer = AsyncWorker::new(format!("retained-a-{round}-{i}-peer")).spawn();
+    let worker = AsyncWorker::new(format!("retained-a-{round}-{i}")).spawn();
     worker.request(Watch(peer.child_handle())).await.unwrap();
     for _ in 0..4 {
         assert_eq!(worker.request(Ask).await.unwrap(), 1);
@@ -257,9 +257,11 @@ async fn async_pair(round: usize, i: usize) {
     } else {
         (&peer, &worker)
     };
-    first.context().stop();
+    // An administrative stop (not the actor's own ctx.stop(), which inside a
+    // started() still running is Init::stop: no stopped(), so no unregister).
+    first.child_handle().stop();
     first.join().await;
-    second.context().stop();
+    second.child_handle().stop();
     second.join().await;
     assert!(orphan.await.is_err());
 }
@@ -354,8 +356,8 @@ impl threads::Handler<Down> for NativeWorker {
 
 fn native_pair(round: usize, i: usize) {
     use threads::ActorStart;
-    let peer = NativeWorker::new(format!("retained-n-{round}-{i}-peer")).start();
-    let worker = NativeWorker::new(format!("retained-n-{round}-{i}")).start();
+    let peer = NativeWorker::new(format!("retained-n-{round}-{i}-peer")).spawn();
+    let worker = NativeWorker::new(format!("retained-n-{round}-{i}")).spawn();
     worker.request(Watch(peer.child_handle())).unwrap();
     for _ in 0..4 {
         assert_eq!(worker.request(Ask).unwrap(), 1);
@@ -375,9 +377,11 @@ fn native_pair(round: usize, i: usize) {
     } else {
         (&peer, &worker)
     };
-    first.context().stop();
+    // An administrative stop (not the actor's own ctx.stop(), which inside a
+    // started() still running is Init::stop: no stopped(), so no unregister).
+    first.child_handle().stop();
     first.join();
-    second.context().stop();
+    second.child_handle().stop();
     second.join();
     assert!(orphan.recv().is_err());
 }
@@ -482,7 +486,7 @@ fn threads_timers_do_not_accumulate_on_a_running_actor() {
     // `send_interval` (lives until it stops) itself.
     let before = quiet()[11];
     let baseline = before + 1;
-    let actor = NativeWorker::new("retained-timer-host".into()).start();
+    let actor = NativeWorker::new("retained-timer-host".into()).spawn();
     for _ in 0..100 {
         threads::send_after(Duration::from_millis(1), actor.context(), Tick);
     }
@@ -635,7 +639,7 @@ impl tasks::Handler<JobDone> for AsyncExpirer {
 
 async fn async_expiry(dropped: std::sync::Arc<std::sync::atomic::AtomicUsize>) {
     use tasks::ActorStart;
-    let owner = AsyncExpirer::default().start();
+    let owner = AsyncExpirer::default().spawn();
     owner.request(StallJob(dropped)).await.unwrap();
     let expiring: Vec<_> = (0..3)
         .map(|_| owner.send_request(Park, Deadline::after(EXPIRE)).unwrap())
@@ -693,7 +697,7 @@ impl threads::Handler<JobDone> for NativeExpirer {
 
 fn native_expiry(dropped: std::sync::Arc<std::sync::atomic::AtomicUsize>) {
     use threads::ActorStart;
-    let owner = NativeExpirer::default().start();
+    let owner = NativeExpirer::default().spawn();
     owner.request(StallJob(dropped)).unwrap();
     let expiring: Vec<_> = (0..3)
         .map(|_| owner.send_request(Park, Deadline::after(EXPIRE)).unwrap())

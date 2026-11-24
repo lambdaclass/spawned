@@ -19,7 +19,7 @@ fn main() {
             "https://httpbin.org/ip".to_string(),
             Duration::from_millis(1000),
         )
-        .start();
+        .spawn();
 
         // giving it some time before ending
         rt::sleep(Duration::from_secs(10)).await;

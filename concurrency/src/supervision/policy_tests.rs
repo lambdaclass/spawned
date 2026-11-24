@@ -74,7 +74,7 @@ async fn initial_placement_failure_has_deterministic_failed_slots() {
             for _ in 0..8 {
                 let system = ActorSystem::new().unwrap();
                 let group = system.thread_group("placement-failure", 1).unwrap();
-                let occupied = CoordinatorWorker.start_on(&group).unwrap();
+                let occupied = CoordinatorWorker.with_options(&group).spawn().unwrap();
                 rt::timeout(Duration::from_secs(10), occupied.ready())
                     .await
                     .unwrap()
@@ -281,7 +281,8 @@ async fn admission_closure_after_readiness_preserves_fixed_system_order() {
                     entered: None,
                     release: None,
                 }
-                .start_on(&group)
+                .with_options(&group)
+                .spawn()
                 .unwrap()
                 .ready()
                 .await
@@ -312,7 +313,8 @@ async fn admission_closure_after_readiness_preserves_fixed_system_order() {
                 entered: None,
                 release: None,
             }
-            .start_on(&group)
+            .with_options(&group)
+            .spawn()
             .unwrap()
             .ready()
             .await
@@ -325,7 +327,8 @@ async fn admission_closure_after_readiness_preserves_fixed_system_order() {
                 entered: Some(entered),
                 release: Some(gate),
             }
-            .start_on(&group)
+            .with_options(&group)
+            .spawn()
             .unwrap()
             .ready()
             .await
@@ -395,7 +398,8 @@ async fn startup_completion_or_drop_after_readiness_preserves_system_order() {
                         entered: None,
                         release: None,
                     }
-                    .start_on(&group)
+                    .with_options(&group)
+                    .spawn()
                     .unwrap()
                     .ready()
                     .await
@@ -439,7 +443,8 @@ async fn startup_completion_or_drop_after_readiness_preserves_system_order() {
                     entered: None,
                     release: None,
                 }
-                .start_on(&group)
+                .with_options(&group)
+                .spawn()
                 .unwrap()
                 .ready()
                 .await
@@ -452,7 +457,8 @@ async fn startup_completion_or_drop_after_readiness_preserves_system_order() {
                     entered: Some(entered),
                     release: Some(gate),
                 }
-                .start_on(&group)
+                .with_options(&group)
+                .spawn()
                 .unwrap()
                 .ready()
                 .await
