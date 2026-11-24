@@ -33,3 +33,7 @@ id	name	file	bug
 32	start-link-to-exiting-parent	tasks/actor/lifecycle.rs	A start_link commits its link to a parent already exiting (stage-1 check misses a requested exit)
 33	start-kill-below-signal	link.rs	A held untrapped signal outranks a kill during started() (final reason not Killed)
 34	start-ready-in-closing-group	system.rs	A start commits ready while its execution group is closing (row 9 lost)
+35	sup-round-stop-skips-kill	supervision/run.rs	A round's collateral stop takes the self-exit path: no kill at shutdown_timeout, stuck after one interval (V3)
+37	cleanup-drop-uncontained	mailbox.rs	A payload destroyed after the death point (queued message, discarded job result or callback) is dropped without containment
+38	fenced-job-drop-in-turn	tasks/jobs.rs	A fenced job terminal drops its done callback and result in the owner's turn, so their destructor panic kills the owner
+39	handler-panic-log-unguarded	tasks/actor/lifecycle.rs	The handler-panic diagnostic calls the tracing subscriber unguarded, so a panicking subscriber unwinds the lifecycle and skips stopped()

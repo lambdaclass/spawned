@@ -78,6 +78,10 @@ impl<A: Actor> ActorRef<A> {
             linked_reason.clone(),
             cancellation_token.clone(),
             cell.clone(),
+            crate::introspection::Meta::new(
+                std::any::type_name::<A>(),
+                crate::introspection::Host::Native,
+            ),
         );
 
         let shared = Arc::new(ActorShared {
@@ -104,6 +108,7 @@ impl<A: Actor> ActorRef<A> {
             )),
             cleaned: Arc::default(),
         });
+        shared.signal.meta.set_probe(probe_of(&shared));
         let actor_ref = ActorRef {
             shared: shared.clone(),
         };
@@ -167,7 +172,7 @@ impl<A: Actor> ActorRef<A> {
                         let registered = crate::monitor::fence::register(
                             &p.monitors,
                             monitor_ref,
-                            active.clone(),
+                            (id, active.clone()),
                             || {
                                 let request = link::lock_request(&p.request);
                                 if request.reason().is_some()
@@ -233,7 +238,8 @@ impl<A: Actor> ActorRef<A> {
         .with_replies(actor_ref.shared.replies.clone())
         .with_jobs(actor_ref.shared.jobs.clone())
         .with_startup(cell, link_parent)
-        .with_name(name);
+        .with_name(name)
+        .with_report(actor_ref.shared.signal.clone());
         let startup = crate::actor_cleanup::ActorStartup::new(
             (actor, ctx, rx, cancellation_token),
             cleanup,

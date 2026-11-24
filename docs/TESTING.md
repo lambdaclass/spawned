@@ -144,7 +144,7 @@ section maps each one to what spawned does and lists where it is still behind.
 | Fault injection | Failpoints at named sites in the lifecycle code; suites that panic in every user callback and drop every public future at every await point |
 | Formal specifications | TLA+ models of every lifecycle protocol, each invariant with a negative control that must fail; Apalache proofs of the safety invariants |
 | Specs tied to the code | Trace validation of real runs against the models, trace coverage, and the required `model-sync` check: code that changes modelled behaviour without its model fails CI |
-| Proving the tests work | The [planted-bug matrix](#planted-bug-sensitivity) (all 24 realistic 0.8 bugs and the 10 for the 0.9 unified start caught, each by two or more layers), `cargo-mutants`, and the [semantics coverage](#semantics-coverage) matrix (a check that fails for all 50 guarantees) |
+| Proving the tests work | The [planted-bug matrix](#planted-bug-sensitivity) (all 24 realistic bugs of the six-layer run caught, each by two or more layers; each later bug, added with the fix it guards, caught by the layers it targets), `cargo-mutants`, and the [semantics coverage](#semantics-coverage) matrix (a check that fails for all 50 guarantees) |
 | Fuzzing, metamorphic testing | The coverage-guided [scenario fuzzer](#scenario-fuzzing-fuzz) with contract oracles; one workload on every backend must give the same result |
 | Linearizability checking | A Porcupine-style checker over concurrent request histories |
 | Memory-model checking | Loom, ThreadSanitizer, LeakSanitizer and Kani proofs |
@@ -204,7 +204,7 @@ Status of each layer. "Planned" items are tracked in the
 | Full functional proofs | Verus or Creusot | Restart budget, backoff window and generation logic wrong for inputs beyond Kani's bound | Later, once the APIs settle |
 | Pure arithmetic | Kani | Overflow, panics and off-by-one in backoff, jitter, the restart window and recovery ids, for all inputs in a bound | `concurrency/src/kani_proofs.rs`, weekly and on `concurrency/src` PRs |
 | Test quality | cargo-mutants | Tests that still pass when the code is broken | Weekly over supervision and system code |
-| Resource budgets | `future_layout`, `stack_budget` | Growth of handles, futures and lifecycle stack depth (a real client stack overflow before v0.7.1) | Sizes in CI; stack budgets in review (PR #220) |
+| Resource budgets | `future_layout`, `stack_budget` | Growth of handles, futures and lifecycle stack depth (a real client stack overflow before v0.7.1) | Sizes and stack budgets in CI (`future_layout`, `stack_budget`) |
 | Compatibility | cargo-semver-checks | Unexpected public API removals | In CI |
 | Macro misuse | trybuild compile-fail tests | `#[protocol]` and `#[actor]` misuse that compiles or gives an unclear error | In CI on the pinned toolchain ([macro diagnostics](#macro-diagnostics)) |
 | Feature separation | cargo-hack | Missing dependencies hidden by dev-dependency feature unification | CI builds each library feature, default, no-default and all features without dev dependencies |
@@ -378,6 +378,10 @@ giving collateral children their own backoff fails
 | T4 | paused-time tests and the simulator clock; `src/threads/timer_tests.rs::threads_send_*`; `supervision::native_restart_window_expires_on_the_monotonic_clock` | A N TG, Sim | partial → covered | |
 | P1 | `panic_safety`; `foreign_panics`; `mailbox_drop_panic`; failpoints | A B T N G TG | covered | not simulated |
 | P2 | `panic-abort` CI job; `foreign_panics::panicking_panic_hook_*` | A N | covered | no observer for `Down`/`Exit` |
+| I1 | `introspection::*::info_returns_during_a_wedged_turn`; `introspection::sim_mode::reads_do_not_change_the_tape` | A B T N G TG, Sim | new (0.9) | console reads: later steps |
+| I3 | `introspection::*::lifecycle_walks_*` (a destructor held between D and publication); `child_handle_info_after_every_ref_is_dropped` | A B T N G TG, Sim | new (0.9, tier 0 part) | counters: `introspection` feature |
+| I10 | `crash_reports` (panics in every hook, abnormal self-exit, no report for clean exits, kills and untrapped signals, supervised fields) | A N G | new (0.9, crash part) | supervisor reports, sessions |
+| I11 | perf gate (`hotpath.py gate`, against the merge base and the last release) | A N | new (0.9) | codegen diff: step 2 |
 
 Bugs found: none. Every gap test passed on the first correct run in both
 builds; the two initial `sim_ordering` failures were test errors (a stop
@@ -445,25 +449,11 @@ rejection permits no effect. Normal successful replies require their matching
 effect; the checker never treats ambiguous operations as acknowledged success.
 No automatic retry or exactly-once guarantee is introduced.
 
-The Linux campaign driver runs isolated owned process groups with CPU affinity,
-nice level, wall-time, sampled RSS, thread and descriptor budgets. Builds have a
-separate memory allowance from stress executables. It kills only its own process
-group on failure and writes commands, source revision, environment and resource
-peaks. The default 768-thread ceiling accommodates 256 offered-load producers
-and their collectors; they still share the declared CPU mask. Shared-page RSS
-can be counted more than once and short peaks can escape sampling.
-
-```sh
-python3 benchmarks/run_reliability.py --source . --out /tmp/spawned-reliability --cpus 2,3,4,5 --phase all --seconds 30 --replicates 3
-```
-
-Use an available CPU set appropriate to the machine. The benchmark phase records
-closed-loop requests, actor-to-actor graphs, concentrated offered load and actor
-churn/idle soaks. Benchmarks describe their generator as well as actor work; high
-producer counts do not imply that many actor workers. See the
-[recorded campaign](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/research/reliability/2026-11-06/README.md) for results,
-excluded preflights and reproducibility details. No throughput threshold is
-enforced in shared CI. Nightly CI retains failure coverage and stress logs.
+The isolated Linux reliability campaign (closed-loop requests, actor graphs,
+offered load, churn) and its runner were removed with the benchmark
+experiments; they are at `bf59ace0`, and the
+[recorded campaign](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/research/reliability/2026-11-06/README.md)
+is archived. No throughput threshold is enforced in shared CI.
 
 The suite generates 2–8 worker actors and an observer, with sequences of sends,
 requests, and dropped reply receivers. Every generated scenario runs on Tokio
@@ -948,7 +938,7 @@ oracle's name, so shrinking can match it):
 | X2 (flush) | No `Down` of a monitor is handled after the driver's `demonitor` of it returned (dispatch and the handler's record are one poll, so a `Down` whose dispatch began earlier is already recorded) |
 | X3, X5 | `Exit` carries the peer's published reason; a trapping, still-linked actor gets it (no more often than links were made); a non-trapping one does not survive a peer's abnormal exit |
 | X7 | No `Note` from a source after its `Down`/`Exit` at the same receiver |
-| X8 | An actor whose only possible stop cause was one driver `stop`, `shutdown` or `stop_with_reason` on it while alive publishes exactly that reason (skipped if a hook or the state destructor panicked) |
+| X8 | An actor whose only possible stop cause was one driver `stop`, `shutdown` or `stop_with_reason` on it while alive publishes exactly that reason (skipped if a hook panicked; a destructor panic after D is no excuse, L6) |
 | X3 (reason) | A standalone, non-trapping actor whose only possible stop cause was its link to a peer survives the peer's `Normal` exit, and after `Shutdown`, `Panic` or `Kill` publishes the peer's reason, so the crash keeps propagating |
 | X5 (unlink) | After the driver unlinks two running actors (and does not link them again), neither receives an `Exit` from the other, and a standalone actor whose only stop causes were links to that peer outlives it |
 | T1 (cancel) | A timer cancelled at time `c` delivers at most the ticks due by `c` (`send_after`: at most one, none if cancelled before its period; `send_interval`: one per elapsed period) |
@@ -963,6 +953,9 @@ oracle's name, so shrinking can match it):
 | V4, V9 | `current()` never returns an exited generation; a finished supervisor has every child `Stopped` or `Failed`, no live generation, and runs no factory afterwards; children stop in reverse declaration order |
 | S1-S4 | A complete system shutdown leaves no managed actor running and no coordinator failure; a shut-down system admits nothing; targets stop in reverse admission order |
 | M5, S3, S5 | After teardown: every actor state dropped, no registered name left, and the simulator's task count back to its starting value |
+| M6 (panic injection) | Every injected-fault payload (message, reply, job result, `done` captures, emit, helper locals, panic payload) is destroyed exactly once: never leaked, never twice |
+| L6 (panic injection) | A payload destructor that panics on its owner's own task (a queued message at the death point, a fenced or cancelled job's result, `done` or emit, a reply payload outside the actor's own `reply()` call) is that actor's recorded `cleanup_failure()`; with one stop request as the only cause, the published reason is still the requested one (X8 no longer excuses destructor panics) |
+| R1, R6 (panic injection) | Every `Fx` request resolves exactly once, deferred ones included (unbounded deadline; collected at a fence once resolved, at the latest after teardown): `Ok` with its own nonce, `ActorStopped`/`NoProc`, `RequestTimeout` not before its timeout, or `ReplyDropped`/`Overloaded` only for a deferred reply |
 
 Order checks run only after quiescing (timers cancelled, requests collected,
 every actor fenced, no child starting or backing off) and when every
@@ -1015,10 +1008,146 @@ for `Supervision.tla`, OneForAll and RestForOne, cohort actions only, for
 `fuzz/tla-sample.sh CORPUS [MAX] [OUT]` replays a corpus and runs
 `trace_check.py` on them (`nix develop -c fuzz/tla-sample.sh ...`).
 
+#### Panic injection
+
+The fuzz target reads its input in the fault format (`Format::Faults`): an
+operation whose 4-byte discriminant is `7 (mod 8)` is a fault step instead,
+and everything else decodes as before, so the committed seeds and the older
+regressions (`Format::Base`, `decode`, `assert_passes`, `repro --base`) keep
+their meaning. Fault steps arm entry points (`FaultOp::Arm`, each site about
+one time in four), send or request `Fx` commands (answer, defer, answer or
+drop deferred tokens, start a job, panic, spawn a helper) and arm `Fx`
+timers. Payloads are `Bomb`s: armed when their site was armed at creation,
+defused by the user code that takes them, so an armed one goes off only where
+the framework destroys or copies it on its own. Nothing goes off in the
+driver, its request tasks, or inside a handler's own call into the framework
+(a refused `pipe` drops `work` and `done` there by design, R7): those are the
+caller's context. All of it is harness code: the framework and the default
+build are untouched.
+
+Every place spawned runs user code, and how the harness reaches it:
+
+| Entry point | Runs on | Injection | Expected (contract) |
+|---|---|---|---|
+| `started()` | actor task | `Hooks` bits 0-2 (panic), `started_sleep` | `Panic`, no `stopped()` (L5) |
+| handlers (`Do`, `Fx`) | actor task | `Cmd::Panic`, `FaultCmd::Panic` | `Panic`, then `stopped()` (L5) |
+| `stopped()` | actor task | `Hooks` bits 3-5, `stopped_sleep`; answers deferred tokens | `Panic` unless killed (L3, L5) |
+| `exit_received` | actor task | `EXIT_PANIC` | handler panic (L4) |
+| `Down` handler | actor task | `DOWN_PANIC` | handler panic (L4) |
+| `Note` handler | actor task | `NOTE_PANIC` | handler panic (L4) |
+| state `Drop` | actor task, after D | `Hooks` bits 6-7 | cleanup failure, reason unchanged (L6) |
+| queued message `Drop` | actor task, after D | `MSG_DROP` | cleanup failure, reason unchanged (L6) |
+| refused message `Drop` | sender (driver, handler or timer task) | `MSG_DROP` | the sender's context |
+| timer message `Clone` (`send_interval`) | timer task | `MSG_CLONE` | the timer task ends; the actor is unaffected |
+| cancelled timer's message `Drop` | timer task | `MSG_DROP` | the timer task ends |
+| reply payload `Drop` (immediate and deferred replies) | wherever the slot dies: caller, deadline service, disposal worker | `REPLY_DROP` | contained off the caller (P1) |
+| deferred `ReplyTo`: answered in a turn, a job's `done`, `stopped()`, or dropped | actor task | `FaultCmd::{Defer, Answer, DropToken}`, `Pipe { answer }` | every caller answered once (R6) |
+| job work (async, blocking) | job task | `WORK_PANIC` | `JobError::Panicked` (R7) |
+| job `done` | actor task (a turn) | `DONE_PANIC` | handler panic |
+| job `done` dropped unrun (fenced, cancelled) | actor task or deadline service | `DONE_DROP` | contained; on the owner's task, a cleanup failure |
+| job result `Drop` (fenced, cancelled, keyed replacement, deadline, owner exit) | actor task, job task or deadline service | `RESULT_DROP` | contained (R7, L6) |
+| job emit `Drop` (`emit`, `emit_at`, fenced or expired) | actor task, job task or deadline service | `EMIT_DROP` | contained |
+| panic payload `Drop` | wherever the panic is caught | `PAYLOAD_DROP` (every injected panic) | `dispose_panic` forgets the secondary (L6) |
+| `tracing` subscriber | every task that logs | `TRACING` | contained where the contract says so (P1) |
+| `Debug` / `Display` of user payloads | none on main | `FMT` | armed for introspection (#301, #304, #305) |
+| `ChildSpec` factory (error, panic) | supervisor task | `WorkerDef::{fail_mask, panic_mask}` | a failed attempt (V1-V5) |
+| nested `configure` | supervisor task | `CONFIGURE_PANIC` | a failed attempt |
+| helper future body, `Drop` | helper task | `Cmd::Helper`, `HELPER_DROP` | `HelperError`, joined by the scope |
+
+Not reachable from the harness (single-threaded simulator, `tasks` mode
+only): `threads` mode, `Backend::Blocking`/`Thread` and native groups (their
+panic paths are covered by `panic_safety`, `native_mailbox_drop` and
+`foreign_panics`), stream listeners (`spawn_listener`, `send_message_on`),
+`spawned-test`'s `in_actor` closures, and wakers of user futures.
+
+`cargo run --release --example sites -- CORPUS` replays a corpus and counts,
+per site, the runs that armed it and made it go off. On the corpus of a
+40-minute run (2026-11-21, fede, 6 workers, 10.6 million executions, no
+failure with #309; 5,769 inputs), replayed with the harness of 2026-11-23
+(no failure), the runs in which each site went off:
+`MSG_DROP` 113, `MSG_CLONE` 36, `REPLY_DROP` 8, `RESULT_DROP` 23,
+`DONE_DROP` 47, `DONE_PANIC` 34, `WORK_PANIC` 34, `DOWN_PANIC` 5,
+`EXIT_PANIC` 9, `PAYLOAD_DROP` 425, `TRACING` 478, `CONFIGURE_PANIC` 298,
+`EMIT_DROP` 50, `NOTE_PANIC` 3, `HELPER_DROP` 6, and `FMT` 0 (the
+framework formats no user payload yet). Each site was armed in 400 to 743
+runs. (An earlier count also credited a `Clone` panic to the payload's
+`MSG_DROP`; subscriber and `configure` panics now carry an exploding
+payload too.)
+
+Findings: the payload of a caught panic was dropped in place at the
+`started()`, handler and `stopped()` boundaries (both modes), at helpers,
+factories and native group roots, so a payload whose destructor panicked
+unwound the lifecycle (no `stopped()` after a handler panic, reason "actor
+lifecycle unwound"); fixed in #309, regression
+`exploding_panic_payload_keeps_stopped` (45 bytes after `tmin`). Harness
+false positives kept as regressions: `refused_job_drops_in_handler_call`
+(a refused `pipe` drops `work` and `done` in the caller's call, R7) and
+`transient_restarts_on_job_payload_cleanup` (a job payload's destructor
+failed on the deadline service: still the owner's cleanup failure, which
+restarts a Transient child).
+
 CI (`fuzz.yml`) runs rustfmt, clippy and the harness tests (seeds,
 regressions, generated inputs) and a 60 s single-process smoke run on pull
 requests that touch `rt`, `concurrency`, `macros` or `fuzz`; longer
 campaigns are `workflow_dispatch` only. There is no scheduled run.
+
+#### Release fuzz campaign
+
+Sixty seconds per pull request is a smoke test, not a search: the V1/V2
+oracle fixed in #303 was wrong on main and only a long local run found it.
+Before each release a multi-hour campaign runs by hand
+([release checklist](#release-checklist)), with
+`fuzz/release-campaign.sh`:
+
+1. `campaign.sh` in fork mode (default 4 h, 8 workers) from `fuzz/seeds`
+   plus the previous campaign's minimized corpus;
+2. every crash, timeout and OOM artifact is replayed with `repro` (no
+   libFuzzer) and grouped by the failure it reproduces (`OUT/triage.tsv`); a
+   wall-clock timeout that does not reproduce under the simulator is reported,
+   not emitted;
+3. for each distinct failure the smallest inputs are minimized (`cargo fuzz
+   tmin`; a minimized input that now fails differently is dropped for its
+   original) and the smallest becomes a regression,
+   `fuzz/regressions/campaign_<oracle>_<hash>.{input,tape}` and
+   `fuzz/tests/campaign_<oracle>_<hash>.rs`: the strict replay of its shrunk
+   decision tape (permissive once a fix changes the task structure), plus 32
+   other seeds. The test fails until the framework bug or the oracle is
+   fixed; it is committed with the fix (and the TLA+ change, if the behaviour
+   is modelled), renamed after the cause;
+4. the corpus is reduced with `cargo fuzz cmin` (libFuzzer's smallest subset
+   with the same coverage, run on a copy) and, if that succeeded and kept
+   inputs, replaces the persistent corpus directory
+   (`-c`, default `~/spawned-work/fuzz-corpus` on fede), so the next campaign
+   starts where this one stopped. It is not committed: `fuzz/seeds` stays the
+   small checked-in corpus. A re-triage (`-T`) leaves it alone;
+5. `OUT/summary.txt` records the commit, host, time, executions, coverage,
+   failures and emitted regressions.
+
+```sh
+# on fede, in a spawned checkout under ~/spawned-work, at the release commit
+export CARGO_INCREMENTAL=0
+nice -n 10 fuzz/release-campaign.sh -t 14400 -j 8 -o ~/spawned-work/fuzz-release-<version>
+fuzz/release-campaign.sh -T -o ~/spawned-work/fuzz-release-<version>   # re-triage after a fix
+rm -rf fuzz/target                                                      # about 3 GB
+```
+
+**First release campaign** (2026-11-21, fede, 2.5 h, 8 workers at `nice
+10` on a shared 30-core host, main at `96803e5e` plus the #303 oracle fix):
+40.2 million executions (330-1,100 per second), edge coverage 11,380 after
+one minute and 12,170 at the end, corpus 6,513 inputs reduced to 4,660
+(19 MB). Nine failing inputs, all one failure: the L4 oracle misread the
+trap flag of an actor the driver called `trap_exit` on after it had exited, a
+harness false positive (regression `untrapped_shutdown_after_late_trap`, the
+script's 51-byte minimization; see the table below). No framework bug. With
+the oracle fixed, a re-triage (`-T`) of all nine reproduces none.
+
+The script exits non-zero when any failure reproduces, or when a replay is
+unresolved: `repro` hung past `REPRO_TIMEOUT` (900 s) or died without an
+oracle verdict (a crash outside the oracles is a failure too). Triage each one as a
+framework bug (fix it with the emitted test, and the model in the same PR if
+the behaviour is modelled) or a wrong oracle (fix the oracle; the emitted
+test stays as its regression). A campaign is clean only when a re-triage
+(`-T`) of all its artifacts, on the fixed tree, emits nothing.
 
 **First campaign** (2026-11-11, a shared 30-core Linux server, libFuzzer fork
 mode with 4 then 2 workers at `nice 19`, `-s none`): about 3 h 10 min and
@@ -1050,6 +1179,7 @@ input and, for random schedules, its tape:
 | X3 | `ctx.link` from an exited actor's context is a no-op (`register_link` sees its own table closed), while linking to an exited peer delivers its reason (X5); found by the generated-input test before the campaign. The asymmetry is not stated in the semantics contract. |
 | livelock | a nested subtree that restarts more slowly than its parent's budget refills retries forever; the start is now bounded at 30 s |
 | V5 exhaustion | the oracle measured the window at the end of the exhausting child's last attempt, but a collateral OneForAll child reserves only after its round's cleanup, and a superseding round (a sibling's failed rebuild) makes it reserve again later; the oracle now takes the most grants at any moment up to the tree's last grant (`budget_reserved_after_round`) |
+| L4 (release campaign) | an actor panicked, then an untrapped `Shutdown` replaced the reason during `stopped()` (allowed for a non-trapping actor), but the oracle took the driver's later `trap_exit(true)` on the exited actor as its flag; a trap flag set on an exiting or exited actor is now unknown (`untrapped_shutdown_after_late_trap`) |
 
 ## Scope
 
@@ -1562,7 +1692,9 @@ catches the bugs a reviewer would actually miss, 24 realistic bugs were written
 notice disposition table, the answer after publication, the held administrative stop,
 held signals, the stage-1 parent check, the decision precedence and row 9)
 by hand (`verification/planted/patches/`, one patch each, listed in
-`INDEX.tsv`) and each was run, alone, against six layers:
+`INDEX.tsv`) and each was run, alone, against six layers. Later bugs are
+added with the fix they guard and numbered by PR (25-34 #293, 35 #310, 37-39 #308), and
+run on the layers that target them (their rows say which):
 
 | Layer | What runs | Budget |
 |---|---|---|
@@ -1575,7 +1707,7 @@ by hand (`verification/planted/patches/`, one patch each, listed in
 
 ```sh
 verification/planted/run.sh -l TSCFVK -f 900 -o /tmp/planted baseline   # control: every layer must miss
-verification/planted/run.sh -l TSCFVK -f 600 -o /tmp/planted             # all 34 patches
+verification/planted/run.sh -l TSCFVK -f 600 -o /tmp/planted             # every patch
 verification/planted/run.sh -l TS -o /tmp/planted verification/planted/patches/09-*.patch
 ```
 
@@ -1646,13 +1778,22 @@ times the other rows'); its unpatched control missed in C and in F (300 s,
 | 22 | `send_interval` keeps ticking after its actor stops | 149 (2 tests) | 66 (1 test) | 30 | 52 (T2) | - | - |
 | 23 | System shutdown stops targets in admission order | 65 | 12 | 8 | <1 (S2) | - | - |
 | 24 | System shutdown ignores admission order between actors and trees | 40 | 13 | - | 11 (S2) | - | - |
+| 35 | A round's collateral stop is never killed; stuck after one interval (V3) | 116 (2 tests) | 55 (1 test) | n/r | n/r | 50 (1 trace rejected) | n/r |
 | | **Caught** | **24** | **18** | **14** | **22** | **4** | **2** |
+
+Row 35 (layers T, S and V only, so it is not in the totals; n/r is not run;
+T and S on 2026-11-21 at `c08d3202`; V on 2026-11-23 on a laptop, the
+collateral trace test and its check only). V catches it because the trace
+scenario runs its stuck case first and writes each trace before checking
+the exit reason, so the bug's `CStuck` without a `CKill` reaches the model.
+Before, the scenario failed waiting for the kill and wrote no trace.
 
 Before the follow-ups (2026-11-11, `cc60801d`, five layers, no K): caught
 T 22, S 15, C 6, F 9, V 4; bugs 08 and 20 hung T; F missed every
 restart-decision, budget, backoff and exit-reason bug (01-04, 06, 08, 13, 14).
-Now all 24 are caught by at least one layer and every bug by at least two
-(15, which used to escape everything, by T, S, C and F; see below).
+Now all 24 of this matrix are caught by at least one layer and every one by at least two
+(15, which used to escape everything, by T, S, C and F; see below). The
+panic-injection bugs 37-39 have their own table below.
 
 - **F now catches 22 of 24** (was 9), all but one within 60 s. The new oracles
   (see "Scenario fuzzing") check which children a restart rebuilds (03, 04:
@@ -1706,6 +1847,17 @@ Now all 24 are caught by at least one layer and every bug by at least two
 | 15 | Fuzzer **X2** (flush): no `Down` is handled after the driver's `demonitor` of it returned; the minimized input is the regression `down_after_demonitor` | F, C, T (was none in the matrix; see below) |
 | 17 | Fuzzer **L7** (monitor waiters): after the leak checks, an observer that exits while monitoring a live target leaves the task count where it was before the observer started. A fixed end-of-run probe, so every input catches it | F, C, T, S (was T, S) |
 | 22 | Fuzzer **T2** (stop): a `send_interval` task starts no round after its actor's exit is published (the harness counts clones of the timer message) | F, C, T, S (was T, S) |
+
+**Panic-injection bugs (37-39).** Three patches plant containment bugs on
+the paths the [panic injection](#panic-injection) reaches, each run against
+C and F (600 s) on the injection branch with the payload-disposal fix (#309),
+after a clean baseline (C and F missed, 636,000 executions):
+
+| Bug | Planted fault | C (s) | F (s, oracle) |
+|---|---|---|---|
+| 37 | A payload destroyed after the death point (queued message, discarded job result or callback) is dropped without containment | - | 9 (L6: not recorded as a cleanup failure) |
+| 38 | A fenced job terminal drops `done` and its result in the owner's turn | - | 269 (M: an actor stopped without any cause) |
+| 39 | The handler-panic diagnostic calls the subscriber unguarded (a panicking subscriber skips `stopped()`) | 30 (`exploding_panic_payload_keeps_stopped`) | 3 (L5: `stopped()` did not run after a handler panic) |
 
 Bug 15 used to be unobservable: before 0.8 `demonitor` was best-effort ("the
 message may still arrive"), so a `Down` after it returned was allowed. Since
@@ -2352,6 +2504,11 @@ publishes to crates.io):
    attributed by owner). Link both `SUMMARY.md` files in the release PR. Start
    them by hand; the two runs use different ports and can share a host if the
    disk allows.
+6. A 4-hour [release fuzz campaign](#release-fuzz-campaign) on fede at the
+   release commit (`fuzz/release-campaign.sh -t 14400 -j 8`), started by hand.
+   Every failure it finds is triaged and fixed (framework or oracle) with its
+   emitted regression test before tagging; link `summary.txt` and the
+   triage in the release PR.
 
 ## CI hardening
 
@@ -2411,9 +2568,7 @@ setting but not CPU confinement.
 `deny.toml` configures cargo-deny (advisories, licenses, duplicate versions as
 warnings, crates.io as the only source) and `.cargo/audit.toml` configures
 cargo-audit; the `supply-chain` CI job runs both. Unmaintained, unsound and
-yanked crates fail the job like vulnerabilities. The benchmark experiments
-(monoio, pprof) are a standalone crate outside the workspace
-(`benchmarks/experiments`), so neither tool scans them. Each accepted
+yanked crates fail the job like vulnerabilities. Each accepted
 advisory is listed with its path and reason in `deny.toml`; keep both ignore
 lists identical and drop entries when the upstream path moves.
 

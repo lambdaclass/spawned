@@ -39,6 +39,8 @@ mod envelope;
 use envelope::*;
 mod actor_ref;
 mod context;
+mod introspect;
+use introspect::probe_of;
 mod lifecycle;
 #[cfg(test)]
 use lifecycle::run_actor;
@@ -332,6 +334,10 @@ fn test_context<A: Actor>(
         request.clone(),
         token.clone(),
         crate::start::StartupCell::new(),
+        crate::introspection::Meta::new(
+            std::any::type_name::<A>(),
+            crate::introspection::Host::Async,
+        ),
     );
     let ctx = Context {
         shared: Arc::new(ActorShared {

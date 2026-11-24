@@ -1,6 +1,7 @@
 # Introspection v1 (0.9 design, revision 3, in review)
 
-Status: design only, not implemented. Revisions 2 and 3 answer two rounds of
+Status: step 0 merged (#284); step 1 (tier 0) being implemented in staged
+PRs: `info()`, labels and crash reports first. Revisions 2 and 3 answer two rounds of
 independent reviews (Codex and agy, each round "approve after the listed
 changes"; no P0 remained after round one); see
 [Review resolutions](#review-resolutions). Priority tier 2 of the
@@ -1409,7 +1410,18 @@ observed for 9.8 s in `info()` and `ShutdownReport`.
 0. Threads mode onto `Arc<ActorShared<A>>`, measured on its own (done, #284).
 1. Tier 0: metadata and labels, `info()`, trees with the shared types, crash
    and supervisor events, `StatusEnvelope`, `get_state`/`get_status`,
-   `Inspect`, `ActorError::CallbackFailed`.
+   `Inspect`, `ActorError::CallbackFailed`. Staged: (1a) `info()`, labels,
+   `ChildHandle::links`/`monitors`, `SystemId`, crash reports; (1b) the
+   status turn; (1c) supervision trees and supervisor reports. Decisions
+   taken in 1a, where this design left room: a crash report is emitted only
+   for an abnormal reason the actor produced itself (a panic, an abnormal
+   self-exit or parent exit), not for one a kill, an untrapped signal or a
+   runtime drop imposed (OTP: such a process runs no code, so `proc_lib`
+   reports nothing); `name` comes from registrations owned by the actor's
+   identity (a plain `registry::register` stores a value, not a process);
+   `Parent` is `None`, `Actor(id)` or `System`; `restarts` of a supervisor
+   position is `generation - 1`; `is_alive()` keeps its 0.8 meaning (false
+   from publication) until listings land in step 2.
 2. Tables (`console` or `introspection`), `processes()`, `snapshot()`, wire
    structs; tier 1 activity slot, interner, clock, mailbox counters; fold
    `diagnostics`; benchmark gate and codegen check.

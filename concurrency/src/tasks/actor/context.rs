@@ -244,7 +244,7 @@ impl<A: Actor> Context<A> {
             crate::monitor::fence::register(
                 &self.shared.monitors,
                 monitor_ref,
-                active.clone(),
+                (target.id(), active.clone()),
                 // The token check makes registration inert once shutdown
                 // starts. The closed table serializes registration with exit
                 // cleanup, even on paths that unwind before cancelling the
@@ -417,7 +417,7 @@ impl<A: Actor> Context<A> {
             })
         });
         // Waking the waiter must happen after releasing the table lock.
-        if let Some(active) = active {
+        if let Some((_, active)) = active {
             active.cancel();
         }
     }
@@ -443,7 +443,7 @@ impl<A: Actor> Context<A> {
             &self.shared.signal,
             &self.shared.links,
             target.signal_target(),
-            target.links(),
+            target.link_table(),
             false,
         );
     }
@@ -458,7 +458,7 @@ impl<A: Actor> Context<A> {
             &self.shared.signal,
             &self.shared.links,
             target.signal_target(),
-            target.links(),
+            target.link_table(),
             true,
         ) {
             LinkOutcome::NoProc => Err(NoProc),
@@ -474,7 +474,7 @@ impl<A: Actor> Context<A> {
             self.shared.id,
             &self.shared.links,
             target.id(),
-            target.links(),
+            target.link_table(),
         );
     }
 

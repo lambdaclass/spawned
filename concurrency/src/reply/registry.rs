@@ -468,6 +468,16 @@ impl Registry {
         self.turn.external_count()
     }
 
+    /// Live deferred `ReplyTo` tokens (introspection, out of band).
+    pub(crate) fn deferred_tokens(&self) -> usize {
+        self.turn.external_count()
+    }
+
+    /// The turn phase (introspection, out of band: one load).
+    pub(crate) fn phase(&self) -> u8 {
+        self.turn.load()
+    }
+
     /// Keep the ownership hold through every callback run by token drop,
     /// including unwinding from a foreign waker.
     pub(crate) fn token_drop_guard(&self) -> impl Drop + '_ {

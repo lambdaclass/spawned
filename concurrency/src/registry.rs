@@ -202,6 +202,21 @@ pub(crate) fn whereis_start<T: Clone + Send + Sync + 'static>(name: &str) -> Opt
     entry?.value.downcast_ref::<T>().cloned()
 }
 
+/// The first name, in name order, that `actor` holds (OTP
+/// `registered_name`): a registration owned by the actor's identity
+/// (through its managed scope, or `register_owned`). Values stored with the
+/// plain [`register`] are not tied to an actor. Reader cost only: a scan
+/// under the read lock.
+pub(crate) fn name_of(actor: crate::ActorId) -> Option<String> {
+    let store = global_store().read().unwrap_or_else(|p| p.into_inner());
+    store
+        .iter()
+        .filter(|(_, entry)| entry.owner.is_some_and(|(owner, _)| owner == actor))
+        .map(|(name, _)| name)
+        .min()
+        .cloned()
+}
+
 /// List all registered names, sorted. (The store is a `HashMap`, whose
 /// iteration order depends on per-process random state; sorting keeps
 /// callers deterministic, which the simulation backend relies on.)
@@ -283,6 +298,21 @@ mod tests {
         let names = registered();
         assert!(names.contains(&"test_list_a".to_string()));
         assert!(names.contains(&"test_list_b".to_string()));
+    }
+
+    #[test]
+    fn name_of_reports_the_least_owned_name() {
+        let actor = crate::ActorId::next();
+        assert_eq!(name_of(actor), None);
+        let b = register_owned("name_of_probe_b", actor, 1u8, None).unwrap();
+        let a = register_owned("name_of_probe_a", actor, 1u8, None).unwrap();
+        register("name_of_probe_0", 1u8).unwrap();
+        assert_eq!(name_of(actor).as_deref(), Some("name_of_probe_a"));
+        drop(a);
+        assert_eq!(name_of(actor).as_deref(), Some("name_of_probe_b"));
+        drop(b);
+        unregister("name_of_probe_0");
+        assert_eq!(name_of(actor), None);
     }
 
     #[test]
