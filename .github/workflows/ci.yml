@@ -129,7 +129,7 @@ jobs:
       # panic = "abort" (chat_room has two actors, so exactly one warning).
       - name: '#[actor] warns once per crate under panic = "abort"'
         run: |
-          out=$(cargo build --locked -p chat_room --profile panic-abort 2>&1) || { echo "$out"; exit 1; }
+          out=$(cargo build --locked -p chat_room --bin chat_room --profile panic-abort 2>&1) || { echo "$out"; exit 1; }
           echo "$out"
           test "$(grep -c 'PanicAbortInActorCrate' <<<"$out")" = 1
 

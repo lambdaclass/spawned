@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Examples consolidated from 19 crates to 10 with no example
+  removed: each tasks/threads pair (`bank`, `chat_room`, `ping_pong`,
+  `signal_test`, `updater`) is one package whose second binary is
+  `<name>_threads` (`cargo run -p bank --bin bank_threads`), and
+  `blocking_genserver`, `busy_genserver_warning` and `exit_reason` are
+  binaries of `spawned-capability-examples`. examples/README.md has the
+  new commands.
 - CI: AI review runs Codex, Claude and Grok automatically; Kimi, DeepSeek and
   Gemini only on demand (`/review`, `/kimi`, `/deepseek`, `/gemini`).
 - Remove the settled backend experiments: the `benchmarks/experiments` crate
