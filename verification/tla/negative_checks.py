@@ -382,6 +382,38 @@ INTROSPECTION_CONTROLS = [
 ]
 
 
+# Admission package (docs/design/admission.md): each mutation of the bounded
+# mailbox, credit pool, skip and priority-lane protocol against the
+# invariant or property it breaks.
+ADMISSION_CONTROLS = [
+    ("MCAdmission", "Barge", "NoOvertaking"),
+    ("MCAdmission", "FirstFit", "NoOvertaking"),
+    ("MCAdmission", "LazyHandoff", "NoIdleWithWaiter"),
+    ("MCAdmission", "NoCapacityCheck", "CapacityRespected"),
+    ("MCAdmission", "ExpireRacesHandoff", "RejectedNeverAdmitted"),
+    ("MCAdmission", "TimeoutWhileWaiting", "TimeoutOnlyAdmitted"),
+    ("MCAdmission", "LateAdmit", "NoAdmitAfterD"),
+    ("MCAdmission", "KeepWaiters", "NoWaiterAfterD"),
+    ("MCAdmission", "LeakCredits", "CreditsReturnedAtDeath"),
+    ("MCAdmission", "CountControl", "ControlNeverRefused"),
+    ("MCAdmission", "SkipOpen", "SkipOnlyClosed"),
+    ("MCAdmission", "SkipNoOptIn", "SkipOnlyClosed"),
+    ("MCAdmission", "NoValve", "BoundedOvertaking"),
+    ("MCAdmissionOversize", "OversizeWaits", "NoOversizeWait"),
+]
+ADMISSION_TEMPORAL_CONTROLS = [
+    ("MCAdmissionLive", "LazyHandoff", "WaiterResolves"),
+    ("MCAdmissionCycle", "NoDeadline", "TurnsEnd"),
+]
+
+
+def admission_controls(tlc):
+    for module, fault, invariant in ADMISSION_CONTROLS:
+        named_fault(module, fault, invariant, tlc)
+    for module, fault, prop in ADMISSION_TEMPORAL_CONTROLS:
+        named_temporal(module, fault, prop, tlc)
+
+
 def disposal_trace_controls(traces, tlc, directory):
     """Disposal traces Disposal.tla must reject: edits of recorded traces,
     and traces recorded from deliberately broken code (`controls/`)."""
@@ -874,6 +906,7 @@ def main():
     for fault, prop in LIFECYCLE_TEMPORAL_CONTROLS:
         named_temporal("MCLifecycleLive", fault, prop, args.tlc, LIFECYCLE_SMALL)
     start_controls(args.tlc)
+    admission_controls(args.tlc)
 
 
 if __name__ == "__main__":
