@@ -153,8 +153,8 @@ mod tasks_mode {
     #[tokio::test]
     async fn handler_panic_is_reported_with_the_contract_fields() {
         capture();
-        let peer = Crashy::default().start();
-        let actor = Crashy::default().start();
+        let peer = Crashy::default().spawn();
+        let actor = Crashy::default().spawn();
         actor.context().link(&peer.child_handle());
         actor.send(Boom).unwrap();
         assert!(matches!(actor.wait_exit().await, ExitReason::Panic(_)));
@@ -188,14 +188,14 @@ mod tasks_mode {
             panic_in_started: true,
             ..Default::default()
         }
-        .start();
+        .spawn();
         assert!(matches!(started.wait_exit().await, ExitReason::Panic(_)));
         assert!(one_report(started.id())["reason"].contains("boom in started"));
         let stopped = Crashy {
             panic_in_stopped: true,
             ..Default::default()
         }
-        .start();
+        .spawn();
         stopped.child_handle().stop();
         assert!(matches!(stopped.wait_exit().await, ExitReason::Panic(_)));
         assert!(one_report(stopped.id())["reason"].contains("boom in stopped"));
@@ -209,18 +209,18 @@ mod tasks_mode {
             ExitReason::Shutdown(None),
             ExitReason::shutdown_with("bye"),
         ] {
-            let actor = Crashy::default().start();
+            let actor = Crashy::default().spawn();
             actor.request(Quit(reason.clone())).await.unwrap();
             assert_eq!(actor.wait_exit().await, reason);
             assert!(reports(actor.id()).is_empty());
         }
-        let killed = Crashy::default().start();
+        let killed = Crashy::default().spawn();
         killed.child_handle().kill();
         assert_eq!(killed.wait_exit().await, ExitReason::Killed);
         assert!(reports(killed.id()).is_empty());
-        let signalled = Crashy::default().start();
+        let signalled = Crashy::default().spawn();
         signalled.child_handle().exit(ExitReason::Kill.clone());
-        let signalled2 = Crashy::default().start();
+        let signalled2 = Crashy::default().spawn();
         signalled2
             .child_handle()
             .exit(ExitReason::Panic("remote".into()));
@@ -236,7 +236,7 @@ mod tasks_mode {
     #[tokio::test]
     async fn self_exit_with_an_abnormal_reason_is_reported() {
         capture();
-        let actor = Crashy::default().start();
+        let actor = Crashy::default().spawn();
         actor.request(Quit(ExitReason::Kill)).await.unwrap();
         assert_eq!(actor.wait_exit().await, ExitReason::Kill);
         assert_eq!(one_report(actor.id())["reason"], "kill");
@@ -293,17 +293,17 @@ mod threads_mode {
     #[test]
     fn handler_panic_is_reported_and_clean_exits_are_not() {
         capture();
-        let actor = Crashy.start();
+        let actor = Crashy.spawn();
         actor.send(Boom).unwrap();
         assert!(matches!(actor.wait_exit(), ExitReason::Panic(_)));
         let report = one_report(actor.id());
         assert!(report["actor_type"].ends_with("Crashy"));
         assert_eq!(report["label"], "native");
         assert!(report["reason"].contains("native boom"));
-        let clean = Crashy.start();
+        let clean = Crashy.spawn();
         clean.request(Quit(ExitReason::Normal)).unwrap();
         clean.wait_exit();
-        let killed = Crashy.start();
+        let killed = Crashy.spawn();
         killed.child_handle().kill();
         assert_eq!(killed.wait_exit(), ExitReason::Killed);
         let until = Instant::now() + Duration::from_millis(50);

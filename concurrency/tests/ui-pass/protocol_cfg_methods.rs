@@ -22,7 +22,7 @@ impl Fixed {
 }
 
 fn main() {
-    let actor = Fixed.start();
+    let actor = Fixed.spawn();
     assert_eq!(Variant::get(&actor).unwrap(), 3);
     actor.context().stop();
     actor.join();

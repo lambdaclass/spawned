@@ -82,7 +82,7 @@ fn native_actor_thread_and_state_released_after_stop() {
     let state = Arc::new(());
     let thread = Arc::new(());
     let (state_weak, thread_weak) = (Arc::downgrade(&state), Arc::downgrade(&thread));
-    let actor = threads::ActorStart::start(NativeProbe {
+    let actor = threads::ActorStart::spawn(NativeProbe {
         _state: state,
         thread: Some(thread),
     });
@@ -138,11 +138,11 @@ impl threads::Handler<SetPeer<threads::ActorRef<NativeA>>> for NativeB {
 fn native_actor_reference_cycle_released_after_stop() {
     let (sa, sb) = (Arc::new(()), Arc::new(()));
     let (wa, wb) = (Arc::downgrade(&sa), Arc::downgrade(&sb));
-    let a = threads::ActorStart::start(NativeA {
+    let a = threads::ActorStart::spawn(NativeA {
         _state: sa,
         peer: None,
     });
-    let b = threads::ActorStart::start(NativeB {
+    let b = threads::ActorStart::spawn(NativeB {
         _state: sb,
         peer: None,
     });
@@ -159,12 +159,12 @@ fn native_actor_reference_cycle_released_after_stop() {
 
 #[test]
 fn owned_registration_removed_with_its_guard_after_native_stop() {
-    let actor = threads::ActorStart::start(NativeProbe {
+    let actor = threads::ActorStart::spawn(NativeProbe {
         _state: Arc::new(()),
         thread: None,
     });
     let name = "leaks-native-owned";
-    let guard = registry::register_owned(name, actor.id(), actor.clone()).unwrap();
+    let guard = registry::register_owned(name, actor.id(), actor.clone(), None).unwrap();
     actor.context().stop();
     actor.join();
     drop(guard);
@@ -272,7 +272,7 @@ mod async_leaks {
                 if backend == Backend::Thread {
                     probe.thread = Some(thread);
                 }
-                let actor = probe.start_with_backend(backend);
+                let actor = probe.with_options(backend).spawn().unwrap();
                 actor.request(Ping).await.unwrap();
                 if backend == Backend::Thread {
                     assert_eq!(thread_weak.strong_count(), 1, "probe bound to actor thread");
@@ -294,8 +294,8 @@ mod async_leaks {
     fn monitor_waiters_released_on_demonitor_owner_exit_and_target_exit() {
         let rt = runtime();
         rt.block_on(async {
-            let owner = Probe::new(Arc::new(())).start();
-            let target = Probe::new(Arc::new(())).start();
+            let owner = Probe::new(Arc::new(())).spawn();
+            let target = Probe::new(Arc::new(())).spawn();
             owner.request(Ping).await.unwrap();
             target.request(Ping).await.unwrap();
             let baseline = rt.metrics().num_alive_tasks();
@@ -315,7 +315,7 @@ mod async_leaks {
             tasks_drain_to(&rt, baseline - 1, "monitor waiters after owner exit");
 
             // Target exit delivers Down and releases the waiter.
-            let watcher = Probe::new(Arc::new(())).start();
+            let watcher = Probe::new(Arc::new(())).spawn();
             watcher.context().monitor(&target.child_handle());
             target.request(Crash).await.unwrap_err();
             within!(target.join()).await;
@@ -400,13 +400,17 @@ mod async_leaks {
                     peer: None,
                     recipient: None,
                 }
-                .start_with_backend(backend);
+                .with_options(backend)
+                .spawn()
+                .unwrap();
                 let b = AsyncB {
                     _state: sb,
                     peer: None,
                     recipient: None,
                 }
-                .start_with_backend(backend);
+                .with_options(backend)
+                .spawn()
+                .unwrap();
                 let ra = a.recipient::<Ping>();
                 let rb = b.recipient::<Ping>();
                 let weaks = (Arc::downgrade(&ra), Arc::downgrade(&rb));
@@ -445,13 +449,13 @@ mod async_leaks {
                 peer: None,
                 recipient: None,
             }
-            .start();
+            .spawn();
             let b = AsyncB {
                 _state: sb,
                 peer: None,
                 recipient: None,
             }
-            .start();
+            .spawn();
             a.request(SetPeer((b.clone(), b.recipient::<Ping>())))
                 .await
                 .unwrap();
@@ -566,7 +570,8 @@ mod async_leaks {
                 thread: Some(worker),
                 name: Some("leaks-system-actor"),
             }
-            .start_on(&group)
+            .with_options(&group)
+            .spawn()
             .unwrap();
             actor.request(Ping).await.unwrap();
             assert_eq!(worker_weak.strong_count(), 1, "probe bound to worker");
@@ -711,19 +716,19 @@ mod sim_leaks {
             let weak = [&state, &sa, &sb].map(Arc::downgrade);
             rt.block_on(async {
                 let baseline = rt.stats().tasks;
-                let probe = Probe { _state: state }.start();
+                let probe = Probe { _state: state }.spawn();
                 probe.request(Ping).await.unwrap();
                 let timer = tasks::send_interval(Duration::from_secs(3600), probe.context(), Ping);
                 let a = A {
                     _state: sa,
                     peer: None,
                 }
-                .start();
+                .spawn();
                 let b = B {
                     _state: sb,
                     peer: None,
                 }
-                .start();
+                .spawn();
                 let (ra, rb) = (a.recipient::<Ping>(), b.recipient::<Ping>());
                 let recipients = [Arc::downgrade(&ra), Arc::downgrade(&rb)];
                 a.request(SetPeer((b.clone(), rb))).await.unwrap();
@@ -760,11 +765,11 @@ mod sim_leaks {
                 let owner = Probe {
                     _state: Arc::new(()),
                 }
-                .start();
+                .spawn();
                 let target = Probe {
                     _state: Arc::new(()),
                 }
-                .start();
+                .spawn();
                 owner.request(Ping).await.unwrap();
                 target.request(Ping).await.unwrap();
                 let baseline = rt.stats().tasks;
@@ -799,7 +804,10 @@ mod sim_leaks {
             rt.block_on(async {
                 let system = ActorSystem::new().unwrap();
                 let group = system.async_group("leaks-sim", 1).unwrap();
-                let actor = Probe { _state: state }.start_on(&group).unwrap();
+                let actor = Probe { _state: state }
+                    .with_options(&group)
+                    .spawn()
+                    .unwrap();
                 actor.request(Ping).await.unwrap();
                 actor.context().register_name(name).unwrap();
                 let _parked = actor
@@ -849,11 +857,11 @@ mod sim_leaks {
                 let watcher = Probe {
                     _state: Arc::new(()),
                 }
-                .start();
+                .spawn();
                 let target = Probe {
                     _state: Arc::new(()),
                 }
-                .start();
+                .spawn();
                 watcher.request(Ping).await.unwrap();
                 target.request(Ping).await.unwrap();
                 let baseline = rt.stats().tasks;

@@ -5,18 +5,35 @@ impl Actor for EarlyStop {
         ctx.stop();
     }
     fn stopped(&mut self, _: &Context<Self>) {
-        panic!("cleanup failed");
+        panic!("stopped() must not run after a failed start");
     }
 }
+/// `ctx.stop()` in `started()` is a failed start (unified start, 2.3 row
+/// 5): `stopped()` does not run and the start reports `InitExited(Normal)`.
 #[test]
-fn panic_during_early_stop_is_reported() {
+fn stop_in_started_fails_the_start_without_stopped() {
     crate::test_wait::bounded(
-        concat!(module_path!(), "::panic_during_early_stop_is_reported"),
+        concat!(
+            module_path!(),
+            "::stop_in_started_fails_the_start_without_stopped"
+        ),
         move || {
-            let actor = EarlyStop.start();
-            assert!(
-                matches!(actor.wait_exit(), ExitReason::Panic(message) if message.contains("cleanup failed"))
-            );
+            let actor = EarlyStop.spawn();
+            assert_eq!(actor.wait_exit(), ExitReason::Normal);
+            assert!(matches!(
+                actor.ready(),
+                Err(crate::StartError::InitExited {
+                    reason: ExitReason::Normal,
+                    pending: None
+                })
+            ));
+            assert!(matches!(
+                EarlyStop.start(),
+                Err(crate::StartError::InitExited {
+                    reason: ExitReason::Normal,
+                    pending: None
+                })
+            ));
         },
     );
 }

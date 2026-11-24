@@ -41,3 +41,5 @@ bench = false
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_sim)', 'cfg(tokio_unstable)', 'cfg(fuzzing)'] }
+# Manual `started()` impls return a refined `impl Future` (0.9 unified start).
+refining_impl_trait = { level = "allow", priority = -1 }

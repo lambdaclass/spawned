@@ -700,7 +700,7 @@ mod tests {
                 impl Actor for One {
                     const MAX_NATIVE_JOBS: Option<usize> = Some(1);
                 }
-                let owner = One.start();
+                let owner = One.spawn();
                 let ctx = owner.context();
                 for i in 0..2000 {
                     let permit = ctx
@@ -729,7 +729,7 @@ mod tests {
 
     #[test]
     fn refused_job_payload_panics_are_contained() {
-        let owner = Owner.start();
+        let owner = Owner.spawn();
         let ctx = owner.context();
         let failures = ctx.shared.sender.failures();
         for finish in [false, true] {
@@ -772,7 +772,7 @@ mod tests {
     #[test]
     fn held_job_result_panics_do_not_interrupt_cancellation() {
         for action in ["cancel", "deadline", "replace", "owner_exit"] {
-            let owner = Owner.start();
+            let owner = Owner.spawn();
             let ctx = owner.context();
             let failures = ctx.shared.sender.failures();
             let set = crate::reply::jobs::JobSet::new(owner.id(), 1);
@@ -843,7 +843,7 @@ mod tests {
         crate::test_wait::bounded(
             concat!(module_path!(), "::a_refused_emit_returns_its_credit_once"),
             move || {
-                let owner = Owner.start();
+                let owner = Owner.spawn();
                 for credits in [1, u16::MAX] {
                     let state = JobState::new(owner.id(), credits);
                     let job = JobCtx {
@@ -872,7 +872,7 @@ mod tests {
                 "::cancel_on_caller_gone_on_a_plain_job_is_a_bug"
             ),
             move || {
-                let owner = Owner.start();
+                let owner = Owner.spawn();
                 let ctx = owner.context();
                 let refused = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     ctx.reserve_blocking_job(JobOptions::new().cancel_on_caller_gone())

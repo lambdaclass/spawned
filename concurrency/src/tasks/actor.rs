@@ -96,7 +96,15 @@ pub trait Actor: Send + Sized + 'static {
     /// with `#[actor(max_native_jobs = N)]` or `ChildSpec::max_native_jobs`.
     const MAX_NATIVE_JOBS: Option<usize> = None;
 
-    fn started(&mut self, _ctx: &Context<Self>) -> impl Future<Output = ()> + Send {
+    /// Initialisation, before any message (OTP `init/1`). Returns `()`,
+    /// `Result<(), E>`, `Result<Init<Self>, E>` or [`Init<Self>`]: ready, a
+    /// continuation, an error, a stop or ignore. The waiting starts
+    /// (`start`, `start_link`, `start_monitor`) and [`ActorRef::ready`]
+    /// answer with its result. A failed start never runs `stopped()`.
+    fn started(
+        &mut self,
+        _ctx: &Context<Self>,
+    ) -> impl Future<Output: Into<Init<Self>> + Send> + Send {
         async {}
     }
 
@@ -193,7 +201,10 @@ struct ActorShared<A: Actor> {
     /// This instance as the target of exit signals and link notices.
     signal: Arc<SignalTarget>,
     mailbox: crate::instrumentation::Mailbox,
-    managed: Option<Arc<crate::system::Scope>>,
+    /// The managed scope, set at the commit (unified start, stage 1).
+    managed: std::sync::OnceLock<Arc<crate::system::Scope>>,
+    /// The backend of an unmanaged instance (inherited by `start_link`).
+    backend: Backend,
     /// This instance's reply registry: deferred tokens, credits, turn phase.
     replies: Arc<Registry>,
     /// This instance's pipe-to-self jobs.
@@ -322,6 +333,7 @@ fn test_context<A: Actor>(
         trap.clone(),
         request.clone(),
         token.clone(),
+        crate::start::StartupCell::new(),
         crate::introspection::Meta::new(
             std::any::type_name::<A>(),
             crate::introspection::Host::Async,
@@ -339,7 +351,8 @@ fn test_context<A: Actor>(
             linked_reason: request.clone(),
             signal,
             mailbox: crate::instrumentation::Mailbox::default(),
-            managed: None,
+            managed: std::sync::OnceLock::new(),
+            backend: Backend::Async,
             replies: Registry::new(id, DEFAULT_MAX_OUTSTANDING),
             jobs: Arc::new(crate::reply::jobs::JobSet::new(id, 1)),
             cleaned: watch::channel(false).1,
@@ -353,46 +366,19 @@ fn test_context<A: Actor>(
 }
 
 // ---------------------------------------------------------------------------
-// Actor::start
+// Starting actors (unified start, 0.9)
 // ---------------------------------------------------------------------------
 
-/// Extension trait for starting an actor. Automatically implemented for all [`Actor`] types.
-pub trait ActorStart: Actor {
-    /// Start the actor with the default backend ([`Backend::Async`]).
-    fn start(self) -> ActorRef<Self> {
-        self.start_with_backend(Backend::default())
-    }
+mod start;
+pub use start::{ActorStart, Init, Name, StartOptions, Starter, Starting};
 
-    /// Admit this actor to an owned parked async execution group.
-    fn start_on(
-        self,
-        group: &crate::system::ExecutionGroup,
-    ) -> Result<ActorRef<Self>, crate::system::SystemError> {
-        group.start(self)
-    }
-
-    /// Start the actor with a specific [`Backend`].
-    fn start_with_backend(self, backend: Backend) -> ActorRef<Self> {
-        ActorRef::spawn(self, backend, None)
-    }
-
-    /// Start linked to `parent_ctx`'s actor, which becomes this instance's
-    /// parent (E3). The link is registered before `started()`. The parent's
-    /// exit ends a trapping child normally (its `stopped()` runs; it never
-    /// reaches `exit_received`), a non-trapping child as any link notice. A
-    /// parent already past its death point gives the child a `NoProc` parent
-    /// exit.
-    ///
-    /// The child is always an unmanaged `Backend::Async` actor, even when
-    /// the parent is managed: it is outside the parent's execution group and
-    /// its ordered shutdown (`spawn_helper` on it returns `UnmanagedActor`).
-    /// The unified start API (planned for 0.9) will inherit the placement.
-    fn start_linked<P: Actor>(self, parent_ctx: &Context<P>) -> ActorRef<Self> {
-        ActorRef::spawn(self, Backend::Async, Some(parent_ctx.child_handle()))
+impl<A: Actor> ActorShared<A> {
+    /// The managed scope (set once, at the commit).
+    #[inline]
+    pub(crate) fn managed(&self) -> Option<&Arc<crate::system::Scope>> {
+        self.managed.get()
     }
 }
-
-impl<A: Actor> ActorStart for A {}
 
 // ---------------------------------------------------------------------------
 // send_message_on (utility)

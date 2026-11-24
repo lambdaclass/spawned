@@ -140,7 +140,13 @@ async fn shutdown_order(log: Log) -> Vec<u32> {
         log: log.clone(),
     };
     for id in 0..2 {
-        start(id).start_on(&group).unwrap().ready().await.unwrap();
+        start(id)
+            .with_options(&group)
+            .spawn()
+            .unwrap()
+            .ready()
+            .await
+            .unwrap();
     }
     let mut tree = system
         .supervisor(config(SupervisorStrategy::OneForOne))
@@ -160,7 +166,13 @@ async fn shutdown_order(log: Log) -> Vec<u32> {
     .unwrap();
     let _tree = tree.start().await.unwrap();
     for id in 200..202 {
-        start(id).start_on(&group).unwrap().ready().await.unwrap();
+        start(id)
+            .with_options(&group)
+            .spawn()
+            .unwrap()
+            .ready()
+            .await
+            .unwrap();
     }
     let report = system.shutdown(LIMIT).await;
     assert!(report.complete, "shutdown incomplete");
@@ -374,7 +386,9 @@ fn blocking_backend_actor_fails_the_run() {
             trap: false,
             log,
         }
-        .start_with_backend(spawned_concurrency::tasks::Backend::Blocking);
+        .with_options(spawned_concurrency::tasks::Backend::Blocking)
+        .spawn()
+        .unwrap();
         spawned_rt::tasks::sleep(Duration::from_millis(10)).await;
         drop(node);
     });
@@ -1040,7 +1054,7 @@ async fn drain_pending(log: Log) -> Vec<u32> {
     let parker = Parker {
         pending: spawned_concurrency::tasks::PendingReplies::with_capacity(CALLERS as usize),
     }
-    .start();
+    .spawn();
     let callers: Vec<_> = (0..CALLERS)
         .map(|id| {
             let (parker, log) = (parker.clone(), log.clone());

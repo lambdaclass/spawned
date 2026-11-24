@@ -3,7 +3,7 @@
 Status: **owned async/native/pinned groups and nested supervision strategies available in v0.7.0**. Updated 2026-11-09.
 See the [usage guide](../GUIDE.md#execution-groups-and-supervision) for actual signatures and supported limits.
 This document records the design contract; illustrative API shapes below are not copyable code.
-v0.7.0 also includes the dedicated-runtime worker-budget correction. Ordinary handlers, protocols and `.start()` remain usable.
+v0.7.0 also includes the dedicated-runtime worker-budget correction. Ordinary handlers, protocols and `.start()` (0.9: `.spawn()`) remain usable.
 
 The combined goal is straightforward: an application chooses where its actors
 run, and the framework can reconstruct a failed child in that same execution
@@ -64,7 +64,7 @@ the method is called from another runtime or a plain native thread. Group
 closure rejects new registration/placement, with the helper API's documented
 error or cancelled/inert-handle outcome rather than an ambient-runtime fallback.
 
-Existing unsupervised `.start()` remains ambient. Calling it inside a managed
+Existing unsupervised `.start()` (0.9: `.spawn()`/`.start()`) remains ambient. Calling it inside a managed
 actor does not enroll the new actor in its supervision tree or ordered cleanup,
 even if it happens to run on the group's runtime. Treat it like unregistered
 application `tokio::spawn`: group teardown may abort it without an async

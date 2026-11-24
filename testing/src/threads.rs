@@ -39,11 +39,11 @@ impl Mock {
         self
     }
 
-    /// Start on a dedicated OS thread.
-    pub fn start(self) -> MockRef {
+    /// Spawn on a dedicated OS thread.
+    pub fn spawn(self) -> MockRef {
         let inbox = self.inbox.clone();
         MockRef {
-            actor: ActorStart::start(self),
+            actor: ActorStart::spawn(self),
             inbox,
         }
     }

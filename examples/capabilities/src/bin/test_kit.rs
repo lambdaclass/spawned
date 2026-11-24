@@ -62,7 +62,7 @@ fn converter(rates: RatesRef, out: &kit::Probe<Converted>) -> ConverterRef {
         rates,
         out: out.recipient(),
     }
-    .start()
+    .spawn()
     .to_converter_ref()
 }
 
@@ -71,7 +71,7 @@ async fn main() {
     // 1. Mock the dependency and probe the output.
     let rates = kit::Mock::new()
         .on::<rates_protocol::Rate>(|msg| if msg.currency == "EUR" { 110 } else { 100 })
-        .start();
+        .spawn();
     let out = kit::Probe::<Converted>::new();
     let under_test = converter(rates.to_rates_ref(), &out);
     assert_eq!(under_test.convert("EUR".into(), 3).await.unwrap(), Ok(330));
@@ -84,7 +84,7 @@ async fn main() {
     let slow = kit::Mock::new()
         .on::<rates_protocol::Rate>(|_| 1)
         .delay::<rates_protocol::Rate>(Duration::from_millis(300))
-        .start();
+        .spawn();
     let under_test = converter(slow.to_rates_ref(), &out);
     let error = under_test
         .convert("USD".into(), 1)
@@ -97,7 +97,7 @@ async fn main() {
     // 3. Fault: the dependency crashes; unmocked messages would crash it too.
     let crashing = kit::Mock::new()
         .crash_on::<rates_protocol::Rate>("rates feed lost")
-        .start();
+        .spawn();
     let under_test = converter(crashing.to_rates_ref(), &out);
     assert!(under_test.convert("USD".into(), 1).await.unwrap().is_err());
     assert_eq!(
@@ -142,7 +142,7 @@ async fn main() {
     // 5. The same mock in threads mode, with an injected stop reason.
     let native = native_kit::Mock::new()
         .on::<rates_protocol::Rate>(|_| 7)
-        .start();
+        .spawn();
     assert_eq!(native.rate("X".into()).unwrap(), 7);
     faults::exit(&native.child_handle(), ExitReason::Shutdown(None));
     assert_eq!(

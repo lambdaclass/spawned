@@ -106,6 +106,7 @@ pub mod registry;
 #[doc(hidden)]
 pub mod reply;
 pub mod response;
+mod start;
 #[cfg(feature = "async")]
 mod stop_token;
 #[cfg(feature = "async")]
@@ -125,6 +126,7 @@ pub use reply::{
     ReplyReceiver, ReplyTo,
 };
 pub use response::{Response, DEFAULT_REQUEST_TIMEOUT};
+pub use start::{StartError, StartOutcome, Timeout};
 // send_handler also supports manual Handler impls. request_handler and
 // deferred_handler are method markers consumed by #[actor], not standalone
 // proc macros to re-export.

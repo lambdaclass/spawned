@@ -171,7 +171,7 @@ async fn settle(actor: &ActorRef<Owner>) {
 async fn deferred_and_job_families_count_each_outcome_once() {
     metrics::configure(Config::default().timing_sample_every(1)).unwrap();
     let before = metrics::snapshot();
-    let actor = Owner::default().start();
+    let actor = Owner::default().spawn();
 
     // Replied, and Overloaded at the bound.
     let first = actor

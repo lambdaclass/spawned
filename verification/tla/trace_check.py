@@ -50,8 +50,10 @@ def tla_event(event, cohort=False):
 def generate(trace, workdir):
     schema = trace.get("schema", "one-for-one-v1")
     if schema not in {"one-for-one-v1", "cohort-v1", "tree-v1", "jobs-v1", "replies-v1",
-                      "lifecycle-v1", "coordinator-v1", "disposal-v1"}:
+                      "lifecycle-v1", "start-v1", "coordinator-v1", "disposal-v1"}:
         raise ValueError(f"unsupported trace schema: {schema}")
+    if schema == "start-v1":
+        return generate_start(trace, workdir)
     if schema == "tree-v1":
         return generate_tree(trace, workdir)
     if schema == "jobs-v1":
@@ -353,6 +355,64 @@ def generate_lifecycle(trace, workdir):
                   "    SelfReasons <- Reasons\n    SignalReasons <- Reasons\n"
                   "    AdminReasons <- Reasons\n    DropEnabled = TRUE\n"
                   "    Fault = \"None\"\n    Trace <- TraceLog\n"
+                  "INVARIANT Safety\nINVARIANT TraceIncomplete\n")
+
+
+def start_records(trace):
+    """Normalize a start-v1 trace: children k1, k2, ... in SBegin order
+    (events of the parent, a group or a lookup miss carry c = 0, "none").
+    Returns (records, kids, max_sends)."""
+    kids, sends = {}, {}
+    for e in trace["events"]:
+        if e["a"] == "SBegin":
+            if int(e["c"]) in kids:
+                raise ValueError(f"child {e['c']} begun twice")
+            kids[int(e["c"])] = f"k{len(kids) + 1}"
+    if not kids:
+        raise ValueError("a start trace needs at least one start")
+    records = []
+    for e in trace["events"]:
+        raw = int(e["c"])
+        if raw and raw not in kids:
+            raise ValueError(f"event for an unrecorded child {raw}: {e}")
+        c = kids.get(raw, "none")
+        if e["a"] == "SSend":
+            sends[c] = sends.get(c, 0) + 1
+        records.append("[a |-> {}, c |-> {}, x |-> {}, y |-> {}, z |-> {}, f |-> {}]".format(
+            tla_string(e["a"]), tla_string(c), tla_string(e["x"]), tla_string(e["y"]),
+            tla_string(e["z"]), "TRUE" if e["f"] else "FALSE"))
+    return records, sorted(kids.values()), max(sends.values(), default=0)
+
+
+def generate_start(trace, workdir):
+    """A parent's starts against Start.tla (unified start, 0.9)."""
+    for model in ("Start.tla", "TraceStart.tla"):
+        shutil.copy(os.path.join(HERE, model), workdir)
+    records, kids, sends = start_records(trace)
+    place = trace.get("pplace", "U")
+    if place not in {"G", "U"}:
+        raise ValueError(f"parent placement must be G or U: {place}")
+    kid_set = "{" + ", ".join(tla_string(k) for k in kids) + "}"
+    with open(os.path.join(workdir, "TraceRun.tla"), "w") as out:
+        out.write("---- MODULE TraceRun ----\nEXTENDS TraceStart\n"
+                  f"TraceKids == {kid_set}\n"
+                  "TraceKinds == {\"spawn\", \"start\", \"link\", \"monitor\"}\n"
+                  "TraceExplicit == {\"none\", \"G\", \"G2\", \"U\", \"same\"}\n"
+                  f"TraceParentPlaces == {{{tla_string(place)}}}\n"
+                  "TraceLog == <<\n    " + ",\n    ".join(records) + "\n>>\n====\n")
+    with open(os.path.join(workdir, "TraceRun.cfg"), "w") as out:
+        out.write("INIT TraceInit\nNEXT TraceNext\nCONSTANTS\n"
+                  "    Kids <- TraceKids\n    Kinds <- TraceKinds\n"
+                  "    Explicit <- TraceExplicit\n    ParentPlaces <- TraceParentPlaces\n"
+                  f"    Cap = {int(trace.get('cap', 1000))}\n"
+                  "    Named = TRUE\n    TimeoutEnabled = TRUE\n    KillEnabled = TRUE\n"
+                  "    AdminStopEnabled = TRUE\n    ParentCanExit = TRUE\n    ParentKillEnabled = TRUE\n"
+                  "    CloseEnabled = FALSE\n    OwnerCloseEnabled = FALSE\n"
+                  f"    MaxMsgs = {sends}\n    ChildCanTrap = TRUE\n"
+                  "    UnlinkEnabled = TRUE\n    ScopeEnabled = FALSE\n"
+                  "    Fault = \"None\"\n    Trace <- TraceLog\n"
+                  f"    TracePlace = {tla_string(place)}\n"
+                  f"    TraceTrap = {'TRUE' if trace.get('ptrap') else 'FALSE'}\n"
                   "INVARIANT Safety\nINVARIANT TraceIncomplete\n")
 
 

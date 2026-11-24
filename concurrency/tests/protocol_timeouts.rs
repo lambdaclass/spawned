@@ -103,7 +103,7 @@ mod asynchronous {
     #[cfg_attr(not(spawned_sim), tokio::test(start_paused = true))]
     #[cfg_attr(spawned_sim, spawned_macros::sim_test)]
     async fn protocol_method_and_handle_overrides_have_explicit_precedence() {
-        let actor = Worker.start();
+        let actor = Worker.spawn();
         // Virtual time: larger than the old five-second default.
         assert_eq!(actor.work(6000).await.unwrap(), 6000);
         assert_eq!(
@@ -127,7 +127,7 @@ mod asynchronous {
         actor.context().stop();
         actor.join().await;
 
-        let actor = Worker.start();
+        let actor = Worker.spawn();
         assert!(matches!(
             actor
                 .with_request_timeout(Duration::from_millis(1))
@@ -138,7 +138,7 @@ mod asynchronous {
         actor.context().stop();
         actor.join().await;
 
-        let actor = Worker.start();
+        let actor = Worker.spawn();
         assert!(matches!(
             actor.legacy(6000).await,
             Err(ActorError::RequestTimeout)
@@ -183,7 +183,7 @@ mod synchronous {
     }
     #[test]
     fn method_override_and_configured_type_erasure_work_without_async() {
-        let actor = Worker.start();
+        let actor = Worker.spawn();
         let configured = actor.with_request_timeout(Duration::from_secs(1));
         assert_eq!(configured.brief(25).unwrap(), 25);
         let erased = configured.to_timed_ref();
@@ -258,7 +258,7 @@ mod synchronous {
     }
     #[test]
     fn configured_handles_do_not_shadow_protocol_method_names() {
-        let actor = Worker.start();
+        let actor = Worker.spawn();
         let configured = actor.with_request_timeout(Duration::from_secs(1));
         assert_eq!(configured.timeout().unwrap(), 31);
         assert_eq!(configured.actor_ref().unwrap(), 32);
@@ -283,7 +283,7 @@ mod synchronous {
     }
     #[test]
     fn timeout_expression_precedes_argument_moves_without_capturing_user_names() {
-        let actor = Worker.start();
+        let actor = Worker.spawn();
         assert_eq!(
             actor
                 .owned(Job {
@@ -314,7 +314,7 @@ mod synchronous {
             entered,
             release: wait,
         }
-        .start();
+        .spawn();
         ready.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(matches!(
             futures::executor::block_on(actor.zero()),

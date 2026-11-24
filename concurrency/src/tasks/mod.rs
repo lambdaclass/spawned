@@ -15,10 +15,11 @@ pub use crate::reply::{
     ReplyFuture, ReplyReceiver, ReplyTo,
 };
 pub use crate::response::Response;
+pub use crate::start::{StartError, StartOutcome, Timeout};
 pub use crate::Instant;
 pub use actor::{
-    request, send_message_on, Actor, ActorRef, ActorStart, Backend, Context, Handler, Receiver,
-    Recipient, DEFAULT_REQUEST_TIMEOUT,
+    request, send_message_on, Actor, ActorRef, ActorStart, Backend, Context, Handler, Init, Name,
+    Receiver, Recipient, StartOptions, Starter, Starting, DEFAULT_REQUEST_TIMEOUT,
 };
 pub use actor::{BlockingJobPermit, JobCtx, JobPermit, DEFAULT_STOP_DEADLINE};
 pub use stream::spawn_listener;

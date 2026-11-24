@@ -408,18 +408,19 @@ mod env {
         pub fn start(&self, victim: Victim) -> Started {
             let _entered = self.rt.enter();
             match self.place {
-                Place::Ambient => {
-                    Started::Task(TaskVictim(victim).start_with_backend(Backend::Async))
-                }
-                Place::Native => Started::Native(spawned_concurrency::threads::ActorStart::start(
+                Place::Ambient => Started::Task(
+                    TaskVictim(victim)
+                        .with_options(Backend::Async)
+                        .spawn()
+                        .unwrap(),
+                ),
+                Place::Native => Started::Native(spawned_concurrency::threads::ActorStart::spawn(
                     super::thread_actors::ThreadVictim(victim),
                 )),
                 _ => {
-                    let actor = self
-                        .group
-                        .as_ref()
-                        .unwrap()
-                        .start(TaskVictim(victim))
+                    let actor = TaskVictim(victim)
+                        .with_options(self.group.as_ref().unwrap())
+                        .spawn()
                         .unwrap();
                     let _ = self.bounded(actor.ready());
                     Started::Task(actor)

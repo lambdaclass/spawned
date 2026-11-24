@@ -48,7 +48,7 @@ impl Handler<Read> for Counter {
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
-    let counter = Counter(0).start();
+    let counter = Counter(0).spawn();
     let (entered_tx, entered_rx) = oneshot::channel();
     let (release_tx, release_rx) = oneshot::channel();
     // The deadline is fixed at send (OTP's call/3): already due here. An

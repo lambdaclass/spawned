@@ -27,11 +27,16 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 pub(crate) const DEFAULT_EMIT_CREDITS: u16 = 16;
 
 /// Default `Actor::MAX_NATIVE_JOBS`: `min(4, available_parallelism)`.
+/// Read once per process: `available_parallelism` parses cgroup files on
+/// Linux (about a third of a spawn's instructions when called per spawn).
 pub(crate) fn default_max_native_jobs() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
-        .min(4)
+    static DEFAULT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *DEFAULT.get_or_init(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .min(4)
+    })
 }
 
 /// Per-instance overrides of `Actor::MAX_OUTSTANDING` and
@@ -46,6 +51,13 @@ pub(crate) struct Bounds {
 
 #[cfg(feature = "async")]
 impl Bounds {
+    /// These bounds, each falling back to the given one when unset.
+    pub(crate) fn or(self, max_outstanding: Option<usize>, max_native_jobs: Option<usize>) -> Self {
+        Self {
+            max_outstanding: self.max_outstanding.or(max_outstanding),
+            max_native_jobs: self.max_native_jobs.or(max_native_jobs),
+        }
+    }
     /// The effective `(max_outstanding, max_native_jobs)` for an actor whose
     /// constants are `outstanding` and `native`.
     pub(crate) fn resolve(self, outstanding: usize, native: Option<usize>) -> (usize, usize) {

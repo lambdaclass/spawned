@@ -58,13 +58,19 @@ fn persistent_blocking_actors_queue_until_a_worker_is_released() {
         // Await both started hooks so the finite pool is occupied deterministically.
         for _ in 0..2 {
             let (tx, rx) = tokio::sync::oneshot::channel();
-            let actor = Worker(Some(tx)).start_with_backend(Backend::Blocking);
+            let actor = Worker(Some(tx))
+                .with_options(Backend::Blocking)
+                .spawn()
+                .unwrap();
             cleanup.0.push(actor.child_handle());
             tokio::time::timeout(LIMIT, rx).await.unwrap().unwrap();
             actors.push(actor);
         }
         let (tx, mut started) = tokio::sync::oneshot::channel();
-        let queued = Worker(Some(tx)).start_with_backend(Backend::Blocking);
+        let queued = Worker(Some(tx))
+            .with_options(Backend::Blocking)
+            .spawn()
+            .unwrap();
         cleanup.0.push(queued.child_handle());
         assert!(matches!(
             started.try_recv(),

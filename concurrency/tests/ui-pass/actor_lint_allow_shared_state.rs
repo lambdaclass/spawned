@@ -37,7 +37,7 @@ fn main() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let seen = Arc::new(AtomicU64::new(0));
-        let actor = Shared::new(seen.clone()).start();
+        let actor = Shared::new(seen.clone()).spawn();
         assert_eq!(actor.request(Tick).await.unwrap(), 0);
         assert_eq!(seen.load(Ordering::SeqCst), 1);
     });

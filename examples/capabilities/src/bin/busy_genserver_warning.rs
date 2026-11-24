@@ -39,7 +39,7 @@ impl BusyWorker {
 pub fn main() {
     rt::run(async move {
         // If we change BusyWorker to Backend::Blocking instead, it won't print the warning
-        let badboy = BusyWorker.start();
+        let badboy = BusyWorker.spawn();
         let _ = badboy.do_work();
 
         rt::sleep(Duration::from_secs(5)).await;

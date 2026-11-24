@@ -315,6 +315,7 @@ impl<A: Actor> Envelope<A> for HeldEnvelope {
 }
 
 /// Build the signal target of a new actor instance.
+#[allow(clippy::too_many_arguments)] // one per field of the signal target
 pub(super) fn signal_target<A: Actor>(
     id: ActorId,
     parent: Option<ActorId>,
@@ -322,6 +323,7 @@ pub(super) fn signal_target<A: Actor>(
     trap: TrapExitFlag,
     request: LinkedExitReason,
     token: CancellationToken,
+    startup: Arc<crate::start::StartupCell>,
     meta: crate::introspection::Meta,
 ) -> Arc<SignalTarget> {
     let exit_tx = sender.clone();
@@ -354,6 +356,7 @@ pub(super) fn signal_target<A: Actor>(
         send_exit,
         send_parent_exit,
         send_held,
+        startup,
         meta,
     })
 }

@@ -664,7 +664,7 @@ G23).
 | | Default | Override |
 |---|---|---|
 | Compiled | `console` feature, in `default` | omit it: no thread, socket, table or symbol |
-| Starts | on `ActorSystem::new` (automatic) or `console::start(cfg) -> ConsoleGuard` (explicit, for bare-actor programs); never on a bare `.start()` | `SPAWNED_CONSOLE=off` or `ConsoleConfig { enabled: false }` |
+| Starts | on `ActorSystem::new` (automatic) or `console::start(cfg) -> ConsoleGuard` (explicit, for bare-actor programs); never on a bare `.spawn()` | `SPAWNED_CONSOLE=off` or `ConsoleConfig { enabled: false }` |
 | Mode | read-only | `SPAWNED_CONSOLE_ALLOW=kill,terminate,trace` (each separately) or `ConsoleConfig::allow(..)` |
 | Directory | `$XDG_RUNTIME_DIR/spawned`, else `/tmp/spawned-<euid>` | `SPAWNED_CONSOLE_DIR=/dir` or `ConsoleConfig::dir(..)` |
 | Failure | one `WARN spawned::console` (`ENOENT`, `EROFS`, `EACCES`, `EPERM`/seccomp, untrusted directory) and the program continues | — |
@@ -950,7 +950,7 @@ Frozen before release:
 | Flight recorder in v1 | Deferred to 0.10 | Same ring as full `sys:trace`; design once. |
 | Per-turn `tracing` span | Deferred to rank 28 | Not free even when filtered. |
 | Console on a system's control runtime | Rejected (revision 2) | A system may end while others live; console work must not delay supervision. |
-| Console started by bare `.start()` | Rejected (revision 2) | Hidden threads and sockets in library calls, seccomp failures; bare programs opt in with `console::start`. |
+| Console started by bare `.spawn()` | Rejected (revision 2) | Hidden threads and sockets in library calls, seccomp failures; bare programs opt in with `console::start`. |
 | Changing the umask to create the socket | Rejected (revision 2) | Process-global, races other threads, needs `unsafe`. |
 | Pid-only socket names, pid-based stale cleanup | Rejected (revision 2) | Pid namespaces and reuse; nonce plus lock instead. |
 | `atexit` cleanup | Rejected | Needs `unsafe`; the lock makes leftovers identifiable. |
@@ -1156,7 +1156,7 @@ Placements: A `Backend::Async`, B `Blocking`, T `Thread`, N threads mode, G
 
 | Test | Fails if |
 |---|---|
-| `starts_with_actor_system_not_with_bare_start` | a socket appears for bare `.start()` |
+| `starts_with_actor_system_not_with_bare_start` | a socket appears for bare `.spawn()` |
 | `console_start_guard_for_bare_programs` | no socket with the guard; left after its drop |
 | `refcount_binds_and_unbinds_and_binds_again` (two systems, then a third later) | socket missing while a system lives; not removed at 1→0; no rebind |
 | `forked_child_never_unlinks_parent_socket` (`drop_subprocess`-style fork) | the parent's files removed |
@@ -1270,7 +1270,7 @@ an exhaustive `match` on `Lifecycle` or `Unavailable` without a wildcard.
 | Status via `InTurnEnvelope` (panic ends actor) | `callback_panic_*` |
 | Abandoned status callback still runs | `status_skipped_when_caller_gave_up` |
 | `tree()` holds the parent lock while expanding | `tree_holds_no_lock_across_children` |
-| Console binds on bare `.start()` / unlinks without the pid check | `starts_with_actor_system_*`, `forked_child_*` |
+| Console binds on bare `.spawn()` / unlinks without the pid check | `starts_with_actor_system_*`, `forked_child_*` |
 | Stale cleanup without the lock | `stale_pair_removed_only_*` |
 | Blocking write without a deadline | `slow_reader_*` |
 | Unordered shard iteration | `reads_do_not_change_the_tape` |
@@ -1457,7 +1457,7 @@ Each finding was treated as a claim and checked against the design and the
 | Codex 11 | A kill-capable `check_now()` cannot be tape-neutral | Accepted | Neutrality only for reads and report-only checks; kill-capable checks promise identical replay (`kill_check_replays`) |
 | Codex 12, agy P1-4 | Changing the umask is unsafe and racy; leaf-only checks | Accepted | Umask never touched; private `0700` directory, bind inside, `0600` as defence in depth, effective-uid peer check; ancestor and symlink checks; root refused unless the process is root |
 | Codex 13, agy P1-5 | Pid-based stale cleanup and system-owned lifetime are unsafe | Accepted | Instance nonce, a held `File::lock` as liveness, removal only with the lock and a `(dev, ino)` match, the server removes only its own files; refcounted lifetime independent of any one system |
-| agy P0-2 | Console on bare `.start()`, `atexit`, multiple systems, `fork()` | Accepted (coordinator decision 1) | Automatic only on `ActorSystem::new`; `console::start` guard for bare programs; refcount 0→1 bind, 1→0 unlink, rebind later; `bound_pid` check; no `atexit`, no `unsafe`; failures warn once |
+| agy P0-2 | Console on bare `.spawn()`, `atexit`, multiple systems, `fork()` | Accepted (coordinator decision 1) | Automatic only on `ActorSystem::new`; `console::start` guard for bare programs; refcount 0→1 bind, 1→0 unlink, rebind later; `bound_pid` check; no `atexit`, no `unsafe`; failures warn once |
 | Codex 14, agy P1-6 | Console and watchdog can block the control plane | Accepted | Own console thread; per-frame 2 s write deadline; limits table (connections, requests, rows, bytes, depth, strings, rate); `state` awaited, not blocking; threads-only builds use a thread per connection; watchdog sampling separate from delivery; one outstanding probe per target |
 | Codex 15 | `restart` is misleading and unfenced | Accepted (coordinator decision 3) | Renamed `kill`; consequences per supervisor policy documented; targets carry system id and an expected `id@generation`; `stale_target`; `kill`, `terminate`, `trace` allowed separately |
 | Codex 16 | Wire and data contracts not frozen | Accepted | [Wire and data contract](#wire-and-data-contract): framing, envelope, error codes, encodings, `Unavailable` values, enums, evolution, cursors; `SystemId` in snapshots; `#[non_exhaustive]` on every public type; `serde_json` with dedicated wire structs |

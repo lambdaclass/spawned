@@ -101,7 +101,7 @@ fn admitted_request_racing_shutdown_drops_its_reply_before_join_completes() {
         .unwrap();
     runtime.block_on(async {
         let (stopped, stop_rx) = tokio::sync::oneshot::channel();
-        let actor = Worker(Some(stopped)).start();
+        let actor = Worker(Some(stopped)).spawn();
         let _cleanup = Cleanup(actor.child_handle());
         let (entered, entered_rx) = tokio::sync::oneshot::channel();
         let (release, gate) = tokio::sync::oneshot::channel();

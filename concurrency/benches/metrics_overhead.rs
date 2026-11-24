@@ -66,7 +66,7 @@ fn main() {
             .build()
             .unwrap();
         rt.block_on(async {
-            let actors: Vec<_> = (0..actors).map(|_| Sink.start()).collect();
+            let actors: Vec<_> = (0..actors).map(|_| Sink.spawn()).collect();
             for actor in &actors {
                 black_box(actor.request(Work(work)).await.unwrap());
             }
@@ -100,7 +100,7 @@ fn main() {
     } else {
         assert_eq!(mode, "threads");
         use threads::ActorStart;
-        let actors: Vec<_> = (0..actors).map(|_| Sink.start()).collect();
+        let actors: Vec<_> = (0..actors).map(|_| Sink.spawn()).collect();
         for actor in &actors {
             black_box(actor.request(Work(work)).unwrap());
         }

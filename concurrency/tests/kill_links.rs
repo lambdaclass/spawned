@@ -38,10 +38,10 @@ fn native_propagated_kill_is_trappable_but_direct_kill_is_not() {
         recv.recv_timeout(LIMIT).unwrap()
     }
     let (send, events) = mpsc::channel();
-    let a = Node(send.clone()).start();
-    let b = Node(send.clone()).start();
-    let c = Node(send.clone()).start();
-    let d = Node(send).start();
+    let a = Node(send.clone()).spawn();
+    let b = Node(send.clone()).spawn();
+    let c = Node(send.clone()).spawn();
+    let d = Node(send).spawn();
     b.context().link(&a.child_handle());
     c.context().trap_exit(true);
     c.context().link(&b.child_handle());
@@ -93,10 +93,10 @@ async fn async_propagated_kill_is_trappable_but_direct_kill_is_not() {
         }
     }
     let (send, events) = mpsc::channel();
-    let a = Node(send.clone()).start();
-    let b = Node(send.clone()).start();
-    let c = Node(send.clone()).start();
-    let d = Node(send).start();
+    let a = Node(send.clone()).spawn();
+    let b = Node(send.clone()).spawn();
+    let c = Node(send.clone()).spawn();
+    let d = Node(send).spawn();
     b.context().link(&a.child_handle());
     c.context().trap_exit(true);
     c.context().link(&b.child_handle());

@@ -862,7 +862,7 @@ mod tests {
                 reply.reply(());
             }
         }
-        let actor = std::thread::spawn(|| Native.start()).join().unwrap();
+        let actor = std::thread::spawn(|| Native.spawn()).join().unwrap();
         let runtime = spawned_rt::tasks::sim::Runtime::with_seed(29);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             runtime
@@ -880,7 +880,7 @@ mod tests {
 
         let runtime = spawned_rt::tasks::sim::Runtime::with_seed(31);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            runtime.block_on(async { Native.start() })
+            runtime.block_on(async { Native.spawn() })
         }));
         drop(runtime);
         let panic = match result {

@@ -53,7 +53,7 @@ mod asynchronous {
     pub async fn run() {
         let (release, gate) = tokio::sync::oneshot::channel();
         let calls = Arc::new(AtomicUsize::new(0));
-        let actor = Worker(gate, calls.clone()).start();
+        let actor = Worker(gate, calls.clone()).spawn();
         // Startup is held, so neither timed-out request can complete early.
         assert!(actor.value().await.is_err());
         assert!(actor.quick().await.is_err());
@@ -109,7 +109,7 @@ mod synchronous {
     pub fn run() {
         let (release, gate) = std::sync::mpsc::channel();
         let calls = Arc::new(AtomicUsize::new(0));
-        let actor = Worker(gate, calls.clone()).start();
+        let actor = Worker(gate, calls.clone()).spawn();
         assert!(actor.value().is_err());
         assert!(actor.quick().is_err());
         release.send(()).unwrap();
