@@ -93,7 +93,7 @@ fn native_drop_child() {
                 release: gate,
                 state_panics,
             }
-            .start();
+            .spawn();
             arrival.recv_timeout(LIMIT).unwrap();
             let dropped = Arc::new(AtomicUsize::new(0));
             let replies: Vec<_> = (0..2)
@@ -138,7 +138,7 @@ fn native_drop_child() {
         release: gate,
         state_panics: true,
     }
-    .start();
+    .spawn();
     arrival.recv_timeout(LIMIT).unwrap();
     actor.send(Crash).unwrap();
     let dropped = Arc::new(AtomicUsize::new(0));

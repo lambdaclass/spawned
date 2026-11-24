@@ -18,24 +18,24 @@ compile_error!(
 );
 
 mod driver;
+mod fault;
 mod oracles;
 pub mod scenario;
 mod world;
 
-pub use driver::run_body;
-
-/// Violation details (kind: detail) of the last failing run on this thread.
-pub fn last_details() -> Vec<String> {
-    driver::LAST_DETAILS.with(|d| d.borrow().clone())
-}
+pub use driver::{run_body, run_body_reporting, Report};
 pub use scenario::*;
+pub use world::Sites;
 
 use spawned_rt::tasks::sim::{
     self,
     explore::{explore, Strategy},
     Tape,
 };
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 /// The strategy a [`Sched`] stands for (one run).
 pub fn strategy(sched: Sched) -> Strategy {
@@ -61,45 +61,49 @@ pub struct Run {
     /// Decision tape of the run (always for random runs and failures).
     pub tape: Option<Tape>,
     pub polls: u64,
+    /// Violation details (kind: detail) of a failing run.
+    pub details: Vec<String>,
+    /// Injection-site statistics of the run.
+    pub sites: Sites,
 }
 
 /// Run `scenario` once under its own seed and strategy, or strictly replay
 /// `tape` instead.
 pub fn execute(scenario: &Scenario, tape: Option<&Tape>) -> Run {
     init();
-    let body = |seed: u64| run_body(scenario.clone(), seed);
-    if let Some(tape) = tape {
+    let report = Arc::new(Mutex::new(Report::default()));
+    let body = |seed: u64| run_body_reporting(scenario.clone(), seed, Some(report.clone()));
+    let (failure, polls, tape) = if let Some(tape) = tape {
         let outcome = sim::run_once(tape.seed, Some(tape), &body);
-        return Run {
-            failure: outcome.failure,
-            polls: outcome.stats.steps,
-            tape: Some(outcome.tape),
-        };
-    }
-    match scenario.sched {
-        Sched::Random => {
-            let outcome = sim::run_once(scenario.seed, None, &body);
-            Run {
-                failure: outcome.failure,
-                polls: outcome.stats.steps,
-                tape: Some(outcome.tape),
+        (outcome.failure, outcome.stats.steps, Some(outcome.tape))
+    } else {
+        match scenario.sched {
+            Sched::Random => {
+                let outcome = sim::run_once(scenario.seed, None, &body);
+                (outcome.failure, outcome.stats.steps, Some(outcome.tape))
+            }
+            sched => {
+                // One run: the report is that run's.
+                let report = explore(&strategy(sched), scenario.seed, 1, &body);
+                match report.found {
+                    Some(found) => (
+                        found.outcome.failure,
+                        found.outcome.stats.steps,
+                        Some(found.outcome.tape),
+                    ),
+                    None => (None, report.max_polls, None),
+                }
             }
         }
-        sched => {
-            let report = explore(&strategy(sched), scenario.seed, 1, &body);
-            match report.found {
-                Some(found) => Run {
-                    failure: found.outcome.failure,
-                    polls: found.outcome.stats.steps,
-                    tape: Some(found.outcome.tape),
-                },
-                None => Run {
-                    failure: None,
-                    polls: report.max_polls,
-                    tape: None,
-                },
-            }
-        }
+    };
+    let Report { details, sites } =
+        std::mem::take(&mut *report.lock().unwrap_or_else(|p| p.into_inner()));
+    Run {
+        failure,
+        tape,
+        polls,
+        details,
+        sites,
     }
 }
 
@@ -111,7 +115,7 @@ pub fn fuzz_one(scenario: &Scenario) {
         return;
     };
     eprintln!("spawned-fuzz: FAILED: {failure}");
-    for detail in last_details() {
+    for detail in &run.details {
         eprintln!("spawned-fuzz:   {detail}");
     }
     eprintln!(
@@ -141,19 +145,39 @@ fn tape_hash(tape: &Tape) -> u64 {
     })
 }
 
-/// Decode a fuzz input the way `libfuzzer_sys::fuzz_target!` does.
+/// Decode an input of the base format ([`Format::Base`]: every input
+/// committed before fault injection, `fuzz/seeds` and the older
+/// `fuzz/regressions`).
 pub fn decode(bytes: &[u8]) -> Option<Scenario> {
+    decode_as(bytes, Format::Base)
+}
+
+/// Decode an input the way the fuzz target does ([`Format::Faults`]).
+pub fn decode_faults(bytes: &[u8]) -> Option<Scenario> {
+    decode_as(bytes, Format::Faults)
+}
+
+pub fn decode_as(bytes: &[u8], format: Format) -> Option<Scenario> {
     use arbitrary::{Arbitrary, Unstructured};
     if bytes.len() < <Scenario as Arbitrary>::size_hint(0).0 {
         return None;
     }
-    Scenario::arbitrary_take_rest(Unstructured::new(bytes)).ok()
+    Scenario::decode_with(Unstructured::new(bytes), format).ok()
 }
 
-/// Regression check: `input` must pass under its own seed and strategy and
-/// under the strict replay of `tape`.
+/// Regression check: `input` (base format) must pass under its own seed and
+/// strategy and under the strict replay of `tape`.
 pub fn assert_passes(input: &[u8], tape: Option<&str>) {
-    let scenario = decode(input).expect("regression input does not decode");
+    assert_passes_as(input, tape, Format::Base);
+}
+
+/// [`assert_passes`] for an input of the fuzz target's format.
+pub fn assert_passes_faults(input: &[u8], tape: Option<&str>) {
+    assert_passes_as(input, tape, Format::Faults);
+}
+
+fn assert_passes_as(input: &[u8], tape: Option<&str>, format: Format) {
+    let scenario = decode_as(input, format).expect("regression input does not decode");
     let run = execute(&scenario, None);
     assert_eq!(run.failure, None, "scenario fails under its own schedule");
     if let Some(text) = tape {

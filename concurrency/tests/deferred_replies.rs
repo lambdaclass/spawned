@@ -161,7 +161,7 @@ mod tasks_mode {
 
     fn start() -> (spawned_concurrency::tasks::ActorRef<Parker>, Arc<Seen>) {
         let seen = Arc::new(Seen::default());
-        (Parker::new(seen.clone()).start(), seen)
+        (Parker::new(seen.clone()).spawn(), seen)
     }
 
     async fn settle(actor: &spawned_concurrency::tasks::ActorRef<Parker>) -> usize {
@@ -413,7 +413,7 @@ mod tasks_mode {
                 reply.reply(closed);
             }
         }
-        let actor: ActorRef<Watcher> = Watcher { closed: None }.start();
+        let actor: ActorRef<Watcher> = Watcher { closed: None }.spawn();
         let rx = actor.send_request(Watch, Deadline::Never).unwrap();
         actor.request(Ping).await.unwrap(); // `Watch` was handled (FIFO)
         drop(rx);
@@ -462,7 +462,7 @@ mod tasks_mode {
                 self.0 = Some(token);
             }
         }
-        let actor = Shortener(None).start();
+        let actor = Shortener(None).spawn();
         let began = tokio::time::Instant::now();
         let result = actor
             .request_with_timeout(Shorten, Duration::from_secs(60))
@@ -497,7 +497,7 @@ mod tasks_mode {
                 } // otherwise dropped unanswered
             }
         }
-        let actor = Picky.start();
+        let actor = Picky.spawn();
         let dropped = actor.request(Ask(false)).await.unwrap_err();
         assert!(matches!(dropped, ActorError::ReplyDropped));
         assert!(!dropped.is_transient() && !dropped.target_gone());
@@ -525,7 +525,7 @@ mod tasks_mode {
     async fn reply_pair_drives_a_manual_handler_directly() {
         let seen = Arc::new(Seen::default());
         let mut parker = Parker::new(seen);
-        let actor = Parker::new(Arc::new(Seen::default())).start();
+        let actor = Parker::new(Arc::new(Seen::default())).spawn();
         let ctx = actor.context();
         let (reply, rx) = spawned_concurrency::__private::reply_pair::<u64>(Deadline::Never);
         parker.handle(Park(5), reply, &ctx).await;
@@ -619,7 +619,7 @@ mod threads_mode {
             answer_in_stopped: false,
             seen: seen.clone(),
         }
-        .start();
+        .spawn();
         (actor, seen)
     }
 

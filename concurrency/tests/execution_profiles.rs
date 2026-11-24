@@ -9,6 +9,7 @@ use spawned_concurrency::{
     supervision::{Backoff, ChildSpec, SupervisorConfig, SupervisorStrategy},
     system::{ActorSystem, ExecutionProfile, SystemError},
     tasks::{Actor, ActorStart, Context, Handler},
+    StartError,
 };
 use std::{
     sync::{
@@ -43,7 +44,7 @@ impl Handler<Audit> for Probe {
 }
 struct StartPeer;
 impl Message for StartPeer {
-    type Result = Result<spawned_concurrency::tasks::ActorRef<Probe>, SystemError>;
+    type Result = Result<spawned_concurrency::tasks::ActorRef<Probe>, StartError>;
 }
 impl Handler<StartPeer> for Probe {
     async fn handle(
@@ -53,7 +54,7 @@ impl Handler<StartPeer> for Probe {
         ctx: &Context<Self>,
     ) {
         let __reply_value: <StartPeer as Message>::Result =
-            { ctx.execution_group().unwrap().start(Probe) };
+            { Probe.with_options(&ctx.execution_group().unwrap()).spawn() };
         reply.reply(__reply_value);
     }
 }
@@ -78,14 +79,17 @@ async fn native_context_placement_uses_a_free_slot_and_validates_helper_budgets(
             helper_workers: 2
         })
     );
-    let actor = Probe.start_on(&group.shard(0).unwrap()).unwrap();
+    let actor = Probe
+        .with_options(&group.shard(0).unwrap())
+        .spawn()
+        .unwrap();
     within!(actor.ready()).await.unwrap();
     let peer = actor.request(StartPeer).await.unwrap().unwrap();
     within!(peer.ready()).await.unwrap();
     assert!(peer.request(Audit).await.unwrap().0.ends_with("actor-1"));
     assert!(matches!(
         actor.request(StartPeer).await.unwrap(),
-        Err(SystemError::Capacity)
+        Err(StartError::Capacity)
     ));
     assert!(system.shutdown(LIMIT).await.complete);
 }
@@ -139,11 +143,20 @@ async fn persistent_native_slots_bound_admission_and_helpers_progress_during_blo
             helper_workers: 1
         })
     );
-    let a = Probe.start_on(&group.shard(0).unwrap()).unwrap();
-    let b = Probe.start_on(&group.shard(1).unwrap()).unwrap();
+    let a = Probe
+        .with_options(&group.shard(0).unwrap())
+        .spawn()
+        .unwrap();
+    let b = Probe
+        .with_options(&group.shard(1).unwrap())
+        .spawn()
+        .unwrap();
     within!(a.ready()).await.unwrap();
     within!(b.ready()).await.unwrap();
-    assert!(matches!(Probe.start_on(&group), Err(SystemError::Capacity)));
+    assert!(matches!(
+        Probe.with_options(&group).spawn(),
+        Err(StartError::Capacity)
+    ));
     assert!(a.request(Audit).await.unwrap().0.ends_with("actor-0"));
     let (entered_tx, entered) = tokio::sync::oneshot::channel();
     let (release, release_rx) = std::sync::mpsc::channel();
@@ -184,7 +197,10 @@ async fn persistent_native_slots_bound_admission_and_helpers_progress_during_blo
         .is_ok());
     release.send(()).unwrap();
     assert!(system.shutdown(LIMIT).await.complete);
-    assert!(matches!(Probe.start_on(&group), Err(SystemError::Closed)));
+    assert!(matches!(
+        Probe.with_options(&group).spawn(),
+        Err(StartError::Closed)
+    ));
 }
 // Not simulated: native execution groups need OS threads.
 #[cfg(not(spawned_sim))]
@@ -192,7 +208,7 @@ async fn persistent_native_slots_bound_admission_and_helpers_progress_during_blo
 async fn native_capacity_is_released_only_after_registered_helper_cleanup() {
     let system = ActorSystem::new().unwrap();
     let group = system.thread_group("slot-cleanup", 1).unwrap();
-    let actor = Probe.start_on(&group).unwrap();
+    let actor = Probe.with_options(&group).spawn().unwrap();
     within!(actor.ready()).await.unwrap();
     let (entered_tx, entered) = tokio::sync::oneshot::channel();
     let (release, release_rx) = std::sync::mpsc::channel();
@@ -209,14 +225,17 @@ async fn native_capacity_is_released_only_after_registered_helper_cleanup() {
         .unwrap();
     actor.context().stop();
     actor.child_handle().wait_exit_async().await;
-    assert!(matches!(Probe.start_on(&group), Err(SystemError::Capacity)));
+    assert!(matches!(
+        Probe.with_options(&group).spawn(),
+        Err(StartError::Capacity)
+    ));
     release.send(()).unwrap();
     drop(helper);
     let replacement = spawned_rt::tasks::timeout(LIMIT, async {
         loop {
-            match Probe.start_on(&group) {
+            match Probe.with_options(&group).spawn() {
                 Ok(actor) => break actor,
-                Err(SystemError::Capacity) => spawned_rt::tasks::yield_now().await,
+                Err(StartError::Capacity) => spawned_rt::tasks::yield_now().await,
                 Err(e) => panic!("{e}"),
             }
         }
@@ -318,7 +337,12 @@ async fn pinned_shards_preserve_explicit_cpu_placement_and_cross_shard_requests(
     let group = system.pinned_group("pipeline", cpus.clone()).unwrap();
     assert!(group.shard(cpus.len()).is_err());
     let actors: Vec<_> = (0..cpus.len())
-        .map(|i| Probe.start_on(&group.shard(i).unwrap()).unwrap())
+        .map(|i| {
+            Probe
+                .with_options(&group.shard(i).unwrap())
+                .spawn()
+                .unwrap()
+        })
         .collect();
     for (i, actor) in actors.iter().enumerate() {
         within!(actor.ready()).await.unwrap();
@@ -387,7 +411,7 @@ mod tls_join {
         let system = ActorSystem::new().unwrap();
         let cpu = spawned_rt::tasks::affinity::available_cpus().unwrap()[0];
         let group = system.pinned_group("tls-owner", vec![cpu]).unwrap();
-        let actor = Probe.start_on(&group).unwrap();
+        let actor = Probe.with_options(&group).spawn().unwrap();
         within!(actor.ready()).await.unwrap();
         let (entered_tx, entered) = tokio::sync::oneshot::channel();
         let (release, release_rx) = std::sync::mpsc::channel();
@@ -522,7 +546,7 @@ fn partial_pinned_construction_rolls_back_before_returning_error() {
     let group = system.async_group("after-rollback", 1).unwrap();
     let runtime = spawned_rt::tasks::control_runtime().unwrap();
     runtime.block_on(async {
-        let actor = Probe.start_on(&group).unwrap();
+        let actor = Probe.with_options(&group).spawn().unwrap();
         within!(actor.ready()).await.unwrap();
         assert!(actor.request(Audit).await.is_ok());
         assert!(system.shutdown(LIMIT).await.complete);

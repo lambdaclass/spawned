@@ -14,7 +14,7 @@ impl Counter {
 }
 fn main() {
     spawned_rt::tasks::run(async {
-        let actor = Counter.start();
+        let actor = Counter.spawn();
         let interface: CounterRef = actor.to_counter_ref();
         assert_eq!(interface.read().await.unwrap(), 42);
         actor.child_handle().stop();

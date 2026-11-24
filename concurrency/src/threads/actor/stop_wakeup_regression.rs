@@ -79,6 +79,8 @@ fn cancellation_wakes_the_real_blocking_receive_boundary() {
                         trap.clone(),
                         request.clone(),
                         token.clone(),
+                        crate::start::StartupCell::new(),
+                        Default::default(),
                     ),
                     mailbox: crate::instrumentation::Mailbox::default(),
                     replies: Registry::new_native(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
@@ -137,11 +139,11 @@ fn every_stop_route_wakes_an_idle_thread() {
         move || {
             for route in 0..4 {
                 let (stopped_tx, stopped) = mpsc::channel();
-                let actor = Idle(stopped_tx).start();
+                let actor = Idle(stopped_tx).spawn();
                 // A reply ensures startup is complete before the cancellation race.
                 actor.request(Noop).unwrap();
                 let failing = if route == 3 {
-                    let peer = Failing.start();
+                    let peer = Failing.spawn();
                     actor.context().link(&peer.child_handle());
                     Some(peer)
                 } else {
@@ -219,7 +221,7 @@ fn repeated_stop_during_a_handler_discards_queued_requests() {
                 release: release_rx,
                 handled: handled.clone(),
             }
-            .start();
+            .spawn();
             let first = actor.send_request(Work, DEFAULT_REQUEST_TIMEOUT).unwrap();
             entered.recv_timeout(Duration::from_secs(2)).unwrap();
             let replies: Vec<_> = (0..256)

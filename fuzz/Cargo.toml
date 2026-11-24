@@ -24,6 +24,8 @@ libfuzzer-sys = "0.4"
 spawned-rt = { path = "../rt" }
 spawned-concurrency = { path = "../concurrency" }
 spawned-macros = { path = "../macros" }
+# The panicking subscriber of the `TRACING` injection site.
+tracing = "0.1"
 
 [features]
 # Record supervisor lifecycle traces of finished flat trees for TLA+ trace
@@ -39,3 +41,5 @@ bench = false
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_sim)', 'cfg(tokio_unstable)', 'cfg(fuzzing)'] }
+# Manual `started()` impls return a refined `impl Future` (0.9 unified start).
+refining_impl_trait = { level = "allow", priority = -1 }

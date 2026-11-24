@@ -332,6 +332,50 @@ fn mutual_death_delivers_at_most_one_notice() {
     });
 }
 
+/// The commit of a `start_link` (unified start, stage 1) racing the
+/// parent's exit begin and death point: the edge is installed only while
+/// the parent's exit has not begun (read under the parent's exit request,
+/// inside the table transaction), and an installed edge always gets its
+/// notice at the parent's D. A refused commit leaves no record on either
+/// side (`EdgeOnlyToRunningParent`, `NoEdgeToDeadParent`, `AbortInvisible`).
+#[test]
+fn start_edge_commit_races_parent_exit_begin() {
+    model("start_edge_commit_races_parent_exit_begin", || {
+        let (parent, child) = (Arc::new(Actor::new(1)), Arc::new(Actor::new(2)));
+        let exiting = Arc::new(loom::sync::Mutex::new(false));
+        let exit = {
+            let (parent, exiting) = (parent.clone(), exiting.clone());
+            spawn(move || {
+                *exiting.lock().unwrap() = true;
+                die(&parent, ExitReason::Shutdown, &[]);
+            })
+        };
+        let installed = table::install_start_edge(
+            &parent.target,
+            &parent.links,
+            &child.target,
+            &child.links,
+            1,
+            || !*exiting.lock().unwrap(),
+        );
+        exit.join().unwrap();
+        if installed {
+            assert_eq!(
+                child.log(),
+                vec![Notice {
+                    from: parent.id(),
+                    gen: 1,
+                    reason: ExitReason::Shutdown
+                }]
+            );
+        } else {
+            assert!(child.log().is_empty());
+            assert_eq!(child.records(), 0, "a refused commit left a record");
+        }
+        assert_eq!(parent.records(), 0);
+    });
+}
+
 /// Concurrent `link` from both ends: one edge, symmetric records.
 #[test]
 fn concurrent_links_install_one_edge() {

@@ -106,7 +106,7 @@ enum Work {
 fn run(budget: Option<Duration>, work: Work) -> Option<String> {
     let body = move |_seed| async move {
         sim::set_turn_budget(budget);
-        let worker = Worker.start();
+        let worker = Worker.spawn();
         match work {
             Work::Nap => worker.request(Nap).await.unwrap(),
             Work::Spin => {
@@ -164,7 +164,7 @@ fn blocking_child() {
         .named(env!("CARGO_PKG_NAME"), module_path!(), "blocking_child")
         .seeds(0..1)
         .run(|_seed| async {
-            Worker.start().request(Nap).await.unwrap();
+            Worker.spawn().request(Nap).await.unwrap();
         });
 }
 

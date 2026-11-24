@@ -244,7 +244,7 @@ impl<A: Actor> Context<A> {
             crate::monitor::fence::register(
                 &self.shared.monitors,
                 monitor_ref,
-                active.clone(),
+                (target.id(), active.clone()),
                 // The token check makes registration inert once shutdown
                 // starts. The closed table serializes registration with exit
                 // cleanup, even on paths that unwind before cancelling the
@@ -281,14 +281,31 @@ impl<A: Actor> Context<A> {
         if !registered {
             return monitor_ref;
         }
+        self.spawn_monitor_waiter(target.clone(), monitor_ref, active, None);
+        monitor_ref
+    }
 
-        let target = target.clone();
+    /// The monitor's waiter: at the target's publication, the `Down` is
+    /// delivered (receiver-side fenced). A `start_monitor`'s waiter disposes
+    /// of it through the child's startup cell instead (design 5.2): diverted
+    /// to the start's waiter, dropped once its error consumed it, or handed
+    /// on after abandonment.
+    fn spawn_monitor_waiter(
+        &self,
+        target: ChildHandle,
+        monitor_ref: MonitorRef,
+        active: spawned_rt::tasks::CancellationToken,
+        cell: Option<Arc<crate::start::StartupCell>>,
+    ) where
+        A: Handler<Down>,
+    {
+        let observer = self.shared.id.raw();
         let actor_ref = self.actor_ref();
         let monitors = self.shared.monitors.clone();
         let registration = crate::monitor::MonitorRegistration(monitors.clone(), monitor_ref);
 
+        let mut watch = crate::start::DownWatch(cell);
         self.spawn_framework(async move {
-            let _registration = registration;
             let reason = match futures::future::select(
                 Box::pin(active.cancelled()),
                 Box::pin(target.wait_exit_async()),
@@ -301,31 +318,86 @@ impl<A: Actor> Context<A> {
             // Receiver-side fence (E6): the entry is removed and the Down
             // enqueued in one critical section, so once `demonitor` returns
             // no Down of this monitor is enqueued.
-            crate::lifecycle_trace::life_section(observer, || {
-                crate::monitor::fence::deliver(&monitors, &monitor_ref, || {
-                    crate::lifecycle_trace::life_emit(observer, || {
-                        crate::lifecycle_trace::LifeEvent::new("Deliver", observer)
-                            .s(target.id().raw())
-                            .m(monitor_ref.raw())
-                            .x(crate::lifecycle_trace::life_reason(&reason))
-                            .k("down")
-                            .o("death")
+            let deliver = move |deliver: bool| {
+                let _registration = registration;
+                if !deliver {
+                    return;
+                }
+                crate::lifecycle_trace::life_section(observer, || {
+                    crate::monitor::fence::deliver(&monitors, &monitor_ref, || {
+                        crate::lifecycle_trace::life_emit(observer, || {
+                            crate::lifecycle_trace::LifeEvent::new("Deliver", observer)
+                                .s(target.id().raw())
+                                .m(monitor_ref.raw())
+                                .x(crate::lifecycle_trace::life_reason(&reason))
+                                .k("down")
+                                .o("death")
+                        });
+                        crate::lifecycle_trace::start_notice(
+                            observer,
+                            target.id().raw(),
+                            "monitor",
+                            &reason,
+                            || {
+                                let _ = enqueue_down(
+                                    &actor_ref.shared.sender,
+                                    &actor_ref.shared.mailbox,
+                                    &actor_ref.shared.replies,
+                                    Down {
+                                        monitor_ref,
+                                        actor: target.id(),
+                                        reason: reason.clone(),
+                                    },
+                                );
+                            },
+                        );
                     });
-                    let _ = enqueue_down(
-                        &actor_ref.shared.sender,
-                        &actor_ref.shared.mailbox,
-                        &actor_ref.shared.replies,
-                        Down {
-                            monitor_ref,
-                            actor: target.id(),
-                            reason,
-                        },
-                    );
                 });
-            });
+            };
+            match watch.take() {
+                None => deliver(true),
+                Some(cell) => {
+                    if let Some(deliver) = cell.dispose_down(Box::new(deliver)) {
+                        deliver(true);
+                    }
+                }
+            }
         });
+    }
 
-        monitor_ref
+    /// The start edge of a `start_monitor` (committed by the caller's stage
+    /// 1): arm the waiter before the child is dispatched.
+    pub(super) fn arm_start_monitor(
+        &self,
+        child: ChildHandle,
+        monitor_ref: MonitorRef,
+        active: spawned_rt::tasks::CancellationToken,
+        cell: Arc<crate::start::StartupCell>,
+    ) where
+        A: Handler<Down>,
+    {
+        self.spawn_monitor_waiter(child, monitor_ref, active, Some(cell));
+    }
+
+    /// This actor's placement (inherited by `start_link`/`start_monitor`).
+    pub(super) fn placement(&self) -> start::Placement {
+        match self.shared.managed() {
+            Some(scope) => start::Placement::Group(scope.group()),
+            None => start::Placement::Backend(self.shared.backend),
+        }
+    }
+
+    /// This actor as the parent of a `start_link`/`start_monitor`.
+    pub(super) fn parent_parts(&self) -> lifecycle::ParentParts {
+        lifecycle::ParentParts {
+            id: self.shared.id,
+            signal: self.shared.signal.clone(),
+            links: self.shared.links.clone(),
+            request: self.shared.linked_reason.clone(),
+            monitors: self.shared.monitors.clone(),
+            token: self.shared.cancellation_token.clone(),
+            placement: self.placement(),
+        }
     }
 
     /// Cancel a previously-set monitor.
@@ -345,7 +417,7 @@ impl<A: Actor> Context<A> {
             })
         });
         // Waking the waiter must happen after releasing the table lock.
-        if let Some(active) = active {
+        if let Some((_, active)) = active {
             active.cancel();
         }
     }
@@ -371,7 +443,7 @@ impl<A: Actor> Context<A> {
             &self.shared.signal,
             &self.shared.links,
             target.signal_target(),
-            target.links(),
+            target.link_table(),
             false,
         );
     }
@@ -386,7 +458,7 @@ impl<A: Actor> Context<A> {
             &self.shared.signal,
             &self.shared.links,
             target.signal_target(),
-            target.links(),
+            target.link_table(),
             true,
         ) {
             LinkOutcome::NoProc => Err(NoProc),
@@ -402,7 +474,7 @@ impl<A: Actor> Context<A> {
             self.shared.id,
             &self.shared.links,
             target.id(),
-            target.links(),
+            target.link_table(),
         );
     }
 
@@ -496,6 +568,7 @@ impl<A: Actor> Context<A> {
     }
 
     /// Type-erased handle to this actor, without an intermediate `ActorRef`.
+    #[allow(dead_code)] // kept for crate-internal callers and tests
     pub(crate) fn child_handle(&self) -> ChildHandle {
         self.shared.child_handle()
     }
@@ -504,7 +577,7 @@ impl<A: Actor> Context<A> {
     /// Construct runtime-bound work inside the async block. Closure of the scope
     /// cancels the helper and waits for its future to drop before cleanup ends.
     /// Returns [`crate::system::SystemError::UnmanagedActor`] for actors started
-    /// with `.start()`; use `.start_on(&group)` to establish cleanup ownership.
+    /// with `.spawn()`; use `.with_options(&group).spawn()` to establish cleanup ownership.
     pub fn spawn_helper<F>(
         &self,
         future: F,
@@ -514,8 +587,7 @@ impl<A: Actor> Context<A> {
         F::Output: Send + 'static,
     {
         self.shared
-            .managed
-            .as_ref()
+            .managed()
             .ok_or(crate::system::SystemError::UnmanagedActor)?
             .spawn_helper(future)
     }
@@ -524,7 +596,7 @@ impl<A: Actor> Context<A> {
     /// Cancellation cannot preempt it. Raw nested spawn calls are not implicitly
     /// owned; use this method rather than detaching a blocking task inside a
     /// cancellable async helper when recovery must await its resource cleanup.
-    /// Requires `.start_on(&group)`, like [`Self::spawn_helper`].
+    /// Requires `.with_options(&group).spawn()`, like [`Self::spawn_helper`].
     pub fn spawn_blocking_helper<F, T>(
         &self,
         work: F,
@@ -534,14 +606,13 @@ impl<A: Actor> Context<A> {
         T: Send + 'static,
     {
         self.shared
-            .managed
-            .as_ref()
+            .managed()
             .ok_or(crate::system::SystemError::UnmanagedActor)?
             .spawn_blocking_helper(work)
     }
 
     pub fn execution_group(&self) -> Option<crate::system::ExecutionGroup> {
-        self.shared.managed.as_ref().map(|s| s.group())
+        self.shared.managed().map(|s| s.group())
     }
 
     /// Register this managed actor until its owned cleanup completes. Removal
@@ -551,20 +622,24 @@ impl<A: Actor> Context<A> {
         name: &str,
     ) -> Result<(), crate::registry::ManagedRegistrationError> {
         self.shared
-            .managed
-            .as_ref()
+            .managed()
             .ok_or(crate::registry::ManagedRegistrationError::OwnerClosed)?
-            .register(name, self.shared.id, self.actor_ref())
+            .register(
+                name,
+                self.shared.id,
+                self.actor_ref(),
+                self.actor_ref().child_handle(),
+            )
     }
 
     pub(crate) fn managed_scope(&self) -> Option<&Arc<crate::system::Scope>> {
-        self.shared.managed.as_ref()
+        self.shared.managed()
     }
     pub(crate) fn spawn_framework<F>(&self, future: F) -> JoinHandle<()>
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        match &self.shared.managed {
+        match self.shared.managed() {
             Some(scope) => scope.spawn_framework(future),
             None => rt::spawn(future),
         }

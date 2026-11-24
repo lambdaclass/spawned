@@ -323,11 +323,11 @@ impl Parker {
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
     // 1. Delegation: the slow request does not block the router.
-    let backend = Backend.start();
+    let backend = Backend.spawn();
     let router = Router {
         backend: backend.clone(),
     }
-    .start();
+    .spawn();
     let slow = router.route(300);
     assert_eq!(router.ping().await.unwrap(), "pong");
     assert_eq!(router.route(1).await.unwrap(), 1);
@@ -338,7 +338,7 @@ async fn main() {
     let verifier = Verifier {
         verdicts: Vec::new(),
     }
-    .start();
+    .spawn();
     verifier
         .send(Verify {
             id: 1,
@@ -364,7 +364,7 @@ async fn main() {
     let conn = Connection {
         current_requests: PendingReplies::with_capacity(2),
     }
-    .start();
+    .spawn();
     let a = conn
         .send_request(
             Outgoing { id: 1 },
@@ -414,7 +414,7 @@ async fn main() {
         free: 0,
         waiters: VecDeque::new(),
     }
-    .start();
+    .spawn();
     let first = table
         .send_request(WaitForPeer, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
         .unwrap();
@@ -434,7 +434,7 @@ async fn main() {
         parked: Vec::new(),
         answer_first: 0,
     }
-    .start();
+    .spawn();
     let one = parker.send_request(Park, Deadline::Never).unwrap();
     let two = parker.send_request(Park, Deadline::Never).unwrap();
     parker.request(StopAnswering(1)).await.unwrap();

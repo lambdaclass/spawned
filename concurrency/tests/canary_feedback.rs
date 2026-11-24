@@ -119,7 +119,7 @@ async fn unfinished_report_identifies_child_and_active_turn() {
 async fn completed_turn_is_not_reported_while_helper_cleanup_remains() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("canary-helper", 1).unwrap();
-    let actor = Worker.start_on(&group).unwrap();
+    let actor = Worker.with_options(&group).spawn().unwrap();
     within!(actor.ready()).await.unwrap();
     actor.context().register_name("canary-standalone").unwrap();
     let (entered, arrival) = oneshot::channel();
@@ -381,7 +381,7 @@ async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
 
 #[spawned_macros::sim_test]
 async fn unmanaged_helpers_return_a_specific_error_without_executing_work() {
-    let actor = Worker.start();
+    let actor = Worker.spawn();
     assert!(matches!(
         actor.context().spawn_helper(async {}),
         Err(spawned_concurrency::system::SystemError::UnmanagedActor)
@@ -428,7 +428,8 @@ async fn panicked_turn_is_cleared_before_stopped_hook() {
         entered: Some(entered),
         release: Some(gate),
     }
-    .start_on(&group)
+    .with_options(&group)
+    .spawn()
     .unwrap();
     within!(actor.ready()).await.unwrap();
     assert!(actor.request(Quit(ExitReason::Kill)).await.is_err());
@@ -478,10 +479,11 @@ async fn trapped_exit_diagnostics_use_the_public_signal_name() {
         entered: Some(entered),
         release: Some(gate),
     }
-    .start_on(&group)
+    .with_options(&group)
+    .spawn()
     .unwrap();
     within!(observer.ready()).await.unwrap();
-    let source = Worker.start_on(&group).unwrap();
+    let source = Worker.with_options(&group).spawn().unwrap();
     within!(source.ready()).await.unwrap();
     observer.context().link(&source.child_handle());
     source

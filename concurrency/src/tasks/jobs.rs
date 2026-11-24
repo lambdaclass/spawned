@@ -609,7 +609,7 @@ impl<A: Actor> Context<A> {
             runner: None,
         };
         #[cfg(not(spawned_sim))]
-        let handle = match &self.shared.managed {
+        let handle = match self.shared.managed() {
             Some(scope) => Some(scope.handle.clone()),
             None => spawned_rt::tasks::Handle::try_current().ok(),
         };
@@ -645,7 +645,7 @@ impl<A: Actor> Context<A> {
         opts: &JobOptions,
         native: &mut NativeSlot<A>,
     ) -> bool {
-        let lease = match &self.shared.managed {
+        let lease = match self.shared.managed() {
             Some(scope) => match scope.job_lease() {
                 Ok(lease) => Some(lease),
                 Err(_) => return false,
@@ -1077,7 +1077,7 @@ mod tests {
                 "::pipe_reply_retires_the_external_token_hold"
             ),
             async {
-                let owner = Owner.start();
+                let owner = Owner.spawn();
                 let ctx = owner.context();
                 let registry = ctx.shared.replies.clone();
                 let (mut handle, receiver) =
@@ -1125,7 +1125,7 @@ mod tests {
 
     #[tokio::test]
     async fn refused_job_payload_panics_are_contained() {
-        let owner = Owner.start();
+        let owner = Owner.spawn();
         let ctx = owner.context();
         let failures = ctx.shared.sender.failures();
         for finish in [false, true] {
@@ -1168,7 +1168,7 @@ mod tests {
     #[tokio::test]
     async fn held_job_result_panics_do_not_interrupt_cancellation() {
         for action in ["cancel", "deadline", "replace", "owner_exit"] {
-            let owner = Owner.start();
+            let owner = Owner.spawn();
             let ctx = owner.context();
             let failures = ctx.shared.sender.failures();
             let set = crate::reply::jobs::JobSet::new(owner.id(), 1);
@@ -1243,7 +1243,7 @@ mod tests {
         crate::test_wait::within(
             concat!(module_path!(), "::a_refused_emit_returns_its_credit_once"),
             async move {
-                let owner = Owner.start();
+                let owner = Owner.spawn();
                 for credits in [1, u16::MAX] {
                     let state = JobState::new(owner.id(), credits);
                     let job = JobCtx {
@@ -1273,7 +1273,7 @@ mod tests {
                 "::cancel_on_caller_gone_on_a_plain_job_is_a_bug"
             ),
             async move {
-                let owner = Owner.start();
+                let owner = Owner.spawn();
                 let ctx = owner.context();
                 let refused = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     ctx.reserve_blocking_job(JobOptions::new().cancel_on_caller_gone())

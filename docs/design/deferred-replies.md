@@ -494,7 +494,7 @@ current turn's slot) and a job set. The order is:
    - `pipe*` now returns `OwnerStopping`.
 
    The run loop arms the cleanup deadline for every actor, standalone
-   `group.start` and `.start()` actors included:
+   group-placed and unmanaged (`.spawn()`) actors included:
    - the supervisor's `shutdown_timeout`;
    - the system grace;
    - otherwise `DEFAULT_STOP_DEADLINE` (5 s).

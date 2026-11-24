@@ -72,7 +72,7 @@ fn deadline_service_child() {
         .build()
         .unwrap();
     runtime.block_on(async {
-        let owner = Owner::default().start();
+        let owner = Owner::default().spawn();
         spawned_concurrency::__private::in_turn(&owner, |_, ctx| {
             let opts = JobOptions::new().deadline(Duration::from_millis(20));
             ctx.pipe_blocking(
@@ -94,7 +94,7 @@ fn deadline_service_child() {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Another actor's deadlines, serviced by the same thread.
-        let other = Owner::default().start();
+        let other = Owner::default().spawn();
         let parked = other
             .send_request(Park, Deadline::after(Duration::from_millis(50)))
             .unwrap();
@@ -223,7 +223,7 @@ fn deadline_service_isolates_a_blocking_destructor_threads() {
 
 /// Another actor's raw request and job deadlines, serviced by the heap.
 async fn other_actor_deadlines_fire(blocker: &Blocker) -> Result<(), String> {
-    let other = Owner::default().start();
+    let other = Owner::default().spawn();
     let parked = other
         .send_request(Park, Deadline::after(Duration::from_millis(50)))
         .unwrap();
@@ -281,7 +281,7 @@ fn deadline_service_blocking_destructor_child() {
     }
     let blocker = std::sync::Arc::new(Blocker::default());
     tokio_runtime().block_on(async {
-        let owner = Owner::default().start();
+        let owner = Owner::default().spawn();
         let armed = blocker.clone();
         spawned_concurrency::__private::in_turn(&owner, move |_, ctx| {
             let opts = JobOptions::new().deadline(Duration::from_millis(20));
@@ -332,7 +332,7 @@ fn deadline_service_same_actor_child() {
     }
     let blocker = std::sync::Arc::new(Blocker::default());
     tokio_runtime().block_on(async {
-        let owner = Owner::default().start();
+        let owner = Owner::default().spawn();
         let deadline = Deadline::after(Duration::from_millis(100));
         let first = owner.send_request(Park, deadline).unwrap();
         let second = owner.send_request(Park, deadline).unwrap();
@@ -373,7 +373,7 @@ fn deadline_service_blocking_waker_child() {
     }
     let blocker = std::sync::Arc::new(Blocker::default());
     tokio_runtime().block_on(async {
-        let owner = Owner::default().start();
+        let owner = Owner::default().spawn();
         // A raw receiver polled once with a waker that blocks: its deadline
         // goes to the owner's heap, whose expiry wakes it.
         let receiver = owner
@@ -414,7 +414,7 @@ mod threads_backend {
     }
 
     pub fn run(blocker: &std::sync::Arc<Blocker>) -> Result<(), String> {
-        let owner = Owner.start();
+        let owner = Owner.spawn();
         let armed = blocker.clone();
         spawned_concurrency::__private::in_turn_threads(&owner, move |_, ctx| {
             let opts = JobOptions::new().deadline(Duration::from_millis(20));
@@ -437,7 +437,7 @@ mod threads_backend {
             "the scheduled emit was never discarded"
         );
         // Another actor's job deadline, serviced by the same deadline service.
-        let other = Owner.start();
+        let other = Owner.spawn();
         let fired = spawned_concurrency::__private::in_turn_threads(&other, |_, ctx| {
             let (tx, rx) = std::sync::mpsc::channel();
             let opts = JobOptions::new().deadline(Duration::from_millis(20));

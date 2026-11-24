@@ -40,7 +40,7 @@ impl Handler<Check> for Worker {
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
-    let actor = Worker.start_with_backend(Backend::Thread);
+    let actor = Worker.with_options(Backend::Thread).spawn().unwrap();
     let (workers, answer) = actor.request(Check).await.unwrap();
     assert_eq!(workers, 1);
     assert_eq!(answer, 42);

@@ -12,12 +12,16 @@ use spawned_concurrency::{
 };
 use spawned_rt::tasks::{self as rt, sim};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    sync::{Arc, Mutex, MutexGuard},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    sync::{
+        atomic::{AtomicU16, AtomicU64, Ordering},
+        Arc, Mutex, MutexGuard,
+    },
     time::Duration,
 };
 
-use crate::scenario::Hooks;
+use crate::fault::{inject_panic, Answer, BombRec};
+use crate::scenario::{site, Hooks};
 
 /// One oracle violation. `kind` is the stable panic message (no ids or
 /// counters, so the tape shrinker can match it across runs); `detail` is
@@ -66,6 +70,15 @@ pub struct Inst {
     /// Taken in `started()`; the published reason is read after teardown.
     pub handle: Option<ChildHandle>,
     pub reason: Option<ExitReason>,
+    /// A reply payload went off inside the actor's own `reply()` call (in a
+    /// turn or `stopped()`): a panic of its own, so its reason is not
+    /// predicted. (One that goes off on its task anywhere else is past D: a
+    /// cleanup failure, L6.)
+    pub relaxed: bool,
+    /// The actor is inside its own `reply()` call (see `relaxed`).
+    pub replying: bool,
+    /// `ChildHandle::cleanup_failure()` after teardown.
+    pub cleanup_failure: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -170,17 +183,152 @@ pub struct State {
     pub nested: BTreeMap<String, SupervisedChild<Worker>>,
     pub timers: Vec<TimerRec>,
     pub violations: Vec<Violation>,
+    /// Every injected-fault payload (M6, L6).
+    pub bombs: Vec<BombRec>,
+    /// `Fx` requests whose reply was deferred: `ReplyDropped` is a valid answer.
+    pub deferred: HashSet<u64>,
+    /// Simulated task -> worker instance.
+    pub tasks: HashMap<sim::Id, usize>,
+}
+
+/// Injection-site statistics of one run (`examples/sites.rs`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Sites {
+    /// Sites armed at some point of the run (`scenario::site` bits).
+    pub armed: u16,
+    /// Per site bit: payloads created armed (payload sites only).
+    pub payloads_armed: [u64; 16],
+    /// Per site bit: faults that went off.
+    pub fired: [u64; 16],
+    /// Subscriber panics (`TRACING`).
+    pub subscriber_panics: u64,
 }
 
 pub struct World {
     state: Mutex<State>,
+    /// Sites armed now (`scenario::site`).
+    armed: AtomicU16,
+    /// Sites armed at some point of the run (stats).
+    ever_armed: AtomicU16,
+    /// The driver's task and its request tasks: the caller's context, where
+    /// no injected fault goes off.
+    callers: Mutex<HashSet<sim::Id>>,
+    /// Tasks whose handler is inside its own call into the framework
+    /// (`ctx.pipe*`, `ctx.spawn_helper`), with the nesting depth: a payload
+    /// the call refuses is dropped there, in the caller's context.
+    calling: Mutex<HashMap<sim::Id, u32>>,
+    /// Callback faults that went off, per site bit (stats). Atomics, so the
+    /// subscriber never takes the state lock (a `tracing` event emitted
+    /// while it is held would deadlock on it).
+    site_fires: [AtomicU64; 16],
+    subscriber_panics: AtomicU64,
 }
 
 impl World {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(State::default()),
+            armed: AtomicU16::new(0),
+            ever_armed: AtomicU16::new(0),
+            callers: Mutex::new(HashSet::new()),
+            calling: Mutex::new(HashMap::new()),
+            site_fires: Default::default(),
+            subscriber_panics: AtomicU64::new(0),
         })
+    }
+    pub fn armed(&self) -> u16 {
+        self.armed.load(Ordering::Relaxed)
+    }
+    pub fn arm(&self, sites: u16) {
+        self.armed.store(sites, Ordering::Relaxed);
+        self.ever_armed.fetch_or(sites, Ordering::Relaxed);
+    }
+    /// Count a fault that went off (stats).
+    pub fn count(&self, site: u16) {
+        let bit = site.trailing_zeros() as usize;
+        if bit < 16 {
+            self.site_fires[bit].fetch_add(1, Ordering::Relaxed);
+        }
+        if site == crate::scenario::site::TRACING {
+            self.subscriber_panics.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    /// The run's injection-site statistics.
+    pub fn sites(&self) -> Sites {
+        let mut sites = Sites {
+            armed: self.ever_armed.load(Ordering::Relaxed),
+            subscriber_panics: self.subscriber_panics.load(Ordering::Relaxed),
+            ..Sites::default()
+        };
+        for (bit, n) in self.site_fires.iter().enumerate() {
+            sites.fired[bit] = n.load(Ordering::Relaxed);
+        }
+        for b in &self.lock().bombs {
+            let bit = b.site.trailing_zeros() as usize;
+            if bit < 16 {
+                sites.payloads_armed[bit] += b.armed as u64;
+                sites.fired[bit] += b.fired.is_some() as u64;
+            }
+        }
+        sites
+    }
+    /// Mark `task` as the caller's context (the driver, a request task).
+    pub fn add_caller(&self, task: Option<sim::Id>) {
+        if let Some(task) = task {
+            self.callers
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(task);
+        }
+    }
+    /// Run `f`, a handler's call into the framework, as caller context of
+    /// the current task (reentrant: a nested call keeps the outer one's).
+    pub fn calling<T>(&self, f: impl FnOnce() -> T) -> T {
+        struct Reset<'a>(&'a World, Option<sim::Id>);
+        impl Drop for Reset<'_> {
+            fn drop(&mut self) {
+                let Some(task) = self.1 else { return };
+                let mut calling = self.0.calling.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(depth) = calling.get_mut(&task) {
+                    *depth -= 1;
+                    if *depth == 0 {
+                        calling.remove(&task);
+                    }
+                }
+            }
+        }
+        let task = crate::fault::task();
+        if let Some(task) = task {
+            *self
+                .calling
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .entry(task)
+                .or_default() += 1;
+        }
+        let _reset = Reset(self, task);
+        f()
+    }
+    /// No injected fault goes off here: the caller's context, or outside
+    /// the simulation (no task the harness models).
+    pub fn in_caller(&self) -> bool {
+        let Some(task) = crate::fault::task() else {
+            return true;
+        };
+        self.calling
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains_key(&task)
+            || self
+                .callers
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains(&task)
+    }
+    /// The worker instance whose task runs now.
+    pub fn task_owner(&self) -> Option<usize> {
+        let task = crate::fault::task()?;
+        self.lock().tasks.get(&task).copied()
     }
     pub fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
@@ -291,10 +439,15 @@ impl Message for Note {
 }
 
 pub struct Worker {
-    world: Arc<World>,
-    instance: usize,
+    pub(crate) world: Arc<World>,
+    pub(crate) instance: usize,
     hooks: Hooks,
     slot: Option<String>,
+    /// Sites armed when it was constructed (handler panics: `DOWN_PANIC`,
+    /// `EXIT_PANIC`, `NOTE_PANIC`, `PAYLOAD_DROP`).
+    pub(crate) faults: u16,
+    /// Deferred `Fx` replies, oldest first.
+    pub(crate) deferred: VecDeque<(u64, spawned_concurrency::ReplyTo<Answer>)>,
 }
 
 impl Worker {
@@ -317,6 +470,8 @@ impl Worker {
             instance,
             hooks,
             slot,
+            faults: world.armed(),
+            deferred: VecDeque::new(),
         }
     }
     pub fn instance(&self) -> usize {
@@ -363,6 +518,9 @@ impl Actor for Worker {
             inst.id = Some(id);
             inst.started_begin = Some(seq);
             inst.handle = Some(ctx.actor_ref().child_handle());
+            if let Some(task) = crate::fault::task() {
+                s.tasks.insert(task, self.instance);
+            }
             if twice {
                 s.violate("L1: started() ran twice", format!("w{}", self.instance));
             }
@@ -376,7 +534,7 @@ impl Actor for Worker {
             s.insts[self.instance].panicked = true;
             s.insts[self.instance].started_panicked = true;
             drop(s);
-            panic!("fuzz: injected started() panic");
+            inject_panic(&self.world, self.faults, "fuzz: injected started() panic");
         }
         let mut s = self.world.lock();
         let seq = s.tick();
@@ -407,28 +565,48 @@ impl Actor for Worker {
         if ms > 0 {
             rt::sleep(Duration::from_millis(ms)).await;
         }
+        // Deferred replies may be answered from `stopped()` (R6).
+        self.answer_all();
         if self.hooks.stopped_panic() {
             self.world.lock().insts[self.instance].panicked = true;
-            panic!("fuzz: injected stopped() panic");
+            inject_panic(&self.world, self.faults, "fuzz: injected stopped() panic");
         }
         let mut s = self.world.lock();
         let seq = s.tick();
         s.insts[self.instance].stopped_end = Some(seq);
     }
 
-    async fn exit_received(&mut self, exit: Exit, _ctx: &Context<Self>) {
-        let mut s = self.world.lock();
-        self.turn(&mut s, "exit_received");
-        let inst = &mut s.insts[self.instance];
-        inst.ended.insert(exit.from);
-        inst.exits.push((exit.from, exit.reason));
+    async fn exit_received(&mut self, exit: Exit, ctx: &Context<Self>) {
+        {
+            let mut s = self.world.lock();
+            self.turn(&mut s, "exit_received");
+            let inst = &mut s.insts[self.instance];
+            inst.ended.insert(exit.from);
+            inst.exits.push((exit.from, exit.reason));
+        }
+        self.handler_fault(site::EXIT_PANIC, ctx, "fuzz: injected exit_received panic");
     }
 }
 
 impl Worker {
+    /// A panic in this handler, if `site` was armed when the instance was
+    /// constructed: a handler panic like any other (L4: `Panic`).
+    fn handler_fault(&self, site: u16, ctx: &Context<Self>, what: &'static str) {
+        if self.faults & site == 0 {
+            return;
+        }
+        self.world.count(site);
+        {
+            let mut s = self.world.lock();
+            s.insts[self.instance].panicked = true;
+            s.stoppable(ctx.id());
+        }
+        inject_panic(&self.world, self.faults, what);
+    }
+
     /// Hook order for any turn (L1/L2): after `started()` returned, before
     /// `stopped()` began.
-    fn turn(&self, s: &mut State, what: &str) {
+    pub(crate) fn turn(&self, s: &mut State, what: &str) {
         let inst = &s.insts[self.instance];
         if inst.started_end.is_none() {
             let detail = format!("w{} {what}", self.instance);
@@ -475,7 +653,7 @@ impl Handler<Do> for Worker {
                 Act::Noop => {}
                 Act::Panic => {
                     self.world.lock().insts[self.instance].panicked = true;
-                    panic!("fuzz: injected handler panic");
+                    inject_panic(&self.world, self.faults, "fuzz: injected handler panic");
                 }
                 Act::Sleep(d) => rt::sleep(d).await,
                 Act::StopSelf(reason) => ctx.stop_with_reason(reason),
@@ -590,6 +768,7 @@ impl Handler<Down> for Worker {
             }
         }
         .await;
+        self.handler_fault(site::DOWN_PANIC, ctx, "fuzz: injected Down handler panic");
         __reply.reply(__value);
     }
 }
@@ -610,6 +789,7 @@ impl Handler<Note> for Worker {
             }
         }
         .await;
+        self.handler_fault(site::NOTE_PANIC, _ctx, "fuzz: injected Note handler panic");
         __reply.reply(__value);
     }
 }

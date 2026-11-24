@@ -635,7 +635,7 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                 break;
             }
         };
-        scope.set_name(&spec.name);
+        scope.set_position(&spec.name, generation);
         if generation > 1 {
             let previous = view.snapshot();
             crate::actor_cleanup::log_safely(|| {
@@ -695,11 +695,12 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
             future: construction,
             lease,
         });
+        let ready_scope = scope.clone();
         let startup = async {
             let actor = task
                 .await
                 .map_err(|e| format!("construction task failed: {e}"))??;
-            actor.ready().await.map_err(|e| e.to_string())?;
+            ready_scope.wait_ready().await?;
             Ok::<_, String>(actor)
         };
         let mut startup_timed_out = false;

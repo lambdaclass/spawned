@@ -57,7 +57,7 @@ impl Handler<mixed_protocol::TestOnlyIncrement> for MixedActor {
 fn cfg_gated_method_works_via_blanket_impl() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async {
-        let actor = MixedActor { value: 10 }.start();
+        let actor = MixedActor { value: 10 }.spawn();
 
         let val = actor.get_value().await.unwrap();
         assert_eq!(val, 10);
@@ -80,7 +80,7 @@ fn cfg_gated_method_works_via_blanket_impl() {
 fn cfg_gated_method_works_via_protocol_ref() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async {
-        let actor = MixedActor { value: 0 }.start();
+        let actor = MixedActor { value: 0 }.spawn();
         let proto_ref: MixedRef = actor.to_mixed_ref();
 
         let val = proto_ref.get_value().await.unwrap();

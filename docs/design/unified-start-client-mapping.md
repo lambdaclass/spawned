@@ -33,7 +33,12 @@ an actor's handler, come from the source.
 - **Optional upgrades** (marked U): an async site may use
   `.start().await?` instead of `.spawn()` to get init failures (today they
   are only logged or invisible). This is a behaviour change: the caller waits
-  for `started()`.
+  for `started()`. The waiting verbs return `Result<ActorRef<A>, StartError>`
+  (design section 2.2), so the upgrade is exactly `.start().await?`. No
+  client actor returns `Init::ignore()` (0.8 has no ignore), so
+  `StartError::Ignored` cannot reach these sites; a client that adds an
+  ignoring actor and treats the opt-out as a success wraps the call in
+  `StartOutcome::from_result`.
 - **Handler sites** (marked H) start a child from inside an actor's turn.
   They stay unmanaged, which is the S6 footgun. `start_link` (or
   `placement_of(ctx)`) would admit the child to the parent's group, so that
@@ -120,6 +125,84 @@ Unchanged:
 - The supervisor `start().await` calls.
 - `#[actor(max_native_jobs = ..)]` (`crates/net/p2p/src/lib.rs:1572`): an
   `Actor` constant, unchanged.
+
+## Implementation revision (0.9, re-checked against the canary sources)
+
+Re-run against the sources the 0.8.0 canary built: ethrex `bc13c9d28`
+(`spawned-v0.8`, the canary's `ethrex_candidate`) and ethlambda `0300c22f`.
+The mechanical rewrite above still holds; line numbers moved, and three
+findings change the mapping:
+
+1. **One behaviour change in ethrex (was "none").**
+   `crates/networking/p2p/rlpx/connection/server.rs:553`, `PeerConnectionServer::started`:
+   when `initialize_connection` fails, it sets
+   `self.state = ConnectionState::Established(..)` and calls `ctx.stop()`,
+   relying on `stopped()` (`:644`) to remove the peer from the peer table and
+   the tx broadcaster and to run `established_state.teardown()`. In 0.9 a
+   `ctx.stop()` in `started()` is a failed start and `stopped()` does not run
+   (as OTP's `terminate/2` after a failed `init/1`): `ctx.stop()` inside
+   `started()` is now the same as returning `Init::stop(Normal)`, so that
+   cleanup would be skipped. **Edit:** move the body of `stopped()` into a
+   helper (say `async fn release(&mut self)`), call it in that failure
+   branch, and return the failure from `started()` instead of calling
+   `ctx.stop()`: `-> Result<(), PeerConnectionError>` (or
+   `Init::error(reason)` / `Init::stop(..)`). The two other `ctx.stop()`
+   calls in `started()` leave `HandshakeFailed`, for which `stopped()` does
+   nothing: unaffected, but they read better as `return Init::stop(..)`.
+   (An administrative `ChildHandle::stop` that arrives during the handshake
+   still waits for `started()` and runs `stopped()`, as in 0.8 and OTP.)
+2. **A site the mapping missed (ethrex).** `crates/l2/sequencer/proof_coordinator.rs:98`:
+   `AssignmentTracker::new(..).start()` inside `ProofCoordinator::new` →
+   `.spawn()`.
+3. **ethlambda `bin/ethlambda/src/http_server.rs:74`** (`#[started]
+   start_serving`) calls `ctx.stop()` when `spawn_helper` fails; its
+   `stopped()` only cancels a token whose server was never started, and the
+   supervisor already treated it as a failed start in 0.8: no change needed
+   (optional: return `Err(err)` to report `InitFailed`).
+
+Exact edits (ethrex 38, ethlambda 14):
+
+| Client | File:line | 0.8 | 0.9 |
+|---|---|---|---|
+| ethrex | `crates/l2/sequencer/native_rollup/l1_watcher.rs:334` | `watcher.start()` | `watcher.spawn()` |
+| ethrex | `crates/l2/sequencer/native_rollup/l1_advancer.rs:488` | `advancer.start()` | `advancer.spawn()` |
+| ethrex | `crates/l2/sequencer/native_rollup/block_producer.rs:504` | `producer.start()` | `producer.spawn()` |
+| ethrex | `crates/l2/sequencer/l1_watcher.rs:194` | `Ok(state.start())` | `Ok(state.spawn())` |
+| ethrex | `crates/l2/sequencer/state_updater.rs:110` | `state_updater.start()` | `state_updater.spawn()` |
+| ethrex | `crates/l2/sequencer/proof_coordinator.rs:98` | `AssignmentTracker::new(..).start()` | `.spawn()` (new) |
+| ethrex | `crates/l2/sequencer/proof_coordinator.rs:111` | `state.start()` | `state.spawn()` |
+| ethrex | `crates/l2/sequencer/proof_coordinator.rs:438` | `connection_handler.start()` | `connection_handler.spawn()` |
+| ethrex | `crates/l2/sequencer/l1_committer.rs:253` | `state.start_with_backend(Backend::Blocking)` | `state.with_options(Backend::Blocking).spawn()?` |
+| ethrex | `crates/l2/sequencer/block_producer.rs:350` | `block_producer.start_with_backend(Backend::Blocking)` | `block_producer.with_options(Backend::Blocking).spawn()?` |
+| ethrex | `crates/l2/sequencer/metrics.rs:69` | `Ok(metrics.start())` | `Ok(metrics.spawn())` |
+| ethrex | `crates/l2/sequencer/l1_proof_sender.rs:176` | `state.start()` | `state.spawn()` |
+| ethrex | `crates/l2/based/block_fetcher.rs:337` | `state.start()` | `state.spawn()` |
+| ethrex | `crates/networking/rpc/subscription_manager.rs:173` | `Self::new(store).start()` | `.spawn()` |
+| ethrex | `crates/networking/rpc/subscription_manager.rs:193` (+ `:40`, `:192` signature) | `Self::new(store).start_on(group)` returning `SystemError` | `Self::new(store).with_options(group).spawn()` returning `StartError` |
+| ethrex | `crates/networking/p2p/tx_broadcaster.rs:206-207` (+ `:17`, `:496` `#[from] SystemError`) | `state.start_on(group)?` / `state.start()` | `state.with_options(group).spawn()?` / `state.spawn()`; `TxBroadcasterError::ActorSystem(#[from] StartError)` |
+| ethrex | `crates/networking/p2p/rlpx/connection/server.rs:213, 228, 292, 4030` | `connection.start()` / `server.start()` | `.spawn()` |
+| ethrex | `crates/networking/p2p/rlpx/connection/server.rs:553-640` | `ctx.stop()` after `initialize_connection` fails, cleanup in `stopped()` | finding 1 above |
+| ethrex | `crates/networking/p2p/rlpx/initiator.rs:50` (+ `:9`, `:48`) | `.start_on(group)?` returning `SystemError` | `.with_options(group).spawn()?` returning `StartError` |
+| ethrex | `crates/networking/p2p/rlpx/initiator.rs:66-67` | `state.start_with_backend(b)` / `state.start()` | `state.with_options(b).spawn().expect("executor construction failed")` / `state.spawn()` |
+| ethrex | `crates/networking/p2p/peer_table.rs:616` | `.start()` | `.spawn()` |
+| ethrex | `crates/networking/p2p/peer_table.rs:635` (+ `:34`, `:629`) | `.start_on(group)` returning `SystemError` | `.with_options(group).spawn()` returning `StartError` |
+| ethrex | `crates/networking/p2p/discovery/server.rs:156` | `.await?.start();` | `.await?.spawn();` |
+| ethrex | `crates/prover/src/prover.rs:251, 260, 268, 276` | `prover.start_with_backend(Backend::Blocking)` | `prover.with_options(Backend::Blocking).spawn()?` |
+| ethrex | `tooling/monitor/src/app.rs:102` | `monitor.start();` | `monitor.spawn();` |
+| ethrex | `test/tests/p2p/peer_table_timeout_tests.rs:33, 47, 59`; `shutdown_order_tests.rs:141, 169, 196` | `Mock::new()..start()` | `Mock::new()..spawn()` |
+| ethrex | `cmd/ethrex/initializers.rs:1050, 1081, 1088` | callers of the E sites | error type follows (`StartError`) |
+| ethlambda | `crates/net/p2p/src/lib.rs:1277` (+ `:88`, `:1193`) | `server.start_on(group)?`, `Result<P2P, SystemError>` | `server.with_options(group).spawn()?`, `Result<P2P, StartError>` |
+| ethlambda | `crates/blockchain/src/lib.rs:454` (+ `:43`, `:250`, `:358`, `:412`) | `.start_on(group)?`, `Result<BlockChain, SystemError>` | `.with_options(group).spawn()?`, `Result<BlockChain, StartError>` |
+| ethlambda | `crates/blockchain/src/lib.rs:6386, 6421, 6443` | `beacon_server(..).start()` | `.spawn()` |
+| ethlambda | `crates/net/p2p/src/beacon/verdict.rs:767, 774, 1835` | `Mock::new()..start()` / `.await.start()` | `.spawn()` |
+| ethlambda | `crates/net/p2p/src/beacon/column_checks.rs:133, 164`; `envelope_checks.rs:191` | `Mock::new().allow_sends().start()` | `.spawn()` |
+| ethlambda | `crates/net/p2p/src/req_resp/envelope_client.rs:615, 702`; `gossipsub/handler.rs:1736` | `Mock::new()..start()` | `.spawn()` |
+
+Unchanged: the supervisor `start().await` calls (ethrex
+`discovery/supervised.rs:151`, ethlambda `main.rs:989`,
+`http_server.rs:219`), `ChildSpec::new`, and every `#[started]` method (the
+macro allows the `refining_impl_trait` lint for them; neither client has a
+manual `impl Actor` with `started`).
 
 ## Related work
 

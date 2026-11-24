@@ -76,7 +76,7 @@ async fn trace_coordinator_ordered_shutdown() {
     let _serial = SERIAL.lock().await;
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("coordinator-ordered", 2).unwrap();
-    let first = Worker.start_on(&group).unwrap();
+    let first = Worker.with_options(&group).spawn().unwrap();
     within!(first.ready()).await.unwrap();
     let mut tree = system.supervisor(SupervisorConfig::default()).unwrap();
     tree.add(ChildSpec::new("child", &group, |_| async {
@@ -84,7 +84,7 @@ async fn trace_coordinator_ordered_shutdown() {
     }))
     .unwrap();
     let supervisor = within!(tree.start()).await.unwrap();
-    let last = Worker.start_on(&group).unwrap();
+    let last = Worker.with_options(&group).spawn().unwrap();
     within!(last.ready()).await.unwrap();
     assert!(system.shutdown(LIMIT).await.complete);
     assert_eq!(
@@ -105,7 +105,7 @@ async fn trace_coordinator_grace_expiry_kills_remaining() {
     let _serial = SERIAL.lock().await;
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("coordinator-grace", 1).unwrap();
-    let first = Worker.start_on(&group).unwrap();
+    let first = Worker.with_options(&group).spawn().unwrap();
     within!(first.ready()).await.unwrap();
     let (entered_tx, entered) = tokio::sync::oneshot::channel();
     let (release, release_rx) = tokio::sync::oneshot::channel();
@@ -126,7 +126,8 @@ async fn trace_coordinator_grace_expiry_kills_remaining() {
         entered: Some(entered_tx),
         release: Some(release_rx),
     }
-    .start_on(&group)
+    .with_options(&group)
+    .spawn()
     .unwrap();
     within!(last.ready()).await.unwrap();
     let report = system.shutdown(Duration::from_millis(20)).await;
@@ -169,7 +170,7 @@ async fn trace_coordinator_panic_takes_emergency_fallback() {
     let group = system.async_group("coordinator-crash", 1).unwrap();
     let mut actors = Vec::new();
     for _ in 0..3 {
-        let actor = Worker.start_on(&group).unwrap();
+        let actor = Worker.with_options(&group).spawn().unwrap();
         within!(actor.ready()).await.unwrap();
         actors.push(actor);
     }

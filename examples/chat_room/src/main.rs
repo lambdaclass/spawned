@@ -11,9 +11,9 @@ use user::User;
 
 fn main() {
     rt::run(async {
-        let room = ChatRoom::new().start();
-        let alice = User::new("Alice".into()).start();
-        let bob = User::new("Bob".into()).start();
+        let room = ChatRoom::new().spawn();
+        let alice = User::new("Alice".into()).spawn();
+        let bob = User::new("Bob".into()).spawn();
 
         alice.join_room(room.to_room_ref()).unwrap();
         bob.join_room(room.to_room_ref()).unwrap();

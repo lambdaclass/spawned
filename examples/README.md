@@ -18,6 +18,7 @@ Usage of each feature is documented in the [guide](../docs/GUIDE.md).
 | Stream listeners and per-message recipients | [streams_and_recipients](capabilities/src/bin/streams_and_recipients.rs) | Same example |
 | Shared protocol contracts and downstream handwritten fakes | [contract library](protocol_contract/src/lib.rs), [consumer test](capabilities/tests/cross_crate_protocol.rs) | Same test covers native actors |
 | Lifecycle hooks (`started`/`stopped`) and `ctx.stop()` | [bank](bank), [updater](updater), [signal_test](signal_test) | [bank_threads](bank_threads), [updater_threads](updater_threads), [signal_test_threads](signal_test_threads) |
+| Unified start (`spawn`, `start`, `start_link`, `start_monitor`, fallible `started()`, `Init::continue_with`), v0.9 | [start_contract tests](../concurrency/tests/start_contract.rs) | [native_lifecycle](capabilities/src/bin/native_lifecycle.rs) |
 | Timers (`send_after`, `send_interval`) | [updater](updater), [signal_test](signal_test), [blocking_genserver](blocking_genserver) | [updater_threads](updater_threads), [signal_test_threads](signal_test_threads) |
 | `send_message_on` and Ctrl-C handling | [signal_test](signal_test) | [signal_test_threads](signal_test_threads) |
 | Backend selection (`Async`, `Blocking`, `Thread`) | [blocking_genserver](blocking_genserver), [signal_test](signal_test) | n/a |
@@ -26,7 +27,7 @@ Usage of each feature is documented in the [guide](../docs/GUIDE.md).
 | Global registry (`registry::register`/`whereis`) | [service_discovery](service_discovery), [registrations and fakes](capabilities/src/bin/registrations_and_fakes.rs) | [registrations and fakes](capabilities/src/bin/registrations_and_fakes.rs), [thread_only](thread_only/README.md) |
 | Exit reasons, `join`, `wait_exit`, monitors, links, trapped exits | [exit_reason](exit_reason) | [native_lifecycle](capabilities/src/bin/native_lifecycle.rs) |
 | Exit signals as in OTP (`exit`/`kill`, trapping, `NoProc`, `try_link`, parent exits, `exit_pending`), v0.8 | [exit_signals](capabilities/src/bin/exit_signals.rs) | gap (threads mode is tested in `otp_exit_signals::threads_mode`) |
-| Execution groups (`ActorSystem`, `start_on`, owned helpers), v0.7 | [execution_groups](capabilities/src/bin/execution_groups.rs) | n/a |
+| Execution groups (`ActorSystem`, `with_options(&group)`, owned helpers), v0.7 | [execution_groups](capabilities/src/bin/execution_groups.rs) | n/a |
 | Supervision, v0.7 | [supervision_recovery](capabilities/src/bin/supervision_recovery.rs) | n/a |
 | Fixed native actor pools / parked Linux pinned shards, v0.7 | [execution_profiles](capabilities/src/bin/execution_profiles.rs) | n/a |
 | Nested supervisors, OneForAll / RestForOne, v0.7 | [supervision_tree](capabilities/src/bin/supervision_tree.rs) | n/a |

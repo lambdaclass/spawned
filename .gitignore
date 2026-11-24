@@ -2,5 +2,3 @@ target/
 benchmarks/__pycache__/
 
 __pycache__/
-
-# Standalone experiments crate (benchmarks/README.md)

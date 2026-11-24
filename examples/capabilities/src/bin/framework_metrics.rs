@@ -23,7 +23,7 @@ impl Handler<Ping> for Worker {
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
     metrics::configure(Config::default().timing_sample_every(16)).unwrap();
-    let actor = Worker.start();
+    let actor = Worker.spawn();
     for _ in 0..32 {
         actor.request(Ping).await.unwrap();
     }

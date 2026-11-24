@@ -263,7 +263,7 @@ impl Handler<Held> for Backend {
 
 /// Start an owner whose reply slots are traced.
 fn start() -> ActorRef<Owner> {
-    let actor = Owner::default().start();
+    let actor = Owner::default().spawn();
     lifecycle_trace::watch_deferred(id(&actor));
     actor
 }
@@ -572,12 +572,12 @@ async fn owner_exit_cancels_the_job() {
 
 /// Start an owner with a backend B for its jobs.
 fn start_with_backend() -> (ActorRef<Owner>, ActorRef<Backend>) {
-    let backend = Backend::default().start();
+    let backend = Backend::default().spawn();
     let actor = Owner {
         backend: Some(backend.clone()),
         ..Owner::default()
     }
-    .start();
+    .spawn();
     lifecycle_trace::watch_deferred(id(&actor));
     (actor, backend)
 }
@@ -754,8 +754,8 @@ mod threads_mode {
 
     #[test]
     fn blocking_job_asks_downstream() {
-        let backend = Backend.start();
-        let actor = Owner(backend).start();
+        let backend = Backend.spawn();
+        let actor = Owner(backend).spawn();
         let owner: u64 = actor.id().to_string().parse().unwrap();
         lifecycle_trace::watch_deferred(owner);
         assert!(matches!(actor.request(Piped), Ok(4)));

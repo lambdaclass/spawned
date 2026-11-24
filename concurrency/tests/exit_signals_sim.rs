@@ -201,8 +201,8 @@ async fn kill_vs_stopped(seed: u64) {
     let (log, watched) = (Log::default(), Log::default());
     let mut node = Node::new(&log, false);
     node.slow_stop = 2;
-    let target = node.start();
-    let watcher = Node::new(&watched, false).start();
+    let target = node.spawn();
+    let watcher = Node::new(&watched, false).spawn();
     let handle = target.child_handle();
     let h = handle.clone();
     on(&watcher, move |ctx| {
@@ -267,8 +267,8 @@ async fn late_signal_vs_death(seed: u64) {
     let (log, observed) = (Log::default(), Log::default());
     let mut node = Node::new(&log, false);
     node.slow_stop = 2;
-    let target = node.start();
-    let observer = Node::new(&observed, true).start();
+    let target = node.spawn();
+    let observer = Node::new(&observed, true).spawn();
     let handle = target.child_handle();
     let h = handle.clone();
     on(&observer, move |ctx| {
@@ -288,12 +288,25 @@ async fn late_signal_vs_death(seed: u64) {
     signalling.await.unwrap();
     let log = entries(&log);
     let signal = position(&log, "signal").unwrap();
-    let end = position(&log, "stopped:end").expect("a self-exit runs stopped()");
-    outcome(format!("late signal: {reason:?}"));
-    match reason {
-        ExitReason::Shutdown(_) => {}
-        ExitReason::Normal => assert!(end < signal, "a signal before D was lost: {log:?}"),
-        other => panic!("unexpected reason {other:?}: {log:?}"),
+    // The administrative stop waits for started() (OTP gen_server:stop). If
+    // the untrapped signal arrives while started() still runs, it fails the
+    // start without stopped() (an exit signal kills an initialising
+    // process); otherwise the stop's exit runs stopped().
+    let end = position(&log, "stopped:end");
+    outcome(format!(
+        "late signal: {reason:?}{}",
+        if end.is_none() {
+            " (during started)"
+        } else {
+            ""
+        }
+    ));
+    match (reason.clone(), end) {
+        (ExitReason::Shutdown(None), _) => {}
+        (ExitReason::Normal, Some(end)) => {
+            assert!(end < signal, "a signal before D was lost: {log:?}")
+        }
+        (other, _) => panic!("unexpected reason {other:?}: {log:?}"),
     }
     let downs = downs(&observer, &observed).await;
     assert_eq!(
@@ -310,7 +323,7 @@ async fn late_signal_vs_death(seed: u64) {
 /// `exit_pending()`, and a waiter outside the actor wakes too.
 async fn stopping_vs_trigger(seed: u64) {
     let log = Log::default();
-    let target = Node::new(&log, false).start();
+    let target = Node::new(&log, false).start().await.unwrap();
     let handle = target.child_handle();
     let outside = spawn(target.context().stopping());
     let (trigger, at) = (seed % 3, (seed / 3) % 4);
@@ -345,8 +358,8 @@ async fn stopping_vs_trigger(seed: u64) {
 /// agree; `try_link` after D gets `Err(NoProc)` and no notice.
 async fn link_vs_death(seed: u64) {
     let observed = Log::default();
-    let target = Node::new(&Log::default(), false).start();
-    let observer = Node::new(&observed, true).start();
+    let target = Node::new(&Log::default(), false).spawn();
+    let observer = Node::new(&observed, true).spawn();
     let handle = target.child_handle();
     let stopper = handle.clone();
     let stop_at = seed % 3;
@@ -414,8 +427,8 @@ async fn unlink_demonitor_fence(seed: u64) {
         }
     }
     let observed = Log::default();
-    let target = Node::new(&Log::default(), false).start();
-    let observer = Node::new(&observed, true).start();
+    let target = Node::new(&Log::default(), false).spawn();
+    let observer = Node::new(&observed, true).spawn();
     let handle = target.child_handle();
     let monitor: Arc<Mutex<Option<MonitorRef>>> = Arc::default();
     let (h, m) = (handle.clone(), monitor.clone());

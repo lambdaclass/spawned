@@ -6,6 +6,9 @@ use std::sync::{OnceLock, RwLock};
 struct Entry {
     value: Box<dyn Any + Send + Sync>,
     owner: Option<(crate::ActorId, u64)>,
+    /// The holder's handle, for a name registered by a start
+    /// (`StartError::AlreadyStarted::existing`).
+    handle: Option<crate::ChildHandle>,
     /// `spawned_registered_names`.
     _alive: crate::instrumentation::Live<crate::instrumentation::gauge::Names>,
 }
@@ -56,6 +59,7 @@ pub fn register<T: Clone + Send + Sync + 'static>(
             e.insert(Entry {
                 value: Box::new(value),
                 owner: None,
+                handle: None,
                 _alive: Default::default(),
             });
             Ok(())
@@ -84,12 +88,18 @@ pub fn unregister(name: &str) {
 pub struct RegistrationGuard {
     name: String,
     owner: (crate::ActorId, u64),
+    /// Start-trace child id (0: not recorded).
+    trace: u64,
 }
 impl Drop for RegistrationGuard {
     fn drop(&mut self) {
         fail_point!("registry.before_unregister");
         let removed = {
             let mut store = global_store().write().unwrap_or_else(|p| p.into_inner());
+            let trace = self.trace;
+            crate::lifecycle_trace::start_emit(trace, || {
+                crate::lifecycle_trace::StartEvent::new("SReleaseName", trace)
+            });
             if store
                 .get(&self.name)
                 .is_some_and(|entry| entry.owner == Some(self.owner))
@@ -107,6 +117,7 @@ pub fn register_owned<T: Clone + Send + Sync + 'static>(
     name: &str,
     owner: crate::ActorId,
     value: T,
+    handle: Option<crate::ChildHandle>,
 ) -> Result<RegistrationGuard, RegistryError> {
     use std::collections::hash_map::Entry as MapEntry;
     let mut store = global_store().write().unwrap_or_else(|p| p.into_inner());
@@ -117,14 +128,93 @@ pub fn register_owned<T: Clone + Send + Sync + 'static>(
             slot.insert(Entry {
                 value: Box::new(value),
                 owner: Some(owner),
+                // The holder, for a start's `AlreadyStarted { existing }`.
+                handle,
                 _alive: Default::default(),
             });
             Ok(RegistrationGuard {
                 name: name.into(),
                 owner,
+                trace: 0,
             })
         }
     }
+}
+
+/// A start's name (unified start, stage 1): registered in the commit,
+/// with the holder's handle, under the registry's write lock; `admit` runs
+/// under it too (the commit's other checks are already held). A taken name
+/// reports the holder's handle (`None` for a value that is not an actor).
+/// The guard releases it at publication.
+pub(crate) fn register_start<T: Clone + Send + Sync + 'static, E>(
+    name: &str,
+    owner: crate::ActorId,
+    value: T,
+    handle: crate::ChildHandle,
+    trace: u64,
+    admit: impl FnOnce() -> Result<(), E>,
+) -> Result<Result<RegistrationGuard, Option<crate::ChildHandle>>, E> {
+    use std::collections::hash_map::Entry as MapEntry;
+    let mut store = global_store().write().unwrap_or_else(|p| p.into_inner());
+    // The registry is a start's innermost lock: its commit is decided (and
+    // recorded) here, ordered with `SReleaseName` and `SLookup`.
+    match store.entry(name.to_string()) {
+        MapEntry::Occupied(e) => {
+            crate::lifecycle_trace::commit_point(Some("already"));
+            Ok(Err(e.get().handle.clone()))
+        }
+        MapEntry::Vacant(slot) => {
+            admit()?;
+            crate::lifecycle_trace::commit_point(None);
+            let owner = (owner, NEXT_REGISTRATION.fetch_add(1, Ordering::Relaxed));
+            slot.insert(Entry {
+                value: Box::new(value),
+                owner: Some(owner),
+                handle: Some(handle),
+                _alive: Default::default(),
+            });
+            Ok(Ok(RegistrationGuard {
+                name: name.into(),
+                owner,
+                trace,
+            }))
+        }
+    }
+}
+
+/// `whereis` for a start's typed name, recorded in the start trace.
+pub(crate) fn whereis_start<T: Clone + Send + Sync + 'static>(name: &str) -> Option<T> {
+    let store = global_store().read().unwrap_or_else(|p| p.into_inner());
+    let entry = store.get(name);
+    #[cfg(feature = "lifecycle-trace")]
+    {
+        let holder = entry.and_then(|e| e.owner).map_or(0, |(id, _)| {
+            crate::lifecycle_trace::start_child_of(id.raw())
+        });
+        crate::lifecycle_trace::start_emit_env(|| {
+            crate::lifecycle_trace::StartEvent::new("SLookup", holder).x(if holder != 0 {
+                "hit"
+            } else {
+                "miss"
+            })
+        });
+    }
+    entry?.value.downcast_ref::<T>().cloned()
+}
+
+/// The first name, in name order, that `actor` holds (OTP
+/// `registered_name`): a registration owned by the actor's identity
+/// (through its managed scope, or `register_owned`). Values stored with the
+/// plain [`register`] are not tied to an actor. Reader cost only: a scan
+/// under the read lock.
+pub(crate) fn name_of(actor: crate::ActorId) -> Option<String> {
+    let store = global_store().read().unwrap_or_else(|p| p.into_inner());
+    store
+        .iter()
+        .filter(|(_, entry)| entry.owner.is_some_and(|(owner, _)| owner == actor))
+        .map(|(name, _)| name)
+        .min()
+        .cloned()
 }
 
 /// List all registered names, sorted. (The store is a `HashMap`, whose
@@ -211,11 +301,26 @@ mod tests {
     }
 
     #[test]
+    fn name_of_reports_the_least_owned_name() {
+        let actor = crate::ActorId::next();
+        assert_eq!(name_of(actor), None);
+        let b = register_owned("name_of_probe_b", actor, 1u8, None).unwrap();
+        let a = register_owned("name_of_probe_a", actor, 1u8, None).unwrap();
+        register("name_of_probe_0", 1u8).unwrap();
+        assert_eq!(name_of(actor).as_deref(), Some("name_of_probe_a"));
+        drop(a);
+        assert_eq!(name_of(actor).as_deref(), Some("name_of_probe_b"));
+        drop(b);
+        unregister("name_of_probe_0");
+        assert_eq!(name_of(actor), None);
+    }
+
+    #[test]
     fn old_guard_preserves_new_registration_even_with_same_actor_identity() {
         let actor = crate::ActorId::next();
-        let old = register_owned("owned_generation_guard_test", actor, 1u64).unwrap();
+        let old = register_owned("owned_generation_guard_test", actor, 1u64, None).unwrap();
         unregister("owned_generation_guard_test");
-        let new = register_owned("owned_generation_guard_test", actor, 2u64).unwrap();
+        let new = register_owned("owned_generation_guard_test", actor, 2u64, None).unwrap();
         drop(old);
         assert_eq!(whereis::<u64>("owned_generation_guard_test"), Some(2));
         drop(new);

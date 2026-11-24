@@ -371,7 +371,7 @@ fn start_with(old: OldJob) -> (ActorRef<Owner>, Arc<Log>) {
         handles: Vec::new(),
         gates: Vec::new(),
     }
-    .start();
+    .spawn();
     lifecycle_trace::watch_deferred(actor.id().to_string().parse().unwrap());
     (actor, log)
 }
@@ -656,7 +656,7 @@ mod threads_mode {
     #[test]
     fn delayed_emit_releases_the_held_result_threads() {
         let log = Arc::new(Log::default());
-        let actor = TOwner(log.clone()).start();
+        let actor = TOwner(log.clone()).spawn();
         let id: u64 = actor.id().to_string().parse().unwrap();
         lifecycle_trace::watch_deferred(id);
         actor.request(Go).unwrap();

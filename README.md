@@ -92,7 +92,7 @@ use spawned_rt::tasks as rt;
 
 fn main() {
     rt::run(async {
-        let ns = NameServer::new().start();
+        let ns = NameServer::new().spawn();
 
         ns.add("Joe".into(), "At Home".into()).await.unwrap();
 
@@ -170,7 +170,9 @@ For developers familiar with Erlang/OTP:
 | `gen_server:call/2` | `ns.find(...)` | Direct method call on ActorRef |
 | `gen_server:cast/2` | `ns.notify(...)` | Direct method call (send variant) |
 | `Pid` | `ActorRef<T>` | Handle to a running actor |
-| `start_link/0` | `actor.start_linked(&ctx)` | Start the actor |
+| `proc_lib:spawn/1` | `actor.spawn()` | Start without waiting for `started()` |
+| `gen_server:start/3`, `start_link/3`, `start_monitor/3` | `actor.start()`, `actor.start_link(&ctx)`, `actor.start_monitor(&ctx)` | Start and wait for `started()` (`.await` in tasks mode) |
+| `{ok, S}` / `{ok, S, {continue, C}}` / `{error, R}` / `{stop, R}` / `ignore` | `started()` returning `()`, `Init::continue_with(c)`, `Err(e)`, `Init::stop(r)`, `Init::ignore()` | Init results |
 | `register/2` | `registry::register(name, ref)` | Register an actor by name |
 | `whereis/1` | `registry::whereis(name)` | Look up an actor by name |
 
@@ -301,7 +303,7 @@ with virtual time, so timers and restart backoff take no wall-clock time:
 ```rust
 #[spawned_concurrency::sim_test]
 async fn find_returns_what_add_stored() {
-    let ns = NameServer::new().start();
+    let ns = NameServer::new().spawn();
     ns.add("Joe".into(), "At Home".into()).await.unwrap();
     assert_eq!(
         ns.find("Joe".into()).await.unwrap(),

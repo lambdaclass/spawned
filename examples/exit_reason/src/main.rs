@@ -65,7 +65,7 @@ fn main() {
 
         // 1. Clean stop via ctx.stop()
         println!("--- Scenario 1: Clean stop ---");
-        let worker1 = Worker::new("worker-1").start();
+        let worker1 = Worker::new("worker-1").spawn();
         let pong = worker1.ping().await.unwrap();
         println!("  {pong}");
         worker1.stop().await.unwrap();
@@ -75,7 +75,7 @@ fn main() {
 
         // 2. Panic in handler
         println!("--- Scenario 2: Panic in handler ---");
-        let worker2 = Worker::new("worker-2").start();
+        let worker2 = Worker::new("worker-2").spawn();
         let _ = worker2.panic_now().await; // will fail, actor panics
         let reason = worker2.wait_exit().await;
         println!("  Exit reason: {reason}");
@@ -103,14 +103,14 @@ fn main() {
                 reply.reply(());
             }
         }
-        let worker3 = PanicOnStart.start();
+        let worker3 = PanicOnStart.spawn();
         let reason = worker3.wait_exit().await;
         println!("  Exit reason: {reason}");
         println!("  is_abnormal: {}\n", reason.is_abnormal());
 
         // 4. Polling exit_reason() while running
         println!("--- Scenario 4: Polling exit_reason() ---");
-        let worker4 = Worker::new("worker-4").start();
+        let worker4 = Worker::new("worker-4").spawn();
         println!("  While running: {:?}", worker4.exit_reason());
         worker4.stop().await.unwrap();
         worker4.join().await;
@@ -118,7 +118,7 @@ fn main() {
 
         // 5. ChildHandle — type-erased supervision handle
         println!("\n--- Scenario 5: ChildHandle ---");
-        let worker5 = Worker::new("worker-5").start();
+        let worker5 = Worker::new("worker-5").spawn();
         let handle: ChildHandle = worker5.child_handle();
         println!("  ActorId: {}", handle.id());
         println!("  Same id as ActorRef: {}", handle.id() == worker5.id());
@@ -133,7 +133,7 @@ fn main() {
 
         // 6. ChildHandle from a panicking actor
         println!("\n--- Scenario 6: ChildHandle observes panic ---");
-        let worker6 = Worker::new("worker-6").start();
+        let worker6 = Worker::new("worker-6").spawn();
         let handle6 = worker6.child_handle();
         let _ = worker6.panic_now().await;
         let reason = handle6.wait_exit_async().await;
@@ -145,8 +145,8 @@ fn main() {
         struct Idler;
         impl Actor for Idler {}
 
-        let w = Worker::new("worker-7").start();
-        let i = Idler.start();
+        let w = Worker::new("worker-7").spawn();
+        let i = Idler.spawn();
         let handles: Vec<ChildHandle> = vec![w.child_handle(), i.child_handle()];
         println!("  {} actors managed via Vec<ChildHandle>", handles.len());
         for h in &handles {
@@ -215,11 +215,11 @@ fn main() {
         }
 
         let log = Arc::new(Mutex::new(Vec::new()));
-        let observer = Observer { log: log.clone() }.start();
+        let observer = Observer { log: log.clone() }.spawn();
 
-        let worker_a = Worker::new("worker-a").start();
-        let worker_b = Worker::new("worker-b").start();
-        let worker_c = Worker::new("worker-c").start();
+        let worker_a = Worker::new("worker-a").spawn();
+        let worker_b = Worker::new("worker-b").spawn();
+        let worker_c = Worker::new("worker-c").spawn();
 
         let ref_a = observer
             .request(StartMonitor(worker_a.child_handle()))
@@ -298,10 +298,10 @@ fn main() {
         let supervisor = Supervisor {
             log: sup_log.clone(),
         }
-        .start();
+        .spawn();
 
-        let worker_x = Worker::new("worker-x").start();
-        let worker_y = Worker::new("worker-y").start();
+        let worker_x = Worker::new("worker-x").spawn();
+        let worker_y = Worker::new("worker-y").spawn();
         supervisor
             .request(LinkChild(worker_x.child_handle()))
             .await
