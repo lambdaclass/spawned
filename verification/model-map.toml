@@ -39,7 +39,7 @@ code = [
     "concurrency/src/supervision/**",
     "concurrency/src/lifecycle_trace.rs",
 ]
-coverage_floor = 38   # of 42 action keys
+coverage_floor = 38   # of 45 action keys
 
 [models.Cohorts]
 # OneForAll/RestForOne rounds (selection, stop, cleanup, join barrier,
@@ -58,7 +58,7 @@ code = [
     "concurrency/src/supervision/**",
     "concurrency/src/lifecycle_trace.rs",
 ]
-coverage_floor = 40   # of 46 action keys
+coverage_floor = 40   # of 54 action keys
 
 [models.NestedSupervision]
 # Subtree ownership, attachment, parent join after descendants, shutdown

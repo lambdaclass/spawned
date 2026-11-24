@@ -15,6 +15,7 @@
   "A|Decide/restart",
   "A|Decide/stop",
   "A|Finish",
+  "A|Ignore",
   "A|LoopTop/attempt",
   "A|LoopTop/backoff",
   "A|RetryRelease",
@@ -60,6 +61,8 @@
   "A|OneForAll|CRetire/open",
   "A|OneForAll|CSelect",
   "A|OneForAll|CStop",
+  "A|OneForAll|Ignore/initial",
+  "A|OneForAll|Ignore/round",
   "A|RestForOne|CAck/current",
   "A|RestForOne|CAssign/false",
   "A|RestForOne|CAssign/true",
@@ -79,7 +82,9 @@
   "A|RestForOne|CRetire/closed",
   "A|RestForOne|CRetire/open",
   "A|RestForOne|CSelect",
-  "A|RestForOne|CStop"
+  "A|RestForOne|CStop",
+  "A|RestForOne|Ignore/initial",
+  "A|RestForOne|Ignore/round"
  ],
  "Nested": [
   "A|TAttach",
