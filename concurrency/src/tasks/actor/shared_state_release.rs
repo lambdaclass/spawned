@@ -41,7 +41,7 @@ fn freed_after_stop_and_last_handle_dropped() {
         concat!(module_path!(), "::freed_after_stop_and_last_handle_dropped"),
         move || {
             rt::Runtime::new().unwrap().block_on(async {
-                let actor = Plain.start();
+                let actor = Plain.spawn();
                 let weak = actor.shared_weak();
                 let extra = (actor.clone(), actor.context(), actor.child_handle());
                 actor.context().stop();
@@ -63,7 +63,7 @@ fn freed_when_context_was_stored_in_actor_state() {
         ),
         move || {
             rt::Runtime::new().unwrap().block_on(async {
-                let actor = Holder(None).start();
+                let actor = Holder(None).spawn();
                 let weak = actor.shared_weak();
                 actor.context().stop();
                 actor.join().await;
@@ -80,14 +80,14 @@ fn freed_with_links_and_monitors() {
         concat!(module_path!(), "::freed_with_links_and_monitors"),
         move || {
             rt::Runtime::new().unwrap().block_on(async {
-                let a = Plain.start();
-                let b = Plain.start();
-                let watcher = Plain.start();
+                let a = Plain.spawn();
+                let b = Plain.spawn();
+                let watcher = Plain.spawn();
                 a.context().trap_exit(true);
                 a.context().link(&b.child_handle());
                 let _monitor = watcher.context().monitor(&a.child_handle());
                 watcher.context().monitor(&b.child_handle());
-                let child = Plain.start_linked(&a.context());
+                let child = Plain.start_link(&a.context()).actor_ref().unwrap();
                 let weaks = [
                     a.shared_weak(),
                     b.shared_weak(),

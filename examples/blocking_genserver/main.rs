@@ -67,9 +67,12 @@ impl WellBehavedTask {
 pub fn main() {
     rt::run(async move {
         // If we change BadlyBehavedTask to Backend::Async instead, it can stop the entire program
-        let badboy = BadlyBehavedTask.start_with_backend(Backend::Thread);
+        let badboy = BadlyBehavedTask
+            .with_options(Backend::Thread)
+            .spawn()
+            .unwrap();
         let _ = badboy.do_block();
-        let goodboy = WellBehavedTask { count: 0 }.start();
+        let goodboy = WellBehavedTask { count: 0 }.spawn();
         let _ = goodboy.tick();
         rt::sleep(Duration::from_secs(1)).await;
         let count = goodboy.get_count().await.unwrap();

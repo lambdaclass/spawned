@@ -92,11 +92,11 @@ mod tasks_mode {
         }
         fn start<A: Actor>(&self, actor: A, place: Place) -> ActorRef<A> {
             match place {
-                Place::Async => actor.start_with_backend(Backend::Async),
-                Place::Blocking => actor.start_with_backend(Backend::Blocking),
-                Place::Thread => actor.start_with_backend(Backend::Thread),
-                Place::AsyncGroup => actor.start_on(&self.async_group).unwrap(),
-                Place::ThreadGroup => actor.start_on(&self.thread_group).unwrap(),
+                Place::Async => actor.with_options(Backend::Async).spawn().unwrap(),
+                Place::Blocking => actor.with_options(Backend::Blocking).spawn().unwrap(),
+                Place::Thread => actor.with_options(Backend::Thread).spawn().unwrap(),
+                Place::AsyncGroup => actor.with_options(&self.async_group).spawn().unwrap(),
+                Place::ThreadGroup => actor.with_options(&self.thread_group).spawn().unwrap(),
             }
         }
         fn expected(&self, place: Place) -> Placement {
@@ -308,7 +308,7 @@ mod tasks_mode {
             ctx.link(&msg.peer);
             ctx.monitor(&msg.peer);
             ctx.monitor(&msg.peer);
-            let child = Worker::default().start_linked(ctx);
+            let child = Worker::default().start_link(ctx).actor_ref().unwrap();
             let id = child.id();
             self.child = Some(child);
             assert_eq!(ctx.info().lifecycle, Lifecycle::InTurn);
@@ -323,8 +323,8 @@ mod tasks_mode {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn links_monitors_trap_exit_parent_and_label() {
-        let peer = Worker::default().start();
-        let linker = Linker { child: None }.start();
+        let peer = Worker::default().spawn();
+        let linker = Linker { child: None }.spawn();
         let before = linker.info();
         assert_eq!(before.label, None);
         assert!(before.actor_type.ends_with("Linker"));
@@ -374,10 +374,10 @@ mod tasks_mode {
                 reply: PendingReply<'_, ActorRef<Worker>>,
                 ctx: &Context<Self>,
             ) {
-                reply.reply(Worker::default().start_linked(ctx));
+                reply.reply(Worker::default().start_link(ctx).actor_ref().unwrap());
             }
         }
-        let parent = Parent_.start();
+        let parent = Parent_.spawn();
         let child = parent.request(Spawn).await.unwrap();
         assert_eq!(child.info().parent, Parent::Actor(parent.id()));
         let _rx = child
@@ -403,7 +403,7 @@ mod tasks_mode {
                 ctx.set_label("gone");
             }
         }
-        let actor = Labelled.start();
+        let actor = Labelled.spawn();
         let handle = actor.child_handle();
         actor.child_handle().stop();
         actor.join().await;
@@ -509,7 +509,7 @@ mod threads_mode {
 
     #[test]
     fn info_returns_during_a_wedged_turn() {
-        let actor = Worker.start();
+        let actor = Worker.spawn();
         let (entered_tx, entered) = std_mpsc::channel();
         let (release_tx, release) = std_mpsc::channel();
         actor
@@ -567,7 +567,7 @@ mod threads_mode {
             stop,
             drop_gate: Some(drop_gate),
         }
-        .start();
+        .spawn();
         assert_eq!(actor.info().lifecycle, Lifecycle::Starting);
         start_tx.send(()).unwrap();
         let a = actor.clone();
@@ -619,7 +619,7 @@ mod threads_mode {
             ctx.link(&msg.0);
             ctx.monitor(&msg.0);
             assert_eq!(ctx.info().lifecycle, Lifecycle::InTurn);
-            reply.reply(Worker.start_linked(ctx));
+            reply.reply(Worker.start_link(ctx).unwrap());
         }
     }
     impl Handler<Down> for Linker {
@@ -630,8 +630,8 @@ mod threads_mode {
 
     #[test]
     fn links_monitors_trap_exit_parent_and_label() {
-        let peer = Worker.start();
-        let linker = Linker.start();
+        let peer = Worker.spawn();
+        let linker = Linker.spawn();
         let child = linker.request(Setup(peer.child_handle())).unwrap();
         let info = linker.info();
         assert_eq!(info.label.as_deref(), Some("chain"));
@@ -683,11 +683,11 @@ mod sim_mode {
     }
 
     async fn body(read: bool) {
-        let a = Node { peer: None }.start();
+        let a = Node { peer: None }.spawn();
         let b = Node {
             peer: Some(a.clone()),
         }
-        .start();
+        .spawn();
         b.context().link(&a.child_handle());
         b.context().monitor(&a.child_handle());
         let read_all = |phase: &str| {
@@ -748,7 +748,7 @@ mod seeded {
 
     #[spawned_concurrency::sim_test]
     async fn idle_then_dead_and_published_after_wait_exit() {
-        let a = Echo.start();
+        let a = Echo.spawn();
         a.request(Ping).await.unwrap();
         assert_eq!(a.info().lifecycle, Lifecycle::Idle);
         a.child_handle().stop();

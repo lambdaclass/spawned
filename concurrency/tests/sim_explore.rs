@@ -128,7 +128,7 @@ async fn bump_all(noises: &[u32]) -> Vec<Access> {
         value: 0,
         log: Vec::new(),
     }
-    .start();
+    .spawn();
     let workers: Vec<_> = noises
         .iter()
         .map(|&noise| {
@@ -136,7 +136,7 @@ async fn bump_all(noises: &[u32]) -> Vec<Access> {
                 store: store.clone(),
                 noise,
             }
-            .start()
+            .spawn()
         })
         .collect();
     let replies: Vec<_> = workers

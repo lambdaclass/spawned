@@ -12,12 +12,12 @@ use spawned_rt::threads as rt;
 
 fn main() {
     rt::run(|| {
-        let producer = Producer { consumer: None }.start();
+        let producer = Producer { consumer: None }.spawn();
 
         let consumer = Consumer {
             producer: producer.to_pong_receiver_ref(),
         }
-        .start();
+        .spawn();
 
         producer
             .send(SetConsumer(consumer.to_ping_receiver_ref()))

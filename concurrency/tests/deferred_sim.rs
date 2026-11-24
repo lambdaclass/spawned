@@ -50,7 +50,7 @@ fn owner(log: &Log) -> ActorRef<Owner> {
         stored: Vec::new(),
         job: None,
     }
-    .start()
+    .spawn()
 }
 
 struct Hold;

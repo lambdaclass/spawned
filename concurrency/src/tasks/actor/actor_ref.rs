@@ -9,15 +9,17 @@ impl<A: Actor> ActorRef<A> {
         crate::response::RequestOptions::new(self.clone(), timeout)
     }
 
-    /// Await this managed instance's initial readiness barrier. Success does not
-    /// guarantee it remains alive afterward; ordinary request errors still apply.
-    pub async fn ready(&self) -> Result<(), crate::system::SystemError> {
-        self.shared
-            .managed
-            .as_ref()
-            .ok_or(crate::system::SystemError::UnmanagedActor)?
-            .wait_ready()
+    /// This instance's committed startup result, for every placement and
+    /// verb (a `spawn`ed actor included): `Ok(())` once `started()`
+    /// returned ready, or the start's error (`StartError::Ignored` for
+    /// `Init::ignore()`). A failure is
+    /// answered after the instance's publication (or with `pending` after
+    /// its cleanup deadline), as the waiting starts answer. Success does not
+    /// guarantee the actor remains alive afterward.
+    pub async fn ready(&self) -> Result<(), crate::start::StartError> {
+        start::observe(self, false)
             .await
+            .and_then(crate::start::StartOutcome::into_result)
     }
     pub(crate) fn signal_failure(&self, error: String) {
         let _ = self

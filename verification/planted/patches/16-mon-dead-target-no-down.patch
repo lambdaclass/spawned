@@ -1,12 +1,12 @@
 Planted bug 16 (mon-dead-target-no-down): Monitoring an already-dead actor returns an inert ref and no Down
 
 diff --git a/concurrency/src/monitor/fence.rs b/concurrency/src/monitor/fence.rs
-index f7bbaa27..d40d7c7e 100644
+index 1b7006f0..d82513c4 100644
 --- a/concurrency/src/monitor/fence.rs
 +++ b/concurrency/src/monitor/fence.rs
-@@ -70,10 +70,8 @@ pub(crate) fn register<K: Hash + Eq, V>(
+@@ -72,10 +72,8 @@ pub(crate) fn register<K: Hash + Eq, V>(
          return Registration::Inert;
-     };
+     }
      if target_dead() {
 -        late();
 -        entries.insert(key, Entry::Queued);

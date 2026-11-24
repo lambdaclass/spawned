@@ -35,9 +35,9 @@ mod asynchronous {
     fn macro_receives_linked_exit() {
         spawned_rt::tasks::sim_test(|_| async {
             let (tx, rx) = tokio::sync::oneshot::channel();
-            let observer = Observer { seen: Some(tx) }.start();
+            let observer = Observer { seen: Some(tx) }.spawn();
             observer.context().trap_exit(true);
-            let child = Failing.start_linked(&observer.context());
+            let child = Failing.start_link(&observer.context()).actor_ref().unwrap();
             let event = spawned_rt::tasks::timeout(std::time::Duration::from_secs(2), rx)
                 .await
                 .unwrap()
@@ -51,7 +51,7 @@ mod asynchronous {
 }
 mod synchronous {
     use super::*;
-    use spawned_concurrency::threads::{Actor, ActorStart, Context};
+    use spawned_concurrency::threads::{Actor, ActorStart, Context, Handler, Init};
     struct Observer {
         seen: std::sync::mpsc::Sender<Exit>,
     }
@@ -67,20 +67,36 @@ mod synchronous {
             ctx.stop();
         }
     }
+    // A failed start_link consumes the trapping parent's Exit (OTP), so the
+    // child fails right after it is ready, in its continuation.
+    struct Boom;
+    impl spawned_concurrency::message::Message for Boom {
+        type Result = ();
+    }
     struct Failing;
     #[actor]
     impl Failing {
         #[started]
-        fn begin(&mut self, _: &Context<Self>) {
-            panic!("linked startup failure");
+        fn begin(&mut self, _: &Context<Self>) -> Init<Self> {
+            Init::continue_with(Boom)
+        }
+    }
+    impl Handler<Boom> for Failing {
+        fn handle(
+            &mut self,
+            _: Boom,
+            _: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            panic!("linked failure after start");
         }
     }
     #[test]
     fn macro_receives_linked_exit() {
         let (tx, rx) = std::sync::mpsc::channel();
-        let observer = Observer { seen: tx }.start();
+        let observer = Observer { seen: tx }.spawn();
         observer.context().trap_exit(true);
-        let child = Failing.start_linked(&observer.context());
+        let child = Failing.start_link(&observer.context()).expect("start_link");
         let event = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
         assert_eq!(event.from, child.id());
         assert!(matches!(event.reason, ExitReason::Panic(_)));

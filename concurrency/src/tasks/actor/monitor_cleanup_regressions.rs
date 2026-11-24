@@ -21,8 +21,8 @@ fn closed_monitor_table_rejects_late_registration() {
         move || {
             let rt = rt::Runtime::new().unwrap();
             let _entered = rt.enter();
-            let observer = Idle.start();
-            let target = Idle.start();
+            let observer = Idle.spawn();
+            let target = Idle.spawn();
             // Model cleanup during an unexpected unwind before token cancellation.
             drop(MonitorCleanup(observer.shared.monitors.clone()));
             let child = target.child_handle();
@@ -52,8 +52,8 @@ fn released(rt: &rt::Runtime, done: impl Fn() -> bool) -> bool {
 fn check_cleanup(stop_owner: bool) {
     let rt = rt::Runtime::new().unwrap();
     let _entered = rt.enter();
-    let target = Idle.start();
-    let observer = Idle.start();
+    let target = Idle.spawn();
+    let observer = Idle.spawn();
     let child = target.child_handle();
     let waiter = child.lifetime_probe();
     let monitor = observer.context().monitor(&child);
@@ -109,8 +109,8 @@ fn observer_cancels_its_monitors_before_publishing_its_exit() {
                 .build()
                 .unwrap();
             rt.block_on(async {
-                let target = Idle.start();
-                let observer = Idle.start();
+                let target = Idle.spawn();
+                let observer = Idle.spawn();
                 let child = target.child_handle();
                 let waiter = child.lifetime_probe();
                 observer.context().monitor(&child);

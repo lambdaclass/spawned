@@ -132,12 +132,27 @@ impl Handle {
         use spawned_concurrency::threads::ActorStart as _;
         match _backend {
             #[cfg(feature = "async")]
-            0 => Self::Tasks(tasks::TestActor(worker).start_with_backend(Backend::Async)),
+            0 => Self::Tasks(
+                tasks::TestActor(worker)
+                    .with_options(Backend::Async)
+                    .spawn()
+                    .unwrap(),
+            ),
             #[cfg(feature = "async")]
-            1 => Self::Tasks(tasks::TestActor(worker).start_with_backend(Backend::Blocking)),
+            1 => Self::Tasks(
+                tasks::TestActor(worker)
+                    .with_options(Backend::Blocking)
+                    .spawn()
+                    .unwrap(),
+            ),
             #[cfg(feature = "async")]
-            2 => Self::Tasks(tasks::TestActor(worker).start_with_backend(Backend::Thread)),
-            _ => Self::Threads(threads::TestActor(worker).start()),
+            2 => Self::Tasks(
+                tasks::TestActor(worker)
+                    .with_options(Backend::Thread)
+                    .spawn()
+                    .unwrap(),
+            ),
+            _ => Self::Threads(threads::TestActor(worker).spawn()),
         }
     }
     fn child(&self) -> ChildHandle {

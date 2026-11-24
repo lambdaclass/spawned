@@ -282,9 +282,13 @@ fn main() {
                     "blocking" => tasks::Backend::Blocking,
                     _ => tasks::Backend::Thread,
                 };
-                Target::Tasks(tasks::ActorStart::start_with_backend(Sink, backend))
+                Target::Tasks(
+                    tasks::ActorStart::with_options(Sink, backend)
+                        .spawn()
+                        .unwrap(),
+                )
             }
-            "threads" => Target::Threads(threads::ActorStart::start(Sink)),
+            "threads" => Target::Threads(threads::ActorStart::spawn(Sink)),
             "tokio" => {
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(
                     Work,

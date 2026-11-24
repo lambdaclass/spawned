@@ -13,6 +13,6 @@ index 3b94d213..1ac963ad 100644
 +        } else {
 +            reason
 +        };
-         crate::link::stop_with_reason(self.target.id, &self.target.request, reason, || {
+         crate::link::admin_stop_with_reason(self.target.id, &self.target.request, reason, || {
              (self.target.wake)()
          });

@@ -32,7 +32,7 @@ fn sampling_retains_every_counter_and_scales_only_timing_observations() {
         .build()
         .unwrap();
     rt.block_on(async {
-        let actor = Probe.start();
+        let actor = Probe.spawn();
         for _ in 0..16 {
             actor.request(Ping).await.unwrap();
         }

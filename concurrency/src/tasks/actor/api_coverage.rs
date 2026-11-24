@@ -72,7 +72,7 @@ fn context_recipient_reaches_its_actor() {
         concat!(module_path!(), "::context_recipient_reaches_its_actor"),
         move || {
             rt::Runtime::new().unwrap().block_on(async {
-                let actor = Echo.start();
+                let actor = Echo.spawn();
                 let (recipient, id) = actor.request(OwnRecipient).await.unwrap();
                 assert_eq!(id, actor.id());
                 assert!(matches!(request(&*recipient, Ask(7), WAIT).await, Ok(7)));
@@ -95,7 +95,7 @@ fn requests_to_a_stopped_actor_fail_without_waiting() {
         ),
         move || {
             rt::Runtime::new().unwrap().block_on(async {
-                let actor = Echo.start();
+                let actor = Echo.spawn();
                 let recipient = actor.recipient::<Ask>();
                 actor.child_handle().stop();
                 actor.join().await;
@@ -122,7 +122,7 @@ fn admitted_requests_fail_when_the_actor_stops_before_replying() {
         ),
         move || {
             rt::Runtime::new().unwrap().block_on(async {
-                let actor = Echo.start();
+                let actor = Echo.spawn();
                 let recipient = actor.recipient::<Ask>();
                 let (release, held) = rt::oneshot::channel();
                 actor.send(StopAfter(held)).unwrap();
@@ -150,7 +150,7 @@ fn erased_request_times_out() {
         concat!(module_path!(), "::erased_request_times_out"),
         move || {
             rt::Runtime::new().unwrap().block_on(async {
-                let actor = Echo.start();
+                let actor = Echo.spawn();
                 let recipient = actor.recipient::<Ask>();
                 let (release, held) = rt::oneshot::channel();
                 actor.send(StopAfter(held)).unwrap();
@@ -190,9 +190,9 @@ fn default_exit_received_keeps_a_trapping_actor_alive() {
                 }
             }
             rt::Runtime::new().unwrap().block_on(async {
-                let trapper = Trapper.start();
+                let trapper = Trapper.spawn();
                 assert!(matches!(trapper.request(Ask(0)).await, Ok(0)));
-                let peer = Echo.start();
+                let peer = Echo.spawn();
                 trapper.context().link(&peer.child_handle());
                 peer.send(Boom).unwrap();
                 assert!(matches!(peer.wait_exit().await, ExitReason::Panic(_)));
@@ -214,7 +214,7 @@ fn debug_output_names_the_handle() {
         concat!(module_path!(), "::debug_output_names_the_handle"),
         move || {
             rt::Runtime::new().unwrap().block_on(async {
-                let actor = Echo.start();
+                let actor = Echo.spawn();
                 assert!(format!("{actor:?}").starts_with("ActorRef"));
                 assert!(format!("{:?}", actor.context()).starts_with("Context"));
                 actor.child_handle().stop();

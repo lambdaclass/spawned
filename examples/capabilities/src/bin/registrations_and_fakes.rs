@@ -99,10 +99,22 @@ async fn main() {
     use spawned_concurrency::threads::ActorStart as _;
     struct Native;
     impl spawned_concurrency::threads::Actor for Native {}
-    let native = Native.start();
-    let old = registry::register_owned("example-manual", native.id(), 1u64).unwrap();
+    let native = Native.spawn();
+    let old = registry::register_owned(
+        "example-manual",
+        native.id(),
+        1u64,
+        Some(native.child_handle()),
+    )
+    .unwrap();
     registry::unregister("example-manual");
-    let new = registry::register_owned("example-manual", native.id(), 2u64).unwrap();
+    let new = registry::register_owned(
+        "example-manual",
+        native.id(),
+        2u64,
+        Some(native.child_handle()),
+    )
+    .unwrap();
     drop(old);
     assert_eq!(registry::whereis::<u64>("example-manual"), Some(2));
     native.context().stop();

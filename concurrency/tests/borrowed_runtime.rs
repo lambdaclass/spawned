@@ -36,7 +36,7 @@ impl Handler<Ambient> for Worker {
         reply: spawned_concurrency::PendingReply<'_, ActorRef<Worker>>,
         _: &Context<Self>,
     ) {
-        reply.reply(Worker.start());
+        reply.reply(Worker.spawn());
     }
 }
 
@@ -58,7 +58,7 @@ fn borrowed_groups_join_owned_work_and_leave_the_runtime_and_ambient_tasks_alive
                 system.async_group_on("borrowed", runtime.handle()),
                 Err(SystemError::DuplicateName(_))
             ));
-            let actor = Worker.start_on(&group).unwrap();
+            let actor = Worker.with_options(&group).spawn().unwrap();
             tokio::time::timeout(LIMIT, actor.ready())
                 .await
                 .unwrap()
@@ -93,7 +93,10 @@ fn borrowed_groups_join_owned_work_and_leave_the_runtime_and_ambient_tasks_alive
                 .unwrap()
                 .unwrap();
             assert!(report.wait(LIMIT).await.complete);
-            assert!(matches!(Worker.start_on(&group), Err(SystemError::Closed)));
+            assert!(matches!(
+                Worker.with_options(&group).spawn(),
+                Err(spawned_concurrency::StartError::Closed)
+            ));
             // Ambient work spawned from the managed handler was never adopted.
             tokio::time::timeout(LIMIT, ambient.request(Identity))
                 .await

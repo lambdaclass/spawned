@@ -80,6 +80,11 @@ def build(work, label, rev, features=None):
     target = work / f"target-{label}"  # one per side: identical crate hashes would collide
     env = dict(os.environ, CARGO_TARGET_DIR=str(target), CARGO_INCREMENTAL="0",
                **BUILD_PROFILE)
+    # Before the 0.9 unified start, `start()` was the non-waiting start: the
+    # driver's `spawn_actor!` uses it on such a tree (same workload).
+    actor_rs = tree / "concurrency" / "src" / "tasks" / "actor.rs"
+    if "fn start_with_backend" in actor_rs.read_text():
+        env["RUSTFLAGS"] = (env.get("RUSTFLAGS", "") + " --cfg hotpath_legacy_start").strip()
     extra = ["--features", features] if features else []
     sh(["cargo", "build", "--release", "--locked", "-q", "-p", "spawned-concurrency",
         "--example", "hotpath", *extra], cwd=tree, env=env)

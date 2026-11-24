@@ -1,14 +1,9 @@
 //! Owned execution groups and lifecycle-owned helper scopes.
 //!
-//! Ordinary `.start()` remains ambient and unmanaged. Explicit group admission
+//! Ordinary `.spawn()` remains ambient and unmanaged. Explicit group admission
 //! owns actors/helpers and keeps their runtime alive until managed cleanup ends.
 use crate::stop_token::StopToken;
-use crate::{
-    child_handle::ChildHandle,
-    error::ExitReason,
-    link,
-    tasks::{Actor, ActorRef},
-};
+use crate::{child_handle::ChildHandle, error::ExitReason, link};
 use futures::{
     future::{select, BoxFuture, Either},
     FutureExt,
@@ -112,10 +107,8 @@ pub enum SystemError {
     Runtime(String),
     #[error("execution group belongs to a different actor system")]
     ForeignGroup,
-    #[error("this actor has no managed helper scope; use start_on")]
+    #[error("this actor has no managed helper scope; start it in a group")]
     UnmanagedActor,
-    #[error("actor stopped before becoming ready: {0}")]
-    StartupFailed(ExitReason),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -877,37 +870,80 @@ impl ExecutionGroup {
             .map(|g| lock(&g.state).closing)
             .unwrap_or(true)
     }
-    pub fn start<A: Actor>(&self, actor: A) -> Result<ActorRef<A>, SystemError> {
-        let (scope, lease) = self.reserve(None)?;
-        ActorRef::spawn_managed(actor, scope, lease)
+    /// Whether `other` places actors exactly as this group does (the same
+    /// group and shard selection).
+    pub(crate) fn same_as(&self, other: &ExecutionGroup) -> bool {
+        self.inner.ptr_eq(&other.inner) && self.selection == other.selection
     }
-    pub(crate) fn reserve(
+    /// A unified start's admission (stage 1, design section 3): under this
+    /// group's admission lock, check that it is open and has a slot, then run
+    /// `commit` (the start's edge and name, under their own locks); only if
+    /// it succeeds is the scope created with the instance's prepared stop
+    /// token and exit request. A refusal applies nothing.
+    pub(crate) fn reserve_with<R>(
         &self,
-        parent: Option<Arc<Admission>>,
-    ) -> Result<(Arc<Scope>, Lease), SystemError> {
-        fail_point!("system.reserve" => return Err(SystemError::Capacity));
-        let _parent = parent.as_ref().map(|p| lock(&p.0));
-        if _parent.as_deref() == Some(&false) {
-            return Err(SystemError::Closed);
-        }
-        let group = self.inner.upgrade().ok_or(SystemError::Closed)?;
+        token: StopToken,
+        cause: crate::link::LinkedExitReason,
+        commit: impl FnOnce() -> Result<R, crate::start::StartError>,
+    ) -> Result<(Arc<Scope>, Lease, R), crate::start::StartError> {
+        use crate::start::StartError;
+        fail_point!("system.reserve" => return Err(StartError::Capacity));
+        let group = self.inner.upgrade().ok_or(StartError::Closed)?;
         let mut state = lock(&group.state);
+        // A refusal here is decided under the group lock (also its trace
+        // event: ordered with `SReleaseSlot`).
+        let refuse = |error: StartError| {
+            crate::lifecycle_trace::commit_point(Some(error.trace_refusal()));
+            Err(error)
+        };
         if state.closing {
-            return Err(SystemError::Closed);
+            return refuse(StartError::Closed);
         }
-        let id = next_admission()?;
-        let target = group.choose(&mut state, self.selection)?;
+        let id = match next_admission() {
+            Ok(id) => id,
+            Err(error) => return refuse(error.into()),
+        };
+        let target = match group.choose(&mut state, self.selection) {
+            Ok(target) => target,
+            Err(error) => return refuse(error.into()),
+        };
+        let committed = match commit() {
+            Ok(committed) => {
+                crate::lifecycle_trace::commit_point(None);
+                committed
+            }
+            Err(error) => {
+                // Undo the slot choice under the same lock: invisible.
+                if let Some(free) = &mut state.free {
+                    free.insert(target);
+                }
+                return Err(error);
+            }
+        };
+        let scope = self.new_scope(&group, id, target, None, token, cause);
+        state.scopes.insert(id, scope.clone());
+        Ok((scope.clone(), Lease { scope, root: true }, committed))
+    }
+    fn new_scope(
+        &self,
+        group: &Arc<GroupInner>,
+        id: u64,
+        target: usize,
+        parent: Option<Arc<Admission>>,
+        token: StopToken,
+        cause: crate::link::LinkedExitReason,
+    ) -> Arc<Scope> {
         let (ready, _) = watch::channel(StartupState::Pending);
         let (done, _) = watch::channel(false);
-        let scope = Arc::new(Scope {
+        Arc::new(Scope {
             id,
-            group: Arc::downgrade(&group),
+            group: Arc::downgrade(group),
             handle: group.handle(target),
             target,
             selection: self.selection,
-            parent: parent.clone(),
-            token: StopToken::new(),
-            cause: crate::link::new_linked_exit_reason(),
+            parent,
+            token,
+            cause,
             state: Mutex::new(ScopeState {
                 open: true,
                 leases: 1,
@@ -929,7 +965,34 @@ impl ExecutionGroup {
             ),
             jobs: Mutex::new(None),
             bounds: Mutex::new(Default::default()),
-        });
+            #[cfg(feature = "lifecycle-trace")]
+            start_trace: std::sync::atomic::AtomicU64::new(0),
+        })
+    }
+    pub(crate) fn reserve(
+        &self,
+        parent: Option<Arc<Admission>>,
+    ) -> Result<(Arc<Scope>, Lease), SystemError> {
+        fail_point!("system.reserve" => return Err(SystemError::Capacity));
+        let _parent = parent.as_ref().map(|p| lock(&p.0));
+        if _parent.as_deref() == Some(&false) {
+            return Err(SystemError::Closed);
+        }
+        let group = self.inner.upgrade().ok_or(SystemError::Closed)?;
+        let mut state = lock(&group.state);
+        if state.closing {
+            return Err(SystemError::Closed);
+        }
+        let id = next_admission()?;
+        let target = group.choose(&mut state, self.selection)?;
+        let scope = self.new_scope(
+            &group,
+            id,
+            target,
+            parent.clone(),
+            StopToken::new(),
+            crate::link::new_linked_exit_reason(),
+        );
         state.scopes.insert(id, scope.clone());
         Ok((scope.clone(), Lease { scope, root: true }))
     }
@@ -977,6 +1040,9 @@ pub(crate) struct Scope {
     /// Per-`ChildSpec` overrides of `Actor::MAX_OUTSTANDING` and
     /// `Actor::MAX_NATIVE_JOBS`, read when the actor instance is created.
     bounds: Mutex<crate::reply::jobs::Bounds>,
+    /// The start-trace child this scope admitted (0: not recorded).
+    #[cfg(feature = "lifecycle-trace")]
+    start_trace: std::sync::atomic::AtomicU64,
 }
 impl Scope {
     pub(crate) fn set_bounds(&self, bounds: crate::reply::jobs::Bounds) {
@@ -1024,17 +1090,21 @@ impl Scope {
     pub(crate) fn ready_rx(&self) -> watch::Receiver<StartupState> {
         self.ready.subscribe()
     }
-    pub(crate) async fn wait_ready(&self) -> Result<(), SystemError> {
+    /// The supervisor's readiness barrier: ready, or the reason the actor
+    /// ended before it.
+    pub(crate) async fn wait_ready(&self) -> Result<(), String> {
         let mut ready = self.ready_rx();
         loop {
             let state = ready.borrow_and_update().clone();
             match state {
                 StartupState::Ready => return Ok(()),
-                StartupState::Failed(reason) => return Err(SystemError::StartupFailed(reason)),
+                StartupState::Failed(reason) => {
+                    return Err(format!("actor stopped before becoming ready: {reason}"))
+                }
                 StartupState::Pending => (),
             }
             if ready.changed().await.is_err() {
-                return Err(SystemError::Closed);
+                return Err(SystemError::Closed.to_string());
             }
         }
     }
@@ -1093,6 +1163,7 @@ impl Scope {
         name: &str,
         id: crate::ActorId,
         actor: impl Clone + Send + Sync + 'static,
+        handle: crate::ChildHandle,
     ) -> Result<(), crate::registry::ManagedRegistrationError> {
         fail_point!("registry.before_register" => {
             return Err(crate::registry::ManagedRegistrationError::OwnerClosed)
@@ -1110,9 +1181,12 @@ impl Scope {
         {
             return Err(crate::registry::ManagedRegistrationError::OwnerClosed);
         }
-        state
-            .registrations
-            .push(crate::registry::register_owned(name, id, actor)?);
+        state.registrations.push(crate::registry::register_owned(
+            name,
+            id,
+            actor,
+            Some(handle),
+        )?);
         if state.name.is_none() {
             state.name = Some(name.to_owned());
         }
@@ -1182,7 +1256,10 @@ impl Scope {
         let scope = lock(&self.state);
         !group.closing && scope.open && !self.token.is_cancelled()
     }
-    pub(crate) fn mark_ready(&self) -> bool {
+    /// Whether the scope still admits its actor (its owner's gate, the group
+    /// and the scope), not counting a stop request: an administrative stop
+    /// before `started()` waits for the start (OTP), it does not close it.
+    pub(crate) fn admission_open(&self) -> bool {
         let _parent = self.parent.as_ref().map(|p| lock(&p.0));
         if _parent.as_deref() == Some(&false) {
             return false;
@@ -1191,13 +1268,40 @@ impl Scope {
             return false;
         };
         let group = lock(&g.state);
+        let scope = lock(&self.state);
+        !group.closing && scope.open
+    }
+    /// The readiness commit of a unified start (design 5.1): under this
+    /// scope's admission (its owner's gate, the group, the scope), `decide`
+    /// gets whether admission is open and returns its result and whether the
+    /// instance became ready, which then marks the scope ready.
+    pub(crate) fn ready_commit<R>(&self, decide: impl FnOnce(bool) -> (R, bool)) -> R {
+        let parent = self.parent.as_ref().map(|p| lock(&p.0));
+        let group = self.group.upgrade();
+        let group_state = group.as_ref().map(|g| lock(&g.state));
         let mut scope = lock(&self.state);
-        if group.closing || !scope.open || self.token.is_cancelled() {
-            return false;
+        let open = parent.as_deref() != Some(&false)
+            && group_state.as_ref().is_some_and(|g| !g.closing)
+            && scope.open;
+        let (result, ready) = decide(open);
+        if ready {
+            scope.ready_at = Some(Instant::now());
+            self.ready.send_replace(StartupState::Ready);
         }
-        scope.ready_at = Some(Instant::now());
-        self.ready.send_replace(StartupState::Ready);
-        true
+        result
+    }
+    /// The start-trace child this scope admitted.
+    #[cfg(feature = "lifecycle-trace")]
+    pub(crate) fn set_start_trace(&self, c: u64) {
+        self.start_trace
+            .store(c, std::sync::atomic::Ordering::Release);
+    }
+    /// A start's label: the diagnostic name until a name is registered.
+    pub(crate) fn set_label(&self, label: &str) {
+        let mut state = lock(&self.state);
+        if state.name.is_none() {
+            state.name = Some(label.to_owned());
+        }
     }
     pub(crate) fn end_running(&self) {
         let mut state = lock(&self.state);
@@ -1250,14 +1354,20 @@ impl Scope {
         self.lease(false)
     }
     /// Dispatch the actor root to its reserved worker or runtime shard.
-    pub(crate) fn dispatch_actor<F>(&self, future: F) -> Result<(), SystemError>
+    /// Dispatch a committed actor to its worker. The future comes back if
+    /// the group or its worker is gone (dropped mid-shutdown).
+    pub(crate) fn dispatch_actor<F>(
+        &self,
+        future: F,
+    ) -> Result<(), std::pin::Pin<Box<dyn Future<Output = ()> + Send>>>
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        self.group
-            .upgrade()
-            .ok_or(SystemError::Closed)?
-            .dispatch(self.target, future)
+        fail_point!("system.dispatch_actor" => return Err(Box::pin(future)));
+        match self.group.upgrade() {
+            Some(group) => group.dispatch(self.target, future),
+            None => Err(Box::pin(future)),
+        }
     }
     /// Internal lifecycle cleanup is deliberately not cancelled with ordinary
     /// helpers: its lease must survive until the owned subtree actually joins.
@@ -1420,8 +1530,20 @@ impl Drop for Lease {
         }
         if last {
             drop(registrations);
+            // The scope's owned work is done (`Start.tla` WorkDoneC), then its
+            // slot is released under the group lock (ReleaseSlot).
+            #[cfg(feature = "lifecycle-trace")]
+            let c = self
+                .scope
+                .start_trace
+                .load(std::sync::atomic::Ordering::Acquire);
+            #[cfg(not(feature = "lifecycle-trace"))]
+            let c = 0;
+            crate::lifecycle_trace::start_emit(c, || {
+                crate::lifecycle_trace::StartEvent::new("SWorkDone", c)
+            });
             if let Some(g) = self.scope.group.upgrade() {
-                g.remove_scope(self.scope.id);
+                g.remove_scope(self.scope.id, c);
             }
             self.scope.done.send_replace(true);
         }
@@ -1449,6 +1571,7 @@ impl<F: Future> Future for Tracked<F> {
 #[cfg(test)]
 mod coordinator_tests {
     use super::*;
+    use crate::tasks::Actor;
     use std::sync::atomic::{AtomicBool, AtomicUsize};
     const LIMIT: Duration = Duration::from_secs(10);
     struct Worker(Arc<AtomicUsize>);
@@ -1497,8 +1620,14 @@ mod coordinator_tests {
                 let system = ActorSystem::new().unwrap();
                 let group = system.async_group("coordinator-fault", 1).unwrap();
                 let stopped = Arc::new(AtomicUsize::new(0));
-                let first = Worker(stopped.clone()).start_on(&group).unwrap();
-                let second = Worker(stopped.clone()).start_on(&group).unwrap();
+                let first = Worker(stopped.clone())
+                    .with_options(&group)
+                    .spawn()
+                    .unwrap();
+                let second = Worker(stopped.clone())
+                    .with_options(&group)
+                    .spawn()
+                    .unwrap();
                 first.ready().await.unwrap();
                 second.ready().await.unwrap();
                 let (done, _) = watch::channel(false);

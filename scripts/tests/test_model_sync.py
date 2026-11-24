@@ -163,11 +163,11 @@ class ModelInventory(RepoCopy):
 
     def test_design_only_model_with_code_fails(self):
         tmp = self.copy()
-        self.edit_map(tmp, "code = []\n[models.Start.tlc_only]",
-                      'code = ["concurrency/src/system.rs"]\n[models.Start.tlc_only]')
+        self.edit_map(tmp, "code = []\n[models.Introspection.tlc_only]",
+                      'code = ["concurrency/src/system.rs"]\n[models.Introspection.tlc_only]')
         code, out = run("--root", str(tmp), "models")
         self.assertEqual(code, 1, out)
-        self.assertIn("Start is a design-only model", out)
+        self.assertIn("Introspection is a design-only model", out)
 
     def test_unrun_trace_spec_is_not_validation(self):
         tmp = self.copy()
@@ -244,7 +244,7 @@ class ModelPaths(unittest.TestCase):
         shutil.copy(ROOT / "verification" / "model-map.toml", self.repo / "verification")
         self.write("verification/tla/Lifecycle.tla", "---- MODULE Lifecycle ----\n====\n")
         self.write("concurrency/src/actor_cleanup.rs", ACTOR_CLEANUP)
-        self.write("concurrency/src/registry.rs", "pub fn lookup() {}\n")
+        self.write("concurrency/src/response.rs", "pub fn lookup() {}\n")
         # Loom-checked cores: fence.rs has only a Loom harness, core.rs also
         # a TLA+ model (Lifecycle).
         self.write("concurrency/src/monitor/fence.rs", "pub fn close() -> u32 {\n    1\n}\n")
@@ -343,7 +343,7 @@ class ModelPaths(unittest.TestCase):
         self.assertEqual(code, 1, out)
 
     def test_unmapped_code_passes(self):
-        self.edit("concurrency/src/registry.rs", "{}", "{ let _ = 1; }")
+        self.edit("concurrency/src/response.rs", "{}", "{ let _ = 1; }")
         code, out = self.check()
         self.assertEqual(code, 0, out)
 

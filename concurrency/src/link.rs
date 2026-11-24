@@ -76,6 +76,21 @@ pub(crate) struct ExitRequest {
     /// A parent exit is queued behind earlier messages of a trapping actor
     /// (E3): when dispatched it ends the actor whatever its reason.
     parent_exit_queued: bool,
+    /// The first administrative stop that arrived during `started()`: as
+    /// OTP's `gen_server:stop` (a system message handled after `init/1`
+    /// returns), it is applied after a ready start commits, and `stopped()`
+    /// runs (unified start 2.3).
+    admin: Option<ExitReason>,
+    /// A non-ready startup decision fixed the reason (unified start 2.3):
+    /// the resolution and D are one step, so nothing changes it any more.
+    frozen: bool,
+    /// The `start_link`/`start_monitor` waits of this actor (as a parent):
+    /// an exit begun by a kill or an untrapped exit signal abandons them,
+    /// as in OTP the caller dies at once.
+    waiting_starts: Vec<std::sync::Weak<crate::start::StartupCell>>,
+    /// The start-trace role of this instance (0: not recorded).
+    #[cfg(feature = "lifecycle-trace")]
+    pub(crate) trace: crate::lifecycle_trace::StartRole,
     /// The current reason was imposed by a kill or an untrapped exit signal
     /// (not produced by the actor itself): no crash report (OTP: a process
     /// killed by a signal runs no code).
@@ -105,6 +120,37 @@ impl ExitRequest {
     pub(crate) fn exit_pending(&self) -> bool {
         self.reason.is_some() || self.parent_exit_queued
     }
+    /// The exit was begun by a kill or an untrapped exit signal: in OTP the
+    /// process is dead at once (Spawned: once its running turn returns).
+    fn exit_by_signal(&self) -> bool {
+        self.killed || (self.reason.is_some() && self.skip_hook)
+    }
+    /// Register a start this actor waits for; `false` if its exit by a
+    /// signal already began (the wait is abandoned at once).
+    pub(crate) fn add_waiting_start(
+        &mut self,
+        cell: std::sync::Weak<crate::start::StartupCell>,
+    ) -> bool {
+        if self.dead || self.exit_by_signal() {
+            return false;
+        }
+        self.waiting_starts.retain(|w| w.strong_count() > 0);
+        self.waiting_starts.push(cell);
+        true
+    }
+    /// The start was answered or abandoned: forget it.
+    pub(crate) fn remove_waiting_start(&mut self, cell: *const crate::start::StartupCell) {
+        self.waiting_starts
+            .retain(|w| w.strong_count() > 0 && w.as_ptr() != cell);
+    }
+    /// The waits to abandon once a signal began this actor's exit.
+    fn take_waiting_starts(&mut self) -> Vec<std::sync::Weak<crate::start::StartupCell>> {
+        if self.exit_by_signal() {
+            std::mem::take(&mut self.waiting_starts)
+        } else {
+            Vec::new()
+        }
+    }
     /// What began an exit that skips `stopped()`, for its debug log.
     pub(crate) fn skip_cause(&self) -> &'static str {
         if self.killed {
@@ -120,23 +166,46 @@ impl ExitRequest {
     /// A self-exit or an administrative stop: the first requested reason
     /// wins. Returns whether the run loop must be woken.
     pub(crate) fn request(&mut self, reason: ExitReason) -> bool {
-        if self.dead {
+        if self.dead || self.frozen {
             return false;
         }
         if self.reason.is_none() {
+            self.note_exit(&reason);
             self.reason = Some(reason);
         }
         true
+    }
+    /// An administrative stop (`ChildHandle::stop*`, a scope's stop). One
+    /// that arrives while `started()` runs is held: it decides nothing about
+    /// the start, and is applied once the start commits ready (OTP: a
+    /// `gen_server:stop` waits for `init/1` to return); a failed start
+    /// discards it. Returns whether the run loop must be woken.
+    pub(crate) fn admin_stop(&mut self, reason: ExitReason) -> bool {
+        if self.dead || self.frozen {
+            return false;
+        }
+        if self.starting {
+            if self.admin.is_none() && self.reason.is_none() {
+                #[cfg(feature = "lifecycle-trace")]
+                crate::lifecycle_trace::start_admin(self.trace);
+                self.admin = Some(reason);
+            }
+            return true;
+        }
+        self.request(reason)
     }
     /// An untrapped non-`Normal` exit signal or link notice: begins exit
     /// without `stopped()`, or replaces the reason of an actor already
     /// exiting (decision 8), unless a kill was received.
     pub(crate) fn untrapped(&mut self, reason: ExitReason) -> bool {
-        if self.dead || self.killed {
+        if self.dead || self.killed || self.frozen {
             return false;
         }
         if self.reason.is_none() && !self.hook_begun {
             self.skip_hook = true;
+        }
+        if self.reason.is_none() {
+            self.note_exit(&reason);
         }
         self.reason = Some(reason);
         self.signalled = true;
@@ -145,8 +214,13 @@ impl ExitRequest {
     /// An untrappable kill: `Killed` supersedes any reason until D and
     /// skips a `stopped()` that has not begun.
     pub(crate) fn kill(&mut self) -> bool {
-        if self.dead {
+        if self.dead || self.frozen {
             return false;
+        }
+        #[cfg(feature = "lifecycle-trace")]
+        crate::lifecycle_trace::start_kill(self.trace, self.starting);
+        if self.reason.is_none() {
+            self.note_exit(&ExitReason::Killed);
         }
         self.reason = Some(ExitReason::Killed);
         self.killed = true;
@@ -159,9 +233,20 @@ impl ExitRequest {
     /// A panic in `started()`, a handler or `stopped()`: begins exit, or
     /// replaces the requested reason, unless a kill was received.
     pub(crate) fn panic(&mut self, reason: ExitReason) {
-        if !self.dead && !self.killed {
+        if !self.dead && !self.killed && !self.frozen {
+            if self.reason.is_none() {
+                self.note_exit(&reason);
+            }
             self.reason = Some(reason);
             self.signalled = false;
+        }
+    }
+    /// A ready instance's exit begins (or a start-trace parent's).
+    #[inline(always)]
+    fn note_exit(&self, _reason: &ExitReason) {
+        #[cfg(feature = "lifecycle-trace")]
+        if !self.starting {
+            crate::lifecycle_trace::start_exit(self.trace, _reason);
         }
     }
     /// `stopped()` is about to start: returns whether it runs.
@@ -171,13 +256,21 @@ impl ExitRequest {
     }
     /// The death point D: the requested reason becomes final.
     pub(crate) fn die(&mut self) -> ExitReason {
+        let first = !self.dead;
         self.dead = true;
-        self.reason.get_or_insert(ExitReason::Normal).clone()
+        let reason = self.reason.get_or_insert(ExitReason::Normal).clone();
+        #[cfg(feature = "lifecycle-trace")]
+        if first {
+            crate::lifecycle_trace::start_die(self.trace, &reason, self.frozen);
+        }
+        let _ = first;
+        reason
     }
     /// The runtime dropped the actor before D (G1): `Killed` unless a
     /// non-`Normal` reason was already requested; then D.
     pub(crate) fn runtime_drop(&mut self) -> ExitReason {
-        if !self.dead {
+        // A non-ready startup decision fixed the reason for good (L9).
+        if !self.dead && !self.frozen {
             self.reason = match self.reason.take() {
                 None | Some(ExitReason::Normal) => Some(ExitReason::Killed),
                 Some(reason) => Some(reason),
@@ -192,6 +285,7 @@ impl ExitRequest {
     /// now. A non-trapping actor begins exit with the first non-`Normal`
     /// one; a trapping actor dispatches each held envelope as an `Exit` in
     /// its own place in the queue. Returns whether the run loop must stop.
+    #[cfg(test)]
     pub(crate) fn end_starting(&mut self, trapping: bool) -> bool {
         self.starting = false;
         let held = std::mem::take(&mut self.held);
@@ -209,6 +303,94 @@ impl ExitRequest {
     }
     pub(crate) fn held_trapped(&self) -> bool {
         self.held_trapped
+    }
+    /// `started()` has not run yet and a kill came first (`KilledEarly`).
+    pub(crate) fn killed_early(&self) -> bool {
+        self.killed
+    }
+    /// The startup decision (unified start, design 2.3), when `started()`
+    /// returns (or instead of it). `timed_out`: the init timer committed;
+    /// `open`: the child's admission is open (read under its gate). A
+    /// non-ready row fixes the reason for good (the resolution and D are one
+    /// step); a ready one resolves the held signals as phase 0 always did
+    /// (E2, E3: a trapping child queues them, `Normal` ones are dropped).
+    pub(crate) fn resolve_start(
+        &mut self,
+        trapping: bool,
+        timed_out: bool,
+        returned: &crate::start::Returned,
+        open: bool,
+    ) -> crate::start::Row {
+        use crate::start::{Returned, Row};
+        self.starting = false;
+        let held = std::mem::take(&mut self.held);
+        // Row 3: the first held non-Normal signal to a non-trapping child.
+        // (An administrative stop is not a row: it is applied after a ready
+        // commitment, below.)
+        let row3 = if trapping {
+            None
+        } else {
+            held.iter().find(|r| **r != ExitReason::Normal).cloned()
+        };
+        let admin = self.admin.take();
+        // `signalled`: a reason imposed from outside (the init timer's kill,
+        // a kill, a held untrapped signal) gets no crash report (I10).
+        let row = if timed_out {
+            self.reason = Some(ExitReason::Killed);
+            self.signalled = true;
+            Row::Timer
+        } else if self.killed {
+            self.reason = Some(ExitReason::Killed);
+            self.signalled = true;
+            Row::Kill
+        } else if let Some(reason) = row3 {
+            self.reason = Some(reason);
+            self.signalled = true;
+            Row::Signal
+        } else {
+            match returned {
+                Returned::Panic(message) => {
+                    self.reason = Some(ExitReason::Panic(format!("panic in started(): {message}")));
+                    self.signalled = false;
+                    Row::Panic
+                }
+                _ if self.reason.is_some() => Row::Stop,
+                Returned::Stop(reason) => {
+                    self.reason = Some(reason.clone());
+                    Row::Stop
+                }
+                Returned::Error(_) => {
+                    self.reason = Some(ExitReason::Normal);
+                    Row::Error
+                }
+                Returned::Ignore => {
+                    self.reason = Some(ExitReason::Normal);
+                    Row::Ignore
+                }
+                Returned::Ready | Returned::NotBegun if !open => {
+                    self.reason = Some(ExitReason::Shutdown(None));
+                    Row::Closed
+                }
+                Returned::Ready | Returned::NotBegun => Row::Ready,
+            }
+        };
+        if row == Row::Ready {
+            self.held_trapped = trapping;
+            if trapping && std::mem::take(&mut self.held_parent) {
+                self.parent_exit_queued = true;
+            }
+            // A held administrative stop now begins an ordinary exit: the
+            // run loop (already woken) dispatches nothing and runs stopped().
+            // (Its `SExit` is recorded right after the ready `SResolve`.)
+            if let Some(reason) = admin {
+                self.reason = Some(reason);
+            }
+        } else {
+            self.frozen = true;
+            self.skip_hook = true;
+            self.hook_begun = true;
+        }
+        row
     }
 }
 
@@ -243,6 +425,8 @@ pub(crate) struct SignalTarget {
     /// Queues a signal held during `started()` in its place in the mailbox
     /// (the flag marks a parent signal).
     pub(crate) send_held: SendHeldFn,
+    /// The instance's startup result (unified start, design 5.1).
+    pub(crate) startup: Arc<crate::start::StartupCell>,
     /// Introspection metadata: type, placement, label, the instance probe.
     pub(crate) meta: crate::introspection::Meta,
 }
@@ -286,8 +470,12 @@ fn apply_signal(
     from_parent: bool,
 ) {
     if origin == Origin::Direct && reason == ExitReason::Kill {
-        if lock_request(&target.request).kill() {
+        let mut request = lock_request(&target.request);
+        if request.kill() {
+            let waits = request.take_waiting_starts();
+            drop(request);
             (target.wake)();
+            abandon_waits(waits);
         }
         return;
     }
@@ -328,8 +516,20 @@ fn apply_signal(
         return;
     }
     if request.untrapped(exit.reason) {
+        let waits = request.take_waiting_starts();
         drop(request);
         (target.wake)();
+        abandon_waits(waits);
+    }
+}
+
+/// The actor's exit by a signal began: its pending start waits are
+/// abandoned (outside its exit-request lock).
+fn abandon_waits(waits: Vec<std::sync::Weak<crate::start::StartupCell>>) {
+    for cell in waits {
+        if let Some(cell) = cell.upgrade() {
+            cell.parent_exit();
+        }
     }
 }
 
@@ -347,6 +547,19 @@ pub(crate) fn new_trap_exit_flag() -> TrapExitFlag {
 }
 
 static NEXT_EDGE: AtomicU64 = AtomicU64::new(1);
+
+/// The edge of a `start_link`, in the start's commit (see
+/// [`table::install_start_edge`]). Returns whether it was installed.
+pub(crate) fn install_start_edge(
+    parent: &Arc<SignalTarget>,
+    parent_links: &LinkTable,
+    child: &Arc<SignalTarget>,
+    child_links: &LinkTable,
+    admit: impl FnOnce() -> bool,
+) -> bool {
+    let gen = NEXT_EDGE.fetch_add(1, Ordering::Relaxed);
+    table::install_start_edge(parent, parent_links, child, child_links, gen, admit)
+}
 
 /// Link `own` and `peer` (OTP `link/1`). An existing record (live or
 /// pending) makes it a no-op. Past the peer's D, `try_only` returns
@@ -426,6 +639,8 @@ pub(crate) fn unregister_link(
             trace::life_emit(own_id.raw(), || {
                 trace::LifeEvent::new("Unlink", own_id.raw()).s(peer_id.raw())
             });
+            #[cfg(feature = "lifecycle-trace")]
+            trace::start_unlink(own_id.raw(), peer_id.raw());
         }
         removed
     });
@@ -487,7 +702,9 @@ fn deliver_notice_in_section(
         // One failing internal callback must not prevent other peers from
         // being notified, or panic again during actor-future destruction.
         panic = catch_unwind(AssertUnwindSafe(|| {
-            deliver_signal(receiver, from, reason, Origin::Link, false)
+            trace::start_notice(receiver.id.raw(), from.raw(), "link", &reason, || {
+                deliver_signal(receiver, from, reason.clone(), Origin::Link, false)
+            })
         }))
         .err();
     });
@@ -499,6 +716,47 @@ impl LinkNotices {
     /// receiver still holds the record (E6 fence).
     pub(crate) fn deliver(self) {
         self.deliver_with(deliver_notice);
+    }
+    /// Take the notice to `peer` (a unified start's parent edge) out of the
+    /// set, for its startup cell to dispose of.
+    pub(crate) fn take_notice(&mut self, peer: ActorId) -> Option<LinkNotice> {
+        self.take_peer(peer)
+            .map(|(from, reason, entry)| LinkNotice {
+                from,
+                reason,
+                entry,
+            })
+    }
+}
+
+/// One death notice taken at D (a unified start's parent edge), held by the
+/// child's startup cell until it is disposed of (design 5.2).
+pub(crate) struct LinkNotice {
+    from: ActorId,
+    reason: ExitReason,
+    entry: table::LinkEntry,
+}
+
+impl LinkNotice {
+    /// Deliver it as an ordinary notice (fenced by the receiver's record).
+    pub(crate) fn deliver(self) {
+        if let Some(peer_links) = self.entry.peer_links.upgrade() {
+            deliver_notice(
+                &peer_links,
+                &self.entry.peer,
+                self.from,
+                self.entry.gen,
+                self.reason,
+            );
+        }
+    }
+    /// Consumed by a failed start's answer: the receiver's record goes, so
+    /// no notice of this edge takes effect.
+    pub(crate) fn discard(self) {
+        if let Some(peer_links) = self.entry.peer_links.upgrade() {
+            let removed = table::take_record(&peer_links, self.from, self.entry.gen, |_| {});
+            drop(removed);
+        }
     }
 }
 
@@ -532,11 +790,29 @@ pub(crate) fn propagate_exit(own_id: ActorId, own: &LinkTable, reason: &ExitReas
 /// first requested reason wins over later self-exits and stops; a later
 /// untrapped signal or kill can still replace it until D.
 pub(crate) fn normal_stop(id: ActorId, reason: &LinkedExitReason, cancel: impl FnOnce()) {
-    stop_with_reason(id, reason, ExitReason::Normal, cancel);
+    admin_stop_with_reason(id, reason, ExitReason::Normal, cancel);
 }
 
-/// A self-exit or administrative stop of actor `id` (recorded as `Stop`).
+/// A self-exit of actor `id` (recorded as `Stop`).
 pub(crate) fn stop_with_reason(
+    id: ActorId,
+    reason: &LinkedExitReason,
+    cause: ExitReason,
+    cancel: impl FnOnce(),
+) {
+    trace::life_section(id.raw(), || {
+        trace::life_emit(id.raw(), || {
+            trace::LifeEvent::new("Stop", id.raw()).x(trace::life_reason(&cause))
+        });
+        if lock_request(reason).request(cause) {
+            cancel();
+        }
+    });
+}
+
+/// An administrative stop of actor `id` (`ChildHandle::stop*`, recorded as
+/// `Stop`): during `started()` it decides the start (unified start row 3).
+pub(crate) fn admin_stop_with_reason(
     id: ActorId,
     reason: &LinkedExitReason,
     cause: ExitReason,
@@ -550,10 +826,10 @@ pub(crate) fn stop_with_reason(
     });
 }
 
-/// As [`stop_with_reason`], unrecorded: a parent exit being dispatched (part
-/// of the model's `Dispatch`) or a managed scope's stop.
+/// As [`admin_stop_with_reason`], unrecorded: a parent exit being
+/// dispatched (part of the model's `Dispatch`) or a managed scope's stop.
 pub(crate) fn request_stop(reason: &LinkedExitReason, cause: ExitReason, cancel: impl FnOnce()) {
-    if lock_request(reason).request(cause) {
+    if lock_request(reason).admin_stop(cause) {
         cancel();
     }
 }
@@ -784,6 +1060,7 @@ mod tests {
                 Ok(())
             }),
             send_held: Arc::new(|_, _| Ok(())),
+            startup: crate::start::StartupCell::new(),
             meta: Default::default(),
         }
     }
@@ -954,6 +1231,18 @@ mod tests {
                 let mut r = ExitRequest::default();
                 r.request(ExitReason::Shutdown(None));
                 assert_eq!(r.runtime_drop(), ExitReason::Shutdown(None));
+                // Review #291 item 8: a non-ready startup decision froze the
+                // reason (Init::error: Normal); a runtime drop before D keeps it.
+                let mut r = ExitRequest::default();
+                r.begin_starting();
+                let row = r.resolve_start(
+                    false,
+                    false,
+                    &crate::start::Returned::Error("no config".into()),
+                    true,
+                );
+                assert_eq!(row, crate::start::Row::Error);
+                assert_eq!(r.runtime_drop(), ExitReason::Normal);
             },
         );
     }
