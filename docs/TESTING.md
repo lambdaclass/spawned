@@ -382,8 +382,7 @@ giving collateral children their own backoff fails
 | I3 | `introspection::*::lifecycle_walks_*` (a destructor held between D and publication); `child_handle_info_after_every_ref_is_dropped` | A B T N G TG, Sim | new (0.9, tier 0 part) | counters: `introspection` feature |
 | I4 | `status::*` (order, every outcome, abandoned requests not run, callback panic contained, no credit, during `stopped()` and destruction, no `metrics` accounting); `seeded::get_status_races_stop`; `Introspection.tla` status invariants; `introspection_trace` replayed by `TraceIntrospection.tla` with seven recorded-trace controls | A N, Sim, Model | new (0.9) | |
 | I5 | `status::*::state_is_redacted_*`, `inspect_formats_state`; unit `state_view_*` | A N | new (0.9) | trybuild for `inspect` misuse |
-| I7 | `supervision_introspection::tree_rows_and_counts_agree`; `tree_during_restarts` (`#[sim_test]`) | G, Sim | new (0.9) | lock-order stress under nested restart storms |
-| I10 | `crash_reports` (panics in every hook, abnormal self-exit, no report for clean exits, kills and untrapped signals, supervised fields; supervisor reports: terminated, restarted, start failed, intensity, shutdown error) | A N G | new (0.9) | sessions |
+| I10 | `crash_reports` (panics in every hook, abnormal self-exit, no report for clean exits, kills and untrapped signals, supervised fields) | A N G | new (0.9, crash part) | supervisor reports, sessions |
 | I11 | perf gate (`hotpath.py gate`, against the merge base and the last release) | A N | new (0.9) | codegen diff: step 2 |
 
 Bugs found: none. Every gap test passed on the first correct run in both

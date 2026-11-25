@@ -5,7 +5,7 @@ use super::*;
 use crate::tasks::Context;
 
 type Configure = Arc<dyn Fn(&mut SupervisorBuilder) -> Result<(), String> + Send + Sync>;
-pub(super) type Ready = Arc<Mutex<Option<(ActorId, Supervisor)>>>;
+type Ready = Arc<Mutex<Option<(ActorId, Supervisor)>>>;
 
 pub struct SupervisorSpec {
     name: String,
@@ -62,10 +62,6 @@ impl SupervisedSupervisor {
     pub fn snapshot(&self) -> ChildSnapshot {
         self.child.snapshot()
     }
-    /// This child's row in its parent (OTP `which_children/1` for one child).
-    pub fn info(&self) -> ChildInfo {
-        self.child.info()
-    }
     /// Resolve this ready subtree instance. Old Supervisor handles never rebind.
     pub fn current(&self) -> Result<Supervisor, ChildUnavailable> {
         let actor = self.child.current()?;
@@ -90,14 +86,6 @@ impl SupervisedSupervisor {
         }
     }
 }
-/// The subtree published by adapter instance `id`, whatever its gate.
-pub(super) fn resolve_instance(ready: &Ready, id: ActorId) -> Option<Supervisor> {
-    system::lock(ready)
-        .as_ref()
-        .filter(|(current, _)| *current == id)
-        .map(|(_, supervisor)| supervisor.clone())
-}
-
 fn resolve(ready: &Ready, id: ActorId) -> Result<Supervisor, ChildUnavailable> {
     system::lock(ready)
         .as_ref()
@@ -114,10 +102,7 @@ pub(super) fn add(
     let publish = ready.clone();
     let owner = parent.owner.clone();
     let parent_core = Arc::downgrade(&parent.core);
-    let mut config = spec.config;
-    if config.name.is_none() {
-        config.name = Some(spec.name.clone());
-    }
+    let config = spec.config;
     let configure = spec.configure;
     let shutdown_grace = spec.shutdown_timeout;
     let parent_trace = parent.core.trace;
@@ -164,11 +149,10 @@ pub(super) fn add(
         .startup_timeout(spec.startup_timeout)
         .shutdown_timeout(spec.shutdown_timeout),
     )?;
-    let _ = child.view.nested.set(ready.clone());
     Ok(SupervisedSupervisor { child, ready })
 }
 
-pub(super) struct SupervisorActor {
+struct SupervisorActor {
     builder: Option<SupervisorBuilder>,
     running: Option<Supervisor>,
     ready: Ready,
