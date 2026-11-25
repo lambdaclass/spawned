@@ -599,12 +599,22 @@ The slot's terminal kinds are defined so that rank 5e only adds the reason.
 
 ## 6. Delegation
 
-There is no `ReplyTo::forward` in v1.
+There is no `ReplyTo::forward` in v1: a token is never handed to another
+actor.
 
 ```rust
 let token = reply.defer()?;
 ctx.pipe_reply(JobOptions::new(), token, |_| other.request(msg), |res, token| Delegated { res, token })?;
+// or, when the answer is the job's result (0.9):
+ctx.forward(JobOptions::new(), token, |_| async move { other.request(msg).await })?;
 ```
+
+`ctx.forward` is `pipe_reply` with a framework `done`: the terminal is
+dispatched in the owner's turn behind the same fence, and instead of a
+user handler it answers the token (`Ok(v)` replies, `Err(Overloaded)`
+answers `Overloaded`, anything else drops it). It adds no state, transition
+or credit rule, so `DeferredJobs.tla` and `DeferredReplies.tla` cover it
+unchanged.
 
 The downstream request is an ordinary request with the destination's own
 admission and deadline; it should pass `token.deadline()` on
@@ -702,6 +712,7 @@ impl JobOptions {
 ctx.pipe(opts, |job| async { .. }, done)                     -> Result<JobHandle, PipeError>
 ctx.pipe_blocking(opts, |job| .., done)                      -> Result<JobHandle, PipeError>
 ctx.pipe_reply(opts, token, |job| async { .. }, done)        -> Result<JobHandle, PipeReplyError<R>>
+ctx.forward(opts, token, |job| async { Ok(..) })             -> Result<JobHandle, PipeReplyError<R>> // tasks; pipe_reply whose done answers the token
 ctx.pipe_reply_blocking(opts, token, |job| .., done)         -> Result<JobHandle, PipeReplyError<R>>
 // Reserve-then-spawn: the admission checks (owner running, credit, native
 // slot) before `work`/`done` exist; spawning from the permit cannot fail.
