@@ -69,10 +69,10 @@ note: required by a bound in `spawned_concurrency::threads::Context`
    |                       ^^^^^ required by this bound in `Context`
 
 error[E0277]: the trait bound `Counter: spawned_concurrency::threads::Actor` is not satisfied
-  --> tests/ui/actor_async_handler_threads.rs:14:67
+  --> tests/ui/actor_async_handler_threads.rs:14:5
    |
 14 |     async fn read(&mut self, _msg: Read, _ctx: &Context<Self>) -> u64 { self.0 }
-   |                                                                   ^^^ unsatisfied trait bound
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
    |
 help: the trait `spawned_concurrency::threads::Actor` is not implemented for `Counter`
   --> tests/ui/actor_async_handler_threads.rs:9:1
