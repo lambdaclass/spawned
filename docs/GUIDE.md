@@ -1793,6 +1793,53 @@ stuck in code that never yields, so the kill takes effect only when that code
 returns, and a slot whose child the kill does not end fails the supervisor
 instead of being reused (semantics V3).
 
+### Listing every actor (`processes`, `snapshot`)
+
+With the `console` feature (in `default`), a process-wide table lists every
+actor, bare or managed, from its start until its exit is published (OTP
+`erlang:processes/0` and `process_info/1` by pid):
+
+```rust
+use spawned_concurrency::introspection;
+
+for id in introspection::processes() {            // sorted by ActorId
+    if let Some(info) = introspection::info(id) { // None once published
+        println!("{id} {} {:?}", info.actor_type, info.lifecycle);
+    }
+}
+// Keyset pages (at most introspection::MAX_PAGE = 1,000 per call):
+let mut after = None;
+loop {
+    let page = introspection::actors_page(after, 100);
+    // ... page.actors ...
+    match page.next { Some(last) => after = Some(last), None => break }
+}
+let snapshot = introspection::snapshot();   // systems, groups, trees, bare actors
+std::fs::write("actors.json", snapshot.to_json())?;
+```
+
+`snapshot()` holds every live `ActorSystem` (its groups with their actors,
+and its root supervisors' `tree()`) and the bare actors in `unmanaged`, in
+the spirit of an `erlang:system_info` dump. Without the `console` feature
+there is still the tier 0 view of one system: `system.actors()`,
+`system.snapshot()`, `group.actors()` and `group.snapshot()`.
+
+Listings are in `ActorId` order. An actor alive for the whole call appears
+exactly once (a page walk included), one starting or ending meanwhile may or
+may not; one between its death point and publication reads
+`Dead { published: false }`. Each row is read out of band like `info()`; the
+listing is not one instant. `ChildHandle::is_alive()` is false from the death
+point.
+
+`to_json()` (on `ActorInfo`, `ActorPage` and `Snapshot`) writes one line of
+the console's JSON (schema `introspection::SCHEMA`): every `u64` is a
+string, a field that cannot be given is `{"unavailable":"feature",...}`,
+never `null` or missing. The cost is one shard lock when an actor starts and
+one when it is published, nothing on send, dispatch or a turn; turn
+`default-features = false` (or drop `console`) to compile it out. The
+console socket that serves this data (`SPAWNED_CONSOLE=off` turns it off;
+the tables stay) comes in a later release step.
+
 ### Crash reports
 
 An actor that ends with an abnormal reason it produced itself (a panic in

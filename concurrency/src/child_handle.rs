@@ -10,8 +10,9 @@ use std::sync::Arc;
 static NEXT_ACTOR_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Unique identity for an actor instance. Used by monitors and links to
-/// identify actors without needing the concrete actor type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// identify actors without needing the concrete actor type. Ordered by
+/// creation: ids are never reused, and listings are in id order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ActorId(u64);
 
 impl ActorId {
@@ -25,6 +26,10 @@ impl ActorId {
     }
     pub(crate) fn next() -> Self {
         Self(NEXT_ACTOR_ID.fetch_add(1, Ordering::Relaxed))
+    }
+    #[cfg(all(test, feature = "console"))]
+    pub(crate) fn from_raw_for_test(raw: u64) -> Self {
+        Self(raw)
     }
 }
 
@@ -258,9 +263,13 @@ impl ChildHandle {
         }
     }
 
-    /// Returns `true` if the actor is still running.
+    /// Returns `true` until the actor's death point D (OTP
+    /// `is_process_alive/1`): `false` from the moment its callers are
+    /// answered and sends get `NoProc`, even while its state's destructor
+    /// still runs and `wait_exit()` is not ready yet (`info()` then reads
+    /// `Dead { published: false }`).
     pub fn is_alive(&self) -> bool {
-        self.exit_reason().is_none()
+        !self.is_past_death() && self.exit_reason().is_none()
     }
 
     /// Poll the exit reason. Returns `None` until the exit is published.

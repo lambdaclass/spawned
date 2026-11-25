@@ -44,11 +44,17 @@ harness = false
 required-features = ["async"]
 
 [features]
-default = ["async"]
+default = ["async", "console"]
 async = ["spawned-rt/async"]
 # Native actors remain available in every build; this explicit alias is useful
 # with --no-default-features --features threads.
 threads = []
+# The process-wide actor and system tables: `introspection::processes()`,
+# `info(id)`, `actors_page`, `snapshot()` (bare actors included) and their
+# JSON form, for the console (docs/design/introspection.md). Costs one shard
+# lock at spawn and one at publication; nothing on send, dispatch or a turn.
+# In `default`; without it the tables and the encoder are compiled out.
+console = []
 # Fixed-cardinality counters and sampled timings; disabled by default.
 metrics = []
 # Managed actor message/turn diagnostics, with per-turn clock and lock costs.

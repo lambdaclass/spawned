@@ -260,6 +260,10 @@ pub(crate) trait ShutdownUnit: Send + Sync {
     fn joined(&self) -> BoxFuture<'_, ()>;
     fn is_done(&self) -> bool;
     fn failure(&self) -> Option<String>;
+    /// The unit's supervision tree, for snapshots (a root supervisor).
+    fn tree(&self) -> Option<crate::supervision::SupervisorTree> {
+        None
+    }
 }
 
 #[derive(Clone)]
@@ -292,6 +296,10 @@ pub(crate) struct SystemInner {
     pub(crate) control: Control,
     /// Coordinator trace id (`lifecycle-trace`; zero-sized otherwise).
     trace: crate::lifecycle_trace::TraceId,
+    /// Entry in the process-wide system table (`console`), removed when
+    /// this state is dropped (after shutdown completes).
+    #[cfg(feature = "console")]
+    listed: crate::introspection::table::systems::ListedSystem,
 }
 
 /// Owns runtime groups and managed lifecycle trees. Drop requests shutdown;
@@ -301,9 +309,10 @@ pub struct ActorSystem {
 }
 impl ActorSystem {
     pub fn new() -> Result<Self, SystemError> {
-        Ok(Self {
+        let id = crate::introspection::SystemId::next();
+        let system = Self {
             inner: Arc::new(SystemInner {
-                id: crate::introspection::SystemId::next(),
+                id,
                 state: Mutex::new(SystemState {
                     closing: false,
                     groups: Vec::new(),
@@ -313,14 +322,40 @@ impl ActorSystem {
                 }),
                 control: Control::new()?,
                 trace: crate::lifecycle_trace::TraceId::next(),
+                #[cfg(feature = "console")]
+                listed: crate::introspection::table::systems::ListedSystem::new(id),
             }),
-        })
+        };
+        #[cfg(feature = "console")]
+        system.inner.listed.publish(&system.inner);
+        Ok(system)
     }
 
     /// This system's identity, unique in the process
     /// ([`ActorInfo::system`](crate::introspection::ActorInfo::system)).
     pub fn id(&self) -> crate::introspection::SystemId {
         self.inner.id
+    }
+
+    /// Every actor of this system's groups not yet published, in id order
+    /// (tier 0: read from the groups' scopes, out of band). An actor between
+    /// its death point and publication reads `Dead { published: false }`.
+    pub fn actors(&self) -> Vec<crate::introspection::ActorInfo> {
+        let mut actors: Vec<_> = self
+            .inner
+            .groups()
+            .iter()
+            .flat_map(|group| group.actors())
+            .collect();
+        actors.sort_by_key(|info| info.id);
+        actors
+    }
+
+    /// This system's groups, their actors and its root supervision trees
+    /// (tier 0, out of band; not one instant). See
+    /// [`SystemSnapshot`](crate::introspection::SystemSnapshot).
+    pub fn snapshot(&self) -> crate::introspection::SystemSnapshot {
+        self.inner.snapshot()
     }
 
     /// Lifecycle trace id of this system's shutdown coordinator
@@ -463,6 +498,25 @@ impl Drop for ActorSystem {
 impl SystemInner {
     pub(crate) fn id(&self) -> crate::introspection::SystemId {
         self.id
+    }
+    fn groups(&self) -> Vec<Arc<GroupInner>> {
+        lock(&self.state).groups.clone()
+    }
+    /// Groups, then root supervisors, each read with no system lock held.
+    pub(crate) fn snapshot(&self) -> crate::introspection::SystemSnapshot {
+        let (groups, units) = {
+            let state = lock(&self.state);
+            (state.groups.clone(), state.units.clone())
+        };
+        crate::introspection::SystemSnapshot {
+            id: self.id,
+            groups: groups.iter().map(|group| group.snapshot()).collect(),
+            supervisors: units
+                .iter()
+                .filter(|entry| !entry.unit.is_done())
+                .filter_map(|entry| entry.unit.tree())
+                .collect(),
+        }
     }
     pub(crate) fn accepts_group(&self, group: &ExecutionGroup) -> Result<(), SystemError> {
         let state = lock(&self.state);
@@ -872,6 +926,23 @@ impl ExecutionGroup {
             .upgrade()
             .map(|g| lock(&g.state).closing)
             .unwrap_or(true)
+    }
+    /// The group's attached actors not yet published, in id order (tier 0,
+    /// out of band). Scopes whose actor is not attached yet are skipped, and
+    /// so are scopes whose actor is published while helpers keep them alive
+    /// (counted in [`GroupSnapshot::helpers_draining`]). Empty once the
+    /// group is gone.
+    ///
+    /// [`GroupSnapshot::helpers_draining`]: crate::introspection::GroupSnapshot::helpers_draining
+    pub fn actors(&self) -> Vec<crate::introspection::ActorInfo> {
+        self.inner
+            .upgrade()
+            .map(|group| group.actors())
+            .unwrap_or_default()
+    }
+    /// The group as it is now; `None` once its system dropped it.
+    pub fn snapshot(&self) -> Option<crate::introspection::GroupSnapshot> {
+        self.inner.upgrade().map(|group| group.snapshot())
     }
     /// Whether `other` places actors exactly as this group does (the same
     /// group and shard selection).

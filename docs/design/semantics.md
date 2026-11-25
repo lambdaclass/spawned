@@ -1042,8 +1042,8 @@ remaining differences of the exit-signal design are listed in
 - Rank 19, propagated deadlines: queued work can expire before dispatch (R4).
 
 - 0.9, introspection ([introspection.md](introspection.md)): section 13
-  holds I1, I3 (tier 0 part), I4, I5, I7, I10 (crash and supervisor
-  reports) and I11 so far; the rest (listings, the fenced watchdog kill, the console)
+  holds I1, I3 (tier 0 part), I4, I5, I6, I7, I10 (crash and supervisor
+  reports) and I11 so far; the rest (tier 1, the fenced watchdog kill, the console)
   join it step by step. L3 and L5 are unchanged (nothing preempts a turn); R4
   has one exception (I4): a status request whose caller gave up before
   dispatch is not run.
@@ -1054,10 +1054,10 @@ See the [ranked backlog](../../ROADMAP.md#ranked-backlog).
 
 Design: [introspection.md](introspection.md). Tier 0 is implemented (0.9
 step 1): `info()`, labels, crash and supervisor reports, the status turn
-and supervision trees. Listings, the `introspection` feature (turn ids, ages,
-mailbox counters), the watchdog and the console are later steps; their
-guarantees (I2, I6, I8, I9, I12, I13) are listed in the design and enter this
-section with their code. L3, L5, M1, M2, R1 and R3 are unchanged; R4 has one
+and supervision trees; listings and snapshots (step 2a). The
+`introspection` feature (turn ids, ages, mailbox counters), the watchdog and
+the console are later steps; their guarantees (I2, I8, I9, I12, I13) are
+listed in the design and enter this section with their code. L3, L5, M1, M2, R1 and R3 are unchanged; R4 has one
 exception (I4).
 
 **I1. Out of band.** `info()` (on `ActorRef`, `Context` and `ChildHandle`),
@@ -1086,6 +1086,9 @@ Checked by: [`introspection`][introspection]`::tasks_mode::lifecycle_walks_start
 (every tasks placement; a state destructor held between D and publication),
 `::threads_mode::lifecycle_walks_starting_idle_exiting_dead`,
 `::tasks_mode::child_handle_info_after_every_ref_is_dropped`.
+`ChildHandle::is_alive()` (OTP `is_process_alive/1`) is `false` from D, not
+from publication.
+Checked by: [`introspection_listing`][introspection_listing]`::tasks_mode::d_to_publication_interval`.
 
 **I4. Status is a turn.** `get_state(f)` and `get_status()` (on `ActorRef`,
 `get_status` also on `ChildHandle`; OTP `sys:get_state`, `sys:get_status`)
@@ -1129,6 +1132,37 @@ otherwise `StateView::Redacted`. Output over 64 KiB is cut at a character
 boundary (`Truncated`). A formatter panic is `CallbackFailed`.
 Checked by: [`status`][status]`::tasks_mode::state_is_redacted_by_default_and_formatted_on_opt_in`,
 `::threads_mode::inspect_formats_state`, `src/introspection.rs::tests::state_view_*`.
+
+**I6. Listings.** With the `console` feature (in `default`), every actor,
+bare or managed, is in the process-wide actor table from the moment its
+start commits until its publication: `introspection::processes()` (OTP
+`erlang:processes/0`), `info(id)`, the keyset pages of `actors_page(after,
+limit)` and `snapshot()` (every live system's groups and root supervision
+trees, plus the bare actors). It is removed just before `wait_exit()` becomes
+ready, so `info(id)` is `None` once `wait_exit()` has returned. Every
+listing, including `ActorSystem::actors()` and `ExecutionGroup::actors()`
+(tier 0, from the groups' scopes; a scope whose actor is published while
+helpers keep it is counted in `helpers_draining`), is in strictly increasing
+`ActorId` order: an actor not past D for the whole call appears exactly
+once (in a page walk too, since a page resumes after the last id returned);
+one that starts or ends during it may or may not appear; one between D and
+publication appears as `Dead { published: false }`; no id appears twice.
+Each row is one actor's `info()`, read out of band (I1) with no table lock
+held; the listing is not one instant. The tables cost one shard write lock
+at the start's commit and one at publication; nothing on send, dispatch or a
+turn (I11). Listing reads take no scheduling decision under the simulator.
+Checked by: [`introspection_listing`][introspection_listing]`::tasks_mode::bare_and_managed_actors_are_listed_until_publication`
+(bare `Async`, `Blocking`, `Thread`, `async_group`, `thread_group`, a
+supervised child; snapshot, JSON, removal at publication),
+`::tasks_mode::listing_under_churn` (tasks and threads actors started and
+stopped while `processes`, page walks and `snapshot` run; order, uniqueness,
+stable actors present once), `::tasks_mode::pages_cover_every_actor_once_in_id_order`,
+`::tasks_mode::d_to_publication_interval`,
+`::threads_mode::threads_actors_are_listed_until_publication`,
+`::seeded::listing_follows_spawn_and_publication` (`#[sim_test]`),
+`::sim_mode::listings_do_not_change_the_tape`;
+`src/introspection/wire.rs::tests` (the JSON form: escaping, `u64` as
+strings, unavailable fields).
 
 **I7. Supervision rows.** `Supervisor::which_children()` (OTP
 `which_children/1`) returns one row per child in declaration order, each read
@@ -1189,7 +1223,9 @@ Checked by: [`crash_reports`][crash_reports] (both modes:
 or a turn: its fields are kept by state that already exists or is written at
 spawn (type, placement, the instance probe) and by explicit calls
 (`set_label`, `monitor` stores its target's id). The crash report runs only
-on the exit path.
+on the exit path. The `console` tables add one shard write lock (and a
+`ChildHandle` clone) when a start commits and one at publication; without
+the feature they are compiled out.
 Checked by: the perf gate (`benchmarks/hotpath.py gate`: instructions per
 operation within 3% of the merge base and of the last release).
 
@@ -1205,6 +1241,7 @@ operation within 3% of the merge base and of the last release).
 [context_exit]: ../../concurrency/tests/context_exit.rs
 [cross_backend]: ../../concurrency/tests/cross_backend.rs
 [introspection]: ../../concurrency/tests/introspection.rs
+[introspection_listing]: ../../concurrency/tests/introspection_listing.rs
 [crash_reports]: ../../concurrency/tests/crash_reports.rs
 [status]: ../../concurrency/tests/status.rs
 [supervision_introspection]: ../../concurrency/tests/supervision_introspection.rs

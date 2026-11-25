@@ -1,7 +1,8 @@
 # Introspection v1 (0.9 design, revision 3, in review)
 
-Status: step 0 merged (#284); step 1 (tier 0) being implemented in staged
-PRs: `info()`, labels and crash reports first. Revisions 2 and 3 answer two rounds of
+Status: step 0 merged (#284); step 1 (tier 0, staged 1a-1c) merged; step 2
+in progress: the `console` tables, listings, snapshots and the wire encoder
+first (2a), tier 1 next. Revisions 2 and 3 answer two rounds of
 independent reviews (Codex and agy, each round "approve after the listed
 changes"; no P0 remained after round one); see
 [Review resolutions](#review-resolutions). Priority tier 2 of the
@@ -781,7 +782,7 @@ Line-delimited JSON; see the [wire and data contract](#wire-and-data-contract).
 <- {"v":1,"hello":{"pid":41237,"nonce":"9f2c…","pidns":"4026531836","binary":"ethrex",
      "spawned":"0.9.0","schema":1,"features":["console","introspection"],"allow":[],"watchdog":true}}
 -> {"v":1,"id":1,"cmd":"ps","args":{"sort":"turn_age","limit":20}}
-<- {"v":1,"id":1,"ok":{"taken_at_ms":91233411,"actors":[…],"next":"c:7"}}
+<- {"v":1,"id":1,"ok":{"taken_at_ms":"91233411","actors":[…],"next":"7"}}
 -> {"v":1,"id":2,"cmd":"kill","args":{"target":"sys1/p2p/peer_table","expect":"12@3"}}
 <- {"v":1,"id":2,"err":{"code":"not_allowed","msg":"kill is disabled (SPAWNED_CONSOLE_ALLOW)"}}
 ```
@@ -872,9 +873,9 @@ capacity are dropped and counted. The run loop reads the `trace` flag (its own a
 Frozen before release:
 
 - **Framing.** One JSON object per line, UTF-8, at most 64 KiB per request,
-  nesting depth 32. Encoded with `serde_json` under `console` through
-  dedicated wire structs, so the schema does not follow Rust's derived
-  representation.
+  nesting depth 32. Encoded by a hand-written writer under `console`
+  through dedicated wire structs (no serialization crate: step 2a), so the
+  schema does not follow Rust's derived representation.
 - **Envelope.** Server first: `{"v":1,"hello":{…}}`. Requests
   `{"v":1,"id":<u32>,"cmd":<string>,"args":{…}}`; `id` is client-chosen and
   unique among the connection's in-flight requests. Responses
@@ -1452,7 +1453,45 @@ observed for 9.8 s in `info()` and `ShutdownReport`.
    the kill does not end it within another interval, `stuck`.
 2. Tables (`console` or `introspection`), `processes()`, `snapshot()`, wire
    structs; tier 1 activity slot, interner, clock, mailbox counters; fold
-   `diagnostics`; benchmark gate and codegen check.
+   `diagnostics`; benchmark gate and codegen check. Staged: (2a) the
+   `console` feature (in `default`) with the actor and system tables,
+   `processes()`, `info(id)`, `actors_page`, `snapshot()`,
+   `ActorSystem::actors`/`snapshot`, `ExecutionGroup::actors`/`snapshot` and
+   the JSON encoder; (2b) tier 1. Decisions taken in 2a, where this design
+   left room: the encoder is hand-written (no `serde`/`serde_json`: zero new
+   crates in `spawned-concurrency`); the tables are gated on `console` only
+   until the `introspection` feature exists (2b widens the gate to
+   `any(console, introspection)`); an entry is a `ChildHandle` (no actor
+   state, so dropping one never runs user code), inserted when the start
+   commits (`ActorCleanup::with_listing`) and removed in the publication
+   step **just before** `wait_exit()` becomes ready, so `info(id)` is `None`
+   once `wait_exit()` has returned; systems are listed by `Weak` in a
+   `SystemId`-ordered map, removed when the system's state drops; root
+   supervisors reach `SystemSnapshot.supervisors` through the system's
+   shutdown units (`ShutdownUnit::tree`), finished ones omitted;
+   `Snapshot.unmanaged` holds every listed actor no live system shows (bare
+   ones, and managed ones outliving their system's state), so the snapshot
+   places every actor of `processes()`; a page after the largest possible id
+   is empty; the
+   Rust-side keyset page is `actors_page(after, limit) -> ActorPage`
+   (`limit` clamped to `1..=MAX_PAGE`, 1,000), exact `next` (one extra row
+   read), each shard contributing at most `limit + 1` handles; `Snapshot`
+   omits `watchdog` until step 3 (non-exhaustive, so it is added without a
+   break) and `top`/`window` until tier 1 gives them a rank; under
+   `--cfg spawned_sim` `Snapshot.wall_clock` is the Unix epoch plus virtual
+   time (strict mode forbids a wall-clock read); `ChildHandle::is_alive()` is
+   now false from D (it was false from publication). Wire schema 1: every
+   `u64` and every count not bounded by construction (ids, generations,
+   restarts, counters, deferred, jobs, `*_ms` durations, `taken_at_ms`) is a
+   string; JSON numbers only for `schema`, `links`, `monitors`, worker
+   budgets, busy workers and CPU indices; `null` is a value that does not exist (no label,
+   no system, not dead, the end of a listing as `next`), never a missing
+   field; tagged variants are objects with `kind` (`parent`, `placement`,
+   `profile`, `key`, tree `node`); a dead actor carries
+   `"dead":{"reason","detail","published"}`; labels, names, details and
+   errors are cut at 256 bytes; U+2028/U+2029 and DEL are escaped too.
+   `SPAWNED_CONSOLE=off` comes with the listener (2c/step 5) and never
+   removes the tables.
 3. Watchdog: sampling and delivery threads, D1–D4, reports, sessions,
    metrics, dumps, `check_now`; remove `WarnOnBlocking`.
 4. Fenced kill, `activity_slot_loom`, trace events, `TraceIntrospection.tla`

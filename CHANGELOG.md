@@ -22,6 +22,20 @@
   called: no waiter and nothing per message. Threads mode keeps the polled
   `exit_pending()` (a blocking handler cannot wait on two things).
   semantics.md L11.
+- Introspection step 2a (OTP `erlang:processes/0`): a new `console` Cargo
+  feature, in `default`, keeps process-wide actor and system tables, so
+  `introspection::processes()`, `info(id)` (`None` once published),
+  `actors_page(after, limit)` (keyset pages, at most 1,000) and
+  `snapshot()` list every actor, bare or managed, with every live system's
+  groups and root supervision trees. Tier 0 (no feature needed):
+  `ActorSystem::actors()`/`snapshot()` and
+  `ExecutionGroup::actors()`/`snapshot()`. `ActorInfo`, `ActorPage` and
+  `Snapshot` gain `to_json()`, the console's JSON (schema 1, hand-written,
+  no new dependency; every `u64` a string). Cost: one shard lock at an
+  actor's start and one at its publication, nothing on send, dispatch or a
+  turn; compiled out without `console`. `ActorId` is now `Ord`.
+  **Behaviour change:** `ChildHandle::is_alive()` is false from the death
+  point (callers answered, sends `NoProc`), no longer only from publication.
 - `ctx.forward(opts, token, |job| work)` (tasks mode): delegate a deferred
   reply in one call. The job's `Ok(value)` answers the caller in a later
   turn, fenced at stop like any job result; `Err(Overloaded)` answers
