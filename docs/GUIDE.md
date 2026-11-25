@@ -875,8 +875,16 @@ async fn on_checked(&mut self, msg: Checked, _ctx: &Context<Self>) {
 // Delegation: the obligation and its credit stay here.
 let token = reply.defer()?;
 let downstream = other.send_request(Lookup(key), token.deadline()); // same deadline as our caller
-ctx.pipe_reply(JobOptions::new(), token, |_| async move { downstream?.await }, |res, token| Delegated { res, token })?;
+ctx.forward(JobOptions::new(), token, |_| async move { downstream?.await })?;
 ```
+
+- `ctx.forward` (tasks mode) is delegation with no message type or
+  handler: the job's `Ok(value)` answers the caller in a later turn of this
+  actor, fenced at stop as any job result is (an exit first answers
+  `ActorStopped`). `Err(Overloaded)` answers `Overloaded`; any other error,
+  a panic or the job's deadline drops the token (`ReplyDropped`). Use
+  `ctx.pipe_reply` with your own `done` message when the answer needs the
+  actor's state.
 
 - Four calls, one per shape: `ctx.pipe` (async work), `ctx.pipe_blocking`,
   `ctx.pipe_reply` and `ctx.pipe_reply_blocking` (linked to a deferred

@@ -16,6 +16,12 @@
   called: no waiter and nothing per message. Threads mode keeps the polled
   `exit_pending()` (a blocking handler cannot wait on two things).
   semantics.md L11.
+- `ctx.forward(opts, token, |job| work)` (tasks mode): delegate a deferred
+  reply in one call. The job's `Ok(value)` answers the caller in a later
+  turn, fenced at stop like any job result; `Err(Overloaded)` answers
+  `Overloaded`, any other error, a panic or the job deadline drops the token.
+  It is `pipe_reply` without the message type and handler you wrote for it
+  (the `deferred_replies` example loses about 20 lines).
 - Examples consolidated from 19 crates to 10 with no example
   removed: each tasks/threads pair (`bank`, `chat_room`, `ping_pong`,
   `signal_test`, `updater`) is one package whose second binary is
