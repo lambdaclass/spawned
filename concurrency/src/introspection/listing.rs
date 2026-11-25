@@ -96,13 +96,19 @@ pub struct Snapshot {
     /// Live systems, in id order.
     #[cfg(feature = "async")]
     pub systems: Vec<SystemSnapshot>,
-    /// Actors outside any system (bare `spawn()`), in id order.
+    /// Actors outside any live system, in id order: bare `spawn()`s, and
+    /// managed actors still running after their system's state is gone (so
+    /// every listed actor appears somewhere).
     pub unmanaged: Vec<ActorInfo>,
 }
 
-/// Every actor of the process not yet published, managed or bare, in id
-/// order (OTP `erlang:processes/0`). One shard read lock at a time; no
-/// actor is read.
+/// Every listed actor of the process, managed or bare, in id order (OTP
+/// `erlang:processes/0`): from its start's commit until just before its
+/// publication, so an actor is gone from here once `wait_exit()` has
+/// returned. (The tier 0 `ExecutionGroup::actors` drops it at publication
+/// itself, a moment later.) One shard read lock at a time; no actor is
+/// read. The authoritative set: [`snapshot`] places each of these actors
+/// under its system or in `unmanaged`.
 #[cfg(feature = "console")]
 pub fn processes() -> Vec<ActorId> {
     super::table::ids()
@@ -145,13 +151,25 @@ pub fn snapshot() -> Snapshot {
     let wall_clock = std::time::UNIX_EPOCH
         + std::time::Duration::from_nanos(spawned_rt::time::to_ticks(taken_at));
     #[cfg(feature = "async")]
-    let systems = super::table::systems::live()
-        .iter()
-        .map(|system| system.snapshot())
-        .collect();
+    let live = super::table::systems::live();
+    #[cfg(feature = "async")]
+    let systems: Vec<SystemSnapshot> = live.iter().map(|system| system.snapshot()).collect();
     let unmanaged = super::table::all()
         .iter()
-        .filter(|handle| handle.signal_target().meta.host != super::Host::Managed)
+        .filter(|handle| {
+            let meta = &handle.signal_target().meta;
+            if meta.host != super::Host::Managed {
+                return true;
+            }
+            // A managed actor is under its system, if that system is live.
+            #[cfg(feature = "async")]
+            {
+                let system = meta.scope().and_then(|scope| scope.system_id());
+                !system.is_some_and(|id| live.iter().any(|s| s.id() == id))
+            }
+            #[cfg(not(feature = "async"))]
+            true
+        })
         .map(crate::ChildHandle::info)
         .collect();
     Snapshot {

@@ -522,7 +522,7 @@ impl ShutdownUnit for Core {
             .map(|f| f.message.clone())
     }
     fn tree(&self) -> Option<super::SupervisorTree> {
-        Some(Core::tree(self))
+        Some(self.supervisor_tree())
     }
 }
 

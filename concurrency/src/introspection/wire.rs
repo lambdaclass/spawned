@@ -10,8 +10,8 @@
 //! - Every `u64` and every count not bounded below 2^32 by construction (ids,
 //!   generations, restarts, counters, deferred replies, jobs, durations in
 //!   `*_ms`) is a decimal **string**. JSON numbers are kept for small bounded
-//!   values only: `schema`, `links`, `monitors`, worker budgets and CPU
-//!   indices.
+//!   values only: `schema`, `links`, `monitors`, worker budgets, busy
+//!   workers and CPU indices.
 //! - A field that cannot be given is `{"unavailable":"<reason>"}`, with
 //!   `"feature":"introspection"` added for `feature`; never `null` or an
 //!   omission. `null` means the value does not exist (no label, no system,
@@ -161,7 +161,7 @@ fn millis(d: Duration) -> u64 {
 /// A [`Field`] on the wire: the value, or why it is missing.
 pub(crate) enum WireField<T> {
     Value(T),
-    Unavailable(&'static str),
+    Unavailable(Unavailable),
 }
 
 fn unavailable(reason: Unavailable) -> &'static str {
@@ -179,16 +179,16 @@ impl<T> WireField<T> {
     fn of<'u, U>(field: &'u Field<U>, map: impl FnOnce(&'u U) -> T) -> Self {
         match field {
             Field::Value(value) => WireField::Value(map(value)),
-            Field::Unavailable(reason) => WireField::Unavailable(unavailable(*reason)),
+            Field::Unavailable(reason) => WireField::Unavailable(*reason),
         }
     }
     fn write(&self, json: &mut Json, value: impl FnOnce(&mut Json, &T)) {
         match self {
             WireField::Value(v) => value(json, v),
             WireField::Unavailable(reason) => json.object(|o| {
-                o.key("unavailable").str(reason);
+                o.key("unavailable").str(unavailable(*reason));
                 // The only feature a field can miss today.
-                if *reason == "feature" {
+                if *reason == Unavailable::Feature {
                     o.key("feature").str("introspection");
                 }
             }),
@@ -442,7 +442,7 @@ mod managed {
             count(o.key("worker_budget"), group.worker_budget);
             o.key("closing").bool(group.closing);
             WireField::of(&group.busy_workers, |n| *n)
-                .write(o.key("busy_workers"), |j, n| usize_str(j, *n));
+                .write(o.key("busy_workers"), |j, n| count(j, *n));
             WireField::of(&group.scheduling_delay, |d| millis(*d))
                 .write(o.key("scheduling_delay_ms"), |j, ms| j.u64(*ms));
             usize_str(o.key("helpers_draining"), group.helpers_draining);
@@ -586,6 +586,7 @@ impl super::Snapshot {
         let mut json = Json::new();
         json.object(|o| {
             o.key("schema").num(self.schema);
+            // Clock ticks are nanoseconds (`spawned_rt::time::to_ticks`).
             o.key("taken_at_ms")
                 .u64(spawned_rt::time::to_ticks(self.taken_at) / 1_000_000);
             o.key("wall_unix_ms").u64(
@@ -800,6 +801,119 @@ mod tests {
             WireReason::of(&reason).write(&mut json);
             assert_eq!(json.finish(), wire);
         }
+    }
+
+    #[cfg(feature = "async")]
+    #[test]
+    fn systems_groups_and_trees() {
+        use crate::introspection::{GroupSnapshot, SystemSnapshot};
+        use crate::supervision::{
+            ChildCounts, ChildInfo, ChildKey, ChildKind, ChildState, RestartBudget, RestartMode,
+            SupervisorPhase, SupervisorStrategy, SupervisorTree, TreeChild, TreeNode,
+        };
+        let row = |key: &str, actor, kind| ChildInfo {
+            key: ChildKey::Named(key.into()),
+            actor,
+            ready: actor.is_some(),
+            state: if actor.is_some() {
+                ChildState::Running
+            } else {
+                ChildState::Backoff
+            },
+            kind,
+            restart: RestartMode::Transient,
+            generation: 2,
+            restarts: 1,
+            last_exit: Some(ExitReason::Panic("boom".into())),
+            last_error: None,
+        };
+        let leaf = SupervisorTree {
+            system: Some(SystemId(1)),
+            name: "nested".into(),
+            strategy: SupervisorStrategy::OneForAll,
+            phase: SupervisorPhase::Starting,
+            budget: RestartBudget {
+                max_restarts: 3,
+                window: Duration::from_secs(5),
+                used: 0,
+            },
+            counts: ChildCounts::default(),
+            children: vec![],
+        };
+        let tree = SupervisorTree {
+            system: Some(SystemId(1)),
+            name: "root".into(),
+            strategy: SupervisorStrategy::RestForOne,
+            phase: SupervisorPhase::Running,
+            budget: RestartBudget {
+                max_restarts: 10,
+                window: Duration::from_millis(1500),
+                used: 1,
+            },
+            counts: ChildCounts {
+                specs: 3,
+                active: 1,
+                supervisors: 1,
+                workers: 2,
+            },
+            children: vec![
+                TreeChild {
+                    info: row("w", Some(ActorId::from_raw_for_test(7)), ChildKind::Worker),
+                    node: TreeNode::Worker(Field::Value(info())),
+                },
+                TreeChild {
+                    info: row("gone", None, ChildKind::Worker),
+                    node: TreeNode::Worker(Field::Unavailable(Unavailable::Dead)),
+                },
+                TreeChild {
+                    info: row("nested", None, ChildKind::Supervisor),
+                    node: TreeNode::Supervisor(Field::Value(leaf)),
+                },
+            ],
+        };
+        let system = SystemSnapshot {
+            id: SystemId(1),
+            groups: vec![GroupSnapshot {
+                name: "p2p".into(),
+                profile: crate::system::ExecutionProfile::ThreadPool {
+                    workers: 4,
+                    helper_workers: 1,
+                },
+                worker_budget: 4,
+                closing: false,
+                actors: vec![],
+                busy_workers: Field::Unavailable(Unavailable::Feature),
+                scheduling_delay: Field::Value(Duration::from_millis(3)),
+                helpers_draining: 2,
+            }],
+            supervisors: vec![tree],
+        };
+        let mut json = Json::new();
+        managed::system(&mut json, &system);
+        let actor = info().to_json();
+        let row_tail = r#""ready":false,"state":"backoff","kind":"worker","restart":"transient","generation":"2","restarts":"1","last_exit":{"reason":"panic","detail":"boom"},"last_error":null"#;
+        let expected = [
+            r#"{"id":"1","groups":[{"name":"p2p","#,
+            r#""profile":{"kind":"thread_pool","workers":4,"helper_workers":1},"#,
+            r#""worker_budget":4,"closing":false,"#,
+            r#""busy_workers":{"unavailable":"feature","feature":"introspection"},"#,
+            r#""scheduling_delay_ms":"3","helpers_draining":"2","actors":[]}],"#,
+            r#""supervisors":[{"system":"1","name":"root","strategy":"rest_for_one","phase":"running","#,
+            r#""budget":{"max_restarts":"10","window_ms":"1500","used":"1"},"#,
+            r#""counts":{"specs":"3","active":"1","supervisors":"1","workers":"2"},"children":["#,
+            r#"{"key":{"kind":"named","name":"w"},"actor":"7","ready":true,"state":"running","kind":"worker","restart":"transient","generation":"2","restarts":"1","last_exit":{"reason":"panic","detail":"boom"},"last_error":null,"#,
+            &format!(r#""node":{{"kind":"worker","info":{actor}}}}},"#),
+            r#"{"key":{"kind":"named","name":"gone"},"actor":null,"#,
+            row_tail,
+            r#","node":{"kind":"worker","info":{"unavailable":"dead"}}},"#,
+            r#"{"key":{"kind":"named","name":"nested"},"actor":null,"#,
+            &row_tail.replace(r#""kind":"worker""#, r#""kind":"supervisor""#),
+            r#","node":{"kind":"supervisor","tree":{"system":"1","name":"nested","strategy":"one_for_all","#,
+            r#""phase":"starting","budget":{"max_restarts":"3","window_ms":"5000","used":"0"},"#,
+            r#""counts":{"specs":"0","active":"0","supervisors":"0","workers":"0"},"children":[]}}}]}]}"#,
+        ]
+        .concat();
+        assert_eq!(json.finish(), expected);
     }
 
     #[test]

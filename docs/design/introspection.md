@@ -1468,7 +1468,11 @@ observed for 9.8 s in `info()` and `ShutdownReport`.
    once `wait_exit()` has returned; systems are listed by `Weak` in a
    `SystemId`-ordered map, removed when the system's state drops; root
    supervisors reach `SystemSnapshot.supervisors` through the system's
-   shutdown units (`ShutdownUnit::tree`), finished ones omitted; the
+   shutdown units (`ShutdownUnit::tree`), finished ones omitted;
+   `Snapshot.unmanaged` holds every listed actor no live system shows (bare
+   ones, and managed ones outliving their system's state), so the snapshot
+   places every actor of `processes()`; a page after the largest possible id
+   is empty; the
    Rust-side keyset page is `actors_page(after, limit) -> ActorPage`
    (`limit` clamped to `1..=MAX_PAGE`, 1,000), exact `next` (one extra row
    read), each shard contributing at most `limit + 1` handles; `Snapshot`
@@ -1480,7 +1484,7 @@ observed for 9.8 s in `info()` and `ShutdownReport`.
    `u64` and every count not bounded by construction (ids, generations,
    restarts, counters, deferred, jobs, `*_ms` durations, `taken_at_ms`) is a
    string; JSON numbers only for `schema`, `links`, `monitors`, worker
-   budgets and CPU indices; `null` is a value that does not exist (no label,
+   budgets, busy workers and CPU indices; `null` is a value that does not exist (no label,
    no system, not dead, the end of a listing as `next`), never a missing
    field; tagged variants are objects with `kind` (`parent`, `placement`,
    `profile`, `key`, tree `node`); a dead actor carries

@@ -81,7 +81,13 @@ pub(crate) fn ids() -> Vec<ActorId> {
 /// handles: each shard contributes its own first `limit + 1` above `after`,
 /// merged into a buffer cut back to `limit + 1` after every shard.
 pub(crate) fn page(after: Option<ActorId>, limit: usize) -> (Vec<ChildHandle>, bool) {
-    let start = after.map_or(0, |id| id.raw().saturating_add(1));
+    let start = match after {
+        None => 0,
+        Some(id) => match id.raw().checked_add(1) {
+            Some(start) => start,
+            None => return (Vec::new(), false),
+        },
+    };
     let keep = limit.saturating_add(1);
     let mut found: Vec<(u64, ChildHandle)> = Vec::new();
     for shard in &TABLE {
@@ -152,5 +158,16 @@ pub(crate) mod systems {
     pub(crate) fn live() -> Vec<Arc<SystemInner>> {
         let weak: Vec<Weak<SystemInner>> = lock().values().cloned().collect();
         weak.iter().filter_map(Weak::upgrade).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_page_after_the_largest_id_is_empty() {
+        let (page, more) = page(Some(ActorId::from_raw_for_test(u64::MAX)), 10);
+        assert!(page.is_empty() && !more);
     }
 }

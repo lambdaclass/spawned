@@ -334,7 +334,7 @@ impl Supervisor {
     /// This supervisor and its subtree, each child expanded through the
     /// instance captured with its row (see [`SupervisorTree`]).
     pub fn tree(&self) -> SupervisorTree {
-        self.core.tree()
+        self.core.supervisor_tree()
     }
     pub fn failure(&self) -> Option<String> {
         system::lock(&self.core.failure)
@@ -363,7 +363,7 @@ impl Supervisor {
 impl Core {
     /// [`Supervisor::tree`], also reached through the system's shutdown
     /// unit for `ActorSystem::snapshot`.
-    pub(crate) fn tree(&self) -> SupervisorTree {
+    pub(crate) fn supervisor_tree(&self) -> SupervisorTree {
         use crate::introspection::{Field, Unavailable};
         let captured: Vec<(ChildInfo, Captured)> =
             self.children().iter().map(|c| c.capture()).collect();

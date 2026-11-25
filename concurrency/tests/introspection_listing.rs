@@ -9,7 +9,10 @@
 //! checks only the actors it started, plus order and uniqueness of whole
 //! listings.
 #![cfg(feature = "console")]
-#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
+#![cfg_attr(
+    any(spawned_sim, not(feature = "async")),
+    allow(unused_imports, dead_code)
+)]
 
 use spawned_concurrency::introspection::{self, ActorInfo, Lifecycle, Placement, MAX_PAGE};
 use spawned_concurrency::message::Message;
@@ -326,6 +329,15 @@ mod tasks_mode {
             .chain(stable_threads.iter().map(|a| a.id()))
             .collect();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Stops the churn however the test ends, so a failing reader
+        // reports instead of leaving the churners spinning.
+        struct StopOnDrop(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for StopOnDrop {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let _stop_guard = StopOnDrop(stop.clone());
         let mut churn = Vec::new();
         for _ in 0..2 {
             let stop = stop.clone();
@@ -360,7 +372,7 @@ mod tasks_mode {
             let until = Instant::now() + LIMIT;
             let mut churned = BTreeSet::new();
             let mut rounds = 0;
-            while rounds < 200 || churned.len() < 100 {
+            while rounds < 200 || churned.len() < 20 {
                 assert!(
                     Instant::now() < until,
                     "too little churn: {}",

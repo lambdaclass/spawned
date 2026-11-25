@@ -135,14 +135,12 @@ impl<C: Fn()> ActorCleanup<C> {
     /// (`console` feature; a no-op without it). Called once its start has
     /// committed: one shard write lock now and one at publication, nothing
     /// on send, dispatch or a turn.
-    pub(crate) fn with_listing(self, _handle: &crate::ChildHandle) -> Self {
+    #[cfg_attr(not(feature = "console"), allow(unused_mut))]
+    pub(crate) fn with_listing(mut self, _handle: &crate::ChildHandle) -> Self {
         #[cfg(feature = "console")]
         {
-            let mut this = self;
-            this.listed = Some(crate::introspection::table::insert(_handle));
-            this
+            self.listed = Some(crate::introspection::table::insert(_handle));
         }
-        #[cfg(not(feature = "console"))]
         self
     }
     /// Seal `replies` with the final reason at D, inside the exit-table

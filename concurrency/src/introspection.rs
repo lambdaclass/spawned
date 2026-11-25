@@ -21,9 +21,9 @@
 //! Listings: `ActorSystem::actors`/`snapshot` and
 //! `ExecutionGroup::actors`/`snapshot` (tier 0, from the groups' scopes),
 //! and, with the `console` feature (in `default`), the process-wide
-//! [`processes`] (OTP `erlang:processes/0`), [`info`], [`actors_page`] and
-//! [`snapshot`], which also cover bare actors, plus the JSON form of each
-//! (`to_json`, schema [`SCHEMA`]).
+//! `processes` (OTP `erlang:processes/0`), `info`, `actors_page` and
+//! `snapshot`, which also cover bare actors, plus the JSON form of each
+//! (`to_json`, schema `SCHEMA`).
 
 use crate::child_handle::ActorId;
 use crate::error::ExitReason;
