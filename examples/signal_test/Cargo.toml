@@ -3,10 +3,7 @@ name = "signal_test"
 version = "0.1.0"
 edition = "2021"
 publish = false
-
-[[bin]]
-name = "signal_test"
-path = "src/main.rs"
+default-run = "signal_test"
 
 [dependencies]
 spawned-concurrency = { workspace = true }

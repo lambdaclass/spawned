@@ -1421,7 +1421,22 @@ observed for 9.8 s in `info()` and `ShutdownReport`.
    identity (a plain `registry::register` stores a value, not a process);
    `Parent` is `None`, `Actor(id)` or `System`; `restarts` of a supervisor
    position is `generation - 1`; `is_alive()` keeps its 0.8 meaning (false
-   from publication) until listings land in step 2.
+   from publication) until listings land in step 2; `ActivityKind`'s
+   message variant is `MessageTurn` (Rust-forced: a public `Message` item
+   beside the `Message` trait makes rustc print the trait's full path in
+   users' errors). In 1b: `Inspect` is one trait for both modes, without an
+   `Actor` supertrait (each mode has its own `Actor`); `Actor::FORMAT_STATUS`
+   is set by `#[actor(inspect)]` or `#[actor(inspect = debug)]`; the status
+   envelope completes in dispatch (no future), so it has no await point and
+   no runtime-drop window; `ActorError::CallbackFailed` carries no message
+   (the panic's message is a `spawned::status` WARN event instead): a heap
+   payload grew `ActorError`'s drop glue, which every request result pays
+   (measured +16 to +43 instructions per async request and burst). The
+   status turn is trace-validated from 1b on (`TraceIntrospection.tla`,
+   schema `introspection-v1`: activities beginning and ending, the status
+   steps, the exit decision, stops, kills, the drop, D and publication);
+   the activity word's events (turn ids, the fenced kill) join it with
+   steps 2 and 4.
 2. Tables (`console` or `introspection`), `processes()`, `snapshot()`, wire
    structs; tier 1 activity slot, interner, clock, mailbox counters; fold
    `diagnostics`; benchmark gate and codegen check.

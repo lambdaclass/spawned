@@ -499,6 +499,7 @@ fn apply_signal(
         if request.kill() {
             let waits = request.take_waiting_starts();
             drop(request);
+            trace::intro(target.id.raw(), "Kill", "");
             (target.wake)();
             abandon_waits(waits);
         }
@@ -836,6 +837,7 @@ pub(crate) fn stop_with_reason(
             trace::LifeEvent::new("Stop", id.raw()).x(trace::life_reason(&cause))
         });
         if lock_request(reason).request(cause) {
+            trace::intro(id.raw(), "Stop", "");
             cancel();
         }
     });
@@ -853,7 +855,10 @@ pub(crate) fn admin_stop_with_reason(
         trace::life_emit(id.raw(), || {
             trace::LifeEvent::new("Stop", id.raw()).x(trace::life_reason(&cause))
         });
-        request_stop(reason, cause, cancel);
+        if lock_request(reason).admin_stop(cause) {
+            trace::intro(id.raw(), "Stop", "");
+            cancel();
+        }
     });
 }
 

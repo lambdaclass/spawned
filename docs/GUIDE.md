@@ -1695,6 +1695,51 @@ async fn started(&mut self, ctx: &Context<Self>) {
 A label is for people and tools, not for lookup (use the
 [registry](#registry)). Setting one takes a short lock at that call only.
 
+### State and status (`get_state`, `get_status`)
+
+`info()` never touches the actor's state. To read the state itself, ask the
+actor, like OTP's `sys:get_state` and `sys:get_status`:
+
+```rust
+let peers = actor.get_state(|server| server.peers.len()).await?;   // tasks
+let report = actor.get_status().await?;          // StatusReport { info, state }
+let slow = actor.with_request_timeout(Duration::from_secs(1)).get_state(|s| s.height).await;
+// threads: actor.get_state(|s| s.height).unwrap()
+```
+
+These run in a **status turn**: queued behind the messages already in the
+mailbox and run between handler turns, so the callback sees a consistent
+`&A`. On a stuck actor they time out (5 s by default) like any request; use
+`info()` there. Outcomes: the value, `RequestTimeout`, `ActorStopped(reason)`
+(the actor died with it queued), `NoProc` (it was already dead) or
+`CallbackFailed` if the callback (or the state formatter) panicked (its message is
+logged at WARN, target `spawned::status`, with `actor_id`, `actor_type`,
+`label` and `error`).
+A panicking callback does not end the actor, and nothing it did is undone. A
+status request whose caller already gave up is skipped when its turn comes.
+Status turns take no deferred-reply credit and are not counted as messages
+by `metrics`. A `ChildHandle` has `get_status()` and
+`get_status_with_timeout(d)`.
+
+`get_status()` returns the actor's `info()` (as it was between turns) and its
+state, **redacted by default**: status reports reach operators and logs. An
+actor opts in with `#[actor(inspect)]` and an `Inspect` impl (OTP
+`format_status/1`), or `#[actor(inspect = debug)]` for its `Debug` form:
+
+```rust
+use spawned_concurrency::introspection::Inspect;
+
+impl Inspect for PeerTable {
+    fn format_status(&self) -> String {
+        format!("{} peers, {} banned", self.peers.len(), self.banned.len())
+    }
+}
+#[actor(protocol = PeerTableProtocol, inspect)]
+impl PeerTable { /* ... */ }
+```
+
+Formatted state over 64 KiB comes back `StateView::Truncated`.
+
 ### Crash reports
 
 An actor that ends with an abnormal reason it produced itself (a panic in
@@ -1948,6 +1993,13 @@ out.expect_no_message(Duration::from_millis(20)).await;
   messages; a reply closure that panics logs its message as `Crashed`.
 - The log keeps one entry per message for the mock's lifetime, so it suits
   unit tests rather than soak runs with millions of messages.
+- Start behaviour (0.9): `on_started(|ctx| Init::error("no backend"))` makes
+  the mock's `started()` return that `Init` (continue, error, stop, ignore),
+  to test how the code under test handles a dependency that fails to start;
+  `start_delay(d)` makes `started()` take `d` first (virtual time under the
+  simulator in tasks mode), for `init_timeout` and waiting starts;
+  `drop_flag(flag)` sets `flag` when the mock's state is dropped, so a test
+  can check that a failed start answered only after the state was gone.
 
 `MockRef` dereferences to `ActorRef<Mock>`. Its own methods win over protocol
 methods with the same name; call those through `actor_ref()` or the `XRef`.

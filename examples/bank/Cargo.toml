@@ -3,12 +3,9 @@ name = "bank"
 version = "0.1.0"
 edition = "2021"
 publish = false
+default-run = "bank"
 
 [dependencies]
 spawned-rt = { workspace = true, features = ["async", "fmt-subscriber"] }
 spawned-concurrency = { workspace = true }
 tracing = { workspace = true }
-
-[[bin]]
-name = "bank"
-path = "src/main.rs"

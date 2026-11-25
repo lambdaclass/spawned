@@ -1,0 +1,14 @@
+diff --git a/concurrency/src/link.rs b/concurrency/src/link.rs
+index 5add5c2a..7f78c7a4 100644
+--- a/concurrency/src/link.rs
++++ b/concurrency/src/link.rs
+@@ -176,7 +176,8 @@ impl ExitRequest {
+             if self.admin.is_none() && self.reason.is_none() {
+                 #[cfg(feature = "lifecycle-trace")]
+                 crate::lifecycle_trace::start_admin(self.trace);
+-                self.admin = Some(reason);
++                self.admin = Some(reason.clone());
++                self.reason = Some(reason);
+             }
+             return true;
+         }

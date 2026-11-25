@@ -15,6 +15,15 @@
 (*    Core::close, so they are one boolean `open`.                         *)
 (*  - The rolling window is a counter released by WindowExpire.            *)
 (*  - ExecutionGroup closure and placement failure are not modelled.       *)
+(*  - A generation the supervisor stopped (StopObserved) is "stopping"    *)
+(*    until its actor reaches its death point (StopExited). Past          *)
+(*    shutdown_timeout the supervisor kills it (CleanupKill, OTP's        *)
+(*    shutdown escalation) and it is stuck only after a second interval   *)
+(*    (CleanupStuck from "killing"): StuckOnlyAfterKill (V3).             *)
+(*  - A generation stopped before it was published is "abandoned" (its    *)
+(*    actor may still run). It gets the same kill: CleanupKill from        *)
+(*    "abandoned", or from "constructing" ("startkilled") when the trace   *)
+(*    records StartupFailed only once cleanup ends; never stuck unkilled.  *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets, Sequences
 
@@ -39,7 +48,7 @@ Modes    == {"Permanent", "Transient", "Temporary"}
 \* (ChildHandle::shutdown): the design restarts it if Permanent and keeps a
 \* Transient child stopped. Found by trace validation.
 SelfExits      == {"Normal", "Shutdown", "Panic", "Kill"}
-StartupResults == {"none", "timeout", "Normal", "Panic", "Shutdown"}
+StartupResults == {"none", "timeout", "Normal", "Panic", "Shutdown", "Kill"}
 Reasons        == {"none", "timeout", "Normal", "Shutdown", "Panic", "Kill"}
 
 ASSUME N \in Nat \ {0} /\ MaxRestarts \in Nat /\ MaxGen \in Nat \ {0}
@@ -63,7 +72,8 @@ Retries(m, r, ready, init) ==
     init /\ (Restarts(m, r) \/ (~ready /\ m # "Temporary"))
 
 Pcs == {"idle", "top", "backoff", "attempt", "constructing", "running",
-        "cleanup", "decide", "deferred", "finish", "finished"}
+        "stopping", "killing", "abandoned", "startkilled", "cleanup", "decide",
+        "deferred", "finish", "finished"}
 
 VARIABLES
     \* @type: Bool;
@@ -230,7 +240,7 @@ Attempt(c) ==
 
 \* Construction and actor.ready() succeed; publish under gate.if_open.
 \* If the gate closed meanwhile the instance is not published and is
-\* cleaned up (exit observed later as Shutdown).
+\* abandoned (exit observed later as Shutdown).
 BecomeReady(c) ==
     /\ pc[c] = "constructing"
     /\ IF open
@@ -241,19 +251,21 @@ BecomeReady(c) ==
             /\ Goto(c, "running")
             /\ UNCHANGED exitR
        ELSE /\ exitR' = [exitR EXCEPT ![c] = "Shutdown"]
-            /\ Goto(c, "cleanup")
+            /\ Goto(c, "abandoned")
             /\ UNCHANGED <<pub, st, initial, readyGen>>
     /\ UNCHANGED <<sup, gen, alive, first, stopTurn, cdone>>
 
 \* Factory error/panic, startup timeout, or the actor exiting during
 \* started() (with any reason it stops with, Shutdown included while the
 \* supervisor is open: found by trace validation); also admission closing
-\* while constructing.
+\* while constructing. The generation is abandoned unpublished; the code
+\* records this once its cleanup ends, so a kill before it is taken from
+\* "constructing" ("startkilled").
 StartupFailed(c, r) ==
-    /\ pc[c] = "constructing"
+    /\ pc[c] \in {"constructing", "startkilled"}
     /\ r \in StartupResults
     /\ exitR' = [exitR EXCEPT ![c] = r]
-    /\ Goto(c, "cleanup")
+    /\ Goto(c, IF pc[c] = "startkilled" THEN "killing" ELSE "abandoned")
     /\ UNCHANGED <<sup, st, gen, alive, pub, initial, readyGen, first, stopTurn, cdone>>
 
 \* The ready actor exits on its own (normal stop, external shutdown, panic,
@@ -267,18 +279,34 @@ SelfExit(c, r) ==
     /\ Goto(c, "cleanup")
     /\ UNCHANGED <<sup, st, gen, alive, initial, readyGen, first, stopTurn, cdone>>
 
-\* Supervisor shutdown reached this child's stop turn: scope.stop(Shutdown).
+\* Supervisor shutdown reached this child's stop turn: the parent's
+\* Shutdown. The generation is "stopping" until its actor's death point.
 StopObserved(c) ==
     /\ pc[c] = "running"
     /\ ~open /\ stopTurn[c]
     /\ exitR' = [exitR EXCEPT ![c] = "Shutdown"]
     /\ pub' = [pub EXCEPT ![c] = 0]
-    /\ Goto(c, "cleanup")
+    /\ Goto(c, "stopping")
     /\ UNCHANGED <<sup, st, gen, alive, initial, readyGen, first, stopTurn, cdone>>
+
+\* E3/V3: the stopped actor missed its death point within shutdown_timeout:
+\* the parent's kill (scope.kill), then a second interval. The same for a
+\* generation abandoned unpublished whose cleanup missed shutdown_timeout.
+CleanupKill(c) ==
+    /\ pc[c] \in {"stopping", "abandoned", "constructing"}
+    /\ Goto(c, IF pc[c] = "constructing" THEN "startkilled" ELSE "killing")
+    /\ UNCHANGED <<sup, st, gen, alive, pub, initial, exitR, readyGen, first, stopTurn, cdone>>
+
+\* The stopped actor reached its death point (before or after the kill);
+\* its owned tasks are joined next ("cleanup").
+StopExited(c) ==
+    /\ pc[c] \in {"stopping", "killing"}
+    /\ Goto(c, "cleanup")
+    /\ UNCHANGED <<sup, st, gen, alive, pub, initial, exitR, readyGen, first, stopTurn, cdone>>
 
 \* Actor exit plus scope.joined(): every owned task of this generation ended.
 CleanupDone(c) ==
-    /\ pc[c] = "cleanup"
+    /\ pc[c] \in {"cleanup", "abandoned"}
     /\ alive' = [alive EXCEPT ![c] = alive[c] \ {gen[c]}]
     /\ pub' = [pub EXCEPT ![c] = 0]
     /\ st' = [st EXCEPT ![c] = "Stopping"]
@@ -286,9 +314,12 @@ CleanupDone(c) ==
     /\ UNCHANGED <<sup, gen, initial, exitR, readyGen, first, stopTurn, cdone>>
 
 \* Cleanup exceeded shutdown_timeout: Core::fail, still wait for joined,
-\* then leave the loop.
+\* then leave the loop. A generation the supervisor stopped, published or
+\* not, is stuck only after its kill and the second interval ("killing"),
+\* or with its actor dead and an owned task left ("cleanup"); never while
+\* "stopping" or "abandoned".
 CleanupStuck(c) ==
-    /\ pc[c] = "cleanup"
+    /\ pc[c] \in {"cleanup", "killing"}
     /\ Fail
     /\ alive' = [alive EXCEPT ![c] = alive[c] \ {gen[c]}]
     /\ pub' = [pub EXCEPT ![c] = 0]
@@ -379,8 +410,13 @@ SupChildDone ==
     /\ UNCHANGED <<open, failed, sready, sdone, budget, reserved, deadline, timedOut, child>>
 
 \* Child cleanup deadline exceeded: fail and move on to the next child.
+\* Its wait is a backstop beyond the controller's kill and second interval
+\* (3 x shutdown_timeout), so a child still "stopping", or abandoned
+\* unpublished ("abandoned", or "constructing": admission is closed, so its
+\* startup has already been given up) is never given up on.
 SupChildTimeout ==
     /\ sphase = "waitchild" /\ ~cdone[sidx]
+    /\ pc[sidx] \notin {"stopping", "abandoned", "constructing"}
     /\ failed' = TRUE
     /\ timedOut' = timedOut \cup {sidx}
     /\ sidx' = sidx - 1
@@ -402,7 +438,8 @@ ChildStep(c) ==
     \/ LoopTop(c) \/ RetryReserve(c) \/ RetryRelease(c) \/ BackoffDone(c) \/ Attempt(c) \/ BecomeReady(c)
     \/ \E r \in StartupResults : StartupFailed(c, r)
     \/ \E r \in SelfExits : SelfExit(c, r)
-    \/ StopObserved(c) \/ CleanupDone(c) \/ CleanupStuck(c)
+    \/ StopObserved(c) \/ CleanupKill(c) \/ StopExited(c)
+    \/ CleanupDone(c) \/ CleanupStuck(c)
     \/ DeferExit(c) \/ Undefer(c) \/ Decide(c) \/ Finish(c)
 
 SupStep ==
@@ -415,12 +452,13 @@ Next ==
     \/ \E c \in Children : ChildStep(c)
 
 \* Fairness: controllers and the supervisor make progress; cleanup
-\* completes (CleanupDone is fair, CleanupStuck and timeouts are not).
+\* completes (StopExited and CleanupDone are fair; CleanupKill, CleanupStuck
+\* and timeouts are not).
 Fairness ==
     /\ \A c \in Children :
          /\ WF_vars(RetryReserve(c)) /\ WF_vars(RetryRelease(c))
          /\ WF_vars(LoopTop(c)) /\ WF_vars(BackoffDone(c)) /\ WF_vars(Attempt(c))
-         /\ WF_vars(StopObserved(c)) /\ WF_vars(CleanupDone(c))
+         /\ WF_vars(StopObserved(c)) /\ WF_vars(StopExited(c)) /\ WF_vars(CleanupDone(c))
          /\ WF_vars(DeferExit(c)) /\ WF_vars(Undefer(c))
          /\ WF_vars(Decide(c)) /\ WF_vars(Finish(c))
          /\ WF_vars(\E r \in {"Shutdown"} : StartupFailed(c, r))
@@ -497,6 +535,18 @@ ReverseShutdown ==
             \A d \in Children : d > c => cdone[d] \/ d \in timedOut]_vars
 
 NeverReopens == [][open' => open]_vars
+
+\* V3 (E3, OTP's shutdown escalation): a generation the supervisor stopped
+\* leaves "stopping" only through its actor's death point or its kill, and
+\* one abandoned unpublished leaves "abandoned" only through its cleanup or
+\* its kill; neither is given up on (stuck, or by the supervisor's wait)
+\* before the kill.
+StuckOnlyAfterKill ==
+    [][\A c \in Children :
+         /\ pc[c] = "stopping" => pc'[c] \in {"stopping", "killing", "cleanup"}
+         /\ pc[c] = "abandoned" => pc'[c] \in {"abandoned", "killing", "decide"}
+         /\ (pc[c] \in {"stopping", "abandoned"} \/ (pc[c] = "constructing" /\ ~open))
+             => (c \in timedOut' => c \in timedOut)]_vars
 
 (* Liveness: once closed, the supervisor eventually finishes. *)
 ClosedLeadsToDone == (~open) ~> sdone

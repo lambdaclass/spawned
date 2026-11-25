@@ -1,7 +1,10 @@
 # Spawned examples
 
 Every user-facing feature mapped to the runnable examples that show it. Run a
-package from the repository root with `cargo run --locked -p <package>`; the
+package from the repository root with `cargo run --locked -p <package>`. The
+packages with both modes keep the tasks version as the default binary and the
+threads version as a second one: `cargo run --locked -p bank --bin bank_threads`
+(likewise `chat_room`, `ping_pong`, `signal_test` and `updater`). The
 capability programs run with
 `cargo run --locked -p spawned-capability-examples --bin <name>` (see the
 [capability guide](capabilities/README.md) for their commands, purpose and
@@ -13,19 +16,19 @@ Usage of each feature is documented in the [guide](../docs/GUIDE.md).
 | Feature | tasks mode | threads mode |
 |---|---|---|
 | Named shutdown reports and active turns (`diagnostics` feature) | [shutdown_diagnostics](capabilities/src/bin/shutdown_diagnostics.rs): recovery, in-flight message/age, waiting again on incomplete cleanup | n/a (ActorSystem is async-only) |
-| Protocols, `#[actor]`, request/reply and sends | [name_server](name_server), [bank](bank), [ping_pong](ping_pong) | [bank_threads](bank_threads), [ping_pong_threads](ping_pong_threads) |
-| Type-erased protocol refs (`XRef`) between actors | [chat_room](chat_room) | [chat_room_threads](chat_room_threads) |
+| Protocols, `#[actor]`, request/reply and sends | [name_server](name_server), [bank](bank), [ping_pong](ping_pong) | [bank_threads](bank/src/bin/bank_threads/main.rs), [ping_pong_threads](ping_pong/src/bin/ping_pong_threads/main.rs) |
+| Type-erased protocol refs (`XRef`) between actors | [chat_room](chat_room) | [chat_room_threads](chat_room/src/bin/chat_room_threads/main.rs) |
 | Stream listeners and per-message recipients | [streams_and_recipients](capabilities/src/bin/streams_and_recipients.rs) | Same example |
 | Shared protocol contracts and downstream handwritten fakes | [contract library](protocol_contract/src/lib.rs), [consumer test](capabilities/tests/cross_crate_protocol.rs) | Same test covers native actors |
-| Lifecycle hooks (`started`/`stopped`) and `ctx.stop()` | [bank](bank), [updater](updater), [signal_test](signal_test) | [bank_threads](bank_threads), [updater_threads](updater_threads), [signal_test_threads](signal_test_threads) |
+| Lifecycle hooks (`started`/`stopped`) and `ctx.stop()` | [bank](bank), [updater](updater), [signal_test](signal_test) | [bank_threads](bank/src/bin/bank_threads/main.rs), [updater_threads](updater/src/bin/updater_threads/main.rs), [signal_test_threads](signal_test/src/bin/signal_test_threads.rs) |
 | Unified start (`spawn`, `start`, `start_link`, `start_monitor`, fallible `started()`, `Init::continue_with`), v0.9 | [start_contract tests](../concurrency/tests/start_contract.rs) | [native_lifecycle](capabilities/src/bin/native_lifecycle.rs) |
-| Timers (`send_after`, `send_interval`) | [updater](updater), [signal_test](signal_test), [blocking_genserver](blocking_genserver) | [updater_threads](updater_threads), [signal_test_threads](signal_test_threads) |
-| `send_message_on` and Ctrl-C handling | [signal_test](signal_test) | [signal_test_threads](signal_test_threads) |
-| Backend selection (`Async`, `Blocking`, `Thread`) | [blocking_genserver](blocking_genserver), [signal_test](signal_test) | n/a |
-| Blocking-handler warning | [busy_genserver_warning](busy_genserver_warning) | n/a |
+| Timers (`send_after`, `send_interval`) | [updater](updater), [signal_test](signal_test), [blocking_genserver](capabilities/src/bin/blocking_genserver.rs) | [updater_threads](updater/src/bin/updater_threads/main.rs), [signal_test_threads](signal_test/src/bin/signal_test_threads.rs) |
+| `send_message_on` and Ctrl-C handling | [signal_test](signal_test) | [signal_test_threads](signal_test/src/bin/signal_test_threads.rs) |
+| Backend selection (`Async`, `Blocking`, `Thread`) | [blocking_genserver](capabilities/src/bin/blocking_genserver.rs), [signal_test](signal_test) | n/a |
+| Blocking-handler warning | [busy_genserver_warning](capabilities/src/bin/busy_genserver_warning.rs) | n/a |
 | Dedicated-thread actor with async helpers | [dedicated_thread](capabilities/src/bin/dedicated_thread.rs) | n/a |
 | Global registry (`registry::register`/`whereis`) | [service_discovery](service_discovery), [registrations and fakes](capabilities/src/bin/registrations_and_fakes.rs) | [registrations and fakes](capabilities/src/bin/registrations_and_fakes.rs), [thread_only](thread_only/README.md) |
-| Exit reasons, `join`, `wait_exit`, monitors, links, trapped exits | [exit_reason](exit_reason) | [native_lifecycle](capabilities/src/bin/native_lifecycle.rs) |
+| Exit reasons, `join`, `wait_exit`, monitors, links, trapped exits | [exit_reason](capabilities/src/bin/exit_reason.rs) | [native_lifecycle](capabilities/src/bin/native_lifecycle.rs) |
 | Exit signals as in OTP (`exit`/`kill`, trapping, `NoProc`, `try_link`, parent exits, `exit_pending`), v0.8 | [exit_signals](capabilities/src/bin/exit_signals.rs) | gap (threads mode is tested in `otp_exit_signals::threads_mode`) |
 | Execution groups (`ActorSystem`, `with_options(&group)`, owned helpers), v0.7 | [execution_groups](capabilities/src/bin/execution_groups.rs) | n/a |
 | Supervision, v0.7 | [supervision_recovery](capabilities/src/bin/supervision_recovery.rs) | n/a |

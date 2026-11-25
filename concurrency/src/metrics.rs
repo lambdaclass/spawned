@@ -631,6 +631,9 @@ impl RequestObservation {
             Err(ActorError::NoProc) => &COUNTERS.requests_noproc_total,
             Err(ActorError::ReplyDropped) => &COUNTERS.requests_reply_dropped_total,
             Err(ActorError::Overloaded) => &COUNTERS.requests_overloaded_total,
+            // Only status turns answer it, and they bypass request
+            // accounting (introspection I4).
+            Err(ActorError::CallbackFailed) => return,
         }
         .fetch_add(1, Relaxed);
     }

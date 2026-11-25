@@ -715,6 +715,8 @@ async fn message_loop<A: Actor, C: Fn()>(
             // same call). The envelope outlives the turn and lends it the
             // request's slot.
             let mut envelope = envelope;
+            #[cfg(feature = "lifecycle-trace")]
+            let turn_kind = envelope.intro_kind();
             let result = match dispatch(&mut *envelope, &mut *actor, &ctx) {
                 // Dispatch completed the turn synchronously. The caller
                 // hold is only needed if an unfinished future is dropped;
@@ -749,6 +751,12 @@ async fn message_loop<A: Actor, C: Fn()>(
                 Err(panic) => Err(panic),
             };
             ctx.shared.replies.end_turn(result.is_err());
+            #[cfg(feature = "lifecycle-trace")]
+            if result.is_ok() {
+                crate::lifecycle_trace::intro_section(trace_id, || {
+                    crate::lifecycle_trace::intro(trace_id, "End", turn_kind)
+                });
+            }
             #[cfg(feature = "diagnostics")]
             drop(_turn);
             #[cfg(feature = "metrics")]
@@ -768,6 +776,7 @@ async fn message_loop<A: Actor, C: Fn()>(
                     crate::lifecycle_trace::life_emit(trace_id, || {
                         crate::lifecycle_trace::LifeEvent::new("Panic", trace_id).x("turn")
                     });
+                    crate::lifecycle_trace::intro(trace_id, "Panic", "turn");
                     link::lock_request(&request)
                         .panic(ExitReason::Panic(format!("panic in handler: {msg}")));
                 });
@@ -805,6 +814,11 @@ async fn message_loop<A: Actor, C: Fn()>(
                                     .k(envelope.trace_kind())
                             });
                             crate::lifecycle_trace::start_dispatch(trace_id, envelope.trace_kind());
+                            crate::lifecycle_trace::intro(
+                                trace_id,
+                                "Dispatch",
+                                envelope.intro_kind(),
+                            );
                         }
                         result
                     })
@@ -941,6 +955,17 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
                     crate::lifecycle_trace::LifeEvent::new("Panic", trace_id).x("started")
                 });
             }
+            // Introspection.tla: started()'s activity ends (a ready return,
+            // whatever the row) or panics.
+            match &returned {
+                crate::start::Returned::Ready => {
+                    crate::lifecycle_trace::intro(trace_id, "StartEnd", "")
+                }
+                crate::start::Returned::Panic(_) => {
+                    crate::lifecycle_trace::intro(trace_id, "StartPanic", "")
+                }
+                _ => {}
+            }
             row
         })
     });
@@ -1011,6 +1036,11 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
                 "skip"
             })
         });
+        // Introspection.tla: the exit decision, then stopped()'s activity.
+        crate::lifecycle_trace::intro(trace_id, "Exit", if run { "run" } else { "skip" });
+        if run {
+            crate::lifecycle_trace::intro(trace_id, "HookBegin", "");
+        }
         (run, skipped)
     });
     if let Some((cause, reason)) = skipped {
@@ -1037,6 +1067,11 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
     })
     .catch_unwind()
     .await;
+    if stop_result.is_ok() {
+        crate::lifecycle_trace::intro_section(trace_id, || {
+            crate::lifecycle_trace::intro(trace_id, "HookEnd", "")
+        });
+    }
     if let Err(panic) = stop_result {
         let msg = panic_message(&*panic);
         // The payload is user code too: its destructor may panic (L6).
@@ -1048,6 +1083,7 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
             crate::lifecycle_trace::life_emit(trace_id, || {
                 crate::lifecycle_trace::LifeEvent::new("Panic", trace_id).x("stopped")
             });
+            crate::lifecycle_trace::intro(trace_id, "HookPanic", "");
             link::lock_request(&request)
                 .panic(ExitReason::Panic(format!("panic in stopped(): {msg}")));
         });

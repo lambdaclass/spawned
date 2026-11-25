@@ -340,6 +340,36 @@ pub(crate) enum StartRole {
     Parent,
 }
 
+/// One action of `verification/tla/Introspection.tla` for one actor
+/// recorded while `record_introspection` is on: the activity ends and
+/// begins, the status turn's steps (`Status` sent, `Admit`, `Answer`), the
+/// exit decision, stops and kills, the drop, D and publication (see
+/// `TraceIntrospection.tla` for the list). `x` is the outcome or kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntroEvent {
+    pub action: &'static str,
+    pub x: &'static str,
+}
+
+impl IntroEvent {
+    /// JSON object understood by `verification/tla/trace_check.py`.
+    pub fn to_json(&self) -> String {
+        format!(r#"{{"a":"{}","x":"{}"}}"#, self.action, self.x)
+    }
+}
+
+/// `Introspection.tla`'s reason class of a final reason: a stop is the
+/// model's `Shutdown` (its `stopReq`), whatever reason it carried.
+#[allow(dead_code)] // recording is compiled out without the feature
+pub(crate) fn intro_reason(reason: &crate::ExitReason) -> &'static str {
+    use crate::ExitReason;
+    match reason {
+        ExitReason::Killed => "Killed",
+        ExitReason::Panic(_) => "Panic",
+        _ => "Shutdown",
+    }
+}
+
 /// Model name of an exit reason (`Lifecycle.tla` `Reasons`).
 #[allow(dead_code)] // recording is compiled out without the feature
 pub(crate) fn life_reason(reason: &crate::ExitReason) -> &'static str {
@@ -675,14 +705,15 @@ mod imp {
     }
 
     /// Run `f` as one atomic step of the recorded linearization if actor
-    /// `id` is recorded (and as is otherwise). Every lifecycle section is
-    /// keyed by the actor whose locks it takes first, and nested sections use
-    /// the same key, so the section is always the outermost lock.
+    /// `id` is recorded, for `Lifecycle.tla` or `Introspection.tla` (and as
+    /// is otherwise). Every lifecycle section is keyed by the actor whose
+    /// locks it takes first, and nested sections use the same key, so the
+    /// section is always the outermost lock.
     pub(crate) fn life_section<R>(id: u64, f: impl FnOnce() -> R) -> R {
         // Also for the start trace's actors: a message's admission (`SSend`)
         // and its dispatch (`SHandle`) are then one step each of the same
         // linearization (the item is receivable only after `SSend`).
-        if life_traced(id) || start_member(id) {
+        if life_traced(id) || start_member(id) || intro_traced(id) {
             atomic(f)
         } else {
             f()
@@ -695,6 +726,51 @@ mod imp {
             && (START_PARENT.load(Ordering::Acquire) == id || lock(&START_KIDS).contains(&id))
     }
 
+    // Introspection (`Introspection.tla`): the actors spawned while the
+    // recording is on, one log each.
+    static INTRO_ON: AtomicBool = AtomicBool::new(false);
+    static INTRO: Mutex<BTreeMap<u64, Vec<super::IntroEvent>>> = Mutex::new(BTreeMap::new());
+
+    /// Start recording the introspection events of every actor spawned
+    /// from now on. Tests that record must not run concurrently.
+    pub fn record_introspection() {
+        atomic(|| {
+            lock(&INTRO).clear();
+            INTRO_ON.store(true, Ordering::Release);
+        });
+    }
+
+    /// Stop recording; returns actor `id`'s events in their recorded order.
+    pub fn take_introspection(id: u64) -> Vec<super::IntroEvent> {
+        atomic(|| {
+            INTRO_ON.store(false, Ordering::Release);
+            lock(&INTRO).remove(&id).unwrap_or_default()
+        })
+    }
+
+    pub(crate) fn intro_traced(id: u64) -> bool {
+        INTRO_ON.load(Ordering::Acquire) && lock(&INTRO).contains_key(&id)
+    }
+
+    /// Run `f` as one atomic step of the recorded linearization if actor
+    /// `id` is recorded for `Introspection.tla`.
+    pub(crate) fn intro_section<R>(id: u64, f: impl FnOnce() -> R) -> R {
+        if intro_traced(id) {
+            atomic(f)
+        } else {
+            f()
+        }
+    }
+
+    /// Record an introspection action of actor `id` (inside its section).
+    pub(crate) fn intro(id: u64, action: &'static str, x: &'static str) {
+        if INTRO_ON.load(Ordering::Acquire) {
+            if let Some(events) = lock(&INTRO).get_mut(&id) {
+                events.push(super::IntroEvent { action, x });
+            }
+        }
+    }
+
     /// Record an event of actor `t` (inside its section).
     pub(crate) fn life_emit(t: u64, event: impl FnOnce() -> super::LifeEvent) {
         if life_traced(t) {
@@ -705,6 +781,11 @@ mod imp {
     /// A new actor instance (after its `start_linked` link, before
     /// `started()`): recorded from now on.
     pub(crate) fn life_spawn(id: u64, parent: u64) {
+        if INTRO_ON.load(Ordering::Acquire) {
+            atomic(|| {
+                lock(&INTRO).insert(id, Vec::new());
+            });
+        }
         if !LIFE_ON.load(Ordering::Acquire) {
             return;
         }
@@ -1480,6 +1561,14 @@ mod imp {
     pub(crate) fn life_emit(_: u64, _: impl FnOnce() -> super::LifeEvent) {}
     #[allow(dead_code)]
     #[inline(always)]
+    pub(crate) fn intro_section<R>(_: u64, f: impl FnOnce() -> R) -> R {
+        f()
+    }
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn intro(_: u64, _: &'static str, _: &'static str) {}
+    #[allow(dead_code)]
+    #[inline(always)]
     pub(crate) fn life_spawn(_: u64, _: u64) {}
     #[allow(dead_code)]
     #[inline(always)]
@@ -1561,7 +1650,7 @@ mod imp {
 
 #[cfg(feature = "lifecycle-trace")]
 pub use imp::{
-    record_disposal, record_lifecycle, record_start, record_start_parent, recorded, recorded_with,
-    start_count, take, take_disposal, take_jobs, take_lifecycle, take_replies, take_start,
-    take_tree, watch_deferred,
+    record_disposal, record_introspection, record_lifecycle, record_start, record_start_parent,
+    recorded, recorded_with, start_count, take, take_disposal, take_introspection, take_jobs,
+    take_lifecycle, take_replies, take_start, take_tree, watch_deferred,
 };

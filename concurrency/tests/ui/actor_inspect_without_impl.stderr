@@ -1,0 +1,12 @@
+error[E0277]: the trait bound `Secret: spawned_concurrency::introspection::Inspect` is not satisfied
+ --> tests/ui/actor_inspect_without_impl.rs:5:1
+  |
+5 | #[actor(inspect)]
+  | ^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+  |
+help: the trait `spawned_concurrency::introspection::Inspect` is not implemented for `Secret`
+ --> tests/ui/actor_inspect_without_impl.rs:4:1
+  |
+4 | pub struct Secret;
+  | ^^^^^^^^^^^^^^^^^
+  = note: this error originates in the attribute macro `actor` (in Nightly builds, run with -Z macro-backtrace for more info)

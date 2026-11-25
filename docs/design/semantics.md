@@ -186,7 +186,9 @@ Checked by: [`protocol_timeouts`][protocol_timeouts],
 
 **R4. Giving up never cancels.** A caller timeout or a dropped caller future
 or `Response` does not remove the request from the mailbox, cancel its handler
-or roll back effects. The caller cannot tell whether it ran.
+or roll back effects. The caller cannot tell whether it ran. One exception:
+a status request (`get_state`, `get_status`) whose caller gave up before its
+turn began is not run (I4).
 Checked by: [`cancellation_safety::request_family_is_cancel_safe`][cancellation_safety],
 [`request_histories`][request_histories] (timed-out operations are "pending").
 
@@ -629,18 +631,36 @@ Checked by: `Cohorts!StrategySelection`, `Cohorts!WholeCohortBarrier`,
 **V3. At most one live generation.** A slot never has two live generations: a
 replacement starts only after the previous actor, its registered helpers and
 its owned cleanup actually finished. When the supervisor stops a child
-(shutdown, a OneForAll/RestForOne round, a startup rollback), a child that has
-not reached its death point `shutdown_timeout` after its signal is killed
+(shutdown, a OneForAll/RestForOne round, a startup rollback, or a generation
+it gives up on before publishing it: a startup timeout, admission closing
+while it constructs, the gate closing between ready and publication), a child
+that has not reached its death point `shutdown_timeout` after its signal is
+killed
 (`Killed`, design E3); if it misses a second `shutdown_timeout` the slot is
 stuck. A child that exits on its own is stuck if its cleanup misses
 `shutdown_timeout` from its exit (no kill: it would relabel its reason). A
-stuck slot fails the supervisor and nothing replaces it.
+stuck slot fails the supervisor and nothing replaces it. The supervisor's own
+wait for a stopped child, in shutdown or a round, is a backstop at three
+`shutdown_timeout`s, beyond the kill and the second interval, so it never
+gives up on (and fails the tree for) a child before the kill.
 Checked by: `Supervision!AtMostOneGeneration`, `Cohorts!AtMostOneGeneration`,
 `NestedSupervision!AtMostOneGeneration`; [`supervision::cleanup_deadline_escalates_without_overlapping_a_live_generation`][supervision],
 `repeated_crash_producer_and_shutdown_races_never_overlap_generations`,
 `stuck_stopped_hook_triggers_cleanup_deadline_before_terminal_publication`;
 [`otp_exit_signals::tasks_mode::supervisor_shutdown_is_the_parents_exit_signal`][otp_exit_signals]
-(the kill at `shutdown_timeout`); for a OneForAll/RestForOne round's stop,
+(the kill at `shutdown_timeout`); for a supervisor stop turn,
+`Supervision!StuckOnlyAfterKill` (`CleanupKill`/`StopExited`, trace-validated
+by [`supervision_trace`][supervision_trace]`::trace_shutdown_kills_child_at_shutdown_timeout`
+and `trace_shutdown_deadline_with_slow_stop`, with two model faults and two
+recorded-trace controls in `negative_checks.py`) and
+[`collateral_kill`][collateral_kill]`::shutdown_kills_a_stopped_child_without_failing_the_tree`
+(the shutdown loop's backstop; planted bug 36); for a generation stopped
+before publication, the same `Supervision!StuckOnlyAfterKill` (`"abandoned"`
+and `"startkilled"`, trace-validated by
+[`supervision_trace`][supervision_trace]`::trace_unpublished_generation_killed_or_stuck`,
+with two model faults and a recorded-trace control) and
+[`collateral_kill`][collateral_kill]`::unpublished_generation_is_killed_at_shutdown_timeout`
+and `unpublished_generation_is_stuck_only_after_the_kill` (planted bug 40); for a OneForAll/RestForOne round's stop,
 `Cohorts!StuckOnlyAfterKill` (`CKill`/`CStuck`, trace-validated by
 [`cohort_trace`][cohort_trace]`::trace_collateral_child_killed_or_stuck`, with
 a model fault and two recorded-trace controls in `negative_checks.py`) and
@@ -1013,22 +1033,23 @@ remaining differences of the exit-signal design are listed in
 - Rank 19, propagated deadlines: queued work can expire before dispatch (R4).
 
 - 0.9, introspection ([introspection.md](introspection.md)): section 13
-  holds I1, I3 (tier 0 part), I10 (crash reports) and I11 so far; the rest
-  (the status turn, trees, listings, the fenced watchdog kill, the console)
+  holds I1, I3 (tier 0 part), I4, I5, I10 (crash reports) and I11 so far;
+  the rest (trees, listings, the fenced watchdog kill, the console)
   join it step by step. L3 and L5 are unchanged (nothing preempts a turn); R4
-  gains one exception with the status turn: a status request whose caller
-  gave up before dispatch is not run.
+  has one exception (I4): a status request whose caller gave up before
+  dispatch is not run.
 
 See the [ranked backlog](../../ROADMAP.md#ranked-backlog).
 
 ## 13. Introspection
 
 Design: [introspection.md](introspection.md). Tier 0 is implemented (0.9
-step 1, in progress): `info()`, labels and crash reports. The status turn,
-supervision trees, listings, the `introspection` feature (turn ids, ages,
+step 1, in progress): `info()`, labels, crash reports and the status turn.
+Supervision trees, listings, the `introspection` feature (turn ids, ages,
 mailbox counters), the watchdog and the console are later steps; their
-guarantees (I2, I4 to I9, I12, I13) are listed in the design and enter this
-section with their code. L3, L5, M1, M2, R1 and R3 are unchanged.
+guarantees (I2, I6 to I9, I12, I13) are listed in the design and enter this
+section with their code. L3, L5, M1, M2, R1 and R3 are unchanged; R4 has one
+exception (I4).
 
 **I1. Out of band.** `info()` (on `ActorRef`, `Context` and `ChildHandle`),
 `ChildHandle::links()` and `ChildHandle::monitors()` never enqueue, wake, run
@@ -1056,6 +1077,49 @@ Checked by: [`introspection`][introspection]`::tasks_mode::lifecycle_walks_start
 (every tasks placement; a state destructor held between D and publication),
 `::threads_mode::lifecycle_walks_starting_idle_exiting_dead`,
 `::tasks_mode::child_handle_info_after_every_ref_is_dropped`.
+
+**I4. Status is a turn.** `get_state(f)` and `get_status()` (on `ActorRef`,
+`get_status` also on `ChildHandle`; OTP `sys:get_state`, `sys:get_status`)
+queue a status envelope that runs in a turn of its own: behind the messages
+already queued (M2), between handler turns (M1), never inside a suspended
+turn. Its reply uses a 0.8 reply slot with the caller's send-time deadline
+(R3), answered in the status turn: it never defers and takes no
+`MAX_OUTSTANDING` credit. Exactly one outcome: `Ok`, `RequestTimeout`,
+`ActorStopped(final reason)` (still queued at the death point, answered
+there), `NoProc` (sent after it) or `CallbackFailed` (the panic's message is
+logged as a `spawned::status` WARN event with `actor_id`, `actor_type`,
+`label` and `error`). The callback
+runs under its own `catch_unwind`: a panic is answered `CallbackFailed`, its
+payload is disposed of and the turn returns normally, so a caught callback
+panic alone does not end the actor; nothing is rolled back (effects through
+interior mutability remain; a `ReplyTo` it took and dropped answers
+`ReplyDropped`). **Exception to R4:** a status envelope whose slot is already
+closed when its turn begins (the caller timed out or dropped the response)
+is not run; one that closes later runs to the end and its answer is dropped.
+Status envelopes are not messages for `metrics` (no mailbox or request
+accounting). `get_status`'s `info` is the actor between turns (`Idle`).
+Checked by: [`status`][status]`::tasks_mode::status_runs_between_turns_in_mailbox_order`,
+`::status_outcomes_and_abandoned_requests_are_not_run` (fails if the
+abandoned check is removed, both modes), `::callback_panic_is_callback_failed_and_actor_continues`,
+`::get_state_runs_while_deferred_reply_is_outstanding`,
+`::status_during_stopped_and_destruction`, `::status_bypasses_metrics_mailbox_accounting`
+(`metrics`), `::threads_mode::*`, `::seeded::get_status_races_stop`
+(`#[sim_test]`); `Introspection!StatusBetweenTurns`, `!StatusDischarged`,
+`!StatusReasonIsFinal`, `!StatusAtMostOnce`, `!NoCallbackAfterGiveUp`,
+`!CallbackPanicContained` (TLC), with recorded runs replayed against the
+model (`TraceIntrospection.tla`, `tests/introspection_trace.rs`, both modes,
+a runtime drop included) and seven recorded-trace controls rejected
+(`negative_checks.py`: an answer after a skip, outside its turn, twice; a
+caught panic ending the actor; a dispatch after a kill; `stopped()` after a
+kill; a lost kill).
+
+**I5. Redaction.** `get_status` shows type-erased state only for actors that
+opt in: `Actor::FORMAT_STATUS` (set by `#[actor(inspect)]` through
+`introspection::Inspect`, or `#[actor(inspect = debug)]` through `Debug`);
+otherwise `StateView::Redacted`. Output over 64 KiB is cut at a character
+boundary (`Truncated`). A formatter panic is `CallbackFailed`.
+Checked by: [`status`][status]`::tasks_mode::state_is_redacted_by_default_and_formatted_on_opt_in`,
+`::threads_mode::inspect_formats_state`, `src/introspection.rs::tests::state_view_*`.
 
 **I10. Crash reports.** An actor whose final reason is abnormal and was
 produced by the actor itself (a panic in `started()`, a handler or
@@ -1099,6 +1163,7 @@ operation within 3% of the merge base and of the last release).
 [cross_backend]: ../../concurrency/tests/cross_backend.rs
 [introspection]: ../../concurrency/tests/introspection.rs
 [crash_reports]: ../../concurrency/tests/crash_reports.rs
+[status]: ../../concurrency/tests/status.rs
 [otp_exit_signals]: ../../concurrency/tests/otp_exit_signals.rs
 [shutdown_payload]: ../../concurrency/tests/shutdown_payload.rs
 [exit_signals_sim]: ../../concurrency/tests/exit_signals_sim.rs
@@ -1131,7 +1196,7 @@ operation within 3% of the merge base and of the last release).
 [supervision_trace]: ../../concurrency/tests/supervision_trace.rs
 [supervisor_policies]: ../../concurrency/tests/supervisor_policies.rs
 [tree_trace]: ../../concurrency/tests/tree_trace.rs
-[ex_exit_reason]: ../../examples/exit_reason
+[ex_exit_reason]: ../../examples/capabilities/src/bin/exit_reason.rs
 [ex_exit_signals]: ../../examples/capabilities/src/bin/exit_signals.rs
 [ex_native_lifecycle]: ../../examples/capabilities/src/bin/native_lifecycle.rs
 [ex_panic_abort]: ../../concurrency/examples/panic_abort.rs

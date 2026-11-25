@@ -101,6 +101,7 @@ STATIC = {
     "Start": ("TraceStart.tla", {"start-v1"}),
     "Coordinator": ("TraceCoordinator.tla", {"coordinator-v1"}),
     "Disposal": ("TraceDisposal.tla", {"disposal-v1"}),
+    "Introspection": ("TraceIntrospection.tla", {"introspection-v1"}),
 }
 ALL = list(MODELS) + list(STATIC)
 

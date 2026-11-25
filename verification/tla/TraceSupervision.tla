@@ -32,7 +32,7 @@ TraceInit == Init /\ i = 0
 Bool(x) == x = "true"
 
 ChildEvents == {"RetryReserve", "RetryRelease", "LoopTop", "BackoffDone", "Attempt", "BecomeReady",
-                "StartupFailed", "SelfExit", "StopObserved", "CleanupDone",
+                "StartupFailed", "SelfExit", "StopObserved", "CleanupKill", "StopExited", "CleanupDone",
                 "CleanupStuck", "DeferExit", "Undefer", "Decide", "Finish"}
 
 \* The model action named by logged event e, constrained by its parameters.
@@ -68,6 +68,8 @@ Step(e) ==
                   THEN (\E r \in SelfExits : SelfExit(c, r)) \/ StopObserved(c)
                   ELSE SelfExit(c, e.x)
              [] e.a = "StopObserved" -> StopObserved(c)
+             [] e.a = "CleanupKill"  -> CleanupKill(c)
+             [] e.a = "StopExited"   -> StopExited(c)
              [] e.a = "CleanupDone"  -> CleanupDone(c)
              [] e.a = "CleanupStuck" -> CleanupStuck(c)
              [] e.a = "DeferExit"    -> DeferExit(c)
