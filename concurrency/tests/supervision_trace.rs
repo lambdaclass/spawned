@@ -1161,3 +1161,59 @@ async fn trace_replacement_ignore_keeps_its_grant() {
     write_trace("replacement_ignore", supervisor.trace_id(), &modes, 5);
     assert!(system.shutdown(LIMIT).await.complete);
 }
+
+/// V3 composed with an ignore: a replacement that ignores while a blocking
+/// helper holds its owned cleanup past shutdown_timeout is killed first
+/// (CleanupKill, from "constructing" to "startkilled"; the kill cannot end
+/// the helper), and the ignore is observed once the helper is let go within
+/// the second interval (Ignore from "startkilled"). Not under the simulator:
+/// the helper blocks an OS thread on a std channel.
+#[cfg(not(spawned_sim))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trace_ignore_observed_after_its_cleanup_kill() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("trace-ignore-killed", 2).unwrap();
+    let modes = [RestartMode::Permanent];
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let held = Arc::new(Mutex::new(Some(held)));
+    let mut tree = system.supervisor(config(5)).unwrap();
+    let a = tree
+        .add(
+            ChildSpec::new("a", &group, move |ctx| {
+                let held = if ctx.generation() > 1 {
+                    held.lock().unwrap().take()
+                } else {
+                    None
+                };
+                async move {
+                    let ignore = held.is_some();
+                    if let Some(held) = held {
+                        // Wait until the helper runs: a helper not yet
+                        // started when its scope stops is skipped.
+                        let (entered, running) = tokio::sync::oneshot::channel();
+                        ctx.spawn_blocking_helper(move || {
+                            let _ = entered.send(());
+                            let _ = held.recv();
+                        })
+                        .map_err(|e| e.to_string())?;
+                        running.await.map_err(|e| e.to_string())?;
+                    }
+                    Ok::<_, String>(Optional(ignore))
+                }
+            })
+            .restart(modes[0])
+            .shutdown_timeout(Duration::from_millis(100)),
+        )
+        .unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
+    let trace_id = supervisor.trace_id();
+    assert!(a.current().unwrap().request(Crash).await.is_err());
+    recorded(trace_id, "CleanupKill").await;
+    release.send(()).unwrap();
+    wait_state(&a, ChildState::Ignored).await;
+    assert_eq!(a.snapshot().generation, 2);
+    assert!(supervisor.shutdown(LIMIT).await.complete);
+    assert_eq!(supervisor.failure(), None);
+    write_trace("ignore_after_kill", supervisor.trace_id(), &modes, 5);
+    assert!(system.shutdown(LIMIT).await.complete);
+}

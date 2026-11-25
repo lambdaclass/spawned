@@ -29,7 +29,8 @@
 (*    its owned cleanup joined (Ignore): st "Ignored", no generation, the   *)
 (*    first start complete. OneForOne never restarts it (pc "ignored"     *)
 (*    until close); a Temporary child is removed (finish). A stuck ignore *)
-(*    is a StartupFailed whose cleanup gets stuck (V3).                    *)
+(*    is a StartupFailed whose cleanup gets stuck (V3); one whose cleanup *)
+(*    is killed at shutdown_timeout is observed from "startkilled".       *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets, Sequences
 
@@ -283,9 +284,11 @@ StartupFailed(c, r) ==
 \* start (initial: the start barrier advances) and leaves the budget as it
 \* is (a replacement's grant was already stamped at BackoffDone). OneForOne
 \* never restarts it; a Temporary child is removed. Closed meanwhile, the
-\* code takes StartupFailed instead.
+\* code takes StartupFailed instead. An owned cleanup that missed
+\* shutdown_timeout was killed first (CleanupKill from "constructing", V3):
+\* the ignore is observed from "startkilled" once the kill ended it.
 Ignore(c) ==
-    /\ pc[c] = "constructing" /\ open
+    /\ pc[c] \in {"constructing", "startkilled"} /\ open
     /\ alive' = [alive EXCEPT ![c] = alive[c] \ {gen[c]}]
     /\ st' = [st EXCEPT ![c] = "Ignored"]
     /\ initial' = [initial EXCEPT ![c] = TRUE]

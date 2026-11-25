@@ -1156,6 +1156,9 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                     trace::emit(core.trace, || {
                         Event::new("StartupFailed", c, startup_reason(exit.as_ref()))
                     });
+                    if unpublished_killed {
+                        trace::emit(core.trace, || Event::new("StopExited", c, ""));
+                    }
                     trace::emit(core.trace, || Event::new("CleanupDone", c, ""));
                 }
                 parked
