@@ -6,6 +6,14 @@
   `Context` (the runtime inferred from its methods), so a module no longer
   imports them just for the macro; examples drop the now-unused imports
   (docs/MIGRATION.md, 0.8 to 0.9).
+- `Context::stopping()` (tasks mode): a `Send + 'static` future that
+  resolves once `ctx.exit_pending()` is `true` (a stop, a kill, an untrapped
+  exit signal, a panic, or a parent exit queued for a trapping actor), so a
+  long-running handler, helper or piped job can `select!` on it and wind
+  down. Ready at once when an exit is already pending. Zero cost unless
+  called: no waiter and nothing per message. Threads mode keeps the polled
+  `exit_pending()` (a blocking handler cannot wait on two things).
+  semantics.md L11.
 - Examples consolidated from 19 crates to 10 with no example
   removed: each tasks/threads pair (`bank`, `chat_room`, `ping_pong`,
   `signal_test`, `updater`) is one package whose second binary is
