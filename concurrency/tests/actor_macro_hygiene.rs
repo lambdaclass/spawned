@@ -65,7 +65,7 @@ mod threads_mode {
     }
 }
 
-#[tokio::test]
+#[spawned_concurrency::sim_test]
 async fn expands_without_imports() {
     use tasks_mode::CounterProtocol as _;
     let counter = spawned_concurrency::tasks::ActorStart::start(tasks_mode::Counter::default())
@@ -75,6 +75,7 @@ async fn expands_without_imports() {
     assert_eq!(counter.add(2).await.unwrap(), 3);
 }
 
+#[cfg(not(spawned_sim))]
 #[test]
 fn threads_expands_without_imports() {
     use threads_mode::CounterProtocol as _;
