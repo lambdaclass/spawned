@@ -342,6 +342,11 @@ impl<A: Actor> ActorRef<A> {
         if let Some(scope) = &managed {
             // Admitted by the commit: the instance adopts the scope.
             let _ = actor_ref.shared.managed.set(scope.clone());
+            actor_ref
+                .shared
+                .signal
+                .meta
+                .set_scope(Arc::downgrade(scope));
             cell.set_cleanup(scope.cleanup_timeout());
             scope.attach::<A>(actor_ref.child_handle());
             scope.set_jobs(Arc::downgrade(&actor_ref.shared.jobs));
