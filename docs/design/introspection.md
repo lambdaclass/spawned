@@ -296,7 +296,10 @@ handles (`ChildHandle` with its `ActorId`, or the nested `Supervisor` of that
 generation), releases every lock, then expands each captured handle. Because
 handles are instance-bound, a node never mixes generation N's row with
 generation N+1's actor: if the captured instance has exited, its node shows
-`Dead` or `Unavailable(Dead)`. No lock is held across a child's `info()` or a
+`Dead` or `Unavailable(Dead)`. An ignored child (`ChildState::Ignored`,
+OTP's `undefined` pid) keeps its row with no `actor`: it counts in `specs`
+and in `workers` or `supervisors` but not in `active`, and its node reads
+`Unavailable(Dead)`. No lock is held across a child's `info()` or a
 nested `tree()`, so no lock order exists between supervisors and actors.
 `count_children()` and `tree().counts` are derived from the same captured
 rows. `SupervisedChild::snapshot()` becomes `info()`; `Supervisor::snapshots()`
