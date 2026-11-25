@@ -503,6 +503,44 @@ impl<A: Actor> Context<A> {
         link::lock_request(&self.shared.linked_reason).exit_pending()
     }
 
+    /// Resolves once [`exit_pending`](Self::exit_pending) is `true`: the
+    /// awaitable form of it, for a long-running handler, helper or piped job
+    /// that should wind down when this actor is asked to stop.
+    ///
+    /// The same events trigger it: `ctx.stop()`, an administrative stop, a
+    /// kill, an untrapped exit signal or link notice, a panic, and a parent
+    /// exit (supervisor or system shutdown, a `start_linked` parent's exit)
+    /// queued for a trapping actor. A trapped [`Exit`](crate::Exit) does not.
+    /// Already pending (including in `stopped()`): it is ready at once. Once
+    /// the actor is past its death point it stays ready.
+    ///
+    /// The future is `'static` and `Send`, so it can be moved into
+    /// `tokio::select!`, [`pipe`](Self::pipe) or a helper. Nothing preempts
+    /// the handler: it decides what to do when the future resolves, and the
+    /// actor exits after the handler returns. Unused, it costs nothing; a
+    /// waiting future registers one waiter and adds nothing per message.
+    ///
+    /// ```ignore
+    /// tokio::select! {
+    ///     done = self.long_work() => reply.reply(Ok(done)),
+    ///     () = ctx.stopping() => reply.reply(Err(Cancelled)),
+    /// }
+    /// ```
+    pub fn stopping(&self) -> impl Future<Output = ()> + Send + 'static {
+        let token = self.shared.cancellation_token.clone();
+        let request = self.shared.linked_reason.clone();
+        async move {
+            // Every other pending exit cancels the stop token; the waiter is
+            // for a parent exit queued behind this actor's messages.
+            let Some(parent_exit) = link::lock_request(&request).stopping_waiter() else {
+                return;
+            };
+            let stop = pin!(token.cancelled());
+            let parent_exit = pin!(parent_exit.cancelled());
+            future::select(stop, parent_exit).await;
+        }
+    }
+
     /// Control how exit signals (link notices and `exit` signals) are
     /// handled; read when each signal arrives (OTP `trap_exit`).
     ///
