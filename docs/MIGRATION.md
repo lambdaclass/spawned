@@ -133,6 +133,15 @@ Behaviour changes to check at call sites:
   If your crate used Tokio's `fs`, `net`, `process` or `io-util` only through
   spawned's dependency, enable them on your own `tokio` dependency.
 
+- `ChildHandle::is_alive()` turns `false` at the actor's death point (its
+  callers answered, sends `NoProc`), not at publication. Code that waits for
+  `wait_exit()` is unaffected; code that polled `is_alive()` to know that
+  destructors had finished should wait on `wait_exit_async()` /
+  `wait_exit_blocking()` (or `exit_reason().is_some()`) instead.
+- The new `console` feature is in `default`. A crate that sets
+  `default-features = false` and wants `introspection::processes()` /
+  `snapshot()` adds `features = ["console"]`.
+
 ## 0.8.0
 
 ### 0.7 to 0.8: API call-site table

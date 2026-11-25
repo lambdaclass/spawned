@@ -239,7 +239,8 @@ impl<A: Actor> ActorRef<A> {
         .with_jobs(actor_ref.shared.jobs.clone())
         .with_startup(cell, link_parent)
         .with_name(name)
-        .with_report(actor_ref.shared.signal.clone());
+        .with_report(actor_ref.shared.signal.clone())
+        .with_listing(&child_handle);
         let startup = crate::actor_cleanup::ActorStartup::new(
             (actor, ctx, rx, cancellation_token),
             cleanup,

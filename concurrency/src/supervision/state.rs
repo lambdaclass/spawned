@@ -521,6 +521,9 @@ impl ShutdownUnit for Core {
             .as_ref()
             .map(|f| f.message.clone())
     }
+    fn tree(&self) -> Option<super::SupervisorTree> {
+        Some(Core::tree(self))
+    }
 }
 
 pub(super) trait Runner: Send {

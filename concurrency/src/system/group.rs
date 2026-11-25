@@ -241,6 +241,51 @@ impl GroupInner {
             Ok(start)
         }
     }
+    /// The attached actors not yet published, and the scopes whose actor is
+    /// published while helpers keep them (introspection, tier 0). The group
+    /// lock is held only to copy the scopes; each scope's lock only to take
+    /// its handle; no lock is held across `info()`.
+    fn listing(&self) -> (bool, Vec<crate::ChildHandle>, usize) {
+        let (closing, scopes) = {
+            let state = lock(&self.state);
+            (
+                state.closing,
+                state.scopes.values().cloned().collect::<Vec<_>>(),
+            )
+        };
+        let mut live = Vec::new();
+        let mut draining = 0;
+        for child in scopes.iter().filter_map(|scope| scope.child()) {
+            if child.exit_reason().is_some() {
+                draining += 1;
+            } else {
+                live.push(child);
+            }
+        }
+        live.sort_by_key(crate::ChildHandle::id);
+        (closing, live, draining)
+    }
+    pub(super) fn actors(&self) -> Vec<crate::introspection::ActorInfo> {
+        self.listing()
+            .1
+            .iter()
+            .map(crate::ChildHandle::info)
+            .collect()
+    }
+    pub(super) fn snapshot(&self) -> crate::introspection::GroupSnapshot {
+        use crate::introspection::{Field, Unavailable};
+        let (closing, live, helpers_draining) = self.listing();
+        crate::introspection::GroupSnapshot {
+            name: self.name.clone(),
+            profile: self.profile.clone(),
+            worker_budget: self.profile.workers(),
+            closing,
+            actors: live.iter().map(crate::ChildHandle::info).collect(),
+            busy_workers: Field::Unavailable(Unavailable::Feature),
+            scheduling_delay: Field::Unavailable(Unavailable::Feature),
+            helpers_draining,
+        }
+    }
     pub(super) fn handle(&self, target: usize) -> Handle {
         self.targets[target].handle.clone()
     }

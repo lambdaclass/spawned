@@ -334,9 +334,39 @@ impl Supervisor {
     /// This supervisor and its subtree, each child expanded through the
     /// instance captured with its row (see [`SupervisorTree`]).
     pub fn tree(&self) -> SupervisorTree {
+        self.core.tree()
+    }
+    pub fn failure(&self) -> Option<String> {
+        system::lock(&self.core.failure)
+            .as_ref()
+            .map(|f| f.message.clone())
+    }
+    pub async fn join(&self) {
+        let _ = system::wait_true(self.core.done.subscribe()).await;
+    }
+    pub async fn shutdown(&self, grace: Duration) -> SupervisorReport {
+        self.stop();
+        let complete = rt::timeout(grace, system::wait_true(self.core.done.subscribe()))
+            .await
+            .unwrap_or(false);
+        if !complete {
+            self.core.stop_remaining();
+        }
+        SupervisorReport {
+            complete,
+            failure: self.failure(),
+            children: self.snapshots(),
+        }
+    }
+}
+
+impl Core {
+    /// [`Supervisor::tree`], also reached through the system's shutdown
+    /// unit for `ActorSystem::snapshot`.
+    pub(crate) fn tree(&self) -> SupervisorTree {
         use crate::introspection::{Field, Unavailable};
         let captured: Vec<(ChildInfo, Captured)> =
-            self.core.children().iter().map(|c| c.capture()).collect();
+            self.children().iter().map(|c| c.capture()).collect();
         let rows: Vec<ChildInfo> = captured.iter().map(|(row, _)| row.clone()).collect();
         let children = captured
             .into_iter()
@@ -361,35 +391,13 @@ impl Supervisor {
             })
             .collect();
         SupervisorTree {
-            system: self.core.system,
-            name: self.core.name.clone(),
-            strategy: self.core.config.strategy,
-            phase: self.core.phase(),
-            budget: self.core.budget(),
+            system: self.system,
+            name: self.name.clone(),
+            strategy: self.config.strategy,
+            phase: self.phase(),
+            budget: self.budget(),
             counts: ChildCounts::of(&rows),
             children,
-        }
-    }
-    pub fn failure(&self) -> Option<String> {
-        system::lock(&self.core.failure)
-            .as_ref()
-            .map(|f| f.message.clone())
-    }
-    pub async fn join(&self) {
-        let _ = system::wait_true(self.core.done.subscribe()).await;
-    }
-    pub async fn shutdown(&self, grace: Duration) -> SupervisorReport {
-        self.stop();
-        let complete = rt::timeout(grace, system::wait_true(self.core.done.subscribe()))
-            .await
-            .unwrap_or(false);
-        if !complete {
-            self.core.stop_remaining();
-        }
-        SupervisorReport {
-            complete,
-            failure: self.failure(),
-            children: self.snapshots(),
         }
     }
 }

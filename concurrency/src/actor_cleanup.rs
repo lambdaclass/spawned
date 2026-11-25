@@ -75,6 +75,10 @@ pub(crate) struct ActorCleanup<C: Fn()> {
     /// drop: if it is abnormal, it is reported once every obligation is
     /// answered (a subscriber is user code).
     own_reason: bool,
+    /// The instance's entry in the process-wide actor table (`console`),
+    /// removed at publication.
+    #[cfg(feature = "console")]
+    listed: Option<crate::introspection::table::Listed>,
 }
 impl<C: Fn()> ActorCleanup<C> {
     pub(crate) fn new(
@@ -104,6 +108,8 @@ impl<C: Fn()> ActorCleanup<C> {
             name: None,
             report: None,
             own_reason: false,
+            #[cfg(feature = "console")]
+            listed: None,
         }
     }
     /// The instance's startup cell and its start edge's parent.
@@ -123,6 +129,20 @@ impl<C: Fn()> ActorCleanup<C> {
     /// Emit the `spawned::crash` report for this instance (introspection).
     pub(crate) fn with_report(mut self, signal: std::sync::Arc<crate::link::SignalTarget>) -> Self {
         self.report = Some(signal);
+        self
+    }
+    /// List the instance in the process-wide actor table until publication
+    /// (`console` feature; a no-op without it). Called once its start has
+    /// committed: one shard write lock now and one at publication, nothing
+    /// on send, dispatch or a turn.
+    pub(crate) fn with_listing(self, _handle: &crate::ChildHandle) -> Self {
+        #[cfg(feature = "console")]
+        {
+            let mut this = self;
+            this.listed = Some(crate::introspection::table::insert(_handle));
+            this
+        }
+        #[cfg(not(feature = "console"))]
         self
     }
     /// Seal `replies` with the final reason at D, inside the exit-table
@@ -373,6 +393,10 @@ impl<C: Fn()> Drop for ActorCleanup<C> {
                 edge.deliver();
             }
         });
+        // Unlisted just before publication: once `wait_exit()` is ready,
+        // `introspection::info(id)` is `None` (OTP: `undefined`).
+        #[cfg(feature = "console")]
+        drop(self.listed.take());
         self.completion.send_replace(Some(reason.clone()));
         // Answers become available only now that wait_exit is published.
         if let Some((cell, _)) = &self.startup {
