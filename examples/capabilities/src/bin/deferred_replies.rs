@@ -48,13 +48,6 @@ pub trait RouterProtocol: Send + Sync {
 pub struct Router {
     backend: ActorRef<Backend>,
 }
-struct Delegated {
-    res: JobOutcome<Result<u64, ActorError>>,
-    token: ReplyTo<u64>,
-}
-impl Message for Delegated {
-    type Result = ();
-}
 
 #[actor(protocol = RouterProtocol)]
 impl Router {
@@ -71,12 +64,13 @@ impl Router {
         let downstream = self
             .backend
             .send_request(backend_protocol::Lookup { millis: msg.millis }, deadline);
-        let work = async move { downstream?.await };
-        if let Err(e) = ctx.pipe_reply(
+        // The job's result answers the caller in a later turn of this actor
+        // (fenced at stop); `pipe_reply` is the general form, when the
+        // result needs this actor's state before the answer.
+        if let Err(e) = ctx.forward(
             JobOptions::new(),
             token,
-            |_| work,
-            |res, token| Delegated { res, token },
+            |_| async move { downstream?.await },
         ) {
             e.into_token().overloaded();
         }
@@ -85,16 +79,6 @@ impl Router {
     #[request_handler]
     async fn ping(&mut self, _: router_protocol::Ping, _: &Context<Self>) -> &'static str {
         "pong"
-    }
-
-    #[send_handler]
-    async fn delegated(&mut self, msg: Delegated, _: &Context<Self>) {
-        match msg.res {
-            Ok(Ok(v)) => {
-                msg.token.reply(v);
-            }
-            _ => msg.token.overloaded(),
-        }
     }
 }
 

@@ -24,6 +24,12 @@
   turn; compiled out without `console`. `ActorId` is now `Ord`.
   **Behaviour change:** `ChildHandle::is_alive()` is false from the death
   point (callers answered, sends `NoProc`), no longer only from publication.
+- `ctx.forward(opts, token, |job| work)` (tasks mode): delegate a deferred
+  reply in one call. The job's `Ok(value)` answers the caller in a later
+  turn, fenced at stop like any job result; `Err(Overloaded)` answers
+  `Overloaded`, any other error, a panic or the job deadline drops the token.
+  It is `pipe_reply` without the message type and handler you wrote for it
+  (the `deferred_replies` example loses about 20 lines).
 - Examples consolidated from 19 crates to 10 with no example
   removed: each tasks/threads pair (`bank`, `chat_room`, `ping_pong`,
   `signal_test`, `updater`) is one package whose second binary is
