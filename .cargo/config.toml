@@ -1,0 +1,13 @@
+# `cargo sim-test ...` runs tests on the deterministic simulator
+# (docs/TESTING.md, "Running the simulator"): `cargo test` with
+# `--cfg spawned_sim --cfg tokio_unstable` and the `sim` profile, whose
+# artifacts live in target/sim, so it does not thrash the normal build cache.
+# These are cfgs, not features: spawned-sim-libc replaces the libc clock and
+# entropy, so it must never reach a production build through feature
+# unification. A RUSTFLAGS environment variable overrides these flags.
+[alias]
+sim-test = [
+    "test",
+    "--profile", "sim",
+    "--config", "build.rustflags = ['--cfg', 'spawned_sim', '--cfg', 'tokio_unstable']",
+]

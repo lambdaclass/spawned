@@ -94,7 +94,7 @@ layer_T() {
 }
 
 layer_S() {
-    timed env RUSTFLAGS="$sim_flags" CARGO_TARGET_DIR="$root/target/sim" \
+    timed env RUSTFLAGS="$sim_flags" CARGO_TARGET_DIR="$root/target/sim-suites" \
         python3 "$root/scripts/run-sim-tests.py" -p spawned-concurrency --jobs 4 --timeout 120
     if grep -qE '^error(\[E[0-9]+\])?:' "$log" && ! grep -qE '[0-9]+ passed' "$log"; then
         verdict=build; detail=""; return

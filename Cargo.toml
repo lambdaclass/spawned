@@ -37,3 +37,9 @@ repository = "https://github.com/lambdaclass/spawned"
 [profile.panic-abort]
 inherits = "dev"
 panic = "abort"
+
+# Simulator builds (`cargo sim-test`, .cargo/config.toml): the dev profile in
+# its own directory, target/sim, so the --cfg spawned_sim build does not
+# evict the normal one.
+[profile.sim]
+inherits = "dev"

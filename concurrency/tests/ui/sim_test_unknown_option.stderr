@@ -1,0 +1,5 @@
+error: sim_test accepts flavor, worker_threads, seeds, explore, iterations, sim_only and crate
+ --> tests/ui/sim_test_unknown_option.rs:2:33
+  |
+2 | #[spawned_concurrency::sim_test(timeout = 5)]
+  |                                 ^^^^^^^

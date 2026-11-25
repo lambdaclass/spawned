@@ -1048,7 +1048,9 @@ pub enum ActorError {
 Wraps tokio primitives. Under `--cfg spawned_sim` every timer and task here
 runs on the deterministic simulator (virtual time), so code that uses these
 instead of `tokio::time` / `tokio::spawn` directly is testable with
-`#[sim_test]` ([docs/TESTING.md](TESTING.md)):
+`#[spawned_concurrency::sim_test]` (`cargo sim-test` in this repository;
+`#[sim_test(sim_only)]` for a test that exists only under the simulator; see
+[docs/TESTING.md](TESTING.md#seeds-and-decision-tapes-under---cfg-spawned_sim)):
 
 | Item | Description |
 |------|-------------|

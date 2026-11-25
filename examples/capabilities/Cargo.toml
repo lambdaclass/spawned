@@ -28,9 +28,7 @@ required-features = ["metrics"]
 name = "shutdown_diagnostics"
 required-features = ["diagnostics"]
 
-# tests/deterministic_simulation.rs gates its virtual-time test on the simulator.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_sim)'] }
 # Manual `impl Actor` `started()` methods return `()` or an `Init`, refining
 # the trait's `impl Into<Init<Self>>` (`#[started]` adds this allow itself).
 refining_impl_trait = { level = "allow", priority = -1 }

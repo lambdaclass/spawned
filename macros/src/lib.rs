@@ -244,13 +244,17 @@ pub fn send_handler(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// `worker_threads` (used only on Tokio), `seeds = N` (simulation seeds
 /// `0..N`), `explore = "pct:d=3"` (simulation scheduling strategy: `random`,
 /// `pct[:d=D][,k=K]` or `dfs[:bound=B][,depth=N]`) and `iterations = N` (runs
-/// for that strategy). The function may take one `u64` argument, the seed.
+/// for that strategy). `sim_only` compiles the test only under
+/// `--cfg spawned_sim` (the cfg is evaluated by `spawned-concurrency`, so the
+/// caller needs no `#[cfg]` or `unexpected_cfgs` entry). The expansion goes
+/// through `spawned_concurrency::__private`; `crate = path` names a renamed
+/// `spawned-concurrency`. The function may take one `u64` argument, the seed.
 ///
 /// ```ignore
-/// #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
+/// #[spawned_concurrency::sim_test(flavor = "multi_thread", worker_threads = 2)]
 /// async fn restarts_child(seed: u64) { /* ... */ }
 ///
-/// #[spawned_macros::sim_test(explore = "pct:d=3", iterations = 1000)]
+/// #[spawned_concurrency::sim_test(sim_only, explore = "pct:d=3", iterations = 1000)]
 /// async fn no_lost_update() { /* ... */ }
 /// ```
 #[proc_macro_attribute]

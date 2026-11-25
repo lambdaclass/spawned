@@ -142,13 +142,32 @@ pub use spawned_rt::time::Instant;
 ///
 /// Runs the test once on Tokio in normal builds, and over a range of seeds on
 /// the deterministic simulator (one thread, seeded scheduling, virtual time)
-/// under `RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable"`. The expansion
-/// calls `spawned_rt::tasks::SimTest`, so the crate using it also depends on
-/// `spawned-rt`. Failing seeds print `SPAWNED_SIM_SEED` and `SPAWNED_SIM_TAPE`
-/// replay commands. See `docs/TESTING.md`, "Seeds and decision tapes under
-/// `--cfg spawned_sim`", for the options, replay and what the simulator does
-/// not model.
+/// under `RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable"` (in this
+/// repository, `cargo sim-test`). The expansion goes through this crate
+/// (`spawned_concurrency::__private`), so no direct `spawned-rt` dependency
+/// is needed; a crate that renames `spawned-concurrency` passes
+/// `crate = my_spawned`. `#[sim_test(sim_only)]` compiles the test only
+/// under the simulator, without `#[cfg(spawned_sim)]` or `unexpected_cfgs`
+/// configuration in the calling crate. Failing seeds print
+/// `SPAWNED_SIM_SEED` and `SPAWNED_SIM_TAPE` replay commands. See
+/// `docs/TESTING.md`, "Seeds and decision tapes under `--cfg spawned_sim`",
+/// for the options, replay and what the simulator does not model.
 pub use spawned_macros::sim_test;
+
+// `#[sim_test(sim_only)]`: the cfg is evaluated here, in a crate that
+// declares it, so callers need no `unexpected_cfgs` configuration.
+#[cfg(spawned_sim)]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __sim_only {
+    ($($item:item)*) => { $($item)* };
+}
+#[cfg(not(spawned_sim))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __sim_only {
+    ($($item:item)*) => {};
+}
 
 #[cfg(all(kani, feature = "async"))]
 mod kani_proofs;
@@ -166,6 +185,14 @@ mod mailbox;
 pub mod __private {
     use crate::reply::{Deadline, PendingReply, ReplyReceiver};
     use crate::ActorError;
+
+    /// `#[sim_test]` expands through this, so a test crate needs no direct
+    /// `spawned-rt` dependency.
+    #[cfg(feature = "async")]
+    pub use spawned_rt::tasks::SimTest;
+
+    /// `#[sim_test(sim_only)]`: keeps its items only under `spawned_sim`.
+    pub use crate::__sim_only as sim_only;
 
     /// Seals `Receiver` (tasks and threads): implemented by
     /// `ActorRef`, `Context` and spawned-test's probe only.

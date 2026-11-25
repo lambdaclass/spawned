@@ -1,15 +1,32 @@
 //! `#[sim_test]`: a test run under the deterministic simulator.
 use super::*;
 
+const OPTIONS: &str =
+    "sim_test accepts flavor, worker_threads, seeds, explore, iterations, sim_only and crate";
+
 pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let options = parse_macro_input!(attr with syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_terminated);
+    let options = parse_macro_input!(attr with syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated);
     let function = parse_macro_input!(item as syn::ItemFn);
     let mut multi_thread = false;
     let mut workers: Option<syn::Expr> = None;
     let mut seeds: Option<syn::Expr> = None;
     let mut explore: Option<syn::Expr> = None;
     let mut iterations: Option<syn::Expr> = None;
+    let mut sim_only = false;
+    let mut krate: syn::Path = syn::parse_quote!(::spawned_concurrency);
     for option in options {
+        let option = match option {
+            syn::Meta::Path(path) if path.is_ident("sim_only") => {
+                sim_only = true;
+                continue;
+            }
+            syn::Meta::NameValue(option) => option,
+            other => {
+                return syn::Error::new_spanned(other, OPTIONS)
+                    .to_compile_error()
+                    .into()
+            }
+        };
         let key = option
             .path
             .get_ident()
@@ -40,13 +57,18 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
             "seeds" => seeds = Some(option.value),
             "explore" => explore = Some(option.value),
             "iterations" => iterations = Some(option.value),
+            "crate" => match option.value {
+                syn::Expr::Path(path) => krate = path.path,
+                other => {
+                    return syn::Error::new_spanned(other, "expected `crate = path`")
+                        .to_compile_error()
+                        .into()
+                }
+            },
             _ => {
-                return syn::Error::new_spanned(
-                    &option.path,
-                    "sim_test accepts flavor, worker_threads, seeds, explore and iterations",
-                )
-                .to_compile_error()
-                .into()
+                return syn::Error::new_spanned(&option.path, OPTIONS)
+                    .to_compile_error()
+                    .into()
             }
         }
     }
@@ -95,11 +117,11 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
     let seeds = seeds.map(|n| quote! { .seeds(0..(#n)) });
     let explore = explore.map(|s| quote! { .explore(#s) });
     let iterations = iterations.map(|n| quote! { .iterations(#n) });
-    quote! {
+    let test = quote! {
         #(#attrs)*
         #[test]
         #vis fn #name() {
-            ::spawned_rt::tasks::SimTest::new()
+            #krate::__private::SimTest::new()
                 .named(env!("CARGO_PKG_NAME"), module_path!(), stringify!(#name))
                 #flavor
                 #seeds
@@ -107,6 +129,13 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
                 #iterations
                 .run(|#seed: u64| async move #body)
         }
+    };
+    if sim_only {
+        // The cfg is evaluated by spawned-concurrency, which declares it, so
+        // the caller needs neither `#[cfg(spawned_sim)]` nor the
+        // `unexpected_cfgs` lint configuration.
+        quote! { #krate::__private::sim_only! { #test } }.into()
+    } else {
+        test.into()
     }
-    .into()
 }

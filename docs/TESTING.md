@@ -424,8 +424,7 @@ child after a panic and must violate it.
 
 ```sh
 cargo test --locked -p spawned-concurrency --test semantics_gaps --test sim_ordering
-RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim \
-  cargo test --locked -p spawned-concurrency --test semantics_gaps --test sim_ordering
+cargo sim-test --locked -p spawned-concurrency --test semantics_gaps --test sim_ordering
 ```
 
 ## Controlled failures, histories and simulations
@@ -509,11 +508,36 @@ simulator seeds Tokio's thread-local RNG (`select!` branch order, `watch`
 waiter shards) per run, and Tokio only exposes that seed under its own cfg; a
 build with `spawned_sim` alone fails with a `compile_error!`.
 
+In this repository `cargo sim-test` (an alias in `.cargo/config.toml`) is
+`cargo test` with those flags and the `sim` profile, a copy of `dev` whose
+artifacts live in `target/sim`, so a simulator build does not evict the
+normal one (a `RUSTFLAGS` environment variable overrides the alias's flags):
+
+```sh
+cargo sim-test -p spawned-concurrency --test exit_signals_sim
+SPAWNED_SIM_SEED=3 cargo sim-test -p spawned-capability-examples --test deterministic_simulation
+```
+
+The flags stay cfgs rather than a Cargo feature: `spawned-sim-libc`
+replaces the libc clock and entropy, and a feature enabled by any crate in a
+graph is enabled for all of them, so a test-only feature could reach a
+production build. A user crate copies the alias and adds
+`[profile.sim] inherits = "dev"` to its workspace `Cargo.toml`.
+
 Tests written with `#[spawned_concurrency::sim_test]` (re-exported from
-`spawned-macros`; the expansion calls `spawned_rt::tasks::SimTest`, so the
-test crate also depends on `spawned-rt`), or with the plain function
+`spawned-macros`; the expansion goes through
+`spawned_concurrency::__private`, so the test crate needs no direct
+`spawned-rt` dependency, and `crate = path` names a renamed
+`spawned-concurrency`), or with the plain function
 `spawned_rt::tasks::sim_test`, run once on Tokio in normal builds and over
-seeds `0..SPAWNED_SIM_SEEDS` (default 8) under the cfg. A failure prints the
+seeds `0..SPAWNED_SIM_SEEDS` (default 8) under the cfg.
+`#[sim_test(sim_only)]` compiles the test only under the cfg (the cfg is
+evaluated inside `spawned-concurrency`, so the calling crate needs no
+`#[cfg(spawned_sim)]` and no `unexpected_cfgs` entry): for a test that only
+makes sense there, such as hours of virtual time or a `#[should_panic]`
+check that the explorer finds a race Tokio only hits now and then. Outside
+the cfg its body is not compiled, so imports it alone uses belong inside the
+body. A failure prints the
 seed, a `SPAWNED_SIM_SEED=n` replay command (carrying `SPAWNED_SIM_SPIN`,
 `SPAWNED_SIM_MAX_STEPS`, `SPAWNED_SIM_FAIR_AFTER` and
 `SPAWNED_SIM_TURN_BUDGET` if they were set), and the path of a decision tape
@@ -749,8 +773,7 @@ threads-mode tests run their native threads unsimulated even in a simulator
 build.
 
 ```sh
-RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim \
-  cargo test -p spawned-concurrency --test supervision --test sim
+cargo sim-test -p spawned-concurrency --test supervision --test sim
 ```
 
 `deferred_sim` explores deferred-reply and job races with PCT (`d=3`) and
@@ -763,8 +786,7 @@ bugs (no cancel fence at dispatch; a late reply reported `Delivered`) are
 found within the first runs.
 
 ```sh
-RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim \
-  cargo test -p spawned-concurrency --test deferred_sim --test deferred_replies --test deferred_jobs
+cargo sim-test -p spawned-concurrency --test deferred_sim --test deferred_replies --test deferred_jobs
 ```
 
 `exit_signals_sim` explores the exit-signal orderings with PCT (`d=3`, 1,000
@@ -788,8 +810,7 @@ bugs (a late signal ignored, a kill that does not skip `stopped()`, a monitor
 that ignores the death point) are found in the first run.
 
 ```sh
-RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim \
-  cargo test -p spawned-concurrency --test exit_signals_sim -- --nocapture
+cargo sim-test -p spawned-concurrency --test exit_signals_sim -- --nocapture
 ```
 
 ### Simulated suites in CI
@@ -808,7 +829,7 @@ seed reached its window). Larger sweeps (`SPAWNED_SIM_SEEDS`, `SPAWNED_SIM_ITERA
 ignored `explore_budget_table`) stay manual. Same run locally:
 
 ```sh
-RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim \
+RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim-suites \
   python3 scripts/run-sim-tests.py -p spawned-concurrency -p spawned-rt:lib --jobs 4 --timeout 120
 ```
 

@@ -294,31 +294,67 @@ Run `cargo test --workspace`.
 
 ### Testing your own actors deterministically
 
-Mark async tests with `#[spawned_concurrency::sim_test]` (the crate also
-needs `spawned-rt`, which it already uses to run actors). In a normal build they run
-once on Tokio. Built with `RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable"`,
-each one runs on the simulator over seeds `0..SPAWNED_SIM_SEEDS` (default 8)
-with virtual time, so timers and restart backoff take no wall-clock time:
+Mark async tests with `#[spawned_concurrency::sim_test]` (the attribute needs no
+other dependency). In a normal build they run once on Tokio. Built with
+`RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable"`, each one runs on the
+simulator over seeds `0..SPAWNED_SIM_SEEDS` (default 8) with virtual time, so
+timers and restart backoff take no wall-clock time. These are cfgs, not
+Cargo features, so that the simulator's clock and entropy overrides can never
+reach a production build. Add an alias to your `.cargo/config.toml` (this
+repository has it) to run them without retyping the flags, in a separate
+`sim` profile (`target/sim`) that does not evict your normal build:
 
-```rust
-#[spawned_concurrency::sim_test]
-async fn find_returns_what_add_stored() {
-    let ns = NameServer::new().spawn();
-    ns.add("Joe".into(), "At Home".into()).await.unwrap();
-    assert_eq!(
-        ns.find("Joe".into()).await.unwrap(),
-        FindResult::Found { value: "At Home".to_string() }
-    );
-}
+```toml
+# .cargo/config.toml (plus `[profile.sim] inherits = "dev"` in Cargo.toml)
+[alias]
+sim-test = ["test", "--profile", "sim", "--config",
+            "build.rustflags = ['--cfg', 'spawned_sim', '--cfg', 'tokio_unstable']"]
 ```
 
-A failing run prints its seed and the path of a decision tape. Rerun with
-`SPAWNED_SIM_SEED=n` or `SPAWNED_SIM_TAPE=path` to get exactly the same
-interleaving, and use the `.min.tape` the harness writes for a shrunk one.
+A race that Tokio hides, before and after. Two clients bump a counter with a
+read, then a write, as two requests:
+
+```rust
+async fn bump(counter: ActorRef<Counter>) {
+    let n = counter.get().await.unwrap();
+    counter.set(n + 1).await.unwrap(); // the other client may have read n too
+}
+
+// Before: passes almost every run, and fails in CI once in a while.
+#[tokio::test(flavor = "multi_thread")]
+async fn read_modify_write_loses_an_update() {
+    let counter = Counter::default().start().await.unwrap();
+    let a = tokio::spawn(bump(counter.clone()));
+    let b = tokio::spawn(bump(counter.clone()));
+    a.await.unwrap();
+    b.await.unwrap();
+    assert_eq!(counter.get().await.unwrap(), 2, "lost update");
+}
+
+// After: the same body (spawning with spawned_rt::tasks::spawn). Under
+// `cargo sim-test` it fails on every run, at the same schedule.
+#[spawned_concurrency::sim_test(explore = "pct:d=3", iterations = 200)]
+async fn read_modify_write_loses_an_update() { /* ... */ }
+```
+
+```text
+spawned_sim: `read_modify_write_loses_an_update` failed under pct:d=3,k=16,fair=20000
+  at run 5 (seed 4) after 15 polls at virtual time 0ns: assertion `left == right` failed: lost update
+  replay seed: SPAWNED_SIM_STRATEGY=pct:d=3,k=16,fair=20000 SPAWNED_SIM_SEED=4 RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" cargo test ...
+  tape:        $TMPDIR/spawned-sim/read_modify_write_loses_an_update-pct-seed4.tape
+  shrunk tape: $TMPDIR/spawned-sim/read_modify_write_loses_an_update-pct-seed4.min.tape
+```
+
+Rerun with `SPAWNED_SIM_SEED=n` or `SPAWNED_SIM_TAPE=path` to get exactly the
+same interleaving, and use the `.min.tape` the harness writes for a shrunk
+one. The fix (one `increment` message, handled in one turn) then passes every
+schedule. `#[sim_test(sim_only)]` keeps a test that only makes sense under the
+simulator (an hour of virtual time, or the failing "before" above) out of
+normal builds, with no `#[cfg(spawned_sim)]` in your crate.
 [TESTING.md](docs/TESTING.md#seeds-and-decision-tapes-under---cfg-spawned_sim)
 covers PCT and bounded exploration and what the simulator does not model;
 [deterministic_simulation.rs](examples/capabilities/tests/deterministic_simulation.rs)
-is a runnable example.
+runs this example (`cargo sim-test -p spawned-capability-examples --test deterministic_simulation`).
 
 ### How Spawned itself is verified
 

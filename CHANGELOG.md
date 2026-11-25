@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Simulator UX: `cargo sim-test` (a `.cargo/config.toml` alias) runs tests
+  with `--cfg spawned_sim --cfg tokio_unstable` in a new `sim` profile
+  (`target/sim`), so it no longer evicts the normal build.
+  `#[sim_test(sim_only)]` compiles a test only under the simulator, without
+  `#[cfg(spawned_sim)]` or `unexpected_cfgs` configuration in the calling
+  crate. `#[sim_test]` now expands through `spawned_concurrency::__private`
+  (`crate = path` for a renamed dependency), so a test crate no longer needs
+  a direct `spawned-rt` dependency; a crate that used
+  `spawned_macros::sim_test` without depending on `spawned-concurrency` must
+  add it. The README shows a lost-update race that passes under Tokio
+  turned into a deterministic, seed-replayable failure
+  (`examples/capabilities/tests/deterministic_simulation.rs`).
 - `Context::stopping()` (tasks mode): a `Send + 'static` future that
   resolves once `ctx.exit_pending()` is `true` (a stop, a kill, an untrapped
   exit signal, a panic, or a parent exit queued for a trapping actor), so a
