@@ -6,7 +6,8 @@
 //!
 //! # Quick Start
 //!
-//! ```
+#![cfg_attr(feature = "async", doc = "```")]
+#![cfg_attr(not(feature = "async"), doc = "```ignore")]
 //! use spawned_concurrency::tasks::{ActorStart as _, Context};
 //! use spawned_concurrency::{actor, protocol, Response};
 //!
