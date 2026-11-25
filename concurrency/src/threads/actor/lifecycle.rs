@@ -581,6 +581,7 @@ pub(super) fn run_actor_receiving<A: Actor>(
             std::any::type_name::<A>(),
             cause,
             reason.as_ref(),
+            A::HAS_STOPPED,
         );
     }
     if run_hook {

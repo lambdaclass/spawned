@@ -1054,6 +1054,7 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
             std::any::type_name::<A>(),
             cause,
             reason.as_ref(),
+            A::HAS_STOPPED,
         );
     }
     if !run_hook {

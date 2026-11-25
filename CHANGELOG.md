@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A skipped `stopped()` is a `warn` once per actor type when the actor
+  overrides it (`#[stopped]` in `#[actor]`, or `const HAS_STOPPED: bool =
+  true` on a hand-written impl): a kill or an untrapped exit signal, such as
+  a supervisor's shutdown of an actor that does not trap exits, no longer
+  skips cleanup silently. The message names the remedies (`trap_exit` in
+  `started()`, or `Drop`). Other skips stay at `debug`; no behaviour changes.
 - `Context::stopping()` (tasks mode): a `Send + 'static` future that
   resolves once `ctx.exit_pending()` is `true` (a stop, a kill, an untrapped
   exit signal, a panic, or a parent exit queued for a trapping actor), so a

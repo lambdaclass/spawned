@@ -25,13 +25,39 @@ pub(crate) fn log_stopped_skipped(
     actor_type: &'static str,
     cause: &'static str,
     reason: Option<&ExitReason>,
+    has_stopped: bool,
 ) {
     let reason = reason.cloned().unwrap_or(ExitReason::Killed);
+    if has_stopped && first_skip_of(actor_type) {
+        log_safely(|| {
+            tracing::warn!(event = "stopped_skipped", actor = %actor, actor_type, cause,
+                reason = %reason, "stopped() skipped: the exit was not begun by the actor, \
+                an administrative stop or its parent. As in OTP, a kill or an untrapped \
+                exit signal (including a supervisor's or system's shutdown of an actor \
+                that does not trap exits) skips it; call ctx.trap_exit(true) in started() \
+                to run it on shutdown, or move cleanup that must always run into Drop. \
+                Logged once per actor type; later skips are logged at debug");
+        });
+        return;
+    }
     log_safely(|| {
         tracing::debug!(event = "stopped_skipped", actor = %actor, actor_type, cause,
             reason = %reason, "stopped() skipped: the exit was not begun by the actor, \
             an administrative stop or its parent");
     });
+}
+
+/// True the first time an actor type's overridden `stopped()` is skipped.
+/// Only the skip path takes this lock, and only for actors that override
+/// `stopped()`.
+fn first_skip_of(actor_type: &'static str) -> bool {
+    static WARNED: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let mut warned = WARNED.lock().unwrap_or_else(|p| p.into_inner());
+    if warned.contains(&actor_type) {
+        return false;
+    }
+    warned.push(actor_type);
+    true
 }
 
 /// Constructed before dispatch, so even a never-polled actor has cleanup.
@@ -265,7 +291,7 @@ impl<C: Fn()> ActorCleanup<C> {
             replies.end_discharge();
         }
         if let Some(reason) = self.skip_log.take() {
-            log_stopped_skipped(self.id, "", "runtime_drop", Some(&reason));
+            log_stopped_skipped(self.id, "", "runtime_drop", Some(&reason), false);
         }
         if self.own_reason {
             self.crash_report();

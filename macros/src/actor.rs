@@ -751,7 +751,10 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
                     ::core::option::Option::Some(|state: &Self| ::std::format!("{state:#?}"));
             },
         });
-        quote! { #outstanding #native #format_status }
+        let has_stopped = stopped_method
+            .is_some()
+            .then(|| quote! { const HAS_STOPPED: bool = true; });
+        quote! { #outstanding #native #format_status #has_stopped }
     };
 
     let actor_impl = quote! {
