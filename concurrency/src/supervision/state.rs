@@ -104,9 +104,6 @@ pub(super) struct Core {
     pub(super) children: Mutex<Vec<Arc<dyn ChildControl>>>,
     pub(super) budget: Mutex<RetryBudget>,
     pub(super) config: SupervisorConfig,
-    /// `tree()` and `spawned::supervisor` reports.
-    pub(super) name: String,
-    pub(super) system: Option<crate::introspection::SystemId>,
     pub(super) trace: TraceId,
     #[cfg(test)]
     pub(super) initial_ready_pause: Mutex<Option<(CancellationToken, watch::Sender<bool>)>>,
@@ -116,42 +113,6 @@ pub(super) struct Core {
     pub(super) deadline_recorded: std::sync::atomic::AtomicBool,
 }
 impl Core {
-    /// A copy of the child list (its lock is released on return).
-    pub(super) fn children(&self) -> Vec<Arc<dyn ChildControl>> {
-        system::lock(&self.children).clone()
-    }
-    pub(super) fn phase(&self) -> SupervisorPhase {
-        let failed = self.failed.load(std::sync::atomic::Ordering::Acquire);
-        if *self.done.borrow() {
-            if failed {
-                SupervisorPhase::Failed
-            } else {
-                SupervisorPhase::Stopped
-            }
-        } else if failed {
-            SupervisorPhase::Failed
-        } else if !self.gate.is_open() {
-            SupervisorPhase::Stopping
-        } else if *self.ready.borrow() {
-            SupervisorPhase::Running
-        } else {
-            SupervisorPhase::Starting
-        }
-    }
-    pub(super) fn budget(&self) -> RestartBudget {
-        let budget = system::lock(&self.budget);
-        let now = Instant::now();
-        let in_window = budget
-            .attempts
-            .iter()
-            .filter(|&&time| now.saturating_duration_since(time) < budget.window)
-            .count();
-        RestartBudget {
-            max_restarts: budget.max,
-            window: budget.window,
-            used: in_window + budget.reserved,
-        }
-    }
     pub(super) fn close_admission(&self) {
         trace::atomic(|| {
             if self.gate.is_open() {
@@ -292,50 +253,6 @@ impl Core {
             self.fail_kind(kind, error);
         });
     }
-    /// A `spawned::supervisor` report (OTP's SASL supervisor report): the
-    /// target and field names are a contract (stable from 1.0). Emitted
-    /// outside every lock and trace section; a panicking subscriber is
-    /// contained.
-    pub(super) fn report(
-        &self,
-        level: tracing::Level,
-        event: &'static str,
-        child: &str,
-        generation: u64,
-        reason: Option<&ExitReason>,
-        action: &'static str,
-    ) {
-        let budget = self.budget();
-        let system = self.system.map(|id| id.to_string());
-        let reason = reason.map(ToString::to_string);
-        let window_ms = u64::try_from(budget.window.as_millis()).unwrap_or(u64::MAX);
-        crate::actor_cleanup::log_safely(|| {
-            macro_rules! emit {
-                ($macro:ident) => {
-                    tracing::$macro!(
-                        target: "spawned::supervisor",
-                        event,
-                        supervisor = %self.name,
-                        system = system.as_deref(),
-                        child,
-                        generation,
-                        reason = reason.as_deref(),
-                        restarts_in_window = budget.used,
-                        max_restarts = budget.max_restarts,
-                        window_ms,
-                        action,
-                        "supervisor {}: {event} {child} (generation {generation}): {action}",
-                        self.name,
-                    )
-                };
-            }
-            match level {
-                tracing::Level::ERROR => emit!(error),
-                tracing::Level::WARN => emit!(warn),
-                _ => emit!(info),
-            }
-        });
-    }
     pub(super) fn log_failure_once(&self) {
         let failure = {
             let mut slot = system::lock(&self.failure);
@@ -365,16 +282,6 @@ impl Core {
         } else {
             "supervision_give_up"
         };
-        if failure.kind == FailureKind::RestartBudget {
-            self.report(
-                tracing::Level::ERROR,
-                "restart_intensity_reached",
-                child,
-                generation,
-                reason,
-                "shutdown",
-            );
-        }
         if let Err(payload) = std::panic::catch_unwind(AssertUnwindSafe(|| {
             tracing::warn!(event, child, generation, ?reason, ?last_error,
                 kind = ?failure.kind, error = %failure.message, "supervisor failed");

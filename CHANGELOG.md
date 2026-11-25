@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `ctx.forward(opts, token, |job| work)` (tasks mode): delegate a deferred
+  reply in one call. The job's `Ok(value)` answers the caller in a later
+  turn, fenced at stop like any job result; `Err(Overloaded)` answers
+  `Overloaded`, any other error, a panic or the job deadline drops the token.
+  It is `pipe_reply` without the message type and handler you wrote for it
+  (the `deferred_replies` example loses about 20 lines).
 - `Context::stopping()` (tasks mode): a `Send + 'static` future that
   resolves once `ctx.exit_pending()` is `true` (a stop, a kill, an untrapped
   exit signal, a panic, or a parent exit queued for a trapping actor), so a
@@ -92,18 +98,6 @@
   codegen unit, so instruction counts follow the code rather than how generic
   code is partitioned across units (which moved `async_ct_burst` by about
   +2.6% between v0.8.0 and main with no change on its path).
-- Introspection, step 1c (0.9): `Supervisor::which_children()` and
-  `count_children()` (OTP), and `tree()`, which expands the whole subtree
-  (each worker's `info()`, each nested supervisor's `tree()`) from the
-  instances captured with their rows, holding no lock across a child.
-  `ChildInfo` (key, live actor, ready, state, kind, restart, generation,
-  restarts, last exit and error), `ChildCounts`, `SupervisorTree`,
-  `SupervisedChild::info()`, `SupervisorConfig::name`. Supervisors emit
-  `spawned::supervisor` reports (OTP SASL): `child_terminated`,
-  `child_restarted`, `start_failed`, `restart_intensity_reached`,
-  `shutdown_error` (action `killed` at the kill a stopped child earns at its
-  shutdown time, then `stuck` if the kill does not end it). Semantics I7,
-  I10.
 - Introspection, step 1b (0.9): `get_state(f)` and `get_status()` on
   `ActorRef` (and `with_request_timeout(d)`), `get_status()` /
   `get_status_with_timeout(d)` on `ChildHandle` (OTP `sys:get_state`,

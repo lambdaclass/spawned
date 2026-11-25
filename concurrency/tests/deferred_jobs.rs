@@ -615,6 +615,134 @@ mod tasks_mode {
         }
         router.join().await;
     }
+
+    // -- ctx.forward: delegation with no message type or handler --------------
+
+    struct Forwarder {
+        backend: ActorRef<Backend>,
+        gates: Vec<oneshot::Sender<()>>,
+    }
+    impl Actor for Forwarder {}
+    enum Fwd {
+        Lookup(u64),
+        Fail(ActorError),
+        Panic,
+        Gated,
+    }
+    impl Message for Fwd {
+        type Result = u64;
+    }
+    impl Handler<Fwd> for Forwarder {
+        async fn handle(&mut self, msg: Fwd, reply: PendingReply<'_, u64>, ctx: &Context<Self>) {
+            let Ok(token) = reply.defer() else { return };
+            let forwarded = match msg {
+                Fwd::Lookup(millis) => {
+                    let downstream = self.backend.send_request(Lookup(millis), token.deadline());
+                    ctx.forward(
+                        JobOptions::new(),
+                        token,
+                        |_| async move { downstream?.await },
+                    )
+                }
+                Fwd::Fail(error) => {
+                    ctx.forward(JobOptions::new(), token, |_| async move { Err(error) })
+                }
+                Fwd::Panic => ctx.forward(JobOptions::new(), token, |_| async move {
+                    if true {
+                        panic!("forwarded work panicked");
+                    }
+                    Ok(0)
+                }),
+                Fwd::Gated => {
+                    let (open, gate) = oneshot::channel();
+                    self.gates.push(open);
+                    ctx.forward(JobOptions::new(), token, |_| async move {
+                        let _ = gate.await;
+                        Ok(1)
+                    })
+                }
+            };
+            if let Err(e) = forwarded {
+                e.into_token().overloaded();
+            }
+        }
+    }
+    impl Handler<Ping> for Forwarder {
+        async fn handle(
+            &mut self,
+            _: Ping,
+            reply: PendingReply<'_, &'static str>,
+            _: &Context<Self>,
+        ) {
+            reply.reply("pong");
+        }
+    }
+
+    #[spawned_macros::sim_test]
+    async fn forward_answers_from_the_job_while_serving_its_mailbox() {
+        let backend = Backend.spawn();
+        let fwd = Forwarder {
+            backend: backend.clone(),
+            gates: Vec::new(),
+        }
+        .spawn();
+        let slow = fwd
+            .send_request(
+                Fwd::Lookup(200),
+                spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+            )
+            .unwrap();
+        assert_eq!(fwd.request(Ping).await.unwrap(), "pong");
+        assert_eq!(fwd.request(Fwd::Lookup(1)).await.unwrap(), 10);
+        assert_eq!(slow.await.unwrap(), 2000);
+        // Overloaded passes through; any other error, or a panic, drops the
+        // token.
+        assert!(matches!(
+            fwd.request(Fwd::Fail(ActorError::Overloaded)).await,
+            Err(ActorError::Overloaded)
+        ));
+        assert!(matches!(
+            fwd.request(Fwd::Fail(ActorError::NoProc)).await,
+            Err(ActorError::ReplyDropped)
+        ));
+        assert!(matches!(
+            fwd.request(Fwd::Panic).await,
+            Err(ActorError::ReplyDropped)
+        ));
+        assert_eq!(
+            fwd.request(Ping).await.unwrap(),
+            "pong",
+            "a panicked job is not the actor's"
+        );
+        fwd.context().stop();
+        fwd.join().await;
+        backend.context().stop();
+        backend.join().await;
+    }
+
+    /// The answer is fenced like `pipe_reply`'s terminal message: an owner
+    /// that exits first answers the caller with its final reason.
+    #[spawned_macros::sim_test]
+    async fn forward_is_fenced_by_the_owners_exit() {
+        let backend = Backend.spawn();
+        let fwd = Forwarder {
+            backend: backend.clone(),
+            gates: Vec::new(),
+        }
+        .spawn();
+        let pending = fwd.send_request(Fwd::Gated, Deadline::Never).unwrap();
+        assert_eq!(fwd.request(Ping).await.unwrap(), "pong");
+        fwd.child_handle().stop();
+        fwd.join().await;
+        assert!(matches!(
+            pending.await,
+            Err(ActorError::ActorStopped(
+                spawned_concurrency::ExitReason::Normal
+            ))
+        ));
+        backend.context().stop();
+        backend.join().await;
+    }
 }
 
 #[cfg(not(spawned_sim))]
