@@ -21,7 +21,8 @@ Sts == {"Waiting", "Starting", "Running", "Backoff", "Stopping", "Stopped", "Fai
         "Ignored"}
 SPhases == {"starting", "await", "shutdown", "waitchild", "join", "done"}
 \* pcs owning a generation
-Live == {"constructing", "running", "stopping", "killing", "cleanup"}
+Live == {"constructing", "running", "stopping", "killing", "abandoned",
+         "startkilled", "cleanup"}
 
 \* Shape of a state, written so Apalache can also use it as an initial
 \* predicate. gen ranges over all naturals; alive and pub are determined by
@@ -107,7 +108,7 @@ H_first == \A c \in Children :
 \* of a generation that never became ready (S1 removed them from the
 \* Transient restart table, so RestartFollowsPolicy needs this).
 H_exit == \A c \in Children :
-    /\ pc[c] = "constructing" => ~readyGen[c]   \* Attempt cleared it
+    /\ pc[c] \in {"constructing", "startkilled", "abandoned"} => ~readyGen[c]   \* Attempt cleared it
     /\ pc[c] \in {"stopping", "killing", "cleanup", "decide", "deferred", "top", "backoff", "attempt"}
            /\ gen[c] > 0 /\ readyGen[c] => exitR[c] \in SelfExits
 
@@ -172,9 +173,10 @@ ReverseShutdownStep ==
 NeverReopensStep == open' => open
 StuckOnlyAfterKillStep ==
     \A c \in Children :
-        pc[c] = "stopping" =>
-            /\ pc'[c] \in {"stopping", "killing", "cleanup"}
-            /\ (c \in timedOut' => c \in timedOut)
+        /\ pc[c] = "stopping" => pc'[c] \in {"stopping", "killing", "cleanup"}
+        /\ pc[c] = "abandoned" => pc'[c] \in {"abandoned", "killing", "decide"}
+        /\ (pc[c] \in {"stopping", "abandoned"} \/ (pc[c] = "constructing" /\ ~open))
+            => (c \in timedOut' => c \in timedOut)
 
 IgnoredNotRestartedStep ==
     \A c \in Children :

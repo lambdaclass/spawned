@@ -62,6 +62,11 @@ pub(super) struct ViewData<A: Actor> {
 }
 pub(super) struct View<A: Actor> {
     pub(super) index: usize,
+    pub(super) restart: RestartMode,
+    pub(super) kind: ChildKind,
+    /// A nested supervisor's published instances (set once by
+    /// `nested::add`), to expand its subtree in `tree()`.
+    pub(super) nested: std::sync::OnceLock<super::nested::Ready>,
     pub(super) data: Mutex<ViewData<A>>,
     pub(super) gate: Arc<Admission>,
     pub(super) failed: Arc<std::sync::atomic::AtomicBool>,
@@ -190,6 +195,10 @@ impl<A: Actor> SupervisedChild<A> {
     pub fn snapshot(&self) -> ChildSnapshot {
         system::lock(&self.view.data).snapshot.clone()
     }
+    /// This child's row (OTP `which_children/1` for one child).
+    pub fn info(&self) -> ChildInfo {
+        self.view.capture().0
+    }
     pub fn current(&self) -> Result<ActorRef<A>, ChildUnavailable> {
         self.view
             .gate
@@ -236,7 +245,18 @@ impl<A: Actor> SupervisedChild<A> {
     }
 }
 
+/// What `tree()` expands for one child: the instance captured with its row.
+pub(super) enum Captured {
+    Worker(Option<crate::ChildHandle>),
+    /// The subtree of the live instance; `Err(true)` while that instance
+    /// has not published it (starting), `Err(false)` with no instance.
+    Supervisor(Result<Supervisor, bool>),
+}
+
 pub(super) trait ChildControl: Send + Sync {
+    /// The row and the live instance, read under this child's lock; a
+    /// nested supervisor is resolved after it is released.
+    fn capture(&self) -> (ChildInfo, Captured);
     fn assign_recovery(&self, slot: Arc<RecoverySlot>) -> bool;
     fn stop_generation(&self, slot: &RecoverySlot);
     fn snapshot(&self) -> ChildSnapshot;
@@ -249,6 +269,38 @@ pub(super) trait ChildControl: Send + Sync {
     fn settled(&self) -> BoxFuture<'_, ()>;
 }
 impl<A: Actor> ChildControl for View<A> {
+    fn capture(&self) -> (ChildInfo, Captured) {
+        let (row, handle) = {
+            let data = system::lock(&self.data);
+            let handle = data.scope.as_ref().and_then(|scope| scope.child());
+            let snapshot = &data.snapshot;
+            let row = ChildInfo {
+                key: ChildKey::Named(snapshot.name.clone()),
+                actor: handle.as_ref().map(crate::ChildHandle::id),
+                ready: snapshot.state == ChildState::Running,
+                state: snapshot.state,
+                kind: self.kind,
+                restart: self.restart,
+                generation: snapshot.generation,
+                restarts: snapshot.generation.saturating_sub(1),
+                last_exit: snapshot.last_exit.clone(),
+                last_error: snapshot.last_error.clone(),
+            };
+            (row, handle)
+        };
+        let captured = match self.kind {
+            ChildKind::Worker => Captured::Worker(handle),
+            ChildKind::Supervisor => Captured::Supervisor(match handle {
+                None => Err(false),
+                Some(handle) => self
+                    .nested
+                    .get()
+                    .and_then(|ready| super::nested::resolve_instance(ready, handle.id()))
+                    .ok_or(true),
+            }),
+        };
+        (row, captured)
+    }
     fn assign_recovery(&self, slot: Arc<RecoverySlot>) -> bool {
         let old = {
             let mut data = system::lock(&self.data);

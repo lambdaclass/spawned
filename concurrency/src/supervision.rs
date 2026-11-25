@@ -206,6 +206,9 @@ pub struct SupervisorConfig {
     pub restart_window: Duration,
     pub max_children: usize,
     pub backoff: Backoff,
+    /// Shown by `tree()` and the `spawned::supervisor` reports. `None`:
+    /// `"supervisor"`, or a nested supervisor's `SupervisorSpec` name.
+    pub name: Option<String>,
 }
 impl Default for SupervisorConfig {
     fn default() -> Self {
@@ -215,6 +218,7 @@ impl Default for SupervisorConfig {
             restart_window: Duration::from_secs(30),
             max_children: 1024,
             backoff: Backoff::default(),
+            name: None,
         }
     }
 }
@@ -246,6 +250,11 @@ impl SupervisorConfig {
     /// Set [`backoff`](Self::backoff).
     pub fn backoff(mut self, backoff: Backoff) -> Self {
         self.backoff = backoff;
+        self
+    }
+    /// Set [`name`](Self::name).
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
         self
     }
 }
@@ -320,6 +329,147 @@ pub struct ChildSnapshot {
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("child is not currently ready: {0:?}")]
 pub struct ChildUnavailable(pub ChildState);
+
+// ---------------------------------------------------------------------------
+// Introspection: which_children, count_children, tree (OTP supervisor)
+// ---------------------------------------------------------------------------
+
+/// How a supervisor names a child.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ChildKey {
+    /// A `ChildSpec` or `SupervisorSpec` name.
+    Named(String),
+}
+
+impl std::fmt::Display for ChildKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChildKey::Named(name) => f.write_str(name),
+        }
+    }
+}
+
+/// OTP's child `type`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ChildKind {
+    Worker,
+    Supervisor,
+}
+
+/// One child row of a supervisor (OTP `which_children/1`), consistent with
+/// itself (read under that child's lock). Rows of one call may be sampled
+/// at different instants.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ChildInfo {
+    pub key: ChildKey,
+    /// The live instance (starting, ready or stopping); `None` between
+    /// instances and once the child is done (OTP `undefined`).
+    pub actor: Option<ActorId>,
+    /// The instance is ready (`state == Running`).
+    pub ready: bool,
+    pub state: ChildState,
+    pub kind: ChildKind,
+    pub restart: RestartMode,
+    /// 1 for the child's first instance, one more per restart; 0 before
+    /// its first start.
+    pub generation: u64,
+    /// Restarts so far (`generation - 1`).
+    pub restarts: u64,
+    pub last_exit: Option<ExitReason>,
+    pub last_error: Option<String>,
+}
+
+/// OTP `count_children/1`, derived from the rows of one call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct ChildCounts {
+    /// Every child spec.
+    pub specs: usize,
+    /// Children with a live instance.
+    pub active: usize,
+    /// Child specs that are supervisors.
+    pub supervisors: usize,
+    /// Child specs that are workers.
+    pub workers: usize,
+}
+
+impl ChildCounts {
+    pub(crate) fn of(rows: &[ChildInfo]) -> Self {
+        Self {
+            specs: rows.len(),
+            active: rows.iter().filter(|r| r.actor.is_some()).count(),
+            supervisors: rows
+                .iter()
+                .filter(|r| r.kind == ChildKind::Supervisor)
+                .count(),
+            workers: rows.iter().filter(|r| r.kind == ChildKind::Worker).count(),
+        }
+    }
+}
+
+/// Where a supervisor is in its life.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SupervisorPhase {
+    /// Starting its children in order.
+    Starting,
+    Running,
+    /// Admission closed: stopping its children.
+    Stopping,
+    /// Every child is done.
+    Stopped,
+    /// Gave up (restart intensity, a failed start, a stuck cleanup).
+    Failed,
+}
+
+/// The restart intensity (OTP `intensity` and `period`) and what is used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RestartBudget {
+    pub max_restarts: usize,
+    pub window: Duration,
+    /// Restarts in the current window, plus retries waiting in backoff.
+    pub used: usize,
+}
+
+/// A supervisor and its children, expanded (`Supervisor::tree`). Each level
+/// copies its rows and instance-bound handles, releases every lock, then
+/// expands the handles: a node never mixes one generation's row with a
+/// later generation's actor, and no lock is held across a child's `info()`
+/// or a nested `tree()`. Levels are not one instant.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct SupervisorTree {
+    pub system: Option<crate::introspection::SystemId>,
+    /// `SupervisorConfig::name`, or the `SupervisorSpec` name of a nested one.
+    pub name: String,
+    pub strategy: SupervisorStrategy,
+    pub phase: SupervisorPhase,
+    pub budget: RestartBudget,
+    /// Derived from `children`.
+    pub counts: ChildCounts,
+    pub children: Vec<TreeChild>,
+}
+
+/// One child of a [`SupervisorTree`]: its row and its expanded node.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct TreeChild {
+    pub info: ChildInfo,
+    pub node: TreeNode,
+}
+
+/// A child's expansion: the captured instance's `info()`, or its subtree.
+/// `Unavailable(Dead)` when there was no live instance to expand.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum TreeNode {
+    Worker(crate::introspection::Field<crate::introspection::ActorInfo>),
+    Supervisor(crate::introspection::Field<SupervisorTree>),
+}
 
 /// The construction scope is allocated before an ActorId exists. Its helpers
 /// run on the assigned group and are included in cleanup before a retry.

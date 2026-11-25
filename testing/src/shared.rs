@@ -27,7 +27,35 @@ macro_rules! mock_builder {
             Self {
                 rules: Rules::default(),
                 inbox: Arc::new(Inbox::default()),
+                start: StartHooks::default(),
             }
+        }
+
+        /// What the mock's `started()` returns (default: ready): an
+        /// `Init` (continue, error, stop, ignore) to test a caller's start
+        /// handling. Runs after [`start_delay`](Self::start_delay).
+        pub fn on_started(
+            mut self,
+            init: impl FnOnce(&Context<Mock>) -> Init<Mock> + Send + 'static,
+        ) -> Self {
+            self.start.on_started = Some(Box::new(init));
+            self
+        }
+
+        /// Make `started()` take `delay` before it returns (virtual time
+        /// under the simulator in tasks mode): a slow initialiser, for
+        /// `init_timeout` and waiting starts.
+        pub fn start_delay(mut self, delay: Duration) -> Self {
+            self.start.delay = Some(delay);
+            self
+        }
+
+        /// Set `flag` when the mock's state is dropped: lets a test check
+        /// that a failed start was answered only after the state was gone
+        /// (publication order).
+        pub fn drop_flag(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+            self.start.drop_flag = Some(flag);
+            self
         }
 
         /// Answer each `M` with `reply(&msg)`. The message is still logged

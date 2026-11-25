@@ -461,6 +461,9 @@ impl Drop for ActorSystem {
 }
 
 impl SystemInner {
+    pub(crate) fn id(&self) -> crate::introspection::SystemId {
+        self.id
+    }
     pub(crate) fn accepts_group(&self, group: &ExecutionGroup) -> Result<(), SystemError> {
         let state = lock(&self.state);
         if state.closing {

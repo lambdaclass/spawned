@@ -1436,7 +1436,20 @@ observed for 9.8 s in `info()` and `ShutdownReport`.
    schema `introspection-v1`: activities beginning and ending, the status
    steps, the exit decision, stops, kills, the drop, D and publication);
    the activity word's events (turn ids, the fenced kill) join it with
-   steps 2 and 4.
+   steps 2 and 4. In 1c: a supervisor is named by `SupervisorConfig::name` (default
+   `supervisor`; a nested one takes its `SupervisorSpec` name);
+   `SupervisorTree::busy` waits for the dynamic supervisor (#245), which
+   has the slow `terminate_child` it reports; `ChildSnapshot` and
+   `snapshots()` stay until #245 adopts `ChildInfo` (then deprecated);
+   `ChildKey` has only `Named` until #245 adds `Dynamic`; a row's `actor` is
+   the live instance or `None` (OTP `undefined`); a nested supervisor whose
+   instance has not published its subtree yet is `Unavailable(Starting)`;
+   `child_terminated` is reported only for an unexpected exit (abnormal, or
+   a cleanup failure), as SASL does, never for a supervisor-ordered stop,
+   with the action decided after the restart budget; `shutdown_error` is a
+   child that missed its shutdown time (supervisor shutdown or a
+   OneForAll/RestForOne round) and is killed (action `killed`), then, if
+   the kill does not end it within another interval, `stuck`.
 2. Tables (`console` or `introspection`), `processes()`, `snapshot()`, wire
    structs; tier 1 activity slot, interner, clock, mailbox counters; fold
    `diagnostics`; benchmark gate and codegen check.

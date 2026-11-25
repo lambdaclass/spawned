@@ -654,3 +654,37 @@ async fn in_actor_runs_a_closure_in_a_turn() {
     tally.context().stop();
     tally.join().await;
 }
+
+/// `Mock::on_started` and `drop_flag`: a failed start is answered only after
+/// the mock's state is dropped (publication order).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mock_on_started_error_answers_after_drop() {
+    let dropped = Arc::new(AtomicBool::new(false));
+    let result = Mock::new()
+        .on_started(|_| tasks::Init::error("no backend"))
+        .drop_flag(dropped.clone())
+        .start()
+        .await;
+    assert!(matches!(
+        result,
+        Err(spawned_concurrency::StartError::InitFailed { pending: None, .. })
+    ));
+    assert!(
+        dropped.load(Ordering::SeqCst),
+        "answered before the state drop"
+    );
+}
+
+/// `Mock::start_delay` with an init timeout: the start times out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mock_start_delay_hits_init_timeout() {
+    let result = Mock::new()
+        .start_delay(Duration::from_millis(200))
+        .with_options(tasks::StartOptions::new().init_timeout(Duration::from_millis(20)))
+        .start()
+        .await;
+    assert!(matches!(
+        result,
+        Err(spawned_concurrency::StartError::InitTimeout { pending: None })
+    ));
+}

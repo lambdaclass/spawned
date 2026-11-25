@@ -1060,7 +1060,22 @@ def main():
     # v0.8's supervisor wait: it gave up on a stopped child at one
     # shutdown_timeout, racing the controller's kill.
     spec_mutation("MCSupervision", "Supervision.tla", "AbandonBeforeKill",
-                  r' /\\ pc\[sidx\] # "stopping"', "", "StuckOnlyAfterKill", args.tlc)
+                  r'pc\[sidx\] \\notin \{"stopping", ', r'pc[sidx] \\notin {',
+                  "StuckOnlyAfterKill", args.tlc)
+    # V3 for a generation stopped before publication: its cleanup stuck
+    # after one interval without the kill (planted bug 40), and the
+    # supervisor's wait giving up on it before the kill.
+    spec_mutation("MCSupervision", "Supervision.tla", "UnpublishedStuckWithoutKill",
+                  r'(CleanupStuck\(c\) ==\s*/\\ pc\[c\] \\in \{"cleanup", "killing")\}',
+                  r'\1, "abandoned"}', "StuckOnlyAfterKill", args.tlc)
+    spec_mutation("MCSupervision", "Supervision.tla", "AbandonUnpublishedBeforeKill",
+                  r'pc\[sidx\] \\notin \{"stopping", "abandoned", "constructing"\}',
+                  r'pc[sidx] \\notin {"stopping"}', "StuckOnlyAfterKill", args.tlc)
+    unpublished = next(t for t in traces if t.get("name") == "unpublished_stuck")
+    def unpublished_stuck_without_kill(events):
+        events.remove(next(e for e in events if e["a"] == "CleanupKill"))
+    require_rejected(unpublished, unpublished_stuck_without_kill,
+                     "an unpublished generation stuck without its kill", args.tlc)
     stuck = next(t for t in traces if t.get("name") == "shutdown_deadline_slow_stop")
     def stop_stuck_without_kill(events):
         events.remove(next(e for e in events if e["a"] == "CleanupKill"))

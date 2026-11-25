@@ -308,6 +308,10 @@ pub(super) async fn run_recoveries(core: Arc<Core>) {
                 Either::Left(_) => return,
                 Either::Right((Ok(true), _)) => (),
                 _ => {
+                    // The child's controller already reported the kill and
+                    // the stuck slot (`shutdown_error`, actions `killed` and
+                    // `stuck`) unless it was starved; this backstop only
+                    // fails the tree.
                     core.fail_cleanup_for(
                         child.snapshot(),
                         format!("coordinated cleanup stuck for {}", child.snapshot().name),
@@ -394,6 +398,15 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
         .unwrap_or_else(spawned_rt::time::entropy);
     let mut rng = jitter_seed(seed, system::lock(&view.data).snapshot.name.as_bytes());
     let c = view.trace_index;
+    // An unexpected exit whose restart is not granted yet: its
+    // `child_terminated` report waits for the budget's answer (`restart`),
+    // and says `shutdown` if the supervisor stops instead (also on every
+    // exit from this loop, through the guard's drop).
+    let mut terminated = Terminated {
+        core: &core,
+        child: &spec.name,
+        pending: None,
+    };
     loop {
         let open = trace::atomic(|| {
             let open = core.gate.is_open();
@@ -476,6 +489,11 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
             } else {
                 core.reserve_retry(c).map(Some)
             };
+            terminated.report(if reservation.is_some() {
+                "restart"
+            } else {
+                "shutdown"
+            });
             let Some(reservation) = reservation else {
                 // A concurrent stop wins: only fail a supervisor that is still open.
                 trace::atomic(|| {
@@ -657,6 +675,14 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                     "starting replacement child"
                 );
             });
+            core.report(
+                tracing::Level::INFO,
+                "child_restarted",
+                &spec.name,
+                generation,
+                previous.last_exit.as_ref(),
+                "restart",
+            );
         }
         view.changed.send_modify(|n| *n = n.wrapping_add(1));
         let ctx = FactoryContext {
@@ -893,6 +919,18 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                                         core.cohort(|| Event::new("CKill", c, "").round(round));
                                     }
                                 });
+                                // OTP's `shutdown_error`: the child missed its
+                                // shutdown time and is killed (its brutal_kill;
+                                // for a supervisor stop or a round's
+                                // collateral stop alike, V3).
+                                core.report(
+                                    tracing::Level::ERROR,
+                                    "shutdown_error",
+                                    &spec.name,
+                                    generation,
+                                    None,
+                                    "killed",
+                                );
                                 // The second interval runs from the kill.
                                 cleanup_until = Some(Instant::now());
                                 match rt::timeout(spec.shutdown_timeout, child.wait_exit_async())
@@ -908,6 +946,18 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                                     }
                                     Err(_) => {
                                         stuck = true;
+                                        // Rust-forced: the kill did not end
+                                        // it (L3), so the slot is stuck and
+                                        // fails the tree (V3), reported as a
+                                        // second `shutdown_error`.
+                                        core.report(
+                                            tracing::Level::ERROR,
+                                            "shutdown_error",
+                                            &spec.name,
+                                            generation,
+                                            None,
+                                            "stuck",
+                                        );
                                         // Reply traces: the cleanup deadline
                                         // passed before the child's death
                                         // point (DeferredReplies `CleanupDeadline`).
@@ -985,7 +1035,24 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
         let remaining = cleanup_until
             .map(|started| spec.shutdown_timeout.saturating_sub(started.elapsed()))
             .unwrap_or(spec.shutdown_timeout);
-        if rt::timeout(remaining, scope.joined()).await.is_err() {
+        let mut joined = rt::timeout(remaining, scope.joined()).await.is_ok();
+        // E3/V3: a generation stopped before it was published (startup
+        // timeout, admission closing while it constructs, the gate closing
+        // between ready and publication) has had no death-point wait: it
+        // gets the same kill at shutdown_timeout, and is stuck only after a
+        // second interval from the kill.
+        let unpublished_killed = !joined && exit.is_none();
+        if unpublished_killed {
+            fail_point!("supervisor.before_unpublished_kill", async);
+            trace::atomic(|| {
+                scope.kill();
+                trace::emit(core.trace, || Event::new("CleanupKill", c, ""));
+            });
+            joined = rt::timeout(spec.shutdown_timeout, scope.joined())
+                .await
+                .is_ok();
+        }
+        if !joined {
             core.fail_cleanup_for(
                 view.snapshot(),
                 format!("owned cleanup stuck for {}", spec.name),
@@ -1030,6 +1097,9 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                     trace::emit(core.trace, || {
                         Event::new("StartupFailed", c, startup_reason(exit.as_ref()))
                     });
+                }
+                if unpublished_killed {
+                    trace::emit(core.trace, || Event::new("StopExited", c, ""));
                 }
                 trace::emit(core.trace, || Event::new("CleanupDone", c, ""));
             });
@@ -1171,6 +1241,9 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
         }
         // Gate check, decision and any resulting failure happen in one step,
         // so a concurrent stop is never followed by a failure of this child.
+        // What the decision below did, reported after it (outside its
+        // trace section).
+        let mut decided = "closed";
         let again = trace::atomic(|| {
             if !core.gate.is_open() {
                 if !stuck {
@@ -1196,11 +1269,14 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
             }
             if restart {
                 trace::emit(core.trace, || Event::new("Decide", c, "restart"));
+                decided = "restart";
                 return true;
             }
             if ready_at.is_some() {
                 trace::emit(core.trace, || Event::new("Decide", c, "stop"));
+                decided = "none";
             } else {
+                decided = if first_start { "start_failed" } else { "fail" };
                 let (kind, message) = if first_start {
                     let snapshot = view.snapshot();
                     let cause = snapshot
@@ -1224,6 +1300,35 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
             }
             false
         });
+        // OTP's SASL supervisor reports: an unexpected exit (abnormal, or a
+        // cleanup failure) and a failed start; a supervisor-ordered stop
+        // (`closed`) and a clean exit are not reported.
+        let abnormal =
+            exit.as_ref().is_none_or(ExitReason::is_abnormal) || cleanup_failure.is_some();
+        match decided {
+            "start_failed" => core.report(
+                tracing::Level::ERROR,
+                "start_failed",
+                &spec.name,
+                generation,
+                exit.as_ref(),
+                "shutdown",
+            ),
+            "restart" if abnormal => terminated.pending = Some((generation, exit.clone())),
+            "none" | "fail" if abnormal => core.report(
+                tracing::Level::WARN,
+                "child_terminated",
+                &spec.name,
+                generation,
+                exit.as_ref(),
+                if decided == "fail" {
+                    "shutdown"
+                } else {
+                    "none"
+                },
+            ),
+            _ => {}
+        }
         if !again {
             if core.config.strategy == SupervisorStrategy::OneForOne || !core.gate.is_open() {
                 break;
@@ -1268,6 +1373,32 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
         core.cohort(|| Event::new("CRetire", c, "").round(last_recovery));
     });
     core.log_failure_once();
+}
+
+/// A `child_terminated` report waiting for the restart decision.
+struct Terminated<'a> {
+    core: &'a Core,
+    child: &'a str,
+    pending: Option<(u64, Option<ExitReason>)>,
+}
+impl Terminated<'_> {
+    fn report(&mut self, action: &'static str) {
+        if let Some((generation, reason)) = self.pending.take() {
+            self.core.report(
+                tracing::Level::WARN,
+                "child_terminated",
+                self.child,
+                generation,
+                reason.as_ref(),
+                action,
+            );
+        }
+    }
+}
+impl Drop for Terminated<'_> {
+    fn drop(&mut self) {
+        self.report("shutdown");
+    }
 }
 
 pub(super) fn child_failure<A: Actor>(
