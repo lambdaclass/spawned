@@ -187,6 +187,20 @@ async fn handle_work(&mut self, msg: Work, ctx: &Context<Self>) -> Result<(), Re
 }
 ```
 
+A long-running handler (or a helper or piped job) that should wind down when the actor is asked to stop can await `ctx.stopping()` (tasks mode). It resolves once `exit_pending()` is `true`, for the same events, and is ready at once if it already is (including in `stopped()`). The future is `Send + 'static`, so it can go into `tokio::select!`, `ctx.pipe` or `ctx.spawn_helper`. It does not preempt anything: the handler chooses what to do, and the actor exits after the handler returns. A kill wakes it too, but a killed actor still waits for the handler to return. An actor that never calls it pays nothing.
+
+```rust
+#[request_handler]
+async fn handle_fetch(&mut self, msg: Fetch, ctx: &Context<Self>) -> Result<Page, Refused> {
+    tokio::select! {
+        page = self.fetch(msg) => Ok(page),
+        () = ctx.stopping() => Err(Refused::ShuttingDown),
+    }
+}
+```
+
+Threads mode has no `stopping()`: a blocking handler cannot wait for its work and a stop at the same time, so it checks `ctx.exit_pending()` between chunks of work.
+
 State that must be released on every exit, including kills and runtime drops, belongs in `Drop`.
 
 ---
@@ -212,6 +226,7 @@ State that must be released on every exit, including kills and runtime drops, be
 | `ctx.exit(&child_handle, reason)` | Send an exit signal from this actor (OTP `exit/2`) |
 | `ctx.trap_exit(bool)` | Receive exit signals and link notices as `Exit` messages instead of exiting |
 | `ctx.exit_pending()` | Whether this actor's exit has begun or a parent exit is queued |
+| `ctx.stopping()` | Future resolved once `exit_pending()` is `true` (tasks mode; `Send + 'static`, for `select!`) |
 | `ctx.spawn_helper(future)` / `ctx.spawn_blocking_helper(f)` | Actor-owned helper tasks, cancelled and joined before cleanup completes (v0.7) |
 | `ctx.register_name(name)` | Register this actor under a name, released with its generation (v0.7) |
 | `ctx.execution_group()` | The `ExecutionGroup` a managed actor runs on (v0.7) |
@@ -1724,6 +1739,49 @@ impl PeerTable { /* ... */ }
 ```
 
 Formatted state over 64 KiB comes back `StateView::Truncated`.
+
+### Supervision trees (`which_children`, `count_children`, `tree`)
+
+A running `Supervisor` lists its children as OTP's supervisor does:
+
+```rust
+for child in supervisor.which_children() {
+    println!("{} {:?} gen {} restarts {} actor {:?}",
+        child.key, child.state, child.generation, child.restarts, child.actor);
+}
+let counts = supervisor.count_children();   // specs, active, supervisors, workers
+let tree = supervisor.tree();                // the whole subtree, expanded
+```
+
+Each `ChildInfo` row is read under that child's lock; rows of one call can
+come from different instants. `actor` is the live instance (starting, ready
+or stopping), `None` between instances. `tree()` copies each level's rows
+and live instances, releases every lock, then expands them: a worker node
+is that instance's `info()`, a nested supervisor node its own `tree()`,
+`Unavailable(Starting)` for a nested supervisor whose instance is still
+starting its children, and `Unavailable(Dead)` when there was no live
+instance. A node always belongs to
+the generation of its row. `SupervisedChild::info()` is one child's row.
+Name a supervisor with `SupervisorConfig::name` (a nested one defaults to its
+`SupervisorSpec` name).
+
+Supervisors also emit `spawned::supervisor` events (OTP's SASL supervisor
+reports): `child_terminated` (WARN, an unexpected exit), `child_restarted`
+(INFO; `child_terminated`'s `action` is what the restart budget decided:
+`restart`, or `shutdown` when the intensity limit stops the supervisor), and
+at ERROR `start_failed`, `restart_intensity_reached` and `shutdown_error` (a
+child that missed its shutdown time when the supervisor stopped it, at
+shutdown or in a OneForAll or RestForOne round: `killed` when it is killed,
+then `stuck` if the kill does not end it within another interval), with the
+fields `supervisor`, `system`, `child`, `generation`, `reason`,
+`restarts_in_window`, `max_restarts`, `window_ms`, `action`.
+
+A `stuck` child is where Spawned differs from OTP on purpose: OTP's
+`brutal_kill` ends a process that ignores its shutdown and the supervisor
+carries on. Spawned kills it too, but Rust cannot preempt a task or thread
+stuck in code that never yields, so the kill takes effect only when that code
+returns, and a slot whose child the kill does not end fails the supervisor
+instead of being reused (semantics V3).
 
 ### Crash reports
 

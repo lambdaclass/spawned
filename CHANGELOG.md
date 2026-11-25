@@ -8,6 +8,14 @@
   a supervisor's shutdown of an actor that does not trap exits, no longer
   skips cleanup silently. The message names the remedies (`trap_exit` in
   `started()`, or `Drop`). Other skips stay at `debug`; no behaviour changes.
+- `Context::stopping()` (tasks mode): a `Send + 'static` future that
+  resolves once `ctx.exit_pending()` is `true` (a stop, a kill, an untrapped
+  exit signal, a panic, or a parent exit queued for a trapping actor), so a
+  long-running handler, helper or piped job can `select!` on it and wind
+  down. Ready at once when an exit is already pending. Zero cost unless
+  called: no waiter and nothing per message. Threads mode keeps the polled
+  `exit_pending()` (a blocking handler cannot wait on two things).
+  semantics.md L11.
 - Examples consolidated from 19 crates to 10 with no example
   removed: each tasks/threads pair (`bank`, `chat_room`, `ping_pong`,
   `signal_test`, `updater`) is one package whose second binary is
@@ -90,6 +98,18 @@
   codegen unit, so instruction counts follow the code rather than how generic
   code is partitioned across units (which moved `async_ct_burst` by about
   +2.6% between v0.8.0 and main with no change on its path).
+- Introspection, step 1c (0.9): `Supervisor::which_children()` and
+  `count_children()` (OTP), and `tree()`, which expands the whole subtree
+  (each worker's `info()`, each nested supervisor's `tree()`) from the
+  instances captured with their rows, holding no lock across a child.
+  `ChildInfo` (key, live actor, ready, state, kind, restart, generation,
+  restarts, last exit and error), `ChildCounts`, `SupervisorTree`,
+  `SupervisedChild::info()`, `SupervisorConfig::name`. Supervisors emit
+  `spawned::supervisor` reports (OTP SASL): `child_terminated`,
+  `child_restarted`, `start_failed`, `restart_intensity_reached`,
+  `shutdown_error` (action `killed` at the kill a stopped child earns at its
+  shutdown time, then `stuck` if the kill does not end it). Semantics I7,
+  I10.
 - Introspection, step 1b (0.9): `get_state(f)` and `get_status()` on
   `ActorRef` (and `with_request_timeout(d)`), `get_status()` /
   `get_status_with_timeout(d)` on `ChildHandle` (OTP `sys:get_state`,

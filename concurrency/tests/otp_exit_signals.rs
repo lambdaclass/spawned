@@ -1313,6 +1313,188 @@ mod tasks_mode {
             let _ = system.shutdown(Duration::from_millis(100)).await;
         }
     }
+
+    // Context::stopping: the awaitable form of exit_pending. It resolves for
+    // every event that makes exit_pending true (a begun exit, a parent exit
+    // queued for a trapping actor), is ready once pending, and is not
+    // resolved by a trapped Exit.
+    mod stopping {
+        use super::*;
+        use futures::FutureExt as _;
+        use spawned_concurrency::supervision::{ChildSpec, SupervisorConfig};
+        use spawned_concurrency::system::ActorSystem;
+        use tokio::sync::mpsc;
+
+        type Log = Arc<Mutex<Vec<&'static str>>>;
+        pub struct Waiter {
+            log: Log,
+            trap: bool,
+            entered: mpsc::UnboundedSender<()>,
+        }
+        impl Waiter {
+            fn push(&self, entry: &'static str) {
+                self.log.lock().unwrap().push(entry);
+            }
+        }
+        impl Actor for Waiter {
+            async fn started(&mut self, ctx: &Context<Self>) {
+                if self.trap {
+                    ctx.trap_exit(true);
+                }
+            }
+            async fn exit_received(&mut self, _: Exit, _: &Context<Self>) {
+                self.push("exit");
+            }
+            async fn stopped(&mut self, ctx: &Context<Self>) {
+                let ready = ctx.stopping().now_or_never().is_some();
+                self.push(if ready {
+                    "stopped:ready"
+                } else {
+                    "stopped:not-ready"
+                });
+            }
+        }
+        /// Wait for a stop request, at most the given time.
+        struct Wait(Duration);
+        impl Message for Wait {
+            type Result = ();
+        }
+        impl Handler<Wait> for Waiter {
+            async fn handle(
+                &mut self,
+                msg: Wait,
+                reply: spawned_concurrency::PendingReply<'_, ()>,
+                ctx: &Context<Self>,
+            ) {
+                let _ = self.entered.send(());
+                let woke = tokio::select! {
+                    () = ctx.stopping() => true,
+                    () = tokio::time::sleep(msg.0) => false,
+                };
+                assert_eq!(woke, ctx.exit_pending());
+                self.push(if woke { "woke" } else { "timeout" });
+                reply.reply(());
+            }
+        }
+        fn waiter(trap: bool) -> (Waiter, Log, mpsc::UnboundedReceiver<()>) {
+            let log = Log::default();
+            let (entered, rx) = mpsc::unbounded_channel();
+            let waiter = Waiter {
+                log: log.clone(),
+                trap,
+                entered,
+            };
+            (waiter, log, rx)
+        }
+
+        // A handler waiting on stopping() wakes for an administrative stop,
+        // a kill and an untrapped exit signal; it finishes its turn (nothing
+        // preempts it) and the actor ends with the trigger's reason.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn wakes_a_waiting_handler_for_every_begun_exit() {
+            type Trigger = fn(&ChildHandle);
+            let cases: [(&str, Trigger, ExitReason, bool); 4] = [
+                ("stop", |h| h.stop(), ExitReason::Normal, true),
+                (
+                    "stop_with_reason",
+                    |h| h.stop_with_reason(ExitReason::Shutdown(None)),
+                    ExitReason::Shutdown(None),
+                    true,
+                ),
+                ("kill", |h| h.kill(), ExitReason::Killed, false),
+                (
+                    "untrapped exit",
+                    |h| h.exit(ExitReason::Shutdown(None)),
+                    ExitReason::Shutdown(None),
+                    false,
+                ),
+            ];
+            for (name, trigger, reason, runs_stopped) in cases {
+                let (waiter, log, mut entered) = waiter(false);
+                let actor = waiter.start().await.unwrap();
+                actor.send(Wait(LIMIT)).unwrap();
+                entered.recv().await.unwrap();
+                let handle = actor.child_handle();
+                trigger(&handle);
+                assert_eq!(ended(&handle).await, reason, "{name}");
+                let mut expected = vec!["woke"];
+                if runs_stopped {
+                    expected.push("stopped:ready");
+                }
+                assert_eq!(*log.lock().unwrap(), expected, "{name}");
+            }
+        }
+
+        // Ready at once when an exit is already pending, and past the death
+        // point.
+        #[tokio::test]
+        async fn ready_once_pending_and_after_death() {
+            let (waiter, _, _) = waiter(false);
+            let actor = waiter.start().await.unwrap();
+            let ctx = actor.context();
+            assert!(ctx.stopping().now_or_never().is_none());
+            ctx.stop();
+            assert!(ctx.stopping().now_or_never().is_some());
+            ended(&actor.child_handle()).await;
+            assert!(actor.context().stopping().now_or_never().is_some());
+        }
+
+        // The future is 'static and Send: a spawned task holding it outlives
+        // the borrow of the Context and wakes on the stop.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_spawned_waiter_wakes_on_stop() {
+            let (waiter, _, _) = waiter(false);
+            let actor = waiter.start().await.unwrap();
+            let task = tokio::spawn(actor.context().stopping());
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            assert!(!task.is_finished());
+            actor.child_handle().stop();
+            tokio::time::timeout(LIMIT, task).await.unwrap().unwrap();
+            ended(&actor.child_handle()).await;
+        }
+
+        // A trapping supervised child: a trapped Exit from a peer does not
+        // resolve stopping(); the supervisor's shutdown (a parent exit
+        // queued behind the running handler) does, before the exit is
+        // dispatched, and stopped() runs.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_trapped_exit_does_not_wake_it_a_parent_exit_does() {
+            let system = ActorSystem::new().unwrap();
+            let group = system.async_group("stopping", 1).unwrap();
+            let mut tree = system.supervisor(SupervisorConfig::default()).unwrap();
+            let log = Log::default();
+            let (entered_tx, mut entered) = mpsc::unbounded_channel();
+            let l = log.clone();
+            let child = tree
+                .add(
+                    ChildSpec::new("waiter", &group, move |_| {
+                        let waiter = Waiter {
+                            log: l.clone(),
+                            trap: true,
+                            entered: entered_tx.clone(),
+                        };
+                        async move { Ok::<_, String>(waiter) }
+                    })
+                    .shutdown_timeout(LIMIT),
+                )
+                .unwrap();
+            let supervisor = tree.start().await.unwrap();
+            let child = child.current().unwrap();
+            let handle = child.child_handle();
+            child.send(Wait(Duration::from_millis(200))).unwrap();
+            entered.recv().await.unwrap();
+            handle.exit(ExitReason::Shutdown(None));
+            child.send(Wait(LIMIT)).unwrap();
+            entered.recv().await.unwrap();
+            assert!(supervisor.shutdown(LIMIT).await.complete);
+            assert_eq!(ended(&handle).await, ExitReason::Shutdown(None));
+            assert_eq!(
+                *log.lock().unwrap(),
+                vec!["timeout", "exit", "woke", "stopped:ready"]
+            );
+            assert!(system.shutdown(LIMIT).await.complete);
+        }
+    }
 }
 
 mod threads_mode {

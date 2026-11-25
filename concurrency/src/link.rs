@@ -76,6 +76,11 @@ pub(crate) struct ExitRequest {
     /// A parent exit is queued behind earlier messages of a trapping actor
     /// (E3): when dispatched it ends the actor whatever its reason.
     parent_exit_queued: bool,
+    /// Wakes `Context::stopping` waiters when a parent exit is queued
+    /// (every other pending exit cancels the stop token). Created only by a
+    /// waiting `stopping()`, so an actor that never calls it pays nothing.
+    #[cfg(feature = "async")]
+    stopping: Option<spawned_rt::tasks::CancellationToken>,
     /// The first administrative stop that arrived during `started()`: as
     /// OTP's `gen_server:stop` (a system message handled after `init/1`
     /// returns), it is applied after a ready start commits, and `stopped()`
@@ -119,6 +124,26 @@ impl ExitRequest {
     /// are resolved when `started()` returns.
     pub(crate) fn exit_pending(&self) -> bool {
         self.reason.is_some() || self.parent_exit_queued
+    }
+    /// `Context::stopping`: the waiter for a parent exit queued later, or
+    /// `None` when an exit is already pending. Taken under this lock, so a
+    /// parent exit queued after it sees the waiter.
+    #[cfg(feature = "async")]
+    pub(crate) fn stopping_waiter(&mut self) -> Option<spawned_rt::tasks::CancellationToken> {
+        if self.exit_pending() {
+            return None;
+        }
+        Some(self.stopping.get_or_insert_with(Default::default).clone())
+    }
+    /// The `stopping()` waiter to wake once an exit is pending; the caller
+    /// cancels it after releasing this lock (no waker runs under it).
+    #[cfg(feature = "async")]
+    pub(crate) fn take_stopping_wake(&mut self) -> Option<spawned_rt::tasks::CancellationToken> {
+        if self.exit_pending() {
+            self.stopping.take()
+        } else {
+            None
+        }
     }
     /// The exit was begun by a kill or an untrapped exit signal: in OTP the
     /// process is dead at once (Spawned: once its running turn returns).
@@ -504,7 +529,13 @@ fn apply_signal(
             // `exit_pending` reports it to every handler that runs before it.
             request.parent_exit_queued = true;
         }
+        #[cfg(feature = "async")]
+        let stopping = request.take_stopping_wake();
         drop(request);
+        #[cfg(feature = "async")]
+        if let Some(waiter) = stopping {
+            waiter.cancel();
+        }
         let send = if from_parent {
             &target.send_parent_exit
         } else {
@@ -1205,6 +1236,37 @@ mod tests {
             !pending(&t),
             "a held Normal parent signal is ignored untrapped"
         );
+    }
+    #[cfg(feature = "async")]
+    #[test]
+    fn stopping_waiter_wakes_on_a_queued_parent_exit() {
+        let seen = Arc::new(AtomicUsize::new(0));
+        let from = ActorId::next();
+        let waiter = |t: &SignalTarget| lock_request(&t.request).stopping_waiter();
+        // A queued parent exit to a trapping actor cancels the waiter; a
+        // trapped peer Exit does not.
+        let t = target(&seen);
+        t.trap.store(true, Ordering::Release);
+        let w = waiter(&t).unwrap();
+        deliver_signal(&t, from, ExitReason::Shutdown(None), Origin::Link, false);
+        assert!(!w.is_cancelled());
+        deliver_signal(&t, from, ExitReason::Shutdown(None), Origin::Direct, true);
+        assert!(w.is_cancelled());
+        assert!(waiter(&t).is_none(), "pending: no new waiter");
+        // A held parent exit queued by the ready startup decision: the run
+        // loop takes the wake out of the same lock.
+        let t = target(&seen);
+        lock_request(&t.request).begin_starting();
+        let w = waiter(&t).unwrap();
+        deliver_signal(&t, from, ExitReason::Normal, Origin::Direct, true);
+        let mut request = lock_request(&t.request);
+        assert!(request.take_stopping_wake().is_none());
+        let row = request.resolve_start(true, false, &crate::start::Returned::Ready, true);
+        assert_eq!(row, crate::start::Row::Ready);
+        assert!(request.take_stopping_wake().is_some_and(|wake| {
+            wake.cancel();
+            w.is_cancelled()
+        }));
     }
     #[test]
     fn reason_precedence_until_death() {
