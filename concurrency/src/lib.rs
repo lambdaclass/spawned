@@ -6,8 +6,8 @@
 //!
 //! # Quick Start
 //!
-//! ```ignore
-//! use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler};
+//! ```
+//! use spawned_concurrency::tasks::{ActorStart as _, Context};
 //! use spawned_concurrency::{actor, protocol, Response};
 //!
 //! #[protocol]
@@ -19,13 +19,17 @@
 //!
 //! #[actor(protocol = GreeterProtocol)]
 //! impl Greeter {
-//!     pub fn new() -> Self { Greeter }
-//!
 //!     #[request_handler]
 //!     async fn handle_greet(&mut self, msg: greeter_protocol::Greet, _ctx: &Context<Self>) -> String {
 //!         format!("Hello, {}!", msg.name)
 //!     }
 //! }
+//!
+//! spawned_rt::tasks::run(async {
+//!     // `start` waits for `started()`; `spawn` would not.
+//!     let greeter = Greeter.start().await.unwrap();
+//!     assert_eq!(greeter.greet("Joe".into()).await.unwrap(), "Hello, Joe!");
+//! });
 //! ```
 //!
 //! # Core Concepts
