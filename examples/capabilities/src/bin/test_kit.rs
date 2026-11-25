@@ -6,7 +6,7 @@ use spawned_concurrency::{
     message::Message,
     protocol,
     supervision::{Backoff, ChildSpec, SupervisorConfig},
-    tasks::{Actor, ActorStart as _, Context, Handler, Recipient},
+    tasks::{ActorStart as _, Context, Recipient},
     ExitReason, Response,
 };
 use spawned_test::{faults, tasks as kit, threads as native_kit};

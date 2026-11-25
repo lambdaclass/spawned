@@ -25,6 +25,8 @@ impl Message for Quit {
 
 mod a {
     use super::*;
+    // `#[actor]` before 0.9 (the perf gate's baseline) needs these in scope.
+    #[allow(unused_imports)]
     use spawned_concurrency::tasks::{Actor, Context, Handler};
     pub struct Sink(pub u64);
     #[actor]
@@ -47,6 +49,8 @@ mod a {
 
 mod t {
     use super::*;
+    // `#[actor]` before 0.9 (the perf gate's baseline) needs these in scope.
+    #[allow(unused_imports)]
     use spawned_concurrency::threads::{Actor, Context, Handler};
     pub struct Sink(pub u64);
     #[actor]

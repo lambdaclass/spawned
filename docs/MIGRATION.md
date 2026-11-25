@@ -13,6 +13,13 @@ account for when upgrading.
   0.8.0 they only enabled `async`; drop them from your `features` list (use
   `async`, the default, if you need it explicitly). The research experiments
   were removed (last at `bf59ace0`).
+- `#[actor]` names `Actor`, `Handler` and `Context` by path
+  (`spawned_concurrency::tasks::...` for `async fn` methods, `threads` for
+  plain `fn`), so a module needs only the names its own code uses. Imports
+  of `Actor` and `Handler` kept only for the macro become unused; remove
+  them (a crate with `-D warnings` fails on them). An `#[actor]` block with
+  no handler or hook to infer the mode from still resolves the bare names
+  through your imports.
 
 #### Unified start: API call-site table
 

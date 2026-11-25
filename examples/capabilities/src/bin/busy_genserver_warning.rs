@@ -1,5 +1,5 @@
 use spawned_concurrency::error::ActorError;
-use spawned_concurrency::tasks::{Actor, ActorStart as _, Context, Handler};
+use spawned_concurrency::tasks::{ActorStart as _, Context};
 use spawned_concurrency::{actor, protocol};
 use spawned_rt::tasks as rt;
 use std::time::Duration;

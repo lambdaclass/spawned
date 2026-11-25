@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use spawned_concurrency::actor;
-use spawned_concurrency::tasks::{Actor, Context, Handler};
+use spawned_concurrency::tasks::Context;
 
 use crate::protocols::bank_protocol::{Deposit, NewAccount, Stop, Withdraw};
 use crate::protocols::{BankError, BankOutMessage, BankProtocol, MsgResult};

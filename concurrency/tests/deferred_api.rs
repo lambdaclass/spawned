@@ -449,7 +449,7 @@ mod tasks_mode {
 mod threads_mode {
     use super::*;
     use spawned_concurrency::threads::{
-        Actor, ActorStart, Context, Handler, Instant, JobGone, JobOptions, JobOutcome, PipeError,
+        ActorStart, Context, Handler, Instant, JobGone, JobOptions, JobOutcome, PipeError,
     };
     use spawned_concurrency::{actor, send_handler};
     use spawned_test::threads::in_actor;

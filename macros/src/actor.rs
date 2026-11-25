@@ -113,8 +113,19 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
         _ => None,
     });
+    // The inferred runtime also names the traits the expansion implements,
+    // so the caller needs no `Actor`/`Handler`/`Context` import. With no
+    // method to infer from (an empty block, or only `impl Future` and
+    // cfg-gated methods), the bare names resolve through the caller's
+    // imports, as before.
+    let mut runtime = None;
     if let Some(first) = runtime_methods.next() {
         let asynchronous = first.asyncness.is_some();
+        runtime = Some(if asynchronous {
+            quote! { spawned_concurrency::tasks }
+        } else {
+            quote! { spawned_concurrency::threads }
+        });
         if let Some(other) = runtime_methods.find(|sig| sig.asyncness.is_some() != asynchronous) {
             return syn::Error::new_spanned(
                 other,
@@ -125,6 +136,23 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
             .into();
         }
     }
+
+    if runtime.is_none()
+        && impl_block.items.iter().any(|item| matches!(item,
+            ImplItem::Fn(method) if method.attrs.iter().any(is_actor_method_attribute)
+                && matches!(&method.sig.output, ReturnType::Type(_, ty) if matches!(**ty, Type::ImplTrait(_)))))
+    {
+        // Only tasks handlers return `impl Future` from a plain `fn`.
+        runtime = Some(quote! { spawned_concurrency::tasks });
+    }
+    let (actor_trait, handler_trait, context_ty) = match &runtime {
+        Some(path) => (
+            quote! { #path::Actor },
+            quote! { #path::Handler },
+            quote! { #path::Context },
+        ),
+        None => (quote! { Actor }, quote! { Handler }, quote! { Context }),
+    };
 
     let self_ty = &impl_block.self_ty;
     let (impl_generics, _, where_clause) = impl_block.generics.split_for_impl();
@@ -570,7 +598,7 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
                 // The parameter list carries the user's parentheses span.
                 let mut params = proc_macro2::Group::new(
                     proc_macro2::Delimiter::Parenthesis,
-                    quote! { &mut self, #msg_name: #msg_ty, #reply_name: #reply_ty, #ctx_name: &Context<Self> },
+                    quote! { &mut self, #msg_name: #msg_ty, #reply_name: #reply_ty, #ctx_name: &#context_ty<Self> },
                 );
                 params.set_span(method.sig.paren_token.span.join());
                 // Span the generated impl at the method so trait errors
@@ -653,7 +681,7 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
                 let handler_impl = if immediate {
                     quote::quote_spanned! { span =>
                         #(#extra_attrs)*
-                        impl #impl_generics Handler<#msg_ty> for #self_ty #where_clause {
+                        impl #impl_generics #handler_trait<#msg_ty> for #self_ty #where_clause {
                             async fn handle #params {
                                 let _ = #reply_name.reply(self.#method_name(#msg_name, #ctx_name).await);
                             }
@@ -668,7 +696,7 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
                                 &mut self,
                                 #msg_name: #msg_ty,
                                 #reply_name: spawned_concurrency::PendingReply<#turn_lifetime, <#msg_ty as spawned_concurrency::message::Message>::Result>,
-                                #ctx_name: &Context<Self>,
+                                #ctx_name: &#context_ty<Self>,
                             ) -> ::core::option::Option<(#msg_ty, spawned_concurrency::PendingReply<#turn_lifetime, <#msg_ty as spawned_concurrency::message::Message>::Result>)> {
                                 // Keep payload destructors inside the original
                                 // future, whose drop is fenced by DeathFirst.
@@ -688,7 +716,7 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
                 } else if asynchronous {
                     quote::quote_spanned! { span =>
                         #(#extra_attrs)*
-                        impl #impl_generics Handler<#msg_ty> for #self_ty #where_clause {
+                        impl #impl_generics #handler_trait<#msg_ty> for #self_ty #where_clause {
                             async fn handle #params {
                                 #call
                             }
@@ -697,7 +725,7 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
                 } else {
                     quote::quote_spanned! { span =>
                         #(#extra_attrs)*
-                        impl #impl_generics Handler<#msg_ty> for #self_ty #where_clause {
+                        impl #impl_generics #handler_trait<#msg_ty> for #self_ty #where_clause {
                             fn handle #params {
                                 #call
                             }
@@ -756,7 +784,7 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let actor_impl = quote! {
         #protocol_doc
-        impl #impl_generics Actor for #self_ty #where_clause {
+        impl #impl_generics #actor_trait for #self_ty #where_clause {
             #bound_consts
             #(#lifecycle_methods)*
         }

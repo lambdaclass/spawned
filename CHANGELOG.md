@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `#[actor]` expands with absolute paths to `Actor`, `Handler` and
+  `Context` (the runtime inferred from its methods), so a module no longer
+  imports them just for the macro; examples drop the now-unused imports
+  (docs/MIGRATION.md, 0.8 to 0.9).
 - Examples consolidated from 19 crates to 10 with no example
   removed: each tasks/threads pair (`bank`, `chat_room`, `ping_pong`,
   `signal_test`, `updater`) is one package whose second binary is

@@ -7,7 +7,7 @@ use spawned_concurrency::{actor, Exit, ExitReason};
 #[cfg(feature = "async")]
 mod asynchronous {
     use super::*;
-    use spawned_concurrency::tasks::{Actor, ActorStart, Context};
+    use spawned_concurrency::tasks::{ActorStart, Context};
     struct Observer {
         seen: Option<tokio::sync::oneshot::Sender<Exit>>,
     }
@@ -51,7 +51,7 @@ mod asynchronous {
 }
 mod synchronous {
     use super::*;
-    use spawned_concurrency::threads::{Actor, ActorStart, Context, Handler, Init};
+    use spawned_concurrency::threads::{ActorStart, Context, Handler, Init};
     struct Observer {
         seen: std::sync::mpsc::Sender<Exit>,
     }
