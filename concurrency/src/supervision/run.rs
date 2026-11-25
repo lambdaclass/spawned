@@ -716,9 +716,14 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
                     return Err(format!("factory panicked: {message}"));
                 }
             };
-            let actor = result?;
+            let actor = match result? {
+                ChildStart::Actor(actor) => actor,
+                // A factory's ignore starts nothing (OTP's `ignore`).
+                ChildStart::Ignore => return Ok(None),
+            };
             let actor_lease = attempt_scope.actor_lease().map_err(|e| e.to_string())?;
             ActorRef::spawn_managed(actor, attempt_scope.clone(), actor_lease)
+                .map(Some)
                 .map_err(|e| e.to_string())
         };
         let task = scope.handle.spawn(Tracked {
@@ -726,12 +731,26 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
             lease,
         });
         let ready_scope = scope.clone();
+        // `Ok(None)`: the start returned `ignore` (a factory's
+        // `ChildStart::Ignore`, or `Init::ignore()`, which ended the
+        // instance `Normal`), which is not a failure.
         let startup = async {
-            let actor = task
+            let Some(actor) = task
                 .await
-                .map_err(|e| format!("construction task failed: {e}"))??;
-            ready_scope.wait_ready().await?;
-            Ok::<_, String>(actor)
+                .map_err(|e| format!("construction task failed: {e}"))??
+            else {
+                return Ok(None);
+            };
+            match ready_scope.wait_ready().await {
+                Ok(()) => Ok(Some(actor)),
+                Err(_)
+                    if actor.child_handle().signal_target().startup.commit()
+                        == crate::start::Commit::Ignored =>
+                {
+                    Ok(None)
+                }
+                Err(error) => Err(error),
+            }
         };
         let mut startup_timed_out = false;
         let began = match select(
@@ -749,8 +768,8 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
         };
         #[cfg(feature = "failpoints")]
         let began = match began {
-            Ok(actor) => {
-                let mut began = Ok(actor);
+            Ok(Some(actor)) => {
+                let mut began = Ok(Some(actor));
                 fail_point!("child.after_ready_before_publish", async => {
                     began = Err("failpoint child.after_ready_before_publish".to_string())
                 });
@@ -764,10 +783,12 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
         // Trace bookkeeping: the model's StartupFailed (whose reason is known
         // only after cleanup) and CleanupStuck (which skips CleanupDone and
         // Decide).
-        let startup_failed = began.is_err();
+        let ignored = matches!(began, Ok(None));
+        let startup_failed = !matches!(began, Ok(Some(_)));
         let mut stuck = false;
         match began {
-            Ok(actor) => {
+            Ok(None) => (),
+            Ok(Some(actor)) => {
                 let published = trace::atomic(|| {
                     let published = core
                         .gate
@@ -1069,7 +1090,8 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
         if exit.is_none() {
             exit = scope.child().and_then(|child| child.exit_reason());
         }
-        if !stuck {
+        // An ignore records its own step below, once its outcome is decided.
+        if !stuck && !ignored {
             trace::atomic(|| {
                 if startup_failed {
                     trace::emit(core.trace, || {
@@ -1097,6 +1119,87 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, 
         // child's recovery supersedes this controller during cleanup.
         if scope.was_stable(core.config.backoff.stable_after) {
             failures = 0;
+        }
+        if ignored {
+            // OTP's `ignore` (unified-start section 9), observed only now:
+            // the instance is published and its owned cleanup joined (a
+            // stuck one failed above under V3's rule, its slot Stopping).
+            // The spec stays with no generation; it adds nothing to the
+            // budget (a replacement's attempt is already stamped).
+            let parked = trace::atomic(|| {
+                let parked = core
+                    .gate
+                    .if_open(|| {
+                        let mut data = system::lock(&view.data);
+                        if data
+                            .recovery
+                            .as_ref()
+                            .is_some_and(|r| r.meta.id > last_recovery)
+                        {
+                            return false;
+                        }
+                        data.snapshot.state = ChildState::Ignored;
+                        data.snapshot.actor_id = None;
+                        data.current = None;
+                        true
+                    })
+                    .unwrap_or(false);
+                if parked {
+                    trace::emit(core.trace, || {
+                        Event::new("Ignore", c, "")
+                            .round(last_recovery)
+                            .count(generation as usize)
+                    });
+                } else {
+                    // Closed, or a newer round took the slot: an ordinary
+                    // stop before readiness.
+                    trace::emit(core.trace, || {
+                        Event::new("StartupFailed", c, startup_reason(exit.as_ref()))
+                    });
+                    if unpublished_killed {
+                        trace::emit(core.trace, || Event::new("StopExited", c, ""));
+                    }
+                    trace::emit(core.trace, || Event::new("CleanupDone", c, ""));
+                }
+                parked
+            });
+            if parked {
+                view.changed.send_modify(|n| *n = n.wrapping_add(1));
+                // It completes this start: the initial-start barrier and a
+                // round's readiness barrier treat it as done.
+                view.initial.send_replace(true);
+                let round = system::lock(&view.data).recovery.clone();
+                if let Some(round) = round.filter(|r| r.meta.id == last_recovery) {
+                    trace::atomic(|| {
+                        core.cohort(|| Event::new("CAck", c, "").round(round.meta.id));
+                        round.ready.send_replace(true);
+                    });
+                }
+                crate::actor_cleanup::log_safely(|| {
+                    tracing::info!(event = "child_ignored", child = %spec.name, generation,
+                        "child start returned ignore");
+                });
+                // OTP deletes an ignored Temporary child.
+                if spec.restart == RestartMode::Temporary {
+                    break;
+                }
+                // Parked with no process: OneForOne never restarts it (OTP's
+                // `undefined` pid). A OneForAll/RestForOne round that covers
+                // it stops nothing; the loop top answers its stop and clean
+                // barriers and starts it again on the round's resume.
+                let _ = select(
+                    Box::pin(core.admission_closed.cancelled()),
+                    Box::pin(async {
+                        if core.config.strategy == SupervisorStrategy::OneForOne {
+                            futures::future::pending::<()>().await;
+                        } else {
+                            view.recovery_stopping(last_recovery).await;
+                        }
+                    }),
+                )
+                .await;
+                continue;
+            }
         }
         if core.gate.is_open() && view.recovery(last_recovery).is_some() {
             continue;

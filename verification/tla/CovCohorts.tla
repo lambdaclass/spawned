@@ -25,6 +25,7 @@ CovNext ==
       \/ CBegin(c,r,n) /\ L("CBegin", c, r, "")
       \/ CReady(c,r,n) /\ L("CReady", c, r, "")
  \/ \E c \in Children, n \in 1..MaxGen : CJoined(c,n) /\ L("CJoined", c, 0, "")
+ \/ \E c \in Children, r \in Epochs, n \in 1..MaxGen : Ignore(c,r,n) /\ L("Ignore", c, r, "")
  \/ \E r \in Epochs, x \in {"complete","superseded"} : CEnd(r,x) /\ L("CEnd", 0, r, x)
  \/ CInitialReady /\ L("CInitialReady", 0, 0, "")
  \/ CClose /\ L("CClose", 0, 0, "")

@@ -25,7 +25,7 @@
 EXTENDS Supervision, TLC
 
 ChildActions == {"LoopTop", "RetryReserve", "RetryRelease", "BackoffDone",
-                 "Attempt", "BecomeReady", "StartupFailed", "SelfExit",
+                 "Attempt", "BecomeReady", "StartupFailed", "Ignore", "SelfExit",
                  "StopObserved", "CleanupKill", "StopExited", "CleanupDone", "CleanupStuck", "DeferExit", "Undefer",
                  "Decide", "Finish"}
 

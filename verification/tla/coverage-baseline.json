@@ -14,9 +14,12 @@
   "A|Decide/fail",
   "A|Decide/restart",
   "A|Decide/stop",
+  "A|DeferExit",
   "A|Finish",
+  "A|Ignore",
   "A|LoopTop/attempt",
   "A|LoopTop/backoff",
+  "A|LoopTop/finish",
   "A|RetryRelease",
   "A|RetryReserve",
   "A|SelfExit/Kill",
@@ -37,7 +40,8 @@
   "A|SupLaunch",
   "A|SupStartDone/notready",
   "A|SupStartDone/ready",
-  "A|SupStopTurn"
+  "A|SupStopTurn",
+  "A|Undefer"
  ],
  "Cohorts": [
   "A|OneForAll|CAck/current",
@@ -52,6 +56,7 @@
   "A|OneForAll|CEnd/superseded",
   "A|OneForAll|CInitialReady",
   "A|OneForAll|CJoined",
+  "A|OneForAll|CKill",
   "A|OneForAll|CReady/initial",
   "A|OneForAll|CReady/round",
   "A|OneForAll|CRequest/true",
@@ -60,6 +65,9 @@
   "A|OneForAll|CRetire/open",
   "A|OneForAll|CSelect",
   "A|OneForAll|CStop",
+  "A|OneForAll|CStuck",
+  "A|OneForAll|Ignore/initial",
+  "A|OneForAll|Ignore/round",
   "A|RestForOne|CAck/current",
   "A|RestForOne|CAssign/false",
   "A|RestForOne|CAssign/true",
@@ -72,6 +80,7 @@
   "A|RestForOne|CEnd/superseded",
   "A|RestForOne|CInitialReady",
   "A|RestForOne|CJoined",
+  "A|RestForOne|CKill",
   "A|RestForOne|CReady/initial",
   "A|RestForOne|CReady/round",
   "A|RestForOne|CRequest/true",
@@ -79,7 +88,10 @@
   "A|RestForOne|CRetire/closed",
   "A|RestForOne|CRetire/open",
   "A|RestForOne|CSelect",
-  "A|RestForOne|CStop"
+  "A|RestForOne|CStop",
+  "A|RestForOne|CStuck",
+  "A|RestForOne|Ignore/initial",
+  "A|RestForOne|Ignore/round"
  ],
  "Nested": [
   "A|TAttach",

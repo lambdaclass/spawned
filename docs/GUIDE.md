@@ -1429,6 +1429,42 @@ The initial start follows OTP's `start_link` (v0.8):
 - A replacement that fails before readiness is a failed restart attempt and
   is retried under the restart policy and budget.
 
+A child whose start returns `ignore` (OTP's `ignore`; v0.9) is not a failure:
+`Init::ignore()` from `started()`, or a factory returning
+`Ok(ChildStart::Ignore)` (`Ok(actor)` still works: `From<A> for
+ChildStart<A>`). The spec stays with no running generation:
+
+```rust
+use spawned_concurrency::supervision::{ChildSpec, ChildStart, ChildState};
+
+let metrics = tree.add(ChildSpec::new("metrics", &group, move |_| async move {
+    if !enabled {
+        return Ok::<_, String>(ChildStart::Ignore); // nothing is started
+    }
+    Ok(Exporter::new().into())
+}))?;
+let supervisor = tree.start().await?;              // an ignore completes the start
+assert_eq!(metrics.snapshot().state, ChildState::Ignored);
+// metrics.wait_ready() and current() return ChildUnavailable(Ignored) at once.
+```
+
+- It completes the child's first start: later siblings start, `start()`
+  succeeds. `snapshot()` shows `ChildState::Ignored` with no `actor_id`.
+- OneForOne never restarts it: it has no process that could exit (OTP's
+  `undefined` pid).
+- A OneForAll/RestForOne round that covers it starts it again with the
+  cohort, in declaration order (OTP's `start_children` after
+  `terminate_children`). A replacement that ignores inside a round completes
+  the round's readiness barrier, so the later siblings still start.
+- A Temporary child that ignores is removed (its state settles `Stopped`).
+- It adds nothing to the restart budget: a replacement that ignores keeps the
+  restart already counted for it.
+- Supervisor shutdown finishes it at once.
+- It is observed only once the ignoring instance is gone and its owned
+  cleanup (factory helpers, jobs) joined; until then the slot is `Stopping`,
+  and a cleanup that misses `shutdown_timeout` is stuck (V3) and fails the
+  tree like any other.
+
 A supervisor accepts only groups owned by its ActorSystem. ActorRefs can still
 communicate between independent systems. Children start in declaration order
 and shut down in reverse order. Startup

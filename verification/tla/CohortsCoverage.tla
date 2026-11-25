@@ -9,7 +9,8 @@
 EXTENDS Cohorts
 
 ChildActions == {"CRequest", "CSelect", "CAssign", "CStop", "CKill", "CStuck",
-                 "CClean", "CResume", "CBegin", "CReady", "CJoined", "CRetire", "CAck"}
+                 "CClean", "CResume", "CBegin", "CReady", "CJoined", "CRetire", "CAck",
+                 "Ignore"}
 
 Ph == s.phase \o (IF s.open THEN "/open" ELSE "/closed")
               \o (IF s.committed THEN "" ELSE "/initial")
@@ -28,11 +29,12 @@ Flags(c) == (IF c \in s.pending THEN "P" ELSE "")
             \o (IF c \in s.terminal THEN "X" ELSE "")
             \o (IF s.live[c] # {} THEN "L" ELSE "")
             \o (IF s.published[c] # 0 THEN "U" ELSE "")
+            \o (IF c \in s.ignored THEN "I" ELSE "")
 
 Act(a, c, r, x) ==
     CASE a \in {"CRequest", "CAssign", "CEnd"} -> a \o "/" \o x
       [] a \in {"CClean", "CAck"} -> a \o (IF r < s.epoch THEN "/stale" ELSE "/current")
-      [] a \in {"CBegin", "CReady"} -> a \o (IF r = 0 THEN "/initial" ELSE "/round")
+      [] a \in {"CBegin", "CReady", "Ignore"} -> a \o (IF r = 0 THEN "/initial" ELSE "/round")
       [] a = "CRetire" -> a \o (IF s.open THEN "/open" ELSE "/closed")
       [] OTHER -> a
 

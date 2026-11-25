@@ -1,9 +1,10 @@
 Planted bug 06 (sup-backoff-never-resets): Backoff failure streak never resets after a stable generation
 
 diff --git a/concurrency/src/supervision/run.rs b/concurrency/src/supervision/run.rs
+index 6d8a8f1f..9c1cb6ea 100644
 --- a/concurrency/src/supervision/run.rs
 +++ b/concurrency/src/supervision/run.rs
-@@ -940,9 +940,7 @@
+@@ -1047,9 +1047,7 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>,
          });
          // A stable generation resets its failure streak even when another
          // child's recovery supersedes this controller during cleanup.
@@ -11,6 +12,6 @@ diff --git a/concurrency/src/supervision/run.rs b/concurrency/src/supervision/ru
 -            failures = 0;
 -        }
 +        let _ = scope.was_stable(core.config.backoff.stable_after);
-         if core.gate.is_open() && view.recovery(last_recovery).is_some() {
-             continue;
-         }
+         if ignored {
+             // OTP's `ignore` (unified-start section 9), observed only now:
+             // the instance is published and its owned cleanup joined (a

@@ -1,0 +1,17 @@
+Planted bug 41 (sup-ignore-restarted): OneForOne restarts an ignored child (its controller does not park), so an `ignore` retries until the budget is exhausted
+
+diff --git a/concurrency/src/supervision/run.rs b/concurrency/src/supervision/run.rs
+index 6d8a8f1f..67534ff3 100644
+--- a/concurrency/src/supervision/run.rs
++++ b/concurrency/src/supervision/run.rs
+@@ -1117,9 +1117,7 @@ pub(super) async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>,
+                 let _ = select(
+                     Box::pin(core.admission_closed.cancelled()),
+                     Box::pin(async {
+-                        if core.config.strategy == SupervisorStrategy::OneForOne {
+-                            futures::future::pending::<()>().await;
+-                        } else {
++                        if core.config.strategy != SupervisorStrategy::OneForOne {
+                             view.recovery_stopping(last_recovery).await;
+                         }
+                     }),

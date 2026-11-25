@@ -85,7 +85,10 @@ impl<A: Actor> View<A> {
         } else {
             let state = system::lock(&self.data).snapshot.state;
             ChildUnavailable(
-                if matches!(state, ChildState::Stopped | ChildState::Failed) {
+                if matches!(
+                    state,
+                    ChildState::Stopped | ChildState::Failed | ChildState::Ignored
+                ) {
                     state
                 } else {
                     ChildState::Stopping
@@ -224,7 +227,12 @@ impl<A: Actor> SupervisedChild<A> {
                     return Ok(actor);
                 }
             }
-            if matches!(snapshot.state, ChildState::Stopped | ChildState::Failed) {
+            // An ignored child has no process to wait for (OTP's
+            // `undefined` pid): answered at once.
+            if matches!(
+                snapshot.state,
+                ChildState::Stopped | ChildState::Failed | ChildState::Ignored
+            ) {
                 return Err(ChildUnavailable(snapshot.state));
             }
             if !self.view.gate.is_open() {

@@ -772,6 +772,30 @@ Checked by: `Supervision!NoStartAfterClose`, `Supervision!ReverseShutdown`,
 [`otp_exit_signals`][otp_exit_signals]`::tasks_mode::{supervisor_shutdown_is_the_parents_exit_signal, exit_pending::queued_work_sees_the_supervisors_pending_shutdown}`;
 [`exit_signals_sim::supervisor_shutdown_races_a_trapping_childs_queue`][exit_signals_sim].
 
+**V10. Ignore.** A child whose start returns `ignore` (`Init::ignore()` in
+`started()`, or a factory's `ChildStart::Ignore`; OTP's `ignore`) is not a
+failure. The spec stays with no generation (`ChildState::Ignored`, no
+`actor_id`, OTP's `undefined` pid). The ignore completes the child's first
+start (V7: later siblings start and `start()` succeeds). OneForOne never
+restarts it; a OneForAll/RestForOne round whose range covers it starts it
+again with the cohort, in declaration order, and a replacement that ignores
+inside a round completes the round's readiness barrier (V2). An ignored
+Temporary child is removed (it settles `Stopped`). A replacement that ignores
+keeps the restart grant already stamped for it and adds nothing (V5).
+`SupervisedChild::current()`, `wait_ready()` and `wait_for_generation()`
+answer `ChildUnavailable(ChildState::Ignored)` at once; supervisor shutdown
+finishes it at once (V9). The ignore is observed only once the instance is
+published and its owned cleanup joined: until then the slot is `Stopping`,
+and a cleanup that misses `shutdown_timeout` is stuck (V3), failing the tree.
+Checked by: `Supervision!IgnoredNotRestarted`, `Cohorts!RoundCoversRange`
+(model controls `IgnoreRetried`, `IgnoreSkippedInCohort` and two
+recorded-trace controls in `negative_checks.py`; planted bugs 41, 42);
+[`supervised_ignore`][supervised_ignore] (both strategies, Temporary
+removal, the budget, waiters, shutdown, the cleanup wait and a stuck
+ignore); [`supervision_trace`][supervision_trace]`::{trace_ignored_children_are_kept_and_never_restarted, trace_replacement_ignore_keeps_its_grant}`,
+[`cohort_trace`][cohort_trace]`::trace_round_restarts_an_ignored_child`
+(the `Ignore` event, trace-validated).
+
 ## 7. Systems and execution groups
 
 **S1. Admission.** Group construction is all-or-nothing. Actors are admitted
@@ -1238,6 +1262,7 @@ operation within 3% of the merge base and of the last release).
 [supervision]: ../../concurrency/tests/supervision.rs
 [supervision_strategies]: ../../concurrency/tests/supervision_strategies.rs
 [supervision_trace]: ../../concurrency/tests/supervision_trace.rs
+[supervised_ignore]: ../../concurrency/tests/supervised_ignore.rs
 [supervisor_policies]: ../../concurrency/tests/supervisor_policies.rs
 [tree_trace]: ../../concurrency/tests/tree_trace.rs
 [ex_exit_reason]: ../../examples/capabilities/src/bin/exit_reason.rs

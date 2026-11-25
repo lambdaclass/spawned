@@ -1,0 +1,15 @@
+Planted bug 42 (sup-ignore-skipped-in-round): A OneForAll/RestForOne round skips an ignored child (treated as retired), so it stays stopped instead of starting again with the cohort
+
+diff --git a/concurrency/src/supervision/child.rs b/concurrency/src/supervision/child.rs
+index 0805678e..901ea100 100644
+--- a/concurrency/src/supervision/child.rs
++++ b/concurrency/src/supervision/child.rs
+@@ -254,7 +254,7 @@ impl<A: Actor> ChildControl for View<A> {
+             let mut data = system::lock(&self.data);
+             if matches!(
+                 data.snapshot.state,
+-                ChildState::Stopped | ChildState::Failed
++                ChildState::Stopped | ChildState::Failed | ChildState::Ignored
+             ) {
+                 return false;
+             }

@@ -39,6 +39,7 @@ CovNext ==
         \/ BecomeReady(c) /\ L("BecomeReady", c)
         \/ \E r \in StartupResults \cup {"Shutdown"} : StartupFailed(c, r) /\ L("StartupFailed", c)
         \/ \E r \in SelfExits : SelfExit(c, r) /\ L("SelfExit", c)
+        \/ Ignore(c) /\ L("Ignore", c)
         \/ StopObserved(c) /\ L("StopObserved", c)
         \/ CleanupKill(c) /\ L("CleanupKill", c)
         \/ StopExited(c) /\ L("StopExited", c)

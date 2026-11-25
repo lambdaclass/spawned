@@ -12,7 +12,8 @@ API-review cleanups (`send_request`, `#[non_exhaustive]` builders).
 `Name<A>`, `StartError`), 3 (prepare and one commit), 4 (inheritance; not 4.1),
 5.1-5.5 (the startup cell, disposition at publication, abandonment, answering
 with `pending`), 6 (the init timer and stuck policy), 7 (start-time names), 8
-(continuations), 10 partly (`Mock::spawn`/`spawn_with`, `TestSystem::spawn`/
+(continuations), 9 partly (supervised `ignore`: `ChildStart::Ignore`,
+`ChildState::Ignored`, the cohort rule, the models and traces), 10 partly (`Mock::spawn`/`spawn_with`, `TestSystem::spawn`/
 `start`/`spawn_mock`/`options`), 12 (migration), 16.2 (trace validation:
 `TraceStart.tla`, all 28 event kinds, 16 recorded scenarios, 15
 recorded-trace controls).
@@ -23,10 +24,11 @@ recorded-trace controls).
   `Shutdown` at the parent's publication, the scope deadline, the
   generation's end). A linked child of a managed parent is admitted to the
   parent's group but is not owned by its scope.
-- 9: `ChildStart::Ignore`, `ChildState::Ignored`, `ChildStartError`,
-  `ChildSpec::options` and the absolute attempt deadline; the
-  `Supervision.tla`/`Cohorts.tla` changes. A supervised child's
-  `Init::ignore()` is a failed start, as before.
+- 9: `ChildStartError`, `ChildSpec::options` and the absolute attempt
+  deadline. Supervised `ignore` (`ChildStart::Ignore`,
+  `ChildState::Ignored`, the `Supervision.tla`/`Cohorts.tla` changes) is
+  implemented, except the `ChildInfo`/`ChildCounts` rows, which come with
+  introspection's `which_children`/`count_children`.
 - 10: `Mock::on_started`, `start_delay`, `drop_flag`.
 - 16.3-16.5: the simulator races, the fuzzer's start generator and oracles,
   the planted-bug patches of 16.5. The Loom row has one of five tests
@@ -955,6 +957,30 @@ start succeeds belongs in `started()`.
 - **Cost.** One branch after `started()`; the dispatch loop is unchanged.
 - **Not in 0.9:** continuing from ordinary handlers. That needs a branch per
   turn; maintainer decision 4.
+
+**Supervised `ignore` (section 9), choices the text leaves open:**
+
+- **"Published" includes the owned cleanup.** The supervisor observes an
+  ignore after the instance's publication *and* the join of its scope
+  (factory helpers, jobs), as for any generation that ends: the slot is
+  `Stopping` until then and stuck under V3 at `shutdown_timeout`. A stuck
+  ignore is recorded as a startup failure whose cleanup got stuck
+  (`StartupFailed`, `CleanupStuck`), and fails the tree.
+- **Snapshot.** An ignored child's `ChildSnapshot` has `actor_id: None`
+  (OTP's `undefined`) and keeps `last_exit` (`Normal`, or `None` for a
+  factory `Ignore`); `last_error` is not set. After supervisor shutdown it
+  settles `Stopped`, like every finished child. A removed Temporary child
+  settles `Stopped` and stays in `snapshots()` (introspection's
+  `which_children` leaves it out).
+- **Races.** An ignore observed after the supervisor closed, or after a
+  newer round already took the slot, is an ordinary stop before readiness
+  (closed: the child finishes `Stopped`; a round: the slot follows the
+  round).
+- **Model.** `Ignore` is one step in each model, after the generation's
+  cleanup (`CJoined` in cohort traces). `Supervision.tla` checks
+  `IgnoredNotRestarted` (an action property), `Cohorts.tla`
+  `RoundCoversRange` (a round takes every non-retired child of its range);
+  both inductive invariants were extended (`H_ignored`, `H_cover`).
 
 ## 9. Supervisors
 

@@ -106,7 +106,11 @@ failure; restart budget exhaustion and disabled retries; shutdown during
 backoff; replacement startup timeout;
 `Supervisor::shutdown` with a short deadline and a hanging `stopped()`
 (`ShutdownDeadline`, `SupChildTimeout`, `CleanupKill`, `CleanupStuck`); a stop
-turn whose child dies after the kill (`CleanupKill`, `StopExited`); and seeded random
+turn whose child dies after the kill (`CleanupKill`, `StopExited`); ignored
+children (`Ignore`: kept with no generation and never restarted under
+OneForOne, a Temporary one removed; a replacement that ignores keeps its
+grant; one whose owned cleanup missed `shutdown_timeout` is killed first,
+`CleanupKill` then `Ignore`); and seeded random
 crashes, normal exits and external shutdowns racing a stop or shutdown.
 
 How it works:

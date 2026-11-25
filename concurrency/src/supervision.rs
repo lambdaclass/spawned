@@ -305,6 +305,14 @@ pub enum ChildState {
     Stopping,
     Stopped,
     Failed,
+    /// The child's start returned `ignore` (`Init::ignore()` in `started()`,
+    /// or a factory's [`ChildStart::Ignore`]): OTP's `ignore`. The spec
+    /// stays with no running generation (OTP's `undefined` pid), counts as
+    /// started for the tree's start, and is never restarted by OneForOne;
+    /// a later OneForAll/RestForOne round that covers it starts it again
+    /// with the cohort. Observed only once the ignoring instance is
+    /// published and its owned cleanup joined.
+    Ignored,
 }
 
 #[derive(Debug, Clone)]
@@ -496,8 +504,24 @@ impl FactoryContext {
     }
 }
 
+/// What a child factory produced (OTP's `{ok, Pid} | ignore` from the
+/// child's start function). Factories usually return the actor itself:
+/// `From<A> for ChildStart<A>` makes `Ok(actor)` work unchanged.
+pub enum ChildStart<A> {
+    /// Start this instance.
+    Actor(A),
+    /// Start nothing: the same outcome as `Init::ignore()` in `started()`
+    /// ([`ChildState::Ignored`]).
+    Ignore,
+}
+impl<A: Actor> From<A> for ChildStart<A> {
+    fn from(actor: A) -> Self {
+        Self::Actor(actor)
+    }
+}
+
 type Factory<A> =
-    Arc<dyn Fn(FactoryContext) -> BoxFuture<'static, Result<A, String>> + Send + Sync>;
+    Arc<dyn Fn(FactoryContext) -> BoxFuture<'static, Result<ChildStart<A>, String>> + Send + Sync>;
 pub struct ChildSpec<A: Actor> {
     name: String,
     group: ExecutionGroup,
@@ -510,10 +534,13 @@ pub struct ChildSpec<A: Actor> {
 impl<A: Actor> ChildSpec<A> {
     /// Create a permanent child with five-second startup and shutdown limits.
     /// Set both limits explicitly when the application's deadlines are shorter.
-    pub fn new<F, U, E>(name: impl Into<String>, group: &ExecutionGroup, factory: F) -> Self
+    /// The factory returns the actor (`Ok(actor)`) or
+    /// `Ok(ChildStart::Ignore)` to start nothing (OTP's `ignore`).
+    pub fn new<F, U, R, E>(name: impl Into<String>, group: &ExecutionGroup, factory: F) -> Self
     where
         F: Fn(FactoryContext) -> U + Send + Sync + 'static,
-        U: Future<Output = Result<A, E>> + Send + 'static,
+        U: Future<Output = Result<R, E>> + Send + 'static,
+        R: Into<ChildStart<A>>,
         E: std::fmt::Display,
     {
         let factory = Arc::new(factory);
@@ -522,7 +549,12 @@ impl<A: Actor> ChildSpec<A> {
             group: group.clone(),
             factory: Arc::new(move |ctx| {
                 let factory = factory.clone();
-                Box::pin(async move { factory(ctx).await.map_err(|e| e.to_string()) })
+                Box::pin(async move {
+                    factory(ctx)
+                        .await
+                        .map(Into::into)
+                        .map_err(|e| e.to_string())
+                })
             }),
             restart: RestartMode::Permanent,
             startup_timeout: Duration::from_secs(5),

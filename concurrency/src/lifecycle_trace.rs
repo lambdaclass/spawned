@@ -1380,6 +1380,7 @@ mod imp {
         "CBegin",
         "CReady",
         "CJoined",
+        "Ignore",
         "CRetire",
         "CAck",
         "CEnd",

@@ -8,7 +8,7 @@
 use spawned_concurrency::introspection::{Field, Lifecycle};
 use spawned_concurrency::message::Message;
 use spawned_concurrency::supervision::{
-    Backoff, ChildCounts, ChildKey, ChildKind, ChildSpec, ChildState, RestartMode,
+    Backoff, ChildCounts, ChildKey, ChildKind, ChildSpec, ChildStart, ChildState, RestartMode,
     SupervisorConfig, SupervisorPhase, SupervisorSpec, SupervisorStrategy, TreeNode,
 };
 use spawned_concurrency::system::ActorSystem;
@@ -286,6 +286,51 @@ async fn a_starting_nested_supervisor_reads_starting() {
     assert!(matches!(
         root.tree().children[0].node,
         TreeNode::Supervisor(Field::Value(_))
+    ));
+    assert!(system.shutdown(LIMIT).await.complete);
+}
+
+/// An ignored child (OTP `ignore`) keeps its row with no actor: it counts
+/// as a spec and a worker but not as active, and its node is not expanded.
+#[cfg(not(spawned_sim))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ignored_child_counts_as_a_spec_not_active() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("tree-ignore", 2).unwrap();
+    let mut builder = system.supervisor(config()).unwrap();
+    let ignored = builder
+        .add(ChildSpec::new("optional", &group, |_| async {
+            Ok::<_, String>(ChildStart::<Worker>::Ignore)
+        }))
+        .unwrap();
+    let running = builder
+        .add(ChildSpec::new("running", &group, |_| async {
+            Ok::<_, String>(Worker)
+        }))
+        .unwrap();
+    let root = builder.start().await.unwrap();
+    running.wait_ready().await.unwrap();
+
+    let rows = root.which_children();
+    assert_eq!(rows[0].key, ChildKey::Named("optional".into()));
+    assert_eq!(rows[0].state, ChildState::Ignored);
+    assert_eq!((rows[0].actor, rows[0].ready), (None, false));
+    assert_eq!(ignored.info(), rows[0]);
+    let counts = root.count_children();
+    assert_eq!(
+        (
+            counts.specs,
+            counts.active,
+            counts.supervisors,
+            counts.workers
+        ),
+        (2, 1, 0, 2)
+    );
+    let tree = root.tree();
+    assert_eq!(tree.counts, ChildCounts::of_rows(&tree));
+    assert!(matches!(
+        tree.children[0].node,
+        TreeNode::Worker(Field::Unavailable(_))
     ));
     assert!(system.shutdown(LIMIT).await.complete);
 }

@@ -144,7 +144,7 @@ section maps each one to what spawned does and lists where it is still behind.
 | Fault injection | Failpoints at named sites in the lifecycle code; suites that panic in every user callback and drop every public future at every await point |
 | Formal specifications | TLA+ models of every lifecycle protocol, each invariant with a negative control that must fail; Apalache proofs of the safety invariants |
 | Specs tied to the code | Trace validation of real runs against the models, trace coverage, and the required `model-sync` check: code that changes modelled behaviour without its model fails CI |
-| Proving the tests work | The [planted-bug matrix](#planted-bug-sensitivity) (all 24 realistic bugs of the six-layer run caught, each by two or more layers; each later bug, added with the fix it guards, caught by the layers it targets), `cargo-mutants`, and the [semantics coverage](#semantics-coverage) matrix (a check that fails for all 50 guarantees) |
+| Proving the tests work | The [planted-bug matrix](#planted-bug-sensitivity) (all 24 realistic bugs of the six-layer run caught, each by two or more layers; each later bug, added with the fix it guards, caught by the layers it targets), `cargo-mutants`, and the [semantics coverage](#semantics-coverage) matrix (a check that fails for all 51 guarantees) |
 | Fuzzing, metamorphic testing | The coverage-guided [scenario fuzzer](#scenario-fuzzing-fuzz) with contract oracles; one workload on every backend must give the same result |
 | Linearizability checking | A Porcupine-style checker over concurrent request histories |
 | Memory-model checking | Loom, ThreadSanitizer, LeakSanitizer and Kani proofs |
@@ -313,7 +313,8 @@ Model TLA+/Apalache/Kani.
 Totals: 50 guarantees. Before this audit 31 covered, 18 partial, 1 unchecked
 (D5, only a nightly `#[ignore]` stress test). After: 46 covered, 4 partial;
 with the follow-up PR #255 (T4 threads clocks), 47 covered, 3 partial; with
-the 0.9 gap checks (L3, L7, X7, below), 50 covered.
+the 0.9 gap checks (L3, L7, X7, below), 50 covered; supervised `ignore` adds
+V10 (51 guarantees, all covered).
 Mutation checks on the new tests: removing the run loop's stop-before-receive
 check fails `sim_ordering::stop_discards_*` and `tasks_contract::stop_window_*`;
 giving collateral children their own backoff fails
@@ -363,6 +364,7 @@ giving collateral children their own backoff fails
 | V7 | `Supervision!ReadyMeansAllStarted`; startup tests | G, Sim, Model | covered | owned by #240 (rank 5f) |
 | V8 | `NestedSupervision` invariants; `nested_supervision`; `tree_trace` | G TG, Sim, Model | covered | |
 | V9 | Supervision invariants; failpoints; `supervision_contract::message_backlog_does_not_delay_restart`; Fz | G TG P, Sim, Model | partial → covered | |
+| V10 | `Supervision!IgnoredNotRestarted`, `Cohorts!RoundCoversRange` (with model and recorded-trace controls); `supervised_ignore`; `supervision_trace`/`cohort_trace` ignore scenarios | G, Sim, Model | covered | added with supervised `ignore` (0.9); the fuzzer does not generate an `ignore` yet |
 | S1 | `Coordinator!Safety`; `execution_groups`; `execution_profiles` (`Capacity`); `supervision_contract::admission_is_closed_*` | G TG, Sim, Model | partial → covered | |
 | S2 | `Coordinator!OrderedShutdown`; `system_shutdown_orders_*`; `cross_backend::ordered_system_shutdown_matches` | G TG P, Sim, Model | covered | |
 | S3 | `Coordinator!Safety`, `CoordinatorInd` steps; `execution_groups`; `supervision_contract::dropping_a_system_shuts_down_*` (non-blocking drop, 5 s grace) | G, Sim, Model | partial → covered | |
@@ -1674,8 +1676,8 @@ updates the model in the same PR, and drift is a bug. The `model-sync` job
   item. `check-model-sync.py models` prints the current list.
 - **Coverage floors.** Each trace-validated model has a `coverage_floor`: the
   action keys the dedicated trace tests cover in
-  `verification/tla/coverage-baseline.json` (Supervision 36 of 40, Cohorts
-  40 of 46, Nested 11 of 11, Coordinator 9 of 9). The `tla` job already fails when a baseline key
+  `verification/tla/coverage-baseline.json` (Supervision 42 of 46, Cohorts
+  48 of 54, Nested 11 of 11, Coordinator 9 of 9). The `tla` job already fails when a baseline key
   stops being covered; this check fails when the baseline shrinks below the
   floor, so coverage only grows. Raise the floor when coverage grows.
 
@@ -1697,8 +1699,8 @@ held signals, the stage-1 parent check, the decision precedence and row 9)
 by hand (`verification/planted/patches/`, one patch each, listed in
 `INDEX.tsv`) and each was run, alone, against six layers. Later bugs are
 added with the fix they guard, numbered by PR (25-34 #293, 35 #310, 36 #311,
-37-39 #308, 40 #315), and run on the layers that target them (their rows say
-which):
+37-39 #308, 40 #315, 41-42 #321), and run on the layers that target them
+(their rows say which):
 
 | Layer | What runs | Budget |
 |---|---|---|
