@@ -928,10 +928,14 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
     // and the cell lock, one step. No failed start runs stopped().
     let trapping = ctx.shared.trap_exit.load(Ordering::Acquire);
     let continued = continuation.is_some();
-    let decide = |open: bool| {
+    // A parent exit held during started() and queued by a ready decision
+    // wakes `ctx.stopping()`; the wake runs after the locks are released.
+    let mut stopping_wake = None;
+    let mut decide = |open: bool| {
         let mut req = link::lock_request(&request);
         cell.decide(&returned, continued, trapping, |timed_out| {
             let row = req.resolve_start(trapping, timed_out, &returned, open);
+            stopping_wake = req.take_stopping_wake();
             let cause = match (&row, &returned) {
                 (crate::start::Row::Error, crate::start::Returned::Error(cause)) => {
                     Some(cause.clone())
@@ -970,6 +974,9 @@ pub(super) async fn run_actor_lifecycle<A: Actor, C: Fn()>(
             row
         })
     });
+    if let Some(waiter) = stopping_wake {
+        waiter.cancel();
+    }
     if row != crate::start::Row::Ready {
         if let (crate::start::Returned::Error(cause), false) =
             (&returned, row == crate::start::Row::Error)
