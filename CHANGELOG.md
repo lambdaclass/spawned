@@ -14,6 +14,13 @@
   add it. The README shows a lost-update race that passes under Tokio
   turned into a deterministic, seed-replayable failure
   (`examples/capabilities/tests/deterministic_simulation.rs`).
+- Examples consolidated from 19 crates to 10 with no example
+  removed: each tasks/threads pair (`bank`, `chat_room`, `ping_pong`,
+  `signal_test`, `updater`) is one package whose second binary is
+  `<name>_threads` (`cargo run -p bank --bin bank_threads`), and
+  `blocking_genserver`, `busy_genserver_warning` and `exit_reason` are
+  binaries of `spawned-capability-examples`. examples/README.md has the
+  new commands.
 - CI: AI review runs Codex, Claude and Grok automatically; Kimi, DeepSeek and
   Gemini only on demand (`/review`, `/kimi`, `/deepseek`, `/gemini`).
 - Remove the settled backend experiments: the `benchmarks/experiments` crate
@@ -32,6 +39,19 @@
   now a doctest, so it cannot drift again; the README roadmap, project tree,
   `semantics.md` status line and the `stack_budget` row in `TESTING.md` match
   the current state.
+- Fixed (V3, soundness): a generation the supervisor gave up on before
+  publishing it (a startup timeout, admission closing while it constructs,
+  the gate closing between ready and publication) was never killed. Its
+  cleanup waited one `shutdown_timeout` and then marked the slot stuck,
+  failing the tree. It now gets the same escalation as a published child:
+  the kill at `shutdown_timeout`, then stuck only if it also misses a second
+  interval after the kill. So `StuckOnlyAfterKill` holds on every supervisor
+  stop path. In `Supervision.tla`, unpublished generations are `"abandoned"`
+  (or `"startkilled"` when killed before the trace records `StartupFailed`).
+  `CleanupStuck` no longer follows them without a kill, and the shutdown
+  backstop never gives up on them. This is checked by two model faults, a
+  `supervision_trace` scenario with a recorded-trace control, `#[sim_test]`s
+  in `collateral_kill`, and planted bug 40.
 - Bump `url` to 2.5.9 in `Cargo.lock` (RUSTSEC-2026-0592, a stack overflow in
   `Url::origin()`); only the `updater` examples use it, through `reqwest`.
 - Fixed (V3, soundness): a OneForAll or RestForOne round never killed a
@@ -48,7 +68,19 @@
   `Cohorts.tla` gains `CKill` and `CStuck` with
   `StuckOnlyAfterKill` (it had no kill or stuck step, so it permitted the
   bug), trace-validated by a new `cohort_trace` scenario; a `#[sim_test]`
-  (`collateral_kill`) and planted bug 35 cover it.
+  (`collateral_kill`) and planted bug 35 cover it. `Supervision.tla`
+  (OneForOne) had the same gap on a supervisor stop turn. The model
+  allowed a stuck slot without the kill. In the code, the shutdown loop's
+  wait for a stopped child gave up at one `shutdown_timeout`, racing the
+  controller's kill, and failed the tree with "child cleanup deadline
+  exceeded" even when the kill ended the child. That wait is now a backstop
+  at three intervals, like the round coordinator's. The model gains
+  `CleanupKill`/`StopExited` and `StuckOnlyAfterKill`, which also covers the
+  supervisor's wait. It is checked by two model faults, a `shutdown_kill`
+  trace scenario (which found the code bug), two recorded-trace controls, a
+  `#[sim_test]` (`collateral_kill::shutdown_kills_a_stopped_child_without_failing_the_tree`,
+  also for a child that traps exits)
+  and planted bug 36.
 - Release qualification harness, `benchmarks/qualification/`: the client
   canaries and the ethrex memory run, consolidated from the hand-built 0.7.x
   and 0.8.0 runs into one parameterised, manual-only harness. It builds a
@@ -64,6 +96,19 @@
   codegen unit, so instruction counts follow the code rather than how generic
   code is partitioned across units (which moved `async_ct_burst` by about
   +2.6% between v0.8.0 and main with no change on its path).
+- Introspection, step 1b (0.9): `get_state(f)` and `get_status()` on
+  `ActorRef` (and `with_request_timeout(d)`), `get_status()` /
+  `get_status_with_timeout(d)` on `ChildHandle` (OTP `sys:get_state`,
+  `sys:get_status`). They run in a status turn of their own, between handler
+  turns and in mailbox order, with the request's 5 s default timeout; a
+  panicking callback answers the new `ActorError::CallbackFailed` and the
+  actor continues; a status request whose caller already gave up is not run
+  (the one exception to R4). `get_status` reports `info()` and the state,
+  redacted unless the actor opts in with `#[actor(inspect)]` (through
+  `introspection::Inspect`, OTP `format_status/1`) or
+  `#[actor(inspect = debug)]`; new `Actor::FORMAT_STATUS` const. Status
+  turns take no deferred-reply credit and bypass `metrics` accounting.
+  Semantics I4, I5.
 - Introspection, step 1a (0.9, docs/design/introspection.md tier 0):
   `info()` on `ActorRef`, `Context` and `ChildHandle` returns an
   `introspection::ActorInfo` (OTP `process_info`): id, type, label, registered
@@ -215,6 +260,10 @@
   arms); the model releases a group slot at scope completion, as the code
   does. Not yet: scope ownership (S8), supervisor `ignore` and
   `ChildSpec::options`.
+- Test kit: `Mock::on_started`, `start_delay`, `drop_flag` (unified start
+  design 10) to test code that starts a dependency. Ten unified-start
+  planted bugs (`verification/planted/patches/25-34`); the runner's trace
+  layer also records the lifecycle and start traces.
 
 - `model-sync`: a design-only TLA+ model (`design_only = true`: Start,
   Introspection, DynamicSupervisor) stays allowlisted as TLC-only only while

@@ -39,7 +39,7 @@ code = [
     "concurrency/src/supervision/**",
     "concurrency/src/lifecycle_trace.rs",
 ]
-coverage_floor = 36   # of 40 action keys
+coverage_floor = 38   # of 42 action keys
 
 [models.Cohorts]
 # OneForAll/RestForOne rounds (selection, stop, cleanup, join barrier,
@@ -225,17 +225,33 @@ code = [
 coverage_floor = 28   # of 28 trace-spec arms (trace_coverage.py STATIC)
 
 [models.Introspection]
-# Introspection v1 design model (PR #256, 0.9); no code yet.
+# Introspection v1 (0.9). Trace-validated for what is implemented: every
+# activity's begin and end, the status turn (`get_state`/`get_status`:
+# SendStatus, Dispatch, StatusAdmit, StatusAnswer, StatusEnd, the discharge
+# at D), the exit decision, stopped(), stops, kills, the runtime drop's
+# swap, D and publication (TraceIntrospection.tla, schema
+# introspection-v1, recorded by tests/introspection_trace.rs). The activity
+# word, the watchdog's fenced kill and the console are later steps; their
+# actions (Observe, KillCas, ...) have no trace event yet.
 files = [
     "verification/tla/Introspection.tla",
     "verification/tla/MCIntrospection*",
     "verification/tla/TraceIntrospection.tla",
 ]
-code = []
-[models.Introspection.tlc_only]
-design_only = true
-reason = "introspection v1 design model (0.9); process_info, get_state, the watchdog's fenced kill and the console are not implemented"
-tracking = "trace validation is part of implementing introspection v1 (design: PR #256; event table in docs/design/introspection.md)"
+code = [
+    "concurrency/src/introspection.rs",
+    # The run loops whose activity boundaries, status envelope and exit
+    # decision the model's actions are, and where their events are recorded.
+    "concurrency/src/tasks/actor.rs",
+    "concurrency/src/tasks/actor/**",
+    "concurrency/src/threads/actor.rs",
+    "concurrency/src/threads/actor/**",
+    "concurrency/src/actor_cleanup.rs",   # Drop, Die, Publish
+    "concurrency/src/link.rs",            # Stop, Kill
+    "concurrency/src/child_handle.rs",    # get_status through a ChildHandle
+    "concurrency/src/lifecycle_trace.rs",
+]
+coverage_floor = 18   # of 18 action keys (TraceIntrospection arms)
 
 # Loom harnesses. Each tests/*_loom.rs that compiles a production core with
 # `#[path]` (against Loom's types, through the core's `sync` shim) is a model
@@ -388,3 +404,21 @@ emitters = [
     { call = '\btrace::reply\(', arg = 1 },
 ]
 specs = ["verification/tla/TraceReplies.tla"]
+
+[[trace]]
+struct = "IntroEvent"
+emitters = [
+    { call = '\blifecycle_trace::intro\(', arg = 1 },
+    { call = '\btrace::intro\(', arg = 1 },
+]
+specs = ["verification/tla/TraceIntrospection.tla"]
+[trace.unlogged]
+Suspend = "handlers are atomic in the trace mapping: an await inside a turn or hook is not an event"
+Resume = "handlers are atomic in the trace mapping: an await inside a turn or hook is not an event"
+StatusTimeout = "the caller's deadline or a dropped receiver closing the slot: a silent step, decided by the Admit or Die that follows"
+StatusFromTurn = "fault device only (Fault = StatusInTurn)"
+KillDecide = "fault device only (Fault = CheckThenAct)"
+Observe = "the watchdog is not implemented yet (step 3)"
+KillCas = "the watchdog's fenced kill is not implemented yet (step 4)"
+KillCasFail = "the watchdog's fenced kill is not implemented yet (step 4)"
+KillRecord = "the watchdog's fenced kill is not implemented yet (step 4)"

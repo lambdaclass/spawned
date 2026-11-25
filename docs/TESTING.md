@@ -380,6 +380,8 @@ giving collateral children their own backoff fails
 | P2 | `panic-abort` CI job; `foreign_panics::panicking_panic_hook_*` | A N | covered | no observer for `Down`/`Exit` |
 | I1 | `introspection::*::info_returns_during_a_wedged_turn`; `introspection::sim_mode::reads_do_not_change_the_tape` | A B T N G TG, Sim | new (0.9) | console reads: later steps |
 | I3 | `introspection::*::lifecycle_walks_*` (a destructor held between D and publication); `child_handle_info_after_every_ref_is_dropped` | A B T N G TG, Sim | new (0.9, tier 0 part) | counters: `introspection` feature |
+| I4 | `status::*` (order, every outcome, abandoned requests not run, callback panic contained, no credit, during `stopped()` and destruction, no `metrics` accounting); `seeded::get_status_races_stop`; `Introspection.tla` status invariants; `introspection_trace` replayed by `TraceIntrospection.tla` with seven recorded-trace controls | A N, Sim, Model | new (0.9) | |
+| I5 | `status::*::state_is_redacted_*`, `inspect_formats_state`; unit `state_view_*` | A N | new (0.9) | trybuild for `inspect` misuse |
 | I10 | `crash_reports` (panics in every hook, abnormal self-exit, no report for clean exits, kills and untrapped signals, supervised fields) | A N G | new (0.9, crash part) | supervisor reports, sessions |
 | I11 | perf gate (`hotpath.py gate`, against the merge base and the last release) | A N | new (0.9) | codegen diff: step 2 |
 
@@ -1709,10 +1711,14 @@ python3 -m unittest scripts/tests/test_model_sync.py            # self-tests and
 
 Mutation testing breaks one operator at a time. To measure whether the stack
 catches the bugs a reviewer would actually miss, 24 realistic bugs were written
+(plus 10 for the 0.9 unified start, patches 25-34: the init timer, the
+notice disposition table, the answer after publication, the held administrative stop,
+held signals, the stage-1 parent check, the decision precedence and row 9)
 by hand (`verification/planted/patches/`, one patch each, listed in
 `INDEX.tsv`) and each was run, alone, against six layers. Later bugs are
-added with the fix they guard and numbered by PR (25-34 #293, 35 #310, 37-39 #308), and
-run on the layers that target them (their rows say which):
+added with the fix they guard, numbered by PR (25-34 #293, 35 #310, 36 #311,
+37-39 #308, 40 #315), and run on the layers that target them (their rows say
+which):
 
 | Layer | What runs | Budget |
 |---|---|---|
@@ -1797,14 +1803,20 @@ times the other rows'); its unpatched control missed in C and in F (300 s,
 | 23 | System shutdown stops targets in admission order | 65 | 12 | 8 | <1 (S2) | - | - |
 | 24 | System shutdown ignores admission order between actors and trees | 40 | 13 | - | 11 (S2) | - | - |
 | 35 | A round's collateral stop is never killed; stuck after one interval (V3) | 116 (2 tests) | 55 (1 test) | n/r | n/r | 50 (1 trace rejected) | n/r |
+| 36 | Shutdown loop gives up on a stopped child at one interval, racing its kill (V3) | 104 (1 test) | 52 (1 test) | n/r | n/r | 25 | n/r |
+| 40 | A generation stopped before publication is never killed; stuck after one interval (V3) | <1 (2 tests) | 4 (2 tests) | n/r | n/r | 3 (1 trace rejected) | n/r |
 | | **Caught** | **24** | **18** | **14** | **22** | **4** | **2** |
 
-Row 35 (layers T, S and V only, so it is not in the totals; n/r is not run;
-T and S on 2026-11-21 at `c08d3202`; V on 2026-11-23 on a laptop, the
-collateral trace test and its check only). V catches it because the trace
-scenario runs its stuck case first and writes each trace before checking
-the exit reason, so the bug's `CStuck` without a `CKill` reaches the model.
-Before, the scenario failed waiting for the kill and wrote no trace.
+Rows 35, 36 and 40 ran layers T, S and V only, so they are not in the totals
+(n/r: not run). Row 35: T and S on 2026-11-21 at `c08d3202`; V on
+2026-11-23 on a laptop, the collateral trace test and its check only. V
+catches it because the trace scenario runs its stuck case first and writes
+each trace before checking the exit reason, so the bug's `CStuck` without
+a `CKill` reaches the model. Before, the scenario failed waiting for the
+kill and wrote no trace. Row 36: 2026-11-21 at `4efd08ab`.
+Row 40 (2026-11-23, on a laptop) ran only the targeted tests in each layer:
+`collateral_kill`'s two unpublished tests for T and S, and the unpublished
+trace scenario and its check for V; it is not in the totals either.
 
 Before the follow-ups (2026-11-11, `cc60801d`, five layers, no K): caught
 T 22, S 15, C 6, F 9, V 4; bugs 08 and 20 hung T; F missed every

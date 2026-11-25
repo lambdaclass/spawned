@@ -405,6 +405,17 @@ pub(super) fn run_actor_receiving<A: Actor>(
                     crate::lifecycle_trace::LifeEvent::new("Panic", trace_id).x("started")
                 });
             }
+            // Introspection.tla: started()'s activity ends (a ready return,
+            // whatever the row) or panics.
+            match &returned {
+                crate::start::Returned::Ready => {
+                    crate::lifecycle_trace::intro(trace_id, "StartEnd", "")
+                }
+                crate::start::Returned::Panic(_) => {
+                    crate::lifecycle_trace::intro(trace_id, "StartPanic", "")
+                }
+                _ => {}
+            }
             row
         })
     });
@@ -482,6 +493,8 @@ pub(super) fn run_actor_receiving<A: Actor>(
                         });
                         #[cfg(feature = "lifecycle-trace")]
                         crate::lifecycle_trace::start_dispatch(trace_id, envelope.trace_kind());
+                        #[cfg(feature = "lifecycle-trace")]
+                        crate::lifecycle_trace::intro(trace_id, "Dispatch", envelope.intro_kind());
                         false
                     });
                     if stopped {
@@ -492,6 +505,8 @@ pub(super) fn run_actor_receiving<A: Actor>(
                     let observation = envelope
                         .observation()
                         .map(|observation| observation.begin());
+                    #[cfg(feature = "lifecycle-trace")]
+                    let turn_kind = envelope.intro_kind();
                     ctx.shared.replies.begin_turn();
                     let result = catch_unwind(AssertUnwindSafe(|| {
                         crate::lifecycle_trace::with_actor(trace_id, || {
@@ -499,6 +514,12 @@ pub(super) fn run_actor_receiving<A: Actor>(
                         });
                     }));
                     ctx.shared.replies.end_turn(result.is_err());
+                    #[cfg(feature = "lifecycle-trace")]
+                    if result.is_ok() {
+                        crate::lifecycle_trace::intro_section(trace_id, || {
+                            crate::lifecycle_trace::intro(trace_id, "End", turn_kind)
+                        });
+                    }
                     #[cfg(feature = "metrics")]
                     if let Some(observation) = observation {
                         observation.finish(result.is_err());
@@ -516,6 +537,7 @@ pub(super) fn run_actor_receiving<A: Actor>(
                             crate::lifecycle_trace::life_emit(trace_id, || {
                                 crate::lifecycle_trace::LifeEvent::new("Panic", trace_id).x("turn")
                             });
+                            crate::lifecycle_trace::intro(trace_id, "Panic", "turn");
                             link::lock_request(&request)
                                 .panic(ExitReason::Panic(format!("panic in handler: {msg}")));
                         });
@@ -546,6 +568,11 @@ pub(super) fn run_actor_receiving<A: Actor>(
                 "skip"
             })
         });
+        // Introspection.tla: the exit decision, then stopped()'s activity.
+        crate::lifecycle_trace::intro(trace_id, "Exit", if run { "run" } else { "skip" });
+        if run {
+            crate::lifecycle_trace::intro(trace_id, "HookBegin", "");
+        }
         (run, skipped)
     });
     if let Some((cause, reason)) = skipped {
@@ -561,6 +588,11 @@ pub(super) fn run_actor_receiving<A: Actor>(
             fail_point!("actor.before_stopped");
             crate::lifecycle_trace::with_actor(trace_id, || actor.stopped(&ctx));
         }));
+        if stop_result.is_ok() {
+            crate::lifecycle_trace::intro_section(trace_id, || {
+                crate::lifecycle_trace::intro(trace_id, "HookEnd", "")
+            });
+        }
         if let Err(panic) = stop_result {
             let msg = panic_message(&*panic);
             // The payload is user code too: its destructor may panic (L6).
@@ -572,6 +604,7 @@ pub(super) fn run_actor_receiving<A: Actor>(
                 crate::lifecycle_trace::life_emit(trace_id, || {
                     crate::lifecycle_trace::LifeEvent::new("Panic", trace_id).x("stopped")
                 });
+                crate::lifecycle_trace::intro(trace_id, "HookPanic", "");
                 link::lock_request(&request)
                     .panic(ExitReason::Panic(format!("panic in stopped(): {msg}")));
             });

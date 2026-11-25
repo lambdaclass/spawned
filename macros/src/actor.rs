@@ -136,6 +136,9 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut max_native_jobs: Option<syn::Expr> = None;
     let mut allow_shared_state = false;
     let mut allow_panic_abort = false;
+    // `inspect` (through `Inspect`) or `inspect = debug` (the `Debug` form):
+    // `Actor::FORMAT_STATUS` for `get_status`.
+    let mut inspect: Option<Option<Ident>> = None;
     let bridge_traits: Vec<Ident> = if attr.is_empty() {
         Vec::new()
     } else {
@@ -166,6 +169,23 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
                     if slot.replace(value).is_some() {
                         return Err(syn::Error::new(key.span(), format!("`{key}` given twice")));
                     }
+                } else if key == "inspect" {
+                    let how = if input.peek(syn::Token![=]) {
+                        let _: syn::Token![=] = input.parse()?;
+                        let how: Ident = input.parse()?;
+                        if how != "debug" {
+                            return Err(syn::Error::new(
+                                how.span(),
+                                "expected `inspect` or `inspect = debug`",
+                            ));
+                        }
+                        Some(how)
+                    } else {
+                        None
+                    };
+                    if inspect.replace(how).is_some() {
+                        return Err(syn::Error::new(key.span(), "`inspect` given twice"));
+                    }
                 } else if key == "allow_shared_state" {
                     allow_shared_state = true;
                 } else if key == "allow_panic_abort" {
@@ -174,7 +194,8 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
                     return Err(syn::Error::new(
                         key.span(),
                         "unknown parameter, expected `protocol`, `max_outstanding`, \
-                         `max_native_jobs`, `allow_shared_state` or `allow_panic_abort`",
+                         `max_native_jobs`, `inspect`, `allow_shared_state` or \
+                         `allow_panic_abort`",
                     ));
                 } else if input.peek(syn::Token![=]) {
                     // protocol = TraitName
@@ -718,7 +739,19 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
         let outstanding = max_outstanding.map(|n| quote! { const MAX_OUTSTANDING: usize = #n; });
         let native = max_native_jobs
             .map(|n| quote! { const MAX_NATIVE_JOBS: ::core::option::Option<usize> = ::core::option::Option::Some(#n); });
-        quote! { #outstanding #native }
+        let format_status = inspect.map(|how| match how {
+            None => quote! {
+                const FORMAT_STATUS: ::core::option::Option<fn(&Self) -> ::std::string::String> =
+                    ::core::option::Option::Some(
+                        <Self as spawned_concurrency::introspection::Inspect>::format_status,
+                    );
+            },
+            Some(debug) => quote::quote_spanned! { debug.span() =>
+                const FORMAT_STATUS: ::core::option::Option<fn(&Self) -> ::std::string::String> =
+                    ::core::option::Option::Some(|state: &Self| ::std::format!("{state:#?}"));
+            },
+        });
+        quote! { #outstanding #native #format_status }
     };
 
     let actor_impl = quote! {

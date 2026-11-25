@@ -163,11 +163,13 @@ class ModelInventory(RepoCopy):
 
     def test_design_only_model_with_code_fails(self):
         tmp = self.copy()
-        self.edit_map(tmp, "code = []\n[models.Introspection.tlc_only]",
-                      'code = ["concurrency/src/system.rs"]\n[models.Introspection.tlc_only]')
+        # No model in the tree is design-only now: mark a TLC-only one that
+        # maps code.
+        self.edit_map(tmp, "[models.ReplyTimer.tlc_only]\n",
+                      "[models.ReplyTimer.tlc_only]\ndesign_only = true\n")
         code, out = run("--root", str(tmp), "models")
         self.assertEqual(code, 1, out)
-        self.assertIn("Introspection is a design-only model", out)
+        self.assertIn("ReplyTimer is a design-only model", out)
 
     def test_unrun_trace_spec_is_not_validation(self):
         tmp = self.copy()
@@ -192,7 +194,7 @@ class ModelInventory(RepoCopy):
         path.write_text(json.dumps(data))
         code, out = run("--root", str(tmp), "models")
         self.assertEqual(code, 1, out)
-        self.assertIn("below the floor 36", out)
+        self.assertRegex(out, r"Supervision: .* below the floor \d+")
 
     def test_unmapped_loom_harness_fails(self):
         tmp = self.copy()
@@ -277,7 +279,7 @@ class ModelPaths(unittest.TestCase):
         self.edit("concurrency/src/actor_cleanup.rs", "x + 1", "x + 2")
         code, out = self.check()
         self.assertEqual(code, 1, out)
-        self.assertIn("MISSING concurrency/src/actor_cleanup.rs: covered by Lifecycle", out)
+        self.assertIn("MISSING concurrency/src/actor_cleanup.rs: covered by Introspection, Lifecycle, Start", out)
 
     def test_code_change_with_model_passes(self):
         self.edit("concurrency/src/actor_cleanup.rs", "x + 1", "x + 2")

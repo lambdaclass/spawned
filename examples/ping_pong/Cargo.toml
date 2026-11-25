@@ -3,12 +3,9 @@ name = "ping_pong"
 version = "0.1.0"
 edition = "2021"
 publish = false
+default-run = "ping_pong"
 
 [dependencies]
 spawned-rt = { workspace = true, features = ["async", "fmt-subscriber"] }
 spawned-concurrency = { workspace = true }
 tracing = { workspace = true }
-
-[[bin]]
-name = "ping_pong"
-path = "src/main.rs"

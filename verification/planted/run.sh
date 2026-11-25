@@ -153,6 +153,7 @@ layer_V() {
     LIFECYCLE_TRACE_DIR="$traces" cargo test -p spawned-concurrency \
         --features lifecycle-trace,failpoints --no-fail-fast --test supervision_trace \
         --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace \
+        --test lifecycle_trace --test start_trace \
         > "$log" 2>&1
     if grep -qE '^error(\[E[0-9]+\])?:' "$log" && ! grep -q '^test result' "$log"; then
         verdict=build; secs=0; detail=""; return

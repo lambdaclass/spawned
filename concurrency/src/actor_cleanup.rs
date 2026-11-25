@@ -205,6 +205,11 @@ impl<C: Fn()> ActorCleanup<C> {
                 trace::LifeEvent::new(if dropped { "Drop" } else { "Die" }, id)
                     .x(trace::life_reason(&reason))
             });
+            // Introspection.tla: the drop's swap, then D, as two steps.
+            if dropped {
+                trace::intro(id, "Drop", "");
+            }
+            trace::intro(id, "Die", trace::intro_reason(&reason));
             self.close(reason)
         });
         if skipped {
@@ -343,6 +348,7 @@ impl<C: Fn()> Drop for ActorCleanup<C> {
         drop(self.name.take());
         trace::life_section(id, || {
             trace::life_emit(id, || trace::LifeEvent::new("Publish", id));
+            trace::intro(id, "Publish", "");
         });
         let mut notices = self.notices.take();
         trace::start_section(|| {

@@ -1,0 +1,15 @@
+error[E0277]: `Opaque` doesn't implement `Debug`
+ --> tests/ui/actor_inspect_debug_without_debug.rs:5:19
+  |
+5 | #[actor(inspect = debug)]
+  |                   ^^^^^ `Opaque` cannot be formatted using `{:?}` because it doesn't implement `Debug`
+  |
+  = help: the trait `Debug` is not implemented for `Opaque`
+  = note: add `#[derive(Debug)]` to `Opaque` or manually `impl Debug for Opaque`
+  = note: required for `&Opaque` to implement `Debug`
+  = note: this error originates in the macro `$crate::__export::format_args` which comes from the expansion of the macro `::std::format` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: consider annotating `Opaque` with `#[derive(Debug)]`
+  |
+4 + #[derive(Debug)]
+5 | pub struct Opaque;
+  |
