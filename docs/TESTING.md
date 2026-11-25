@@ -1676,8 +1676,8 @@ updates the model in the same PR, and drift is a bug. The `model-sync` job
   item. `check-model-sync.py models` prints the current list.
 - **Coverage floors.** Each trace-validated model has a `coverage_floor`: the
   action keys the dedicated trace tests cover in
-  `verification/tla/coverage-baseline.json` (Supervision 36 of 40, Cohorts
-  40 of 46, Nested 11 of 11, Coordinator 9 of 9). The `tla` job already fails when a baseline key
+  `verification/tla/coverage-baseline.json` (Supervision 42 of 46, Cohorts
+  48 of 54, Nested 11 of 11, Coordinator 9 of 9). The `tla` job already fails when a baseline key
   stops being covered; this check fails when the baseline shrinks below the
   floor, so coverage only grows. Raise the floor when coverage grows.
 

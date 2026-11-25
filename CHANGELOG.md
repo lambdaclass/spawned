@@ -21,7 +21,9 @@
   ignores keeps its restart grant (V5), `wait_ready()`/`current()` answer
   `ChildUnavailable(Ignored)` at once and shutdown finishes it at once. It
   is observed only once the instance's owned cleanup joined (until then the
-  slot is `Stopping`, stuck under V3). `Supervision.tla` and `Cohorts.tla`
+  slot is `Stopping`; an owned cleanup past `shutdown_timeout` gets #315's
+  kill first and is stuck only after a second interval, V3).
+  `Supervision.tla` and `Cohorts.tla`
   gain the `Ignored` state (`Ignore`, `IgnoredNotRestarted`,
   `RoundCoversRange`; inductive invariants updated), traces gain an
   `Ignore(c, g)` event, with negative controls `IgnoreRetried` and

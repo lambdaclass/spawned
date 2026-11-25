@@ -109,7 +109,8 @@ backoff; replacement startup timeout;
 turn whose child dies after the kill (`CleanupKill`, `StopExited`); ignored
 children (`Ignore`: kept with no generation and never restarted under
 OneForOne, a Temporary one removed; a replacement that ignores keeps its
-grant); and seeded random
+grant; one whose owned cleanup missed `shutdown_timeout` is killed first,
+`CleanupKill` then `Ignore`); and seeded random
 crashes, normal exits and external shutdowns racing a stop or shutdown.
 
 How it works:
