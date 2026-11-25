@@ -20,7 +20,7 @@ impl Message for Wedge {
 
 mod tasks_peer {
     use super::*;
-    use spawned_concurrency::tasks::{Actor, Context, Handler};
+    use spawned_concurrency::tasks::{Context, Handler};
 
     /// A connection actor, labelled by its peer and showing its state.
     pub struct Connection {
@@ -51,7 +51,7 @@ mod tasks_peer {
 
 mod threads_peer {
     use super::*;
-    use spawned_concurrency::threads::{Actor, Context, Handler};
+    use spawned_concurrency::threads::{Context, Handler};
 
     #[derive(Debug)]
     pub struct Ledger {

@@ -1,7 +1,5 @@
 use spawned_concurrency::error::ActorError;
-use spawned_concurrency::threads::{
-    send_interval, send_message_on, Actor, ActorStart as _, Context, Handler,
-};
+use spawned_concurrency::threads::{send_interval, send_message_on, ActorStart as _, Context};
 use spawned_concurrency::{actor, protocol};
 use spawned_rt::threads::{self as rt, CancellationToken};
 use std::time::Duration;

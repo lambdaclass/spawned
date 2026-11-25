@@ -17,7 +17,7 @@
 //! `--cfg spawned_sim`", for what the simulator does not model. A crate that
 //! uses `#[cfg(spawned_sim)]` declares it under `[lints.rust]` in its
 //! `Cargo.toml` (`unexpected_cfgs`), as this package does.
-use spawned_concurrency::tasks::{Actor, ActorStart as _, Context, Handler};
+use spawned_concurrency::tasks::{ActorStart as _, Context};
 use spawned_concurrency::{actor, error::ActorError, protocol, Response};
 use spawned_rt::tasks as rt;
 

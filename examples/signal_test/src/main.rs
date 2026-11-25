@@ -1,6 +1,6 @@
 use spawned_concurrency::error::ActorError;
 use spawned_concurrency::tasks::{
-    send_interval, send_message_on, Actor, ActorStart as _, Backend, Context, Handler,
+    send_interval, send_message_on, ActorStart as _, Backend, Context,
 };
 use spawned_concurrency::{actor, protocol};
 use spawned_rt::tasks::{self as rt, CancellationToken};

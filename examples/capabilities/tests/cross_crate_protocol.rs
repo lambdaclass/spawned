@@ -19,10 +19,7 @@ impl<T: Debug + Send + Sync> SharedProtocol for GenericFake<T> {
     }
 }
 mod native {
-    use spawned_concurrency::{
-        actor,
-        threads::{Actor, Context, Handler},
-    };
+    use spawned_concurrency::{actor, threads::Context};
     use spawned_protocol_contract::{
         shared_protocol, where_protocol, SharedProtocol, WhereProtocol,
     };
@@ -40,10 +37,7 @@ mod native {
     }
 }
 mod asynchronous {
-    use spawned_concurrency::{
-        actor,
-        tasks::{Actor, Context, Handler},
-    };
+    use spawned_concurrency::{actor, tasks::Context};
     use spawned_protocol_contract::{
         shared_protocol, where_protocol, SharedProtocol, WhereProtocol,
     };

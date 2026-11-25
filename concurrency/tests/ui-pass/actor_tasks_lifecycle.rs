@@ -15,7 +15,7 @@ impl Message for Pong {
 
 mod asynchronous {
     use super::*;
-    use spawned_concurrency::tasks::{Actor, Context, Handler};
+    use spawned_concurrency::tasks::Context;
     pub struct Echo;
     #[actor]
     impl Echo {
@@ -42,7 +42,7 @@ mod asynchronous {
 
 mod native {
     use spawned_concurrency::actor;
-    use spawned_concurrency::threads::{Actor, Context, Handler};
+    use spawned_concurrency::threads::Actor;
     pub struct Idle;
     #[actor]
     impl Idle {}

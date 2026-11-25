@@ -3,7 +3,7 @@ use spawned_concurrency::{
     actor, protocol, registry,
     supervision::{Backoff, ChildSpec, SupervisorConfig},
     system::ActorSystem,
-    tasks::{Actor, Context, Handler},
+    tasks::{Context, Handler},
     Response,
 };
 use std::{sync::Arc, time::Duration};

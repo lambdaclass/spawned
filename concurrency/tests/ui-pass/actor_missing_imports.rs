@@ -1,3 +1,4 @@
+// `#[actor]` names Actor, Handler and Context by path: no imports needed.
 #![allow(unused_imports)]
 use spawned_concurrency::{actor, protocol, Response};
 #[protocol]

@@ -11,7 +11,7 @@ use wait_protocol::{Release, Wait};
 
 mod tasks_mode {
     use super::*;
-    use spawned_concurrency::tasks::{Actor, Context, Handler};
+    use spawned_concurrency::tasks::Context;
     pub struct Gate {
         waiters: Vec<ReplyTo<u64>>,
         ready: Option<u64>,
@@ -43,7 +43,7 @@ mod tasks_mode {
 
 mod threads_mode {
     use super::*;
-    use spawned_concurrency::threads::{Actor, Context, Handler};
+    use spawned_concurrency::threads::Context;
     pub struct Gate {
         waiters: Vec<ReplyTo<u64>>,
     }

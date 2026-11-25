@@ -13,8 +13,8 @@
 //!    rest with `ActorStopped`.
 use spawned_concurrency::message::Message;
 use spawned_concurrency::tasks::{
-    Actor, ActorRef, ActorStart, Context, Deadline, Handler, InsertErrorKind, JobError, JobOptions,
-    JobOutcome, PendingReplies, PendingReply, ReplyTo,
+    ActorRef, ActorStart, Context, Deadline, InsertErrorKind, JobError, JobOptions, JobOutcome,
+    PendingReplies, PendingReply, ReplyTo,
 };
 use spawned_concurrency::{actor, protocol, ActorError, Response};
 use std::collections::VecDeque;
