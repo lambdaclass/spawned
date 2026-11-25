@@ -119,6 +119,9 @@ pub enum Unavailable {
     Redacted,
     /// The actor is past its death point.
     Dead,
+    /// The instance exists but has not published what is asked for yet (a
+    /// nested supervisor still starting its children).
+    Starting,
 }
 
 /// Where the actor is in its lifecycle (OTP `process_info(status)`, with
@@ -401,6 +404,11 @@ pub(crate) struct Meta {
     /// The instance's shared state, set once right after it is built. Weak:
     /// the signal target outlives the instance in peers' link tables.
     probe: OnceLock<Weak<dyn Probe>>,
+    /// The managed scope that adopted the instance (set once, at adoption).
+    /// Weak: the scope holds the instance's handle. It keeps a released
+    /// instance's system, group and supervisor position readable.
+    #[cfg(feature = "async")]
+    scope: OnceLock<Weak<crate::system::Scope>>,
 }
 
 impl Meta {
@@ -410,7 +418,19 @@ impl Meta {
             host,
             label: Mutex::new(None),
             probe: OnceLock::new(),
+            #[cfg(feature = "async")]
+            scope: OnceLock::new(),
         }
+    }
+
+    #[cfg(feature = "async")]
+    pub(crate) fn set_scope(&self, scope: Weak<crate::system::Scope>) {
+        let _ = self.scope.set(scope);
+    }
+
+    #[cfg(feature = "async")]
+    pub(crate) fn scope(&self) -> Option<Arc<crate::system::Scope>> {
+        self.scope.get().and_then(Weak::upgrade)
     }
 
     pub(crate) fn set_probe(&self, probe: Weak<dyn Probe>) {
@@ -546,6 +566,9 @@ pub(crate) fn released(
     links: &crate::link::LinkTable,
     published: bool,
 ) -> ActorInfo {
+    // The scope outlives the instance while its supervisor or group holds it.
+    #[cfg(feature = "async")]
+    let scope = signal.meta.scope();
     build(Sources {
         signal,
         links,
@@ -554,7 +577,7 @@ pub(crate) fn released(
         monitors: 0,
         jobs_running: 0,
         #[cfg(feature = "async")]
-        scope: None,
+        scope: scope.as_deref(),
     })
 }
 

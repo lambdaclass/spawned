@@ -1727,6 +1727,49 @@ impl PeerTable { /* ... */ }
 
 Formatted state over 64 KiB comes back `StateView::Truncated`.
 
+### Supervision trees (`which_children`, `count_children`, `tree`)
+
+A running `Supervisor` lists its children as OTP's supervisor does:
+
+```rust
+for child in supervisor.which_children() {
+    println!("{} {:?} gen {} restarts {} actor {:?}",
+        child.key, child.state, child.generation, child.restarts, child.actor);
+}
+let counts = supervisor.count_children();   // specs, active, supervisors, workers
+let tree = supervisor.tree();                // the whole subtree, expanded
+```
+
+Each `ChildInfo` row is read under that child's lock; rows of one call can
+come from different instants. `actor` is the live instance (starting, ready
+or stopping), `None` between instances. `tree()` copies each level's rows
+and live instances, releases every lock, then expands them: a worker node
+is that instance's `info()`, a nested supervisor node its own `tree()`,
+`Unavailable(Starting)` for a nested supervisor whose instance is still
+starting its children, and `Unavailable(Dead)` when there was no live
+instance. A node always belongs to
+the generation of its row. `SupervisedChild::info()` is one child's row.
+Name a supervisor with `SupervisorConfig::name` (a nested one defaults to its
+`SupervisorSpec` name).
+
+Supervisors also emit `spawned::supervisor` events (OTP's SASL supervisor
+reports): `child_terminated` (WARN, an unexpected exit), `child_restarted`
+(INFO; `child_terminated`'s `action` is what the restart budget decided:
+`restart`, or `shutdown` when the intensity limit stops the supervisor), and
+at ERROR `start_failed`, `restart_intensity_reached` and `shutdown_error` (a
+child that missed its shutdown time when the supervisor stopped it, at
+shutdown or in a OneForAll or RestForOne round: `killed` when it is killed,
+then `stuck` if the kill does not end it within another interval), with the
+fields `supervisor`, `system`, `child`, `generation`, `reason`,
+`restarts_in_window`, `max_restarts`, `window_ms`, `action`.
+
+A `stuck` child is where Spawned differs from OTP on purpose: OTP's
+`brutal_kill` ends a process that ignores its shutdown and the supervisor
+carries on. Spawned kills it too, but Rust cannot preempt a task or thread
+stuck in code that never yields, so the kill takes effect only when that code
+returns, and a slot whose child the kill does not end fails the supervisor
+instead of being reused (semantics V3).
+
 ### Crash reports
 
 An actor that ends with an abnormal reason it produced itself (a panic in
