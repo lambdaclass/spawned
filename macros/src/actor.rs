@@ -678,6 +678,9 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                 };
 
+                // The trait path takes the handler's span, so a bound error
+                // (`M: Message`) points at the method, as a literal would.
+                let handler_trait = respan(handler_trait.clone(), span);
                 let handler_impl = if immediate {
                     quote::quote_spanned! { span =>
                         #(#extra_attrs)*
@@ -820,4 +823,23 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     output.into()
+}
+
+/// `tokens` with every span set to `span` (an interpolated path keeps its
+/// own spans inside `quote_spanned!`).
+fn respan(tokens: proc_macro2::TokenStream, span: proc_macro2::Span) -> proc_macro2::TokenStream {
+    tokens
+        .into_iter()
+        .map(|mut tree| {
+            if let proc_macro2::TokenTree::Group(group) = &tree {
+                let mut new =
+                    proc_macro2::Group::new(group.delimiter(), respan(group.stream(), span));
+                new.set_span(span);
+                tree = proc_macro2::TokenTree::Group(new);
+            } else {
+                tree.set_span(span);
+            }
+            tree
+        })
+        .collect()
 }

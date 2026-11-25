@@ -2,7 +2,7 @@
 // as a generated message, an acronym trait name without the Protocol suffix,
 // explicit unit and Result<(), ActorError> sends, const and inline timeouts,
 // 'static borrows, fn-pointer fields and a default method body.
-use spawned_concurrency::threads::{Actor, ActorStart, Context, Handler};
+use spawned_concurrency::threads::{ActorStart, Context};
 use spawned_concurrency::{actor, protocol, ActorError, Response};
 use std::time::Duration;
 

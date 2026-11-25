@@ -1,6 +1,6 @@
 // Generic native actor with every lifecycle hook, a `&self` handler, plain
 // inherent methods kept in the block, and a cfg-disabled protocol method.
-use spawned_concurrency::threads::{Actor, ActorStart, Context, Handler};
+use spawned_concurrency::threads::{ActorStart, Context};
 use spawned_concurrency::{actor, protocol, Exit, Response};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

@@ -2,7 +2,7 @@
 // into an error so the snapshot proves every pattern fires.
 #![deny(warnings)]
 use spawned_concurrency::message::Message;
-use spawned_concurrency::tasks::{Actor, Context, Handler};
+use spawned_concurrency::tasks::Context;
 use spawned_concurrency::actor;
 use std::cell::RefCell;
 use std::rc::Rc;

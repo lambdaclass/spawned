@@ -1,5 +1,5 @@
 use spawned_concurrency::{actor, protocol, Response};
-use spawned_concurrency::tasks::{Actor, Context, Handler, ActorStart};
+use spawned_concurrency::tasks::{Context, ActorStart};
 
 #[protocol]
 pub trait CounterProtocol: Send + Sync {

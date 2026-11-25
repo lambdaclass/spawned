@@ -1,5 +1,5 @@
 #![deny(warnings)]
-use spawned_concurrency::{actor, message::Message, tasks::{Actor, Context, Handler}};
+use spawned_concurrency::{actor, message::Message, tasks::Context};
 struct Allow;
 impl Message for Allow { type Result = u64; }
 struct Expect;

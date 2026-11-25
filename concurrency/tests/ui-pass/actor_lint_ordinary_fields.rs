@@ -2,7 +2,7 @@
 // `Arc` of immutable data; `deny(warnings)` proves the lint stays quiet.
 #![deny(warnings)]
 use spawned_concurrency::message::Message;
-use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler};
+use spawned_concurrency::tasks::{ActorStart, Context};
 use spawned_concurrency::actor;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

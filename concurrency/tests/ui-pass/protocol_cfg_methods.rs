@@ -1,6 +1,6 @@
 // Methods with the same name under mutually exclusive cfg predicates are
 // valid; only unconditional duplicates are rejected.
-use spawned_concurrency::threads::{Actor, ActorStart, Context, Handler};
+use spawned_concurrency::threads::{ActorStart, Context};
 use spawned_concurrency::{actor, protocol, Response};
 
 #[protocol]

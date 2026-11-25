@@ -21,7 +21,6 @@ trait Custom: Endpoint {
 // protocol fail just because a configured wrapper does not implement it.
 mod native {
 use super::*;
-use spawned_concurrency::threads::{Actor, Context, Handler};
 pub struct Native;
 #[actor(protocol(Probe, Custom))]
 impl Native {
@@ -33,7 +32,6 @@ impl Native {
 }
 mod asynchronous {
 use super::*;
-use spawned_concurrency::tasks::{Actor, Context, Handler};
 pub struct Async;
 #[actor(protocol(Probe, Custom))]
 impl Async {

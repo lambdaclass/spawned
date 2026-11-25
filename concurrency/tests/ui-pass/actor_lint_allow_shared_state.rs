@@ -4,7 +4,7 @@
 // `panic-abort` profile; see docs/TESTING.md).
 #![deny(warnings)]
 use spawned_concurrency::message::Message;
-use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler};
+use spawned_concurrency::tasks::{ActorStart, Context};
 use spawned_concurrency::actor;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
