@@ -800,12 +800,15 @@ mod tasks_mode {
         impl Capture {
             /// (cause, reason) of each `stopped_skipped` event for `actor`.
             fn skipped(&self, actor: ActorId) -> Vec<(String, String)> {
+                self.skipped_at(tracing::Level::DEBUG, actor)
+            }
+            fn skipped_at(&self, at: tracing::Level, actor: ActorId) -> Vec<(String, String)> {
                 self.0
                     .lock()
                     .unwrap()
                     .iter()
                     .filter(|(level, f)| {
-                        *level == tracing::Level::DEBUG
+                        *level == at
                             && f.get("event").map(String::as_str) == Some("stopped_skipped")
                             && f.get("actor") == Some(&actor.to_string())
                     })
@@ -880,7 +883,57 @@ mod tasks_mode {
                 capture.skipped(dropped),
                 vec![("runtime_drop".into(), "killed".into())]
             );
+            // An actor that overrides stopped() (`HAS_STOPPED`, set by
+            // `#[actor]` for a `#[stopped]` hook): its type's first skip is
+            // a warning, later skips are debug.
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let (first, second) = runtime.block_on(async {
+                let mut ids = Vec::new();
+                for _ in 0..2 {
+                    let actor = Cleanup.spawn();
+                    settle_cleanup(&actor).await;
+                    actor.child_handle().kill();
+                    assert_eq!(ended(&actor.child_handle()).await, ExitReason::Killed);
+                    ids.push(actor.id());
+                }
+                (ids[0], ids[1])
+            });
+            let warn = tracing::Level::WARN;
+            assert_eq!(
+                capture.skipped_at(warn, first),
+                vec![("kill".into(), "killed".into())]
+            );
+            assert!(capture.skipped(first).is_empty());
+            assert!(capture.skipped_at(warn, second).is_empty());
+            assert_eq!(
+                capture.skipped(second),
+                vec![("kill".into(), "killed".into())]
+            );
+            // Node does not declare HAS_STOPPED: never a warning.
+            assert!(capture.skipped_at(warn, killed).is_empty());
             println!("skipped stopped() logged");
+        }
+
+        struct Cleanup;
+        impl Actor for Cleanup {
+            const HAS_STOPPED: bool = true;
+            async fn stopped(&mut self, _: &Context<Self>) {}
+        }
+        impl Handler<Ping> for Cleanup {
+            async fn handle(
+                &mut self,
+                _: Ping,
+                reply: spawned_concurrency::PendingReply<'_, u8>,
+                _: &Context<Self>,
+            ) {
+                reply.reply(7);
+            }
+        }
+        async fn settle_cleanup(actor: &ActorRef<Cleanup>) {
+            actor.request(Ping).await.unwrap();
         }
     }
 

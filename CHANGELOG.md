@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A skipped `stopped()` is a `warn` once per actor type when the actor
+  overrides it (`#[stopped]` in `#[actor]`, or `const HAS_STOPPED: bool =
+  true` on a hand-written impl): a kill or an untrapped exit signal, such as
+  a supervisor's shutdown of an actor that does not trap exits, no longer
+  skips cleanup silently. The message names the remedies (`trap_exit` in
+  `started()`, or `Drop`). Other skips stay at `debug`; no behaviour changes.
 - Examples consolidated from 19 crates to 10 with no example
   removed: each tasks/threads pair (`bank`, `chat_room`, `ping_pong`,
   `signal_test`, `updater`) is one package whose second binary is

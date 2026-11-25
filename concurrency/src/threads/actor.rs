@@ -67,6 +67,14 @@ pub trait Actor: Send + Sized + 'static {
     /// `#[actor(max_native_jobs = N)]`.
     const MAX_NATIVE_JOBS: Option<usize> = None;
 
+    /// Whether this actor overrides `stopped()`. `#[actor]` sets it for a
+    /// `#[stopped]` hook; a hand-written impl that overrides `stopped()` can
+    /// set it too. When a kill, an untrapped exit signal or link notice
+    /// skips the hook, the first skip per actor type is then logged as a
+    /// `warn` (`event = "stopped_skipped"`) naming the remedy, instead of
+    /// at `debug` only. It changes no behaviour.
+    const HAS_STOPPED: bool = false;
+
     /// How `get_status` shows this actor's state (OTP `format_status/1`).
     /// `None` (the default) redacts it: type-erased state appears only for
     /// actors that opt in, with `#[actor(inspect)]` (through

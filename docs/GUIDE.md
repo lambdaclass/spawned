@@ -165,7 +165,7 @@ As in OTP (`terminate/2` runs only for exits the process takes itself), `stopped
 - a supervisor's or system's shutdown, or a `start_link` parent's exit, to an actor that does **not** trap exits: the parent's exit is an exit signal (design E3);
 - the runtime dropping the actor (`Killed`).
 
-Every skip is logged at `debug` with `event = "stopped_skipped"`, the actor id and type, `cause` (`kill`, `exit_signal` or `runtime_drop`) and `reason`. The log is emitted whether or not the actor overrides `stopped()` (there is no cheap way to tell), so filter on the actor type. The lifecycle trace (feature `lifecycle-trace`) records the same decision as `Hook` `skip`.
+Every skip is logged at `debug` with `event = "stopped_skipped"`, the actor id and type, `cause` (`kill`, `exit_signal` or `runtime_drop`) and `reason`. The log is emitted whether or not the actor overrides `stopped()`. For an actor that does (`#[actor]` with a `#[stopped]` hook, or a hand-written impl that sets `const HAS_STOPPED: bool = true`), the first skip per actor type is a `warn` naming the remedy below; later skips of that type stay at `debug`. The lifecycle trace (feature `lifecycle-trace`) records the same decision as `Hook` `skip`.
 
 If cleanup must run on a supervisor's shutdown, trap exits first thing in `started()`; the parent's exit then ends the actor through `stopped()`, after the messages queued before it:
 

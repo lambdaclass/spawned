@@ -31,6 +31,18 @@ mod asynchronous {
             panic!("linked startup failure");
         }
     }
+    struct Cleans;
+    #[actor]
+    impl Cleans {
+        #[stopped]
+        async fn cleanup(&mut self, _: &Context<Self>) {}
+    }
+    /// `#[stopped]` sets `HAS_STOPPED`, which makes a skipped hook a warning.
+    #[test]
+    fn stopped_hook_sets_has_stopped() {
+        const { assert!(<Cleans as Actor>::HAS_STOPPED) };
+        const { assert!(!<Observer as Actor>::HAS_STOPPED) };
+    }
     #[test]
     fn macro_receives_linked_exit() {
         spawned_rt::tasks::sim_test(|_| async {
