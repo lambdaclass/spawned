@@ -77,8 +77,8 @@ struct TerminalEnvelope<T, M> {
 
 impl<A, T, M> Envelope<A> for TerminalEnvelope<T, M>
 where
-    A: Actor + Handler<M>,
-    M: Message,
+    A: Actor,
+    M: Terminal<A>,
     T: Send + 'static,
 {
     #[cfg(feature = "diagnostics")]
@@ -105,7 +105,7 @@ where
                 return;
             }
             let msg = done(outcome);
-            actor.handle(msg, PendingReply::detached(), ctx).await
+            msg.deliver(actor, ctx).await
         });
         (Some(turn), None)
     }
@@ -140,8 +140,8 @@ fn end_of<T>(outcome: &JobOutcome<T>) -> &'static str {
 
 impl<A, T, M> Run<A, T, M>
 where
-    A: Actor + Handler<M>,
-    M: Message,
+    A: Actor,
+    M: Terminal<A>,
     T: Send + 'static,
 {
     /// Take the terminal notification and enqueue `(done, outcome)`.
@@ -706,8 +706,7 @@ impl<A: Actor> Context<A> {
 
     fn arm_deadline<T, M>(&self, opts: &JobOptions, run: &Arc<Run<A, T, M>>)
     where
-        A: Handler<M>,
-        M: Message,
+        M: Terminal<A>,
         T: Send + 'static,
     {
         let Some(at) = opts.deadline.map(spawned_rt::time::to_ticks) else {
@@ -745,8 +744,7 @@ impl<A: Actor> Context<A> {
         caller_gone: Option<Arc<Slot<R>>>,
     ) -> JobHandle
     where
-        A: Handler<M>,
-        M: Message,
+        M: Terminal<A>,
         T: Send + 'static,
         R: Send + 'static,
         W: Future<Output = T> + Send + 'static,
@@ -800,8 +798,7 @@ impl<A: Actor> Context<A> {
         done: Done<T, M>,
     ) -> JobHandle
     where
-        A: Handler<M>,
-        M: Message,
+        M: Terminal<A>,
         T: Send + 'static,
         R: Send + 'static,
         W: FnOnce(JobCtx<A>) -> T + Send + 'static,
@@ -922,6 +919,26 @@ impl<A: Actor> Context<A> {
         W: Future<Output = T> + Send + 'static,
         D: FnOnce(JobOutcome<T>, ReplyTo<R>) -> M + Send + 'static,
     {
+        self.pipe_reply_to(opts, token, work, done)
+    }
+
+    /// [`pipe_reply`](Self::pipe_reply) for any terminal: a message for a
+    /// handler, or [`forward`](Self::forward)'s answer.
+    fn pipe_reply_to<R, T, M, F, W, D>(
+        &self,
+        opts: JobOptions,
+        token: ReplyTo<R>,
+        work: F,
+        done: D,
+    ) -> Result<JobHandle, PipeReplyError<R>>
+    where
+        M: Terminal<A>,
+        R: Send + 'static,
+        T: Send + 'static,
+        F: FnOnce(JobCtx<A>) -> W,
+        W: Future<Output = T> + Send + 'static,
+        D: FnOnce(JobOutcome<T>, ReplyTo<R>) -> M + Send + 'static,
+    {
         let (state, slot, token) = self.link_reply(&opts, token)?;
         let watch = opts.cancel_on_caller_gone.then(|| slot.clone());
         #[cfg(feature = "lifecycle-trace")]
@@ -954,6 +971,42 @@ impl<A: Actor> Context<A> {
         #[cfg(feature = "lifecycle-trace")]
         state.linked(link.1);
         Ok(self.launch_async(opts, state, hold, work, linked_done(token, done), watch))
+    }
+
+    /// Delegate a deferred reply in one call: run `work` as a job linked to
+    /// `token`'s request, as [`pipe_reply`](Self::pipe_reply) does, and
+    /// answer the caller with its result in a later turn of this actor
+    /// (OTP: hand `From` to the work and `gen_server:reply/2` it), with no
+    /// message type or handler to write. Typical use, a downstream request
+    /// that inherits the caller's deadline:
+    ///
+    /// ```ignore
+    /// let Ok(token) = reply.defer() else { return };
+    /// let downstream = self.backend.send_request(Lookup { key }, token.deadline());
+    /// if let Err(e) = ctx.forward(JobOptions::new(), token, |_| async move { downstream?.await }) {
+    ///     e.into_token().overloaded();
+    /// }
+    /// ```
+    ///
+    /// `Ok(value)` answers `value`; `Err(ActorError::Overloaded)` answers
+    /// `Overloaded`. Any other error, a panic in `work` or the job's
+    /// deadline drops the token (the caller gets `ReplyDropped`). The
+    /// answer goes through this actor's mailbox and is fenced as
+    /// `pipe_reply`'s terminal message is: if the actor exits first, the
+    /// caller gets `ActorStopped` with its final reason. On every error the
+    /// token comes back.
+    pub fn forward<R, F, W>(
+        &self,
+        opts: JobOptions,
+        token: ReplyTo<R>,
+        work: F,
+    ) -> Result<JobHandle, PipeReplyError<R>>
+    where
+        R: Send + 'static,
+        F: FnOnce(JobCtx<A>) -> W,
+        W: Future<Output = Result<R, crate::error::ActorError>> + Send + 'static,
+    {
+        self.pipe_reply_to(opts, token, work, answer_forwarded)
     }
 
     /// Blocking [`pipe_reply`](Self::pipe_reply) on Tokio's blocking pool,
@@ -1044,11 +1097,56 @@ impl<A: Actor> Context<A> {
     }
 }
 
+/// What a job's `done` produces, delivered in the owner's turn once it
+/// passed the fence: a message for one of the owner's handlers, or
+/// [`Forwarded`].
+pub(crate) trait Terminal<A: Actor>: Send + 'static {
+    fn deliver<'a>(
+        self,
+        actor: &'a mut A,
+        ctx: &'a Context<A>,
+    ) -> impl Future<Output = ()> + Send + 'a;
+}
+impl<A: Handler<M>, M: Message> Terminal<A> for M {
+    fn deliver<'a>(
+        self,
+        actor: &'a mut A,
+        ctx: &'a Context<A>,
+    ) -> impl Future<Output = ()> + Send + 'a {
+        actor.handle(self, PendingReply::detached(), ctx)
+    }
+}
+
+/// [`Context::forward`]'s terminal: `done` (below) already answered the
+/// token in the owner's turn, after the fence, so it delivers nothing. Not
+/// a [`Message`], so no handler (not even a catch-all one) can receive it.
+pub(crate) struct Forwarded(());
+impl<A: Actor> Terminal<A> for Forwarded {
+    async fn deliver(self, _: &mut A, _: &Context<A>) {}
+}
+
+/// `forward`'s `done`: runs in the owner's turn once the terminal message
+/// passed its fence.
+fn answer_forwarded<R: Send + 'static>(
+    outcome: JobOutcome<Result<R, crate::error::ActorError>>,
+    token: ReplyTo<R>,
+) -> Forwarded {
+    match outcome {
+        Ok(Ok(value)) => {
+            token.reply(value);
+        }
+        Ok(Err(crate::error::ActorError::Overloaded)) => token.overloaded(),
+        // A downstream failure, a panic or the job's deadline: no answer.
+        _ => drop(token),
+    }
+    Forwarded(())
+}
+
 fn linked_done<R, T, M, D>(token: ReplyTo<R>, done: D) -> Done<T, M>
 where
     R: Send + 'static,
     T: Send + 'static,
-    M: Message,
+    M: Send + 'static,
     D: FnOnce(JobOutcome<T>, ReplyTo<R>) -> M + Send + 'static,
 {
     Box::new(move |outcome| done(outcome, token))
