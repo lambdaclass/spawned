@@ -31,7 +31,14 @@ impl SupervisorBuilder {
         let (done, _) = watch::channel(false);
         let (ready, _) = watch::channel(false);
         let (recovery_changed, _) = watch::channel(0);
+        let name = config
+            .name
+            .clone()
+            .unwrap_or_else(|| "supervisor".to_string());
+        let system = owner.upgrade().map(|system| system.id());
         let core = Arc::new(Core {
+            name,
+            system,
             recovery: Mutex::new(RecoveryQueue {
                 pending: Vec::new(),
                 covered: Vec::new(),
@@ -121,8 +128,17 @@ impl SupervisorBuilder {
         let (changed, _) = watch::channel(0);
         let (initial, _) = watch::channel(false);
         let (done, _) = watch::channel(false);
+        let kind =
+            if std::any::TypeId::of::<A>() == std::any::TypeId::of::<nested::SupervisorActor>() {
+                ChildKind::Supervisor
+            } else {
+                ChildKind::Worker
+            };
         let view = Arc::new(View {
             index: children.len(),
+            restart: spec.restart,
+            kind,
+            nested: std::sync::OnceLock::new(),
             data: Mutex::new(ViewData {
                 recovery: None,
                 snapshot: ChildSnapshot {
@@ -303,6 +319,56 @@ impl Supervisor {
             .iter()
             .map(|c| c.snapshot())
             .collect()
+    }
+    /// The children, in declaration order (OTP `which_children/1`). Each
+    /// row is consistent with itself; rows may be sampled at different
+    /// instants. Out of band: takes each child's lock briefly, runs no
+    /// child code and waits for nothing.
+    pub fn which_children(&self) -> Vec<ChildInfo> {
+        self.core.children().iter().map(|c| c.capture().0).collect()
+    }
+    /// OTP `count_children/1`, derived from one `which_children` call.
+    pub fn count_children(&self) -> ChildCounts {
+        ChildCounts::of(&self.which_children())
+    }
+    /// This supervisor and its subtree, each child expanded through the
+    /// instance captured with its row (see [`SupervisorTree`]).
+    pub fn tree(&self) -> SupervisorTree {
+        use crate::introspection::{Field, Unavailable};
+        let captured: Vec<(ChildInfo, Captured)> =
+            self.core.children().iter().map(|c| c.capture()).collect();
+        let rows: Vec<ChildInfo> = captured.iter().map(|(row, _)| row.clone()).collect();
+        let children = captured
+            .into_iter()
+            .map(|(info, handle)| {
+                let node = match handle {
+                    Captured::Worker(Some(child)) => TreeNode::Worker(Field::Value(child.info())),
+                    Captured::Worker(None) => {
+                        TreeNode::Worker(Field::Unavailable(Unavailable::Dead))
+                    }
+                    Captured::Supervisor(Ok(nested)) => {
+                        TreeNode::Supervisor(Field::Value(nested.tree()))
+                    }
+                    Captured::Supervisor(Err(starting)) => {
+                        TreeNode::Supervisor(Field::Unavailable(if starting {
+                            Unavailable::Starting
+                        } else {
+                            Unavailable::Dead
+                        }))
+                    }
+                };
+                TreeChild { info, node }
+            })
+            .collect();
+        SupervisorTree {
+            system: self.core.system,
+            name: self.core.name.clone(),
+            strategy: self.core.config.strategy,
+            phase: self.core.phase(),
+            budget: self.core.budget(),
+            counts: ChildCounts::of(&rows),
+            children,
+        }
     }
     pub fn failure(&self) -> Option<String> {
         system::lock(&self.core.failure)
